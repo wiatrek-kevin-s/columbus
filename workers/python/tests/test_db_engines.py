@@ -170,6 +170,48 @@ class OracleTests(unittest.TestCase):
             print("oracle without the barrier:", sel(ora_conn(), merged)["rows"])
         except w.WorkerError as e:
             print("oracle without the barrier failed (the barrier is needed):", e.message)
+        # The plans show why. Without the barrier Oracle merges the view and
+        # tests both conditions in one filter, in an order of its choosing;
+        # with it, the caller's condition sits on the VIEW, above the
+        # COUNT (ROWNUM) step, and the row filter on the table below.
+        import oracledb
+
+        db = oracledb.connect(user="columbus_rw", password="columbus_rw_test", host=ORA_HOST,
+                              port=int(os.environ.get("COLUMBUS_TEST_ORA_PORT", "1521")),
+                              service_name=os.environ.get("COLUMBUS_TEST_ORA_SERVICE", "FREEPDB1"))
+        try:
+            plans = {}
+            for name, sql in (("barrier", barrier), ("merged", merged)):
+                cur = db.cursor()
+                cur.execute(f"EXPLAIN PLAN SET STATEMENT_ID = '{name}' FOR {sql}")
+                cur.execute("SELECT id, parent_id, operation, options, filter_predicates FROM plan_table "
+                            "WHERE statement_id = :s ORDER BY id", s=name)
+                plans[name] = cur.fetchall()
+                print(f"oracle plan ({name}):")
+                for r in plans[name]:
+                    print("  ", r)
+            db.rollback()
+        finally:
+            db.close()
+
+        def nodes(plan, word):
+            return [r for r in plan if r[4] and word in r[4].upper()]
+
+        merged_both = [r for r in plans["merged"] if r[4] and "TO_NUMBER" in r[4].upper() and "DISTRICT" in r[4].upper()]
+        print("oracle merged plan tests both conditions in one step:", bool(merged_both))
+        plan = plans["barrier"]
+        by_id = {r[0]: r for r in plan}
+        self.assertFalse([r for r in plan if r[4] and "TO_NUMBER" in r[4].upper() and "DISTRICT" in r[4].upper()],
+                         "with the barrier no step tests both conditions")
+        conv, = nodes(plan, "TO_NUMBER")
+        dist, = nodes(plan, "DISTRICT")
+        # The row filter's step is below the caller's condition's step.
+        up, ancestors = dist[1], set()
+        while up is not None:
+            ancestors.add(up)
+            up = by_id[up][1]
+        self.assertIn(conv[0], ancestors, "the caller's condition runs only on what the filtered view returns")
+        self.assertTrue(any(r[2] == "COUNT" for r in plan), "the ROWNUM step is in the plan")
 
     def test_list_datasets(self):
         r = w.list_datasets({"connection": ora_conn("columbus_ro", "columbus_ro_test"), "schemas": ["ROADS"]})
@@ -180,11 +222,15 @@ class OracleTests(unittest.TestCase):
         roads = by_name["ROADS.ROADS"]
         self.assertEqual((roads["geometry_column"], roads["srs_id"]), ("GEOM", 4326))
         self.assertEqual(roads["crs_spec"], {"org": "EPSG", "org_id": 4326})
-        self.assertEqual(roads["geometry_type"], "LINESTRING")
+        # From the spatial index's metadata when the login can see it, else
+        # unknown in a listing; describing the one dataset reads it from a row.
+        print("oracle listing geometry_type:", roads["geometry_type"])
+        self.assertIn(roads["geometry_type"], ("LINESTRING", "GEOMETRY"))
         self.assertEqual([f["name"] for f in roads["fields"]], ["ID", "ROUTE_CODE", "DISTRICT", "OWNER_NAME", "GEOM"])
         self.assertEqual(by_name["ROADS.PARCELS"]["unsupported_geometry"][0]["column"], "SHAPE")
         one = w.list_datasets({"connection": ora_conn(), "only": "roads.roads"})["datasets"]
         self.assertEqual([d["name"] for d in one], ["ROADS.ROADS"])
+        self.assertEqual(one[0]["geometry_type"], "LINESTRING")
 
     def test_unsupported_geometry_comes_back_as_a_placeholder(self):
         r = sel(ora_conn(), "SELECT id, shape FROM roads.parcels ORDER BY id")
@@ -295,6 +341,48 @@ class SqlServerTests(unittest.TestCase):
             print("sql server without the barrier:", sel(ms_conn(), merged)["rows"])
         except w.WorkerError as e:
             print("sql server without the barrier failed (the barrier is needed):", e.message)
+        # The plans show why: with the barrier the conversion is tested in a
+        # Filter above the Top, and the row filter below it.
+        import pyodbc
+
+        c = ms_conn()
+        db = pyodbc.connect(
+            "DRIVER={ODBC Driver 18 for SQL Server};SERVER=tcp:%s,%s;DATABASE=%s;UID=%s;PWD=%s;Encrypt=yes;TrustServerCertificate=yes"
+            % (c["host"], c["port"], c["database"], c["user"], c["password"]), autocommit=True)
+        try:
+            cur = db.cursor()
+            plans = {}
+            for name, sql in (("barrier", barrier), ("merged", merged)):
+                cur.execute("SET SHOWPLAN_ALL ON")
+                cur.execute(sql)
+                cols = [d[0] for d in cur.description]
+                rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+                cur.execute("SET SHOWPLAN_ALL OFF")
+                plans[name] = rows
+                print(f"sql server plan ({name}):")
+                for r in rows:
+                    print("  ", r["NodeId"], r["Parent"], r["PhysicalOp"], (r["Argument"] or "")[:200])
+        finally:
+            db.close()
+        plan = [r for r in plans["barrier"] if r["PhysicalOp"]]
+        by_id = {r["NodeId"]: r for r in plan}
+
+        def ancestors(node):
+            out, up = set(), node["Parent"]
+            while up in by_id:
+                out.add(up)
+                up = by_id[up]["Parent"]
+            return out
+
+        top, = [r for r in plan if r["PhysicalOp"] == "Top"]
+        conv = [r for r in plan if "route_code" in (r["Argument"] or "") and "CONVERT" in (r["Argument"] or "").upper()]
+        dist = [r for r in plan if "[district]" in (r["Argument"] or "") and "WHERE" in (r["Argument"] or "").upper()]
+        self.assertTrue(conv and dist, plan)
+        self.assertFalse([r for r in conv if r in dist], "with the barrier no step tests both conditions")
+        for r in conv:
+            self.assertIn(r["NodeId"], ancestors(top), "the conversion runs above the Top")
+        for r in dist:
+            self.assertIn(top["NodeId"], ancestors(r), "the row filter runs below the Top")
 
     def test_list_datasets(self):
         r = w.list_datasets({"connection": ms_conn("columbus_ro", "Columbus_ro_test1"), "schemas": ["roads"]})

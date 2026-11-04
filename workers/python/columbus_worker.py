@@ -875,10 +875,30 @@ def _ora_list(conn: dict[str, Any], timeout_s: float, schemas=None, only: str | 
             )
             for owner, table, col, gtype in cur.fetchall():
                 entry = tables.get(f"{owner}.{table}")
+                col = str(col or "").strip('"')
                 if entry is not None and entry.get("geometry_column") == col and gtype:
                     entry["geometry_type"] = _SDO_GTYPES.get(str(gtype).upper(), "GEOMETRY")
         except oracledb.DatabaseError:
             pass
+        if only:
+            # Describing one dataset with no type on its spatial index: take
+            # it from one row (only SDO_GTYPE is read: its last digit is the
+            # type).
+            for entry in tables.values():
+                if entry.get("geometry_column") and entry.get("geometry_type") == "GEOMETRY":
+                    s, _, t = entry["name"].partition(".")
+                    try:
+                        cur.execute(
+                            f"SELECT g.{_quote_dq(entry['geometry_column'])}.SDO_GTYPE FROM {_quote_dq(s)}.{_quote_dq(t)} g "
+                            f"WHERE g.{_quote_dq(entry['geometry_column'])} IS NOT NULL AND ROWNUM = 1"
+                        )
+                        r = cur.fetchone()
+                    except oracledb.DatabaseError:
+                        continue
+                    kind = {1: "POINT", 2: "LINESTRING", 3: "POLYGON", 4: "GEOMETRYCOLLECTION",
+                            5: "MULTIPOINT", 6: "MULTILINESTRING", 7: "MULTIPOLYGON"}
+                    if r and r[0]:
+                        entry["geometry_type"] = kind.get(int(r[0]) % 10, "GEOMETRY")
         epsg = _ora_srid_to_epsg(cur, sorted(set(srids.values())))
         for name, srid in srids.items():
             e = tables[name]
