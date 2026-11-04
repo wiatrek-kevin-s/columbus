@@ -222,89 +222,25 @@ fn level_c_reads_anywhere_but_writes_only_granted_folders() {
         return;
     }
     let d = dirs();
+    if cfg!(windows) {
+        // Not available on Windows yet: refused, never run unconfined.
+        let check = Command::new(launcher())
+            .args(["--check", "C"])
+            .output()
+            .unwrap();
+        assert!(!check.status.success());
+        let out = run("C", &d.ws, &[], &py, "print('ran')");
+        assert!(!out.stdout.contains("ran"), "{}", out.stdout);
+        assert!(
+            out.stderr.contains("not available on Windows"),
+            "{}",
+            out.stderr
+        );
+        return;
+    }
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let out = run("C", &d.ws, &[], &py, &script(&d, port));
-    if out.code != 0 && cfg!(windows) {
-        // Which programs start at level C here: a system one, a Rust one
-        // from this build, and Python without isolated mode.
-        let me = launcher().display().to_string();
-        let exe = String::from_utf8_lossy(
-            &Command::new(&py)
-                .args(["-c", "import sys; print(sys.executable)"])
-                .output()
-                .unwrap()
-                .stdout,
-        )
-        .trim()
-        .to_string();
-        if let Ok(o) = Command::new("where").arg(&py).output() {
-            eprintln!("where {py}: {}", String::from_utf8_lossy(&o.stdout));
-        }
-        eprintln!("sys.executable: {exe}");
-        let dir = Path::new(&exe).parent().unwrap().display().to_string();
-        let dll = format!("{dir}\\python312.dll");
-        for target in [dll.as_str(), exe.as_str(), dir.as_str()] {
-            if let Ok(o) = Command::new("icacls").arg(target).output() {
-                eprintln!("icacls {target}:\n{}", String::from_utf8_lossy(&o.stdout));
-            }
-        }
-        // Words without spaces, so cmd sees them as typed.
-        let probes: [(&str, Vec<&str>); 8] = [
-            (
-                "cmd",
-                vec![
-                    "/c",
-                    "type",
-                    dll.as_str(),
-                    ">",
-                    "NUL",
-                    "&&",
-                    "echo",
-                    "dll-readable",
-                ],
-            ),
-            ("cmd", vec!["/c", "dir", "/b", dir.as_str()]),
-            (
-                "cmd",
-                vec![
-                    "/c",
-                    exe.as_str(),
-                    "-c",
-                    "print(1)",
-                    "&",
-                    "echo",
-                    "py-exit-%ERRORLEVEL%",
-                ],
-            ),
-            ("cmd", vec!["/c", "echo", "native-ok"]),
-            (me.as_str(), vec!["--check", "A"]),
-            (py.as_str(), vec!["-c", "print('py-ok')"]),
-            (exe.as_str(), vec!["-c", "print('exe-ok')"]),
-            (exe.as_str(), vec!["-S", "-c", "print('exe-S-ok')"]),
-        ];
-        for (program, args) in probes {
-            let ws = d.ws.display().to_string();
-            let mut a: Vec<&str> = vec![
-                "--level",
-                "C",
-                "--name",
-                "test.probe",
-                "--rw",
-                &ws,
-                "--",
-                program,
-            ];
-            a.extend(args.iter().copied());
-            let o = Command::new(launcher()).args(&a).output().unwrap();
-            eprintln!(
-                "probe {program} {args:?}: exit {:?} out {:?} err {:?}",
-                o.status.code(),
-                String::from_utf8_lossy(&o.stdout),
-                String::from_utf8_lossy(&o.stderr)
-            );
-        }
-    }
     for l in [
         "read_inside: ok",
         "write_inside: ok",

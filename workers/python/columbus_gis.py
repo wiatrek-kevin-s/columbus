@@ -472,6 +472,7 @@ def export_layer(path: str, out_stem: str, fmt: str, crs: str | None = None,
         if not df.crs.equals(target):
             checks.append(check("export.reprojected", "info", f"Reprojected from {_label(df.crs)} to {_label(target)} for delivery"))
             df = df.to_crs(target)
+    gname = df.geometry.name if geo else None
     if rename:
         missing = [k for k in rename if k not in df.columns]
         present = {k: v for k, v in rename.items() if k in df.columns}
@@ -479,24 +480,40 @@ def export_layer(path: str, out_stem: str, fmt: str, crs: str | None = None,
             checks.append(check("export.rename_missing", "warn",
                                 f"The delivery spec renames {', '.join(missing)}, which the layer does not have",
                                 fix="Check the field names against the spec; the layer may come from a different dataset"))
-        clash = [v for v in present.values() if v in df.columns and v not in present]
-        if clash:
-            raise GISError("export.rename", f"renaming would duplicate field(s) {', '.join(clash)}")
+        if gname in present:
+            raise GISError("export.rename", f"the geometry column {gname} cannot be renamed")
+        # GeoPackage and dBase field names ignore case, so clashes do too.
+        after = [present.get(c, c) for c in df.columns]
+        seen: dict[str, str] = {}
+        for name in after:
+            low = str(name).lower()
+            if low in seen:
+                raise GISError("export.rename", f"renaming would give two fields the name {name} (field names ignore case)")
+            seen[low] = name
         df = df.rename(columns=present)
         if present:
             checks.append(check("export.renamed", "info", "Renamed " + ", ".join(f"{k} to {v}" for k, v in present.items())))
     if key in ("shp", "shapefile"):
-        gname = df.geometry.name if geo else None
-        long = [c for c in df.columns if c != gname and len(str(c)) > 10]
+        # dBase field names are at most 10 bytes in the file's encoding (UTF-8).
+        long = [c for c in df.columns if c != gname and len(str(c).encode("utf-8")) > 10]
         if long:
-            raise GISError("export.format", f"Shapefile field names are at most 10 characters; {', '.join(map(str, long))} would be cut",
+            raise GISError("export.format", f"Shapefile field names are at most 10 bytes; {', '.join(map(str, long))} would be cut",
                            fix="Rename them in the delivery spec, or deliver GeoPackage")
+        wide = [c for c in df.columns if c != gname and df[c].dtype == object
+                and df[c].dropna().astype(str).map(lambda v: len(v.encode("utf-8"))).max(initial=0) > 254]
+        if wide:
+            raise GISError("export.format", f"Shapefile text fields hold at most 254 bytes; {', '.join(map(str, wide))} has longer values",
+                           fix="Deliver GeoPackage")
     os.makedirs(os.path.dirname(out_stem) or ".", exist_ok=True)
     out = out_stem + ext
     if driver == "CSV":
         frame = pd.DataFrame(df.drop(columns=df.geometry.name)) if geo else pd.DataFrame(df)
         if geo:
-            frame["wkt"] = df.geometry.to_wkt()
+            if any(str(c).lower() == "wkt" for c in frame.columns):
+                raise GISError("export.rename", "the layer already has a field named wkt, where a CSV export puts the geometry",
+                               fix="Rename that field in the delivery spec")
+            # Full precision: shapely's default rounds to 6 decimals.
+            frame["wkt"] = df.geometry.to_wkt(rounding_precision=-1)
         frame.to_csv(out, index=False)
     else:
         if not geo:

@@ -111,11 +111,11 @@ Known limits: an agent that can run programs as the person could read the browse
 | --- | --- | --- | --- | --- |
 | A | AppContainer, no capabilities | the session workspace and declared folders only | none | engine plugins (the default) and compute-only servers |
 | B | AppContainer with internetClient | same as A | internet, not loopback | local servers that call public APIs themselves |
-| C | restricted token at low integrity | reads what the person can; writes only the workspace and declared folders | loopback and anything else | servers that drive a desktop app (Obsidian, QGIS, ArcGIS Pro add-ins); needs `trust: trusted` or an allow-list entry |
+| C | not available yet (see below) | reads what the person can; writes only the workspace and declared folders | loopback and anything else | servers that drive a desktop app (Obsidian, QGIS, ArcGIS Pro add-ins); needs `trust: trusted` or an allow-list entry |
 
 Every level also runs in a job object: the process and anything it starts end when the gateway stops it, with memory and process limits (`servers.memory_mb`, `plugins.memory_mb`). The program's own folder and, for Python plugins, the interpreter's folders are readable; nothing else in the person's profile is. Policy lists the levels allowed: `servers.levels` (default A, B, C) and `plugins.levels` (default A; plugins never get C). `list_providers` shows each provider's level.
 
-Confinement fails closed. If a level cannot be provided (the launcher is missing, or the operating system has no implementation), the server or plugin is blocked, unless `servers.allow_unconfined_local` allows an unconfined pilot, which `list_providers` then shows as `unconfined`. On Linux, used for development and CI, the launcher uses Landlock for files and a seccomp filter that refuses internet sockets at level A. macOS has no implementation yet.
+Confinement fails closed. If a level cannot be provided (the launcher is missing, or the operating system has no implementation), the server or plugin is blocked, unless `servers.allow_unconfined_local` allows an unconfined pilot, which `list_providers` then shows as `unconfined`. On Linux, used for development and CI, the launcher uses Landlock for files and a seccomp filter that refuses internet sockets at level A. On Windows level C (planned as a restricted token at low integrity) is refused for now: on the systems tested, a low-integrity process could not read ordinary program folders, so it would not do what the level promises; a server that needs it is blocked until it is fixed, or can run at A or B with the folders it needs. macOS has no implementation yet.
 
 Columbus's own engine worker is not confined: it is Columbus's code, it reads the connections (files, databases on the network or on this machine), and it is what enforces the rules on the data.
 
@@ -244,7 +244,8 @@ Phase 1 (this repository, in progress):
 - [x] Local approvals page for clients without elicitation
 - [x] Worker protocol v2 with progress and cancel; Python and Rust plugin SDKs; Columbus's engine rebuilt on it; engine plugins through `run_tool`
 - [ ] RustGIS native worker
-- [x] Confinement levels A–C (Windows AppContainer, restricted token and job objects; Landlock and seccomp on Linux)
+- [x] Confinement levels A–B on Windows (AppContainer and job objects) and A–C on Linux (Landlock and seccomp)
+- [ ] Confinement level C on Windows (a low-integrity process cannot read program folders on the systems tested)
 - [x] OAuth sign-in for remote servers (PKCE, dynamic registration, tokens in Credential Manager)
 - [x] `vector_op` and `verify` through GDAL (geopandas, pyogrio, shapely, pyproj)
 - [ ] `raster_op`, `pointcloud_pipeline` through GDAL/PDAL; a pinned environment (pixi) for the engine

@@ -180,6 +180,17 @@ impl Gateway {
                     Ok(p) => p,
                     Err(e) => return Err(self.deny(ctx, rec, e)),
                 };
+            // Only files Columbus recorded in this session, unchanged since.
+            let Some(meta) = self.state.outputs.get(&path) else {
+                return Err(self.deny(
+                    ctx,
+                    rec,
+                    format!("{h} was not written or saved by a Columbus tool in this session"),
+                ));
+            };
+            if !self.state.outputs.unchanged(&path) {
+                return Err(self.deny(ctx, rec, format!("{h} changed after Columbus wrote it")));
+            }
             inputs.insert(name.clone(), json!({"kind": "file", "path": path}));
             recheck.push((
                 path.clone(),
@@ -191,9 +202,9 @@ impl Gateway {
                 Ok((h, n)) => json!({"param": name, "file": h, "bytes": n}),
                 Err(_) => json!({"param": name, "absent": true}),
             });
-            input_prov.push(
-                json!({"param": name, "handle": h, "labels": self.state.flow.file_labels(&path)}),
-            );
+            input_prov.push(json!({"param": name, "handle": h,
+                "labels": self.state.flow.file_labels(&path),
+                "provenance": meta.provenance, "truncated": meta.truncated}));
             files.push(path);
         }
 
@@ -304,6 +315,7 @@ impl Gateway {
                     rows,
                     source: crate::providers::OutputSource::Engine,
                     truncated: false,
+                    inherited: vec![],
                     sha256: None,
                 },
             );
@@ -466,35 +478,6 @@ impl Gateway {
         };
 
         // Outputs: only the declared paths, only if written.
-        let counts = result.get("outputs").cloned().unwrap_or(Value::Null);
-        let mut saved = Vec::new();
-        for (name, path) in &out_paths {
-            if !path.is_file() {
-                continue;
-            }
-            let c = counts.get(name);
-            let rows = c
-                .and_then(|c| c.get("rows").or_else(|| c.get("features")))
-                .and_then(Value::as_u64);
-            self.state.flow.record_file(path, &labels);
-            self.state.outputs.record(
-                path,
-                OutputMeta {
-                    made_by: full.clone(),
-                    provenance: Some(prov.clone()),
-                    rows,
-                    source: crate::providers::OutputSource::Plugin,
-                    truncated: false,
-                    sha256: None,
-                },
-            );
-            saved.push(SavedFile {
-                handle: self.ws_handle(path).unwrap_or_default(),
-                bytes: std::fs::metadata(path).map(|m| m.len()).unwrap_or(0),
-                kind: spec.outputs[name].kind().to_string(),
-                path: path.clone(),
-            });
-        }
         let mut checks: Vec<Check> = result
             .get("warnings")
             .and_then(Value::as_array)
@@ -521,6 +504,53 @@ impl Gateway {
                 fix: w.get("fix").and_then(Value::as_str).map(String::from),
             })
             .collect();
+        let inherit = self
+            .state
+            .outputs
+            .inherit(&files)
+            .with_step_fails(&checks, &prov);
+        // Content made from a file a connected server sent stays as
+        // untrusted as that file.
+        let from_provider = files.iter().any(|f| {
+            self.state
+                .outputs
+                .get(f)
+                .is_some_and(|m| m.source == crate::providers::OutputSource::Provider)
+        });
+        let counts = result.get("outputs").cloned().unwrap_or(Value::Null);
+        let mut saved = Vec::new();
+        for (name, path) in &out_paths {
+            if !path.is_file() {
+                continue;
+            }
+            let c = counts.get(name);
+            let rows = c
+                .and_then(|c| c.get("rows").or_else(|| c.get("features")))
+                .and_then(Value::as_u64);
+            self.state.flow.record_file(path, &labels);
+            self.state.outputs.record(
+                path,
+                OutputMeta {
+                    made_by: full.clone(),
+                    provenance: Some(prov.clone()),
+                    rows,
+                    source: if from_provider {
+                        crate::providers::OutputSource::Provider
+                    } else {
+                        crate::providers::OutputSource::Plugin
+                    },
+                    truncated: inherit.truncated,
+                    inherited: inherit.fails.clone(),
+                    sha256: None,
+                },
+            );
+            saved.push(SavedFile {
+                handle: self.ws_handle(path).unwrap_or_default(),
+                bytes: std::fs::metadata(path).map(|m| m.len()).unwrap_or(0),
+                kind: spec.outputs[name].kind().to_string(),
+                path: path.clone(),
+            });
+        }
         if !labels.is_empty() {
             checks.push(Check {
                 id: "flow.labels".into(),
