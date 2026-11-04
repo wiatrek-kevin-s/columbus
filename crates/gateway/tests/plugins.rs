@@ -476,8 +476,12 @@ async fn a_rust_plugin_reads_governed_geometry_and_stops_on_time() {
         "stopped in {:?}",
         started.elapsed()
     );
+    // Either timer may stop it first: the server's (which kills the job) or
+    // the plugin's own deadline from the SDK. Both are a timely stop.
     assert!(
-        e.contains("longer than 3 s") || e.to_lowercase().contains("timed out"),
+        e.contains("longer than 3 s")
+            || e.contains("longer than its time limit")
+            || e.to_lowercase().contains("timed out"),
         "{e}"
     );
     // The plugin still works afterwards.
