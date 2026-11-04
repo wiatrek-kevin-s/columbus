@@ -338,7 +338,7 @@ with open(os.path.join("out", "result.csv"), "w", newline="") as f:
     w.writerow(["route_id", "lanes_x2"])
     for r, l in rows:
         w.writerow([r, l * 2])
-print(f"rows={len(rows)} run_dir_ok={os.environ['COLUMBUS_RUN_DIR'] == os.getcwd()}")
+print(f"rows={len(rows)} run_dir_ok={os.path.samefile(os.environ['COLUMBUS_RUN_DIR'], os.getcwd())}")
 "#;
     let args = json!({"code": code, "inputs": {"roads": roads}});
     let first = ok(&call(&c, "run_python", args.clone()).await);

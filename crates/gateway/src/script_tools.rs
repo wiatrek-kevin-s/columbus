@@ -1022,7 +1022,10 @@ mod tests {
         ] {
             assert!(keys.contains(k), "{k}");
         }
-        assert!(!keys.contains("HOME") && !keys.contains("USERPROFILE"));
+        assert!(!keys.contains("HOME"));
+        // On Windows the profile folder names are needed to start an
+        // AppContainer process; nowhere else.
+        assert_eq!(keys.contains("USERPROFILE"), cfg!(windows));
     }
 
     #[cfg(unix)]
