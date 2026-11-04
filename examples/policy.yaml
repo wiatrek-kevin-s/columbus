@@ -36,7 +36,7 @@ servers:
 # The most specific rule wins; deny beats approve at equal specificity.
 flows:
   - from: [connection:roads-prod, connection:assets-prod]
-    to:   [server:*]            # any connected MCP server
+    to:   ["*"]                 # any connected MCP server and any export folder
     action: deny
   - from: [connection:roads-prod]
     to:   [server:sharepoint]
@@ -52,3 +52,14 @@ plugins:
 approvals:
   page: true                     # false: clients without prompts cannot get approvals
   wait_seconds: 45               # how long a call waits for the person on the page (max 300)
+
+# Folders export_output may write to; nothing can be exported anywhere else.
+# granted: true means no approval when every check passes and no flow rule
+# says otherwise. Use folder:<id> in flow rules to treat one specially.
+exports:
+  - { id: district-share, path: '\\fileserver\gis\deliverables', granted: true }
+  - { id: outbox, path: 'C:\Users\Public\Columbus outbox' }
+
+# Hosts registry_fetch may download open data from without asking. Any other
+# host (still public HTTPS only) needs the person's approval.
+fetch_hosts: ["tigerweb.geo.census.gov", "hazards.fema.gov", "*.arcgis.com"]
