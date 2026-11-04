@@ -50,6 +50,8 @@ jobs:
           python-version: "3.12"
       - run: python -m pip install -r workers/python/requirements-gis.txt
       - run: python -m unittest discover -s workers/python/tests -v
+      - name: Skills library
+        run: python skills/check_skills.py
 
   postgis:
     name: PostGIS engine
