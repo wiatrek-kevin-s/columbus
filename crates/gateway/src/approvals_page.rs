@@ -488,12 +488,20 @@ async fn decide(
     if !same_origin(&h, &s) {
         return status(StatusCode::FORBIDDEN, "cross-origin request refused");
     }
-    let Ok(Json(body)) = body else {
+    let Ok(Json(mut body)) = body else {
         return status(
             StatusCode::BAD_REQUEST,
             "expected {\"decision\": \"decline\" | \"allow_once\" | \"always_this_session\"}",
         );
     };
+    // Scripts are approved one run at a time: "for this session" counts as once.
+    if body.decision == Decision::AlwaysThisSession
+        && s.store
+            .status(&id, Utc::now())
+            .is_some_and(|a| a.risk == columbus_shared::approvals::Risk::Script)
+    {
+        body.decision = Decision::AllowOnce;
+    }
     match s.store.decide_via(&id, body.decision, Utc::now(), "page") {
         Ok(a) => {
             // The person is here: opening tabs is fine again.

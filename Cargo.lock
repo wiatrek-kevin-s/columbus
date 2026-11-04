@@ -297,6 +297,7 @@ dependencies = [
  "columbus-flow",
  "columbus-shared",
  "keyring-core",
+ "libc",
  "reqwest",
  "rmcp",
  "rpassword",

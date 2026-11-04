@@ -39,6 +39,12 @@ pub(crate) struct Ask<'a> {
     pub summary: String,
     pub detail: Option<Value>,
     pub approval_id: Option<&'a str>,
+    /// Ask on every call: no standing "allow for this session" covers it,
+    /// and the person is only offered "allow once" (scripts).
+    pub every_time: bool,
+    /// Text the person must see before deciding (a script's full code),
+    /// added to the in-client prompt; the page shows it from `detail`.
+    pub shown: Option<String>,
 }
 
 impl Gateway {
@@ -70,7 +76,7 @@ impl Gateway {
                 .consume(id, ask.tool, ask.request, self.now())?;
             return Ok(Sought::Granted(id.to_string()));
         }
-        if st.approvals.standing_allows(ask.tool, ask.request) {
+        if !ask.every_time && st.approvals.standing_allows(ask.tool, ask.request) {
             return Ok(Sought::Granted("standing".into()));
         }
         let ap = st.approvals.request_with_detail(
@@ -83,16 +89,21 @@ impl Gateway {
         )?;
         let declined = || format!("the person declined: {}", ask.summary);
 
+        let message = match &ask.shown {
+            Some(extra) => format!("{}\n\n{extra}", ask.summary),
+            None => ask.summary.clone(),
+        };
         match ask_person(
             ctx,
             &format!("Columbus: allow {}?", ask.label),
-            &ask.summary,
+            &message,
+            !ask.every_time,
             Duration::from_secs(600),
         )
         .await
         {
             Asked::Allowed { always } => {
-                let d = if always {
+                let d = if always && !ask.every_time {
                     Decision::AlwaysThisSession
                 } else {
                     Decision::AllowOnce

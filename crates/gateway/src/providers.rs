@@ -55,8 +55,9 @@ pub fn resolve_handle(session: &str, sandbox: &Sandbox, handle: &str) -> Result<
     Ok(path)
 }
 
-/// Who wrote a workspace file. Only files Columbus's own engine or an
-/// approved engine plugin wrote are opened by the GIS tools: a file saved
+/// Who wrote a workspace file. Only files Columbus's own engine, an
+/// approved engine plugin or an approved script wrote are opened by the GIS
+/// tools: a file saved
 /// from a connected server's result has content nobody checked, and GDAL
 /// decides how to open a file from its content (a "GeoPackage" that is
 /// really a VRT can read any file or URL).
@@ -65,6 +66,9 @@ pub fn resolve_handle(session: &str, sandbox: &Sandbox, handle: &str) -> Result<
 pub enum OutputSource {
     Engine,
     Plugin,
+    /// Written by a `run_python` script the person approved, in its own run
+    /// folder, confined. Opened like Engine and Plugin files: by content.
+    Script,
     #[default]
     Provider,
 }
@@ -141,6 +145,16 @@ impl Outputs {
         meta.sha256 = columbus_shared::canon::sha256_file(path)
             .ok()
             .map(|(h, _)| h);
+        self.inner
+            .lock()
+            .expect("outputs poisoned")
+            .insert(path.to_path_buf(), meta);
+    }
+    /// Record a file with the hash of the bytes the gateway itself wrote
+    /// (taken while writing it), without reading the file again: what is
+    /// on disk afterwards is only ever compared against this.
+    pub fn record_with_hash(&self, path: &Path, mut meta: OutputMeta, sha256: String) {
+        meta.sha256 = Some(sha256);
         self.inner
             .lock()
             .expect("outputs poisoned")
@@ -476,11 +490,13 @@ pub enum Asked {
 
 /// Ask the person, through their MCP client's own interface, whether to
 /// allow a call. The agent cannot answer this: elicitation is shown to the
-/// person by the client, outside the model's turn.
+/// person by the client, outside the model's turn. Without `offer_always`
+/// the only choice is to allow this one call.
 pub async fn ask_person(
     ctx: &RequestContext<RoleServer>,
     title: &str,
     summary: &str,
+    offer_always: bool,
     timeout: Duration,
 ) -> Asked {
     if !ctx
@@ -490,12 +506,18 @@ pub async fn ask_person(
     {
         return Asked::Unsupported;
     }
-    let decision = EnumSchema::builder(vec![
-        "allow_once".to_string(),
-        "always_this_session".to_string(),
-    ])
-    .description("Allow once, or allow this exact request again for the rest of the session")
-    .build();
+    let decision = if offer_always {
+        EnumSchema::builder(vec![
+            "allow_once".to_string(),
+            "always_this_session".to_string(),
+        ])
+        .description("Allow once, or allow this exact request again for the rest of the session")
+        .build()
+    } else {
+        EnumSchema::builder(vec!["allow_once".to_string()])
+            .description("Allow this one call; it is asked again every time")
+            .build()
+    };
     let schema: ElicitationSchema = match ElicitationSchema::builder()
         .title(title.to_string())
         .required_enum_schema("decision", decision)
@@ -518,7 +540,9 @@ pub async fn ask_person(
                     .and_then(|c| c.get("decision"))
                     .and_then(Value::as_str)
                     == Some("always_this_session");
-                Asked::Allowed { always }
+                Asked::Allowed {
+                    always: always && offer_always,
+                }
             }
             _ => Asked::Declined,
         },

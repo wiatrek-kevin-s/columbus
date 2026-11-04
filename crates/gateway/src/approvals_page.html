@@ -35,6 +35,7 @@ dd { margin: 0; overflow-wrap: anywhere; }
 details { margin: 0 0 12px; font-size: .85rem; }
 summary { cursor: pointer; color: var(--accent); }
 pre { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 10px; overflow: auto; max-height: 18rem; margin: 8px 0 0; font-size: .8rem; }
+pre.code { max-height: 32rem; white-space: pre; }
 .actions { display: flex; flex-wrap: wrap; gap: 8px; }
 button { font: inherit; border-radius: 8px; padding: 8px 14px; cursor: pointer; border: 1px solid var(--line); background: var(--card); color: var(--ink); }
 button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
@@ -116,12 +117,19 @@ button:disabled { opacity: .5; cursor: default; }
       });
     }
     if (dl.childNodes.length) c.appendChild(dl);
+    if (typeof d.code === "string") {
+      // A script is always shown in full before it runs.
+      c.appendChild(el("p", "sub", "The code that will run" + (d.lines ? " (" + d.lines + " lines)" : "") + ":"));
+      c.appendChild(el("pre", "code", d.code));
+    }
     var det = el("details");
     det.appendChild(el("summary", null, "Show the exact request"));
     det.appendChild(el("pre", null, JSON.stringify(a.request, null, 2)));
     c.appendChild(det);
     var actions = el("div", "actions");
+    var once = a.risk === "script";
     [["allow_once", "Allow once", "primary"], ["always_this_session", "Allow for this session", ""], ["decline", "Decline", "danger"]]
+      .filter(function (b) { return !(once && b[0] === "always_this_session"); })
       .forEach(function (b) {
         var btn = el("button", b[2], b[1]);
         btn.type = "button";
@@ -130,7 +138,7 @@ button:disabled { opacity: .5; cursor: default; }
         actions.appendChild(btn);
       });
     c.appendChild(actions);
-    c.appendChild(el("p", "hint", "Allow for this session allows this exact request again until the assistant's session ends."));
+    c.appendChild(el("p", "hint", once ? "Scripts are approved one run at a time." : "Allow for this session allows this exact request again until the assistant's session ends."));
     return c;
   }
 

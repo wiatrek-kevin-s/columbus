@@ -44,6 +44,11 @@ reqwest = { version = "0.13", default-features = false, features = ["json"] }
 tempfile.workspace = true
 rmcp = { workspace = true, features = ["client", "transport-child-process", "transport-streamable-http-server"] }
 
+# run_python: ending a script's process group, opening its outputs without
+# following links.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 # Windows Credential Manager. Other platforms have no native store yet.
 [target.'cfg(windows)'.dependencies]
 keyring-core = "1"

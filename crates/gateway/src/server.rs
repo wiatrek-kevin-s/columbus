@@ -426,6 +426,8 @@ pub struct State {
     >,
     pub flow: columbus_flow::FlowState,
     pub outputs: crate::providers::Outputs,
+    /// `run_python` runs one script at a time per session.
+    pub scripts: tokio::sync::Mutex<()>,
     pub session: String,
     pub user: String,
     pub notes: Vec<String>,
@@ -578,6 +580,7 @@ impl State {
             columns: Default::default(),
             flow: columbus_flow::FlowState::new(),
             outputs: crate::providers::Outputs::default(),
+            scripts: tokio::sync::Mutex::new(()),
             paths,
             policy,
             policy_source,
@@ -617,7 +620,8 @@ impl Gateway {
                 + Self::context_router()
                 + Self::export_router()
                 + Self::fetch_router()
-                + Self::raster_router(),
+                + Self::raster_router()
+                + Self::script_router(),
         }
     }
 
@@ -1106,7 +1110,7 @@ impl Gateway {
                         summary: summary_of(&desc),
                         provider: "columbus".into(),
                         risk: None,
-                        approval: "no".into(),
+                        approval: if t.name == "run_python" { "yes" } else { "no" }.into(),
                     },
                 ));
             }
@@ -1664,6 +1668,8 @@ impl Gateway {
                 summary,
                 detail: Some(detail),
                 approval_id: args.approval_id.as_deref(),
+                every_time: false,
+                shown: None,
             };
             match self.seek_approval(&ctx, ask).await {
                 Ok(crate::approval_flow::Sought::Granted(id)) => rec.approval = Some(id),

@@ -78,7 +78,7 @@ const DEVICE_NAMES: &[&str] = &[
     "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
 ];
 
-fn valid_name(n: &str) -> bool {
+pub(crate) fn valid_name(n: &str) -> bool {
     let stem = n
         .split('.')
         .next()
@@ -608,6 +608,8 @@ impl Gateway {
                 summary,
                 detail: Some(detail),
                 approval_id: args.approval_id.as_deref(),
+                every_time: false,
+                shown: None,
             };
             match self.seek_approval(&ctx, ask).await {
                 Ok(Sought::Granted(id)) => rec.approval = Some(id),
@@ -817,7 +819,7 @@ fn same_name(dir: &Path, name: &str) -> Vec<(String, Option<String>)> {
 
 /// Create `to` (failing if anything is there, including a link), copy
 /// `from` into it, and return the SHA-256 of exactly what was copied.
-fn copy_hashed(from: &Path, to: &Path) -> std::io::Result<String> {
+pub(crate) fn copy_hashed(from: &Path, to: &Path) -> std::io::Result<String> {
     use sha2::{Digest, Sha256};
     use std::io::{Read, Write};
     let mut src = std::fs::File::open(from)?;
@@ -839,7 +841,7 @@ fn copy_hashed(from: &Path, to: &Path) -> std::io::Result<String> {
     Ok(format!("{:x}", h.finalize()))
 }
 
-fn write_new(to: &Path, bytes: &[u8]) -> std::io::Result<()> {
+pub(crate) fn write_new(to: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
     let mut f = std::fs::OpenOptions::new()
         .write(true)

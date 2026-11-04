@@ -22,7 +22,7 @@ MAX_BODY_LINES = 500
 # Tools the design plans but the server does not have yet. A skill may name
 # them only to say they are not available.
 PLANNED = {
-    "pointcloud_pipeline", "run_python", "propose_edits",
+    "pointcloud_pipeline", "propose_edits",
     "apply_edits",
     "draft_context_from_geodatabase",
 }

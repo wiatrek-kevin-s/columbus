@@ -403,7 +403,7 @@ fn plugin_confinement(
 /// The folders a Python interpreter loads from (its own and, for a virtual
 /// environment, the base installation), which a confined plugin must be
 /// able to read. Asked once per interpreter.
-fn python_dirs(python: &Path) -> Vec<PathBuf> {
+pub(crate) fn python_dirs(python: &Path) -> Vec<PathBuf> {
     static CACHE: std::sync::Mutex<BTreeMap<PathBuf, Vec<PathBuf>>> =
         std::sync::Mutex::new(BTreeMap::new());
     if let Some(v) = CACHE.lock().expect("python dirs").get(python) {
