@@ -686,7 +686,12 @@ async fn a_file_changed_while_waiting_for_approval_is_not_sent() {
 
     // Workspace files go to a server only as handles (copied into its own
     // folder once allowed), never as raw paths into the workspace.
-    let ws = who["result"]["workspace"].as_str().unwrap().to_string();
+    // As a person would type it (no \\?\ prefix on Windows).
+    let ws = who["result"]["workspace"]
+        .as_str()
+        .unwrap()
+        .trim_start_matches(r"\\?\")
+        .to_string();
     let e = err(&call(
         &c,
         "run_tool",
