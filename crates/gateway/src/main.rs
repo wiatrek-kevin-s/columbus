@@ -9,6 +9,8 @@
 //! columbus-mcp servers list         connected MCP servers and their state
 //! columbus-mcp servers review ID    a server's tools, the manifest's settings and any flags
 //! columbus-mcp servers approve ID [--accept-flags]   pin the reviewed tool definitions
+//! columbus-mcp servers signin ID    sign in to a remote server in the browser (OAuth)
+//! columbus-mcp servers signout ID   remove its tokens
 //! columbus-mcp plugins list         engine plugins, their versions, hashes and state
 //! columbus-mcp plugins approve ID   approve a plugin's exact contents
 //! columbus-mcp --version
@@ -65,6 +67,8 @@ async fn main() -> Result<()> {
         ["servers", "review", id] => review_cli::review(id).await.map(|_| ()),
         ["servers", "approve", id] => review_cli::approve(id, false).await,
         ["servers", "approve", id, "--accept-flags"] => review_cli::approve(id, true).await,
+        ["servers", "signin", id] => review_cli::signin(id).await,
+        ["servers", "signout", id] => review_cli::signout(id),
         ["secret", "delete", id] => {
             let store = secrets::SecretStore::from_env();
             if store.delete(id)? {
@@ -79,7 +83,7 @@ async fn main() -> Result<()> {
             Ok(())
         }
         _ => bail!(
-            "usage: columbus-mcp [serve] | audit verify FILE | secret set|delete ID | servers list|review|approve ID | plugins list|approve ID | --version"
+            "usage: columbus-mcp [serve] | audit verify FILE | secret set|delete ID | servers list|review|approve|signin|signout ID | plugins list|approve ID | --version"
         ),
     }
 }

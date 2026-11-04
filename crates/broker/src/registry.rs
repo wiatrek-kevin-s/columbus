@@ -22,7 +22,8 @@ use crate::review::{self, Review, ReviewedTool, ToolState};
 use crate::BrokerError;
 
 /// Reads a secret from the gateway's credential store by entry name.
-pub type SecretSource = Arc<dyn Fn(&str) -> Result<Option<String>, String> + Send + Sync>;
+/// Also where OAuth tokens for remote servers are kept.
+pub type SecretSource = Arc<dyn crate::oauth::SecretStore>;
 
 /// Environment variables a local server may inherit; everything else,
 /// including every COLUMBUS_* variable and any secrets in the gateway's
@@ -167,7 +168,7 @@ impl Broker {
         let providers = loaded
             .into_iter()
             .map(|l| {
-                let mut blocked = Self::gate(policy, &l);
+                let mut blocked = Self::gate(policy, &l, secrets.as_ref());
                 let mut confine = None;
                 if blocked.is_none() && matches!(l.manifest.transport, Transport::Stdio { .. }) {
                     match Self::confinement(policy, &l) {
@@ -239,7 +240,11 @@ impl Broker {
     }
 
     /// Policy checks made before any connection is attempted.
-    fn gate(policy: &OrgPolicy, l: &Loaded) -> Option<Status> {
+    fn gate(
+        policy: &OrgPolicy,
+        l: &Loaded,
+        secrets: &dyn crate::oauth::SecretStore,
+    ) -> Option<Status> {
         let m = &l.manifest;
         let blocked = |reason: String| Some(Status::Blocked { reason });
         if !policy.servers.allow.is_empty() && !policy.servers.allow.contains(&m.id) {
@@ -265,9 +270,17 @@ impl Broker {
             }
         }
         if let Auth::Oauth { .. } = m.auth {
-            return Some(Status::SignInRequired {
-                reason: "OAuth sign-in for remote servers is not in this build yet".into(),
-            });
+            if !matches!(m.transport, Transport::Http { .. }) {
+                return blocked("OAuth sign-in applies to remote servers only".into());
+            }
+            if !crate::oauth::signed_in(secrets, &m.id) {
+                return Some(Status::SignInRequired {
+                    reason: format!(
+                        "not signed in; run `columbus-mcp servers signin {}` and sign in in the browser",
+                        m.id
+                    ),
+                });
+            }
         }
         if let Auth::Secret {
             header: Some(h), ..
@@ -310,7 +323,7 @@ impl Broker {
     async fn connect(&self, p: &Provider) -> Result<Connected, String> {
         let m = &p.loaded.manifest;
         let secret = match &m.auth {
-            Auth::Secret { credential, .. } => match (self.secrets)(credential) {
+            Auth::Secret { credential, .. } => match self.secrets.get(credential) {
                 Ok(Some(s)) => Some(s),
                 Ok(None) => return Err(format!("no secret stored for {credential:?}")),
                 Err(e) => return Err(e),
@@ -377,13 +390,24 @@ impl Broker {
             }
             Transport::Http { url } => {
                 let mut cfg = StreamableHttpClientTransportConfig::with_uri(url.clone());
-                if let Some(s) = secret {
-                    cfg = cfg.auth_header(s);
+                if let Auth::Oauth { .. } = &m.auth {
+                    // Tokens stay in the gateway: the client adds the access
+                    // token to each request and refreshes it when needed.
+                    let client =
+                        crate::oauth::authorized_client(url, &m.id, self.secrets.clone()).await?;
+                    let transport = StreamableHttpClientTransport::with_client(client, cfg);
+                    ().serve(transport)
+                        .await
+                        .map_err(|e| format!("MCP handshake failed: {e}"))?
+                } else {
+                    if let Some(s) = secret {
+                        cfg = cfg.auth_header(s);
+                    }
+                    let transport = StreamableHttpClientTransport::from_config(cfg);
+                    ().serve(transport)
+                        .await
+                        .map_err(|e| format!("MCP handshake failed: {e}"))?
                 }
-                let transport = StreamableHttpClientTransport::from_config(cfg);
-                ().serve(transport)
-                    .await
-                    .map_err(|e| format!("MCP handshake failed: {e}"))?
             }
         };
         let server_version = client

@@ -68,7 +68,7 @@ Columbus is an MCP client to other servers too (design change 1, "governed MCP h
 | 2. Data moves as files | File arguments take workspace handles only; the gateway sends the file's bytes. Results marked `to_workspace` are saved as files and a handle comes back |
 | 3. Data-flow approvals | Reading a governed connection labels the session (`connection:roads-prod`) and its files. While a label is active, any write or upload to a connected server needs the person's approval, whatever its manifest says; organization `flows` rules can forbid it outright |
 | 4. External output is untrusted | Connected servers' results are wrapped as data, never instructions |
-| 5. Local servers run confined | **Not in this build yet.** Until it is, local (stdio) servers stay blocked unless policy sets `servers.allow_unconfined_local` for a pilot; they get a scrubbed environment and the workspace as their folder. Remote servers must be on the policy's host list |
+| 5. Local servers run confined | Local (stdio) servers and engine plugins start through the `columbus-confine` launcher at the level their manifest declares (A when none), capped by policy (below). They also get a scrubbed environment and the workspace as their folder. Remote servers must be on the policy's host list |
 
 Review is done by the person at the keyboard:
 
@@ -88,7 +88,21 @@ An approval is bound to exactly what will be sent: each file's SHA-256 and size 
 
 Known limits: an agent that can run programs as the person could read the browser's command line in the instant it starts (the link is single-use, so the person would then see "already used"), and an agent that controls the person's browser can press its buttons. Give such agents only connections whose database logins are read-only.
 
-Not yet: OAuth sign-in for remote servers, Windows confinement levels A–C, the engine plugin SDK and RustGIS worker (milestones 1–2 of change 1).
+### Confinement levels
+
+| Level | On Windows | Files | Network | For |
+| --- | --- | --- | --- | --- |
+| A | AppContainer, no capabilities | the session workspace and declared folders only | none | engine plugins (the default) and compute-only servers |
+| B | AppContainer with internetClient | same as A | internet, not loopback | local servers that call public APIs themselves |
+| C | restricted token at low integrity | reads what the person can; writes only the workspace and declared folders | loopback and anything else | servers that drive a desktop app (Obsidian, QGIS, ArcGIS Pro add-ins); needs `trust: trusted` or an allow-list entry |
+
+Every level also runs in a job object: the process and anything it starts end when the gateway stops it, with memory and process limits (`servers.memory_mb`, `plugins.memory_mb`). The program's own folder and, for Python plugins, the interpreter's folders are readable; nothing else in the person's profile is. Policy lists the levels allowed: `servers.levels` (default A, B, C) and `plugins.levels` (default A; plugins never get C). `list_providers` shows each provider's level.
+
+Confinement fails closed. If a level cannot be provided (the launcher is missing, or the operating system has no implementation), the server or plugin is blocked, unless `servers.allow_unconfined_local` allows an unconfined pilot, which `list_providers` then shows as `unconfined`. On Linux, used for development and CI, the launcher uses Landlock for files and a seccomp filter that refuses internet sockets at level A. macOS has no implementation yet.
+
+Columbus's own engine worker is not confined: it is Columbus's code, it reads the connections (files, databases on the network or on this machine), and it is what enforces the rules on the data.
+
+Not yet: OAuth sign-in for remote servers, the RustGIS worker (milestone 2 of change 1), and Windows' own MCP containment as an extra level once it leaves preview.
 
 ## Connections and secrets
 
@@ -115,6 +129,7 @@ For development and CI only, `COLUMBUS_DEV_SECRETS=1` reads passwords from `COLU
 crates/shared     policy layers, query checking, approvals, sandbox, audit (no I/O to agents)
 crates/broker     connected MCP servers: manifests, client sessions, tool pinning, review flags
 crates/flow       data labels and organization flow rules
+crates/confine    confinement levels A-C (AppContainer, restricted token, job objects; Landlock on Linux)
 crates/gateway    columbus-mcp: MCP server (rmcp), tools, worker supervision, plugins, run_tool
 workers/python    the core engine and the Python plugin SDK (columbus_plugin)
 workers/sdk-rust  the Rust plugin SDK (columbus-plugin)
@@ -130,6 +145,8 @@ Requires Rust (stable, 1.85+) and Python 3.12+. For the GIS tools, `pip install 
 cargo build --release
 .\target\release\columbus-mcp.exe --version
 ```
+
+The build makes two programs: `columbus-mcp.exe` and `columbus-confine.exe`, the launcher that confines local servers and plugins. Keep them in the same folder (or point `COLUMBUS_CONFINE` at the launcher).
 
 Add it to an MCP client. In VS Code with Copilot (`.vscode/mcp.json`):
 
@@ -196,7 +213,8 @@ Phase 1 (this repository, in progress):
 - [x] Local approvals page for clients without elicitation
 - [x] Worker protocol v2 with progress and cancel; Python and Rust plugin SDKs; Columbus's engine rebuilt on it; engine plugins through `run_tool`
 - [ ] RustGIS native worker
-- [ ] Confinement levels A–C on Windows; OAuth for remote servers
+- [x] Confinement levels A–C (Windows AppContainer, restricted token and job objects; Landlock and seccomp on Linux)
+- [ ] OAuth for remote servers
 - [x] `vector_op` and `verify` through GDAL (geopandas, pyogrio, shapely, pyproj)
 - [ ] `raster_op`, `pointcloud_pipeline` through GDAL/PDAL; a pinned environment (pixi) for the engine
 - [x] Verification checks (design section 4) attached to every result: CRS, units, geometry, joins, filters, limits

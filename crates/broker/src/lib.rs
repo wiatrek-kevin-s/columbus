@@ -2,6 +2,7 @@
 //! Columbus manifests (design change 1).
 
 pub mod manifest;
+pub mod oauth;
 pub mod registry;
 pub mod review;
 

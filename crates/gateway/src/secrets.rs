@@ -14,7 +14,9 @@
 //! `COLUMBUS_SECRET_<ID>` environment variables instead (id upper-cased,
 //! non-alphanumerics as `_`). `whoami` reports this mode so it cannot be
 //! left on unnoticed. Platforms without a native store use only this mode
-//! for now; Columbus is Windows-first.
+//! for now; Columbus is Windows-first. Entries Columbus writes itself (OAuth
+//! tokens for remote servers) need `COLUMBUS_DEV_SECRETS_DIR` in this mode:
+//! they are kept there as plain files, for tests only.
 
 use anyhow::{anyhow, Result};
 
@@ -24,14 +26,16 @@ pub const SERVICE: &str = "columbus";
 pub enum SecretStore {
     #[cfg(windows)]
     Windows,
-    DevEnv,
+    DevEnv(Option<std::path::PathBuf>),
     Unavailable(String),
 }
 
 impl SecretStore {
     pub fn from_env() -> Self {
         if std::env::var("COLUMBUS_DEV_SECRETS").as_deref() == Ok("1") {
-            return SecretStore::DevEnv;
+            return SecretStore::DevEnv(
+                std::env::var_os("COLUMBUS_DEV_SECRETS_DIR").map(Into::into),
+            );
         }
         Self::native()
     }
@@ -61,7 +65,7 @@ impl SecretStore {
         match self {
             #[cfg(windows)]
             SecretStore::Windows => "Windows Credential Manager".into(),
-            SecretStore::DevEnv => {
+            SecretStore::DevEnv(_) => {
                 "DEVELOPMENT MODE: secrets read from COLUMBUS_SECRET_* environment variables".into()
             }
             SecretStore::Unavailable(why) => format!("unavailable: {why}"),
@@ -69,7 +73,7 @@ impl SecretStore {
     }
 
     pub fn is_dev(&self) -> bool {
-        matches!(self, SecretStore::DevEnv)
+        matches!(self, SecretStore::DevEnv(_))
     }
 
     fn env_name(id: &str) -> String {
@@ -98,7 +102,14 @@ impl SecretStore {
                     Err(e) => Err(anyhow!("reading the credential store failed: {e}")),
                 }
             }
-            SecretStore::DevEnv => Ok(std::env::var(Self::env_name(connection_id)).ok()),
+            SecretStore::DevEnv(dir) => {
+                if let Ok(v) = std::env::var(Self::env_name(connection_id)) {
+                    return Ok(Some(v));
+                }
+                Ok(dir.as_ref().and_then(|d| {
+                    std::fs::read_to_string(d.join(Self::env_name(connection_id))).ok()
+                }))
+            }
             SecretStore::Unavailable(why) => Err(anyhow!("credential store {why}")),
         }
     }
@@ -111,7 +122,12 @@ impl SecretStore {
                 keyring_core::Entry::new(SERVICE, connection_id)?.set_password(secret)?;
                 Ok(())
             }
-            SecretStore::DevEnv => Err(anyhow!(
+            SecretStore::DevEnv(Some(dir)) => {
+                std::fs::create_dir_all(dir)?;
+                std::fs::write(dir.join(Self::env_name(connection_id)), secret)?;
+                Ok(())
+            }
+            SecretStore::DevEnv(None) => Err(anyhow!(
                 "development mode reads {} from the environment; nothing to store",
                 Self::env_name(connection_id)
             )),
@@ -130,9 +146,26 @@ impl SecretStore {
                     Err(e) => Err(anyhow!("deleting from the credential store failed: {e}")),
                 }
             }
-            SecretStore::DevEnv => Ok(false),
+            SecretStore::DevEnv(dir) => Ok(dir.as_ref().is_some_and(|d| {
+                std::fs::remove_file(d.join(Self::env_name(connection_id))).is_ok()
+            })),
             SecretStore::Unavailable(why) => Err(anyhow!("credential store {why}")),
         }
+    }
+}
+
+/// The broker keeps OAuth tokens for remote servers here too.
+impl columbus_broker::oauth::SecretStore for SecretStore {
+    fn get(&self, key: &str) -> std::result::Result<Option<String>, String> {
+        SecretStore::get(self, key).map_err(|e| e.to_string())
+    }
+    fn set(&self, key: &str, value: &str) -> std::result::Result<(), String> {
+        SecretStore::set(self, key, value).map_err(|e| e.to_string())
+    }
+    fn delete(&self, key: &str) -> std::result::Result<(), String> {
+        SecretStore::delete(self, key)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
     }
 }
 

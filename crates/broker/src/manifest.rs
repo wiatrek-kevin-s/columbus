@@ -35,6 +35,10 @@ pub enum Auth {
     Oauth {
         #[serde(default)]
         scopes: Vec<String>,
+        /// A client id registered with the server in advance; without one,
+        /// Columbus registers itself (dynamic client registration).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        client_id: Option<String>,
     },
     /// A secret from the credential store, handed to the server as an
     /// environment variable (local) or a header (remote).

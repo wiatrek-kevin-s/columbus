@@ -24,7 +24,7 @@ fn broker(paths: &Paths) -> Result<Broker> {
         &paths.servers,
         &paths.personal_servers,
         &scratch,
-        Arc::new(move |n: &str| secrets.get(n).map_err(|e| e.to_string())),
+        secrets,
         crate::server::NATIVE_NAMESPACES,
     )?)
 }
@@ -303,6 +303,76 @@ pub async fn plugins_approve(id: &str) -> Result<()> {
         serde_yaml::to_string(&approvals)?,
     )?;
     println!("Approved {id}.");
+    Ok(())
+}
+
+/// `columbus-mcp servers signin ID`: sign in to a remote server in the
+/// browser (design change 1, section 8). Tokens go to the credential store;
+/// nothing is printed but the outcome.
+pub async fn signin(id: &str) -> Result<()> {
+    use columbus_broker::manifest::{Auth, Transport};
+    let paths = Paths::from_env();
+    let b = broker(&paths)?;
+    let p = b
+        .get(id)
+        .ok_or_else(|| anyhow::anyhow!("no server manifest with id {id:?}"))?;
+    let m = &p.loaded.manifest;
+    let (scopes, client_id) = match &m.auth {
+        Auth::Oauth { scopes, client_id } => (scopes.clone(), client_id.clone()),
+        _ => anyhow::bail!("{id} does not use OAuth sign-in (its manifest's auth is not oauth)"),
+    };
+    let Transport::Http { url } = &m.transport else {
+        anyhow::bail!("{id} is not a remote server");
+    };
+    let store: Arc<dyn columbus_broker::oauth::SecretStore> = Arc::new(SecretStore::from_env());
+    println!(
+        "Signing in to {} ({url}) with scopes: {}",
+        m.display_name(),
+        if scopes.is_empty() {
+            "the server's defaults".to_string()
+        } else {
+            scopes.join(", ")
+        }
+    );
+    let done = columbus_broker::oauth::sign_in(
+        url,
+        id,
+        &scopes,
+        client_id.as_deref(),
+        store,
+        |auth_url| {
+            if std::env::var("COLUMBUS_SIGNIN_BROWSER").as_deref() == Ok("print") {
+                // Tests: the harness follows the link itself.
+                println!("open: {auth_url}");
+                use std::io::Write;
+                let _ = std::io::stdout().flush();
+                return Ok(());
+            }
+            println!("Your browser is opening the sign-in page. Waiting up to 5 minutes...");
+            crate::approvals_page::open_browser(auth_url).map_err(|e| {
+                format!("could not open the browser ({e}); open this address yourself:\n{auth_url}")
+            })
+        },
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!(e))?;
+    println!(
+        "Signed in to {}. Granted scopes: {}. Tokens are in the credential store.",
+        m.display_name(),
+        if done.scopes.is_empty() {
+            "(not reported)".to_string()
+        } else {
+            done.scopes.join(", ")
+        }
+    );
+    Ok(())
+}
+
+/// `columbus-mcp servers signout ID`: forget a server's tokens.
+pub fn signout(id: &str) -> Result<()> {
+    let store = SecretStore::from_env();
+    columbus_broker::oauth::sign_out(&store, id).map_err(|e| anyhow::anyhow!(e))?;
+    println!("Signed out of {id}: its tokens were removed from the credential store.");
     Ok(())
 }
 

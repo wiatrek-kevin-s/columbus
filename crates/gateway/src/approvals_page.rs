@@ -285,7 +285,7 @@ impl ApprovalsPage {
 
 /// Start the person's default browser on `url`, by absolute path where the
 /// platform has one, and reap the child so it does not linger.
-fn open_browser(url: &str) -> std::io::Result<()> {
+pub(crate) fn open_browser(url: &str) -> std::io::Result<()> {
     use std::process::{Command, Stdio};
     let mut cmd = if cfg!(windows) {
         let root = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());

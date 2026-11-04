@@ -499,13 +499,12 @@ impl State {
                     .into(),
             );
         }
-        let lookup = secrets.clone();
         let broker = columbus_broker::registry::Broker::load(
             &policy,
             &paths.servers,
             &paths.personal_servers,
             sandbox.root(),
-            Arc::new(move |name: &str| lookup.get(name).map_err(|e| e.to_string())),
+            secrets.clone(),
             NATIVE_NAMESPACES,
         )?;
         notes.extend(broker.notes.iter().cloned());
