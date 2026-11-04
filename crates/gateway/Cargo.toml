@@ -49,7 +49,12 @@ rmcp = { workspace = true, features = ["client", "transport-child-process", "tra
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
-# Windows Credential Manager. Other platforms have no native store yet.
+# Windows Credential Manager, and the macOS Keychain below. Linux has no
+# native store yet.
 [target.'cfg(windows)'.dependencies]
 keyring-core = "1"
 windows-native-keyring-store = "1"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring-core = "1"
+apple-native-keyring-store = { version = "1", features = ["keychain"] }

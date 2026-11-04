@@ -3,7 +3,8 @@
 //! Passwords live in the operating system's credential store, never in
 //! configuration files, logs, audit lines or tool results, and are never
 //! typed into a chat. On Windows that is Credential Manager (DPAPI, per
-//! user), under the target `columbus:<connection id>`. The person sets one
+//! user), under the target `columbus:<connection id>`; on macOS the login
+//! Keychain, service `columbus`, account `<connection id>`. The person sets one
 //! with `columbus-mcp secret set <connection id>` (or, later, the app).
 //!
 //! The gateway reads a secret only to open a connection, passes it to the
@@ -13,19 +14,20 @@
 //! Development and CI: with `COLUMBUS_DEV_SECRETS=1`, secrets are read from
 //! `COLUMBUS_SECRET_<ID>` environment variables instead (id upper-cased,
 //! non-alphanumerics as `_`). `whoami` reports this mode so it cannot be
-//! left on unnoticed. Platforms without a native store use only this mode
-//! for now; Columbus is Windows-first. Entries Columbus writes itself (OAuth
+//! left on unnoticed. Platforms without a native store (Linux, for now) use
+//! only this mode. Entries Columbus writes itself (OAuth
 //! tokens for remote servers) need `COLUMBUS_DEV_SECRETS_DIR` in this mode:
 //! they are kept there as plain files, for tests only.
 
 use anyhow::{anyhow, Result};
 
-#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
 pub const SERVICE: &str = "columbus";
 
 pub enum SecretStore {
-    #[cfg(windows)]
-    Windows,
+    /// The operating system's store, named for `whoami`.
+    #[cfg(any(windows, target_os = "macos"))]
+    Native(&'static str),
     DevEnv(Option<std::path::PathBuf>),
     Unavailable(String),
 }
@@ -45,16 +47,27 @@ impl SecretStore {
         match windows_native_keyring_store::Store::new() {
             Ok(store) => {
                 keyring_core::set_default_store(store);
-                SecretStore::Windows
+                SecretStore::Native("Windows Credential Manager")
             }
             Err(e) => SecretStore::Unavailable(format!("Windows Credential Manager: {e}")),
         }
     }
 
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    fn native() -> Self {
+        match apple_native_keyring_store::keychain::Store::new() {
+            Ok(store) => {
+                keyring_core::set_default_store(store);
+                SecretStore::Native("macOS Keychain")
+            }
+            Err(e) => SecretStore::Unavailable(format!("macOS Keychain: {e}")),
+        }
+    }
+
+    #[cfg(not(any(windows, target_os = "macos")))]
     fn native() -> Self {
         SecretStore::Unavailable(
-            "no credential store on this platform yet (Windows Credential Manager only); \
+            "no credential store on this platform yet (Windows Credential Manager and the macOS Keychain only); \
              set COLUMBUS_DEV_SECRETS=1 for development"
                 .into(),
         )
@@ -63,8 +76,8 @@ impl SecretStore {
     /// Shown by `whoami`.
     pub fn describe(&self) -> String {
         match self {
-            #[cfg(windows)]
-            SecretStore::Windows => "Windows Credential Manager".into(),
+            #[cfg(any(windows, target_os = "macos"))]
+            SecretStore::Native(name) => (*name).into(),
             SecretStore::DevEnv(_) => {
                 "DEVELOPMENT MODE: secrets read from COLUMBUS_SECRET_* environment variables".into()
             }
@@ -93,8 +106,8 @@ impl SecretStore {
     /// The password for a connection, or None if none is stored.
     pub fn get(&self, connection_id: &str) -> Result<Option<String>> {
         match self {
-            #[cfg(windows)]
-            SecretStore::Windows => {
+            #[cfg(any(windows, target_os = "macos"))]
+            SecretStore::Native(_) => {
                 let entry = keyring_core::Entry::new(SERVICE, connection_id)?;
                 match entry.get_password() {
                     Ok(p) => Ok(Some(p)),
@@ -114,11 +127,11 @@ impl SecretStore {
         }
     }
 
-    #[cfg_attr(not(windows), allow(unused_variables))]
+    #[cfg_attr(not(any(windows, target_os = "macos")), allow(unused_variables))]
     pub fn set(&self, connection_id: &str, secret: &str) -> Result<()> {
         match self {
-            #[cfg(windows)]
-            SecretStore::Windows => {
+            #[cfg(any(windows, target_os = "macos"))]
+            SecretStore::Native(_) => {
                 keyring_core::Entry::new(SERVICE, connection_id)?.set_password(secret)?;
                 Ok(())
             }
@@ -135,11 +148,11 @@ impl SecretStore {
         }
     }
 
-    #[cfg_attr(not(windows), allow(unused_variables))]
+    #[cfg_attr(not(any(windows, target_os = "macos")), allow(unused_variables))]
     pub fn delete(&self, connection_id: &str) -> Result<bool> {
         match self {
-            #[cfg(windows)]
-            SecretStore::Windows => {
+            #[cfg(any(windows, target_os = "macos"))]
+            SecretStore::Native(_) => {
                 match keyring_core::Entry::new(SERVICE, connection_id)?.delete_credential() {
                     Ok(()) => Ok(true),
                     Err(keyring_core::Error::NoEntry) => Ok(false),

@@ -243,7 +243,14 @@ pub fn available(level: Level) -> Result<(), Error> {
         }
         Ok(())
     }
-    #[cfg(not(any(target_os = "linux", windows)))]
+    #[cfg(target_os = "macos")]
+    {
+        Err(Error::Unsupported(format!(
+            "level {} is not available on macOS yet: Columbus has no sandbox there, so local servers, plugins and scripts are refused rather than run unconfined",
+            level.as_str()
+        )))
+    }
+    #[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
     {
         Err(Error::Unsupported(format!(
             "level {} is not implemented on this operating system",

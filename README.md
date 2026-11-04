@@ -221,7 +221,7 @@ Claude Desktop's `claude_desktop_config.json` takes the same entry under `mcpSer
 | Engine worker | `workers\python\columbus_worker.py` beside the executable | `COLUMBUS_WORKER` |
 | Python | `python.exe` on PATH | `COLUMBUS_PYTHON` |
 
-On Linux and macOS the defaults are `/etc/columbus` and the XDG folders. Without a policy file the server runs with safe defaults: local GeoPackage and SQLite only, read-only, no scripts, no edits. See [`examples/`](examples) for a policy and connections.
+On macOS the defaults are `/Library/Application Support/Columbus` (the organization's) and `~/Library/Application Support/Columbus` (yours); on Linux, `/etc/columbus` and the XDG folders. Without a policy file the server runs with safe defaults: local GeoPackage and SQLite only, read-only, no scripts, no edits. See [`examples/`](examples) for a policy and connections.
 
 If the audit folder is not writable (a per-user install without the installer's permissions), the server falls back to a folder under the user's profile and says so in `whoami`. A call that cannot be audited does not run.
 

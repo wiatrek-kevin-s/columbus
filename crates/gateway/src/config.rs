@@ -68,10 +68,21 @@ impl Paths {
     }
 }
 
-/// (ProgramData\Columbus, %APPDATA%\Columbus, %LOCALAPPDATA%\Columbus) on
-/// Windows; /etc/columbus and XDG folders elsewhere.
+/// The organization's folder, the person's settings and the person's local
+/// data: ProgramData\Columbus, %APPDATA%\Columbus and %LOCALAPPDATA%\Columbus
+/// on Windows; /Library/Application Support/Columbus and
+/// ~/Library/Application Support/Columbus (for both) on macOS; /etc/columbus
+/// and the XDG folders elsewhere.
 fn platform_dirs() -> (PathBuf, PathBuf, PathBuf) {
-    if cfg!(windows) {
+    if cfg!(target_os = "macos") {
+        let home = env_path("HOME").unwrap_or_else(|| PathBuf::from("."));
+        let user = home.join("Library/Application Support/Columbus");
+        (
+            PathBuf::from("/Library/Application Support/Columbus"),
+            user.clone(),
+            user,
+        )
+    } else if cfg!(windows) {
         let pd = env_path("ProgramData").unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"));
         let roaming = env_path("APPDATA").unwrap_or_else(|| pd.clone());
         let local = env_path("LOCALAPPDATA").unwrap_or_else(|| roaming.clone());
