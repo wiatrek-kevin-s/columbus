@@ -35,6 +35,7 @@ import json
 import math
 import os
 import pathlib
+import posixpath
 import queue
 import sqlite3
 import struct
@@ -273,7 +274,7 @@ def readonly_uri(path: str, windows: bool | None = None) -> str:
             path = path[4:]
         uri = pathlib.PureWindowsPath(path).as_uri()
     else:
-        uri = pathlib.PurePosixPath(os.path.abspath(path)).as_uri()
+        uri = pathlib.PurePosixPath(posixpath.abspath(path)).as_uri()
     return uri + "?mode=ro"
 
 

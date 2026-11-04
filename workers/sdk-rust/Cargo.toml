@@ -1,5 +1,6 @@
 [package]
 name = "columbus-plugin"
+description = "SDK for Columbus engine plugins: the worker protocol, read-only extracts, a light geometry reader and output writers"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -7,3 +8,12 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+# Bundled SQLite: plugins build the same way on Windows, macOS and Linux
+# without a system library.
+rusqlite = { version = "0.37", features = ["bundled"] }
+
+[dev-dependencies]
+tempfile.workspace = true
