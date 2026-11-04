@@ -69,7 +69,10 @@ class WorkerTests(unittest.TestCase):
             with self.assertRaises(w.WorkerError, msg=sql):
                 w.sql_select({"connection": self.conn, "sql": sql, "max_rows": 10})
         db = sqlite3.connect(self.path)
-        self.assertEqual(db.execute("SELECT count(*) FROM roads").fetchone()[0], 10)
+        try:
+            self.assertEqual(db.execute("SELECT count(*) FROM roads").fetchone()[0], 10)
+        finally:
+            db.close()  # Windows cannot delete a file with an open handle
 
     def test_extensions_cannot_be_loaded(self):
         with self.assertRaises(w.WorkerError):
