@@ -11,6 +11,7 @@
 //! columbus-mcp servers approve ID [--accept-flags]   pin the reviewed tool definitions
 //! columbus-mcp servers signin ID    sign in to a remote server in the browser (OAuth)
 //! columbus-mcp servers signout ID   remove its tokens
+//! columbus-mcp registry update [--from DIR|URL]   install the registry index (checked)
 //! columbus-mcp plugins list         engine plugins, their versions, hashes and state
 //! columbus-mcp plugins approve ID   approve a plugin's exact contents
 //! columbus-mcp --version
@@ -23,6 +24,7 @@ mod gis_tools;
 mod plugin_run;
 mod plugins;
 mod providers;
+mod registry_tools;
 mod review_cli;
 mod secrets;
 mod server;
@@ -68,6 +70,8 @@ async fn main() -> Result<()> {
         ["servers", "approve", id] => review_cli::approve(id, false).await,
         ["servers", "approve", id, "--accept-flags"] => review_cli::approve(id, true).await,
         ["servers", "signin", id] => review_cli::signin(id).await,
+        ["registry", "update"] => registry_tools::update(None).await,
+        ["registry", "update", "--from", src] => registry_tools::update(Some(src)).await,
         ["servers", "signout", id] => review_cli::signout(id),
         ["secret", "delete", id] => {
             let store = secrets::SecretStore::from_env();
@@ -83,7 +87,7 @@ async fn main() -> Result<()> {
             Ok(())
         }
         _ => bail!(
-            "usage: columbus-mcp [serve] | audit verify FILE | secret set|delete ID | servers list|review|approve|signin|signout ID | plugins list|approve ID | --version"
+            "usage: columbus-mcp [serve] | audit verify FILE | secret set|delete ID | servers list|review|approve|signin|signout ID | registry update [--from DIR|URL] | plugins list|approve ID | --version"
         ),
     }
 }

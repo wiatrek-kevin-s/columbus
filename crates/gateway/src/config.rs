@@ -24,6 +24,8 @@ pub struct Paths {
     pub personal_plugins: PathBuf,
     pub worker_script: PathBuf,
     pub python: PathBuf,
+    /// The geo-registry index (`registry.sqlite` and `index.sha256`).
+    pub registry: PathBuf,
 }
 
 fn env_path(name: &str) -> Option<PathBuf> {
@@ -48,6 +50,8 @@ impl Paths {
             personal_plugins: env_path("COLUMBUS_PERSONAL_PLUGINS")
                 .unwrap_or_else(|| roaming.join("plugins")),
             worker_script: env_path("COLUMBUS_WORKER").unwrap_or_else(default_worker_script),
+            registry: env_path("COLUMBUS_REGISTRY")
+                .unwrap_or_else(|| program_data.join("registry")),
             python: env_path("COLUMBUS_PYTHON").unwrap_or_else(|| {
                 PathBuf::from(if cfg!(windows) {
                     "python.exe"

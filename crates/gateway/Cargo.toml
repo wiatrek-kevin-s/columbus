@@ -34,6 +34,8 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 rpassword = "7"
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json"] }
+# Registry downloads; TLS comes from the same features rmcp enables.
+reqwest = { version = "0.13", default-features = false }
 
 [dev-dependencies]
 reqwest = { version = "0.13", default-features = false, features = ["json"] }

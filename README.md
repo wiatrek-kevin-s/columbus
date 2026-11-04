@@ -25,6 +25,7 @@ Columbus makes a GIS analyst, paired with whatever AI their organization already
 | `vector_op` | reproject, buffer, simplify, make_valid, clip, dissolve, intersect, join, spatial_join on handles or governed datasets |
 | `verify` | The spatial checks on any layer or dataset |
 | `sql_select` | One checked, read-only `SELECT` (details below) |
+| `registry_search`, `registry_get` | The open geospatial registry: data sources (publisher, coverage, licence, access) and GIS tools; ranked cards by words, kind, theme and area |
 | `list_providers` | Columbus's engines and connected MCP servers, their trust and state, and the data labels in force |
 | `run_tool` | Run a connected server's tool as `<provider>.<tool>`, under the rules below |
 | `list_outputs` | Workspace files as handles (`ws://<session>/<path>`), with row counts, labels and provenance |
@@ -78,6 +79,15 @@ columbus-mcp servers review drive         # tools, the manifest's settings, the 
 columbus-mcp servers approve drive        # pins the definitions; asks you to type the id on the terminal
 ```
 
+Remote servers that use OAuth (`auth: { type: oauth, scopes: [...] }`) are signed in to by the person, once, in their own browser:
+
+```powershell
+columbus-mcp servers signin drive         # opens the sign-in page; the redirect comes back to 127.0.0.1
+columbus-mcp servers signout drive        # forgets the tokens
+```
+
+Sign-in follows the MCP authorization specification (OAuth 2.1 with PKCE; a client id from the manifest, or dynamic client registration as a native application). The tokens are kept in Windows Credential Manager, one entry per server, and added and refreshed by the gateway; they never reach the agent, tool results or the audit log, and no server receives another's. Scopes are the manifest's, never wider: a grant with any other scope is discarded and the sign-in fails. Until a server is signed in, `list_providers` shows it as `sign_in_required` with the command to run.
+
 Review flags descriptions with hidden characters, wording aimed at the model ("ignore previous", "do not tell the user"), references to other providers' or Columbus's tools, credentials and destinations. Flagged tools need `--accept-flags`.
 
 When a call needs approval, Columbus asks the person in their own MCP client (elicitation); the agent never sees or answers that prompt. When the client cannot ask, Columbus opens its **local approvals page** in the person's browser and the call waits briefly (45 s by default) for the decision. If none comes in time, the agent gets `approval_required` with an id, tells the person, and calls again with that id once they have decided. `whoami` tells the agent which way approvals will reach the person.
@@ -102,7 +112,11 @@ Confinement fails closed. If a level cannot be provided (the launcher is missing
 
 Columbus's own engine worker is not confined: it is Columbus's code, it reads the connections (files, databases on the network or on this machine), and it is what enforces the rules on the data.
 
-Not yet: OAuth sign-in for remote servers, the RustGIS worker (milestone 2 of change 1), and Windows' own MCP containment as an extra level once it leaves preview.
+Not yet: the RustGIS worker (milestone 2 of change 1), and Windows' own MCP containment as an extra level once it leaves preview.
+
+## Registry
+
+`registry_search` and `registry_get` read the [geo-registry](https://github.com/wiatrek-kevin-s/geo-registry) index (`registry.sqlite`, full-text search), installed with `columbus-mcp registry update` (from the registry's rolling release, or `--from` a folder for offline installs) under `%ProgramData%\Columbus\registry`. The index is checked against its `index.sha256` when installed and again before each use; a damaged or altered index is refused. Entries are community-written, so results are marked untrusted and say which entries no person has reviewed yet. A search by area leaves out entries known not to cover it and lists those with no recorded extent last, marked as unchecked. Not yet: `registry_fetch` (running an entry's access recipe), which waits for entries that carry machine-readable access recipes; the seeded entries have web links only.
 
 ## Connections and secrets
 
@@ -197,6 +211,8 @@ PostGIS tests run when `COLUMBUS_TEST_PG_HOST` (and optionally `_PORT`, `_DB`) i
 
 The broker tests run the gateway against a scriptable MCP server ([`examples/fake_mcp_server.rs`](crates/gateway/examples/fake_mcp_server.rs)) and cover the change-1 gates: a changed description is switched off, a poisoned one is flagged, governed data cannot reach a connected server without the person's approval or past a deny rule. The end-to-end test starts the real binary as an MCP client would, with a policy, a GeoPackage connection and the Python worker, and checks over the wire that row filters apply, hidden fields never leave, denied tables and writes are refused, truncation is reported and the audit chain verifies. The GIS test ([`tests/gis.rs`](crates/gateway/tests/gis.rs)) does a full session on a GeoPackage of Austin roads: describe, sample, structured queries, a bbox in lon/lat, buffering refused in degrees and done in feet, a clip, a join whose keys lost their zero padding (flagged with the fix), and verification; and the same queries on PostGIS.
 
+The confinement tests ([`tests/confine.rs`](crates/gateway/tests/confine.rs)) run the launcher at each level on the machine's own mechanism and check what a confined program can read, write and reach; the plugin test includes the change-1 milestone gate (a level A plugin cannot read outside the workspace). The OAuth tests run `servers signin` against a fake authorization server with an MCP endpoint ([`examples/fake_oauth_server.rs`](crates/gateway/examples/fake_oauth_server.rs)): sign-in, connecting with the stored token, refresh of an expired one, and a grant wider than the manifest refused.
+
 ## Roadmap
 
 Phase 1 (this repository, in progress):
@@ -214,7 +230,7 @@ Phase 1 (this repository, in progress):
 - [x] Worker protocol v2 with progress and cancel; Python and Rust plugin SDKs; Columbus's engine rebuilt on it; engine plugins through `run_tool`
 - [ ] RustGIS native worker
 - [x] Confinement levels A–C (Windows AppContainer, restricted token and job objects; Landlock and seccomp on Linux)
-- [ ] OAuth for remote servers
+- [x] OAuth sign-in for remote servers (PKCE, dynamic registration, tokens in Credential Manager)
 - [x] `vector_op` and `verify` through GDAL (geopandas, pyogrio, shapely, pyproj)
 - [ ] `raster_op`, `pointcloud_pipeline` through GDAL/PDAL; a pinned environment (pixi) for the engine
 - [x] Verification checks (design section 4) attached to every result: CRS, units, geometry, joins, filters, limits

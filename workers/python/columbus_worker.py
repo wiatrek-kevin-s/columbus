@@ -802,6 +802,110 @@ def verify_layer(params: dict[str, Any]) -> dict[str, Any]:
         raise _refused(e) from None
 
 
+# ---------- Registry (design section 6) ----------
+
+REGISTRY_LIMIT = 50
+
+
+def _registry_db(params: dict[str, Any]):
+    path = params.get("db")
+    if not isinstance(path, str) or not os.path.isfile(path):
+        raise WorkerError(UNSUPPORTED, "the registry index is not installed (columbus-mcp registry update)")
+    from columbus_plugin import readonly_uri
+
+    return sqlite3.connect(readonly_uri(path), uri=True)
+
+
+def _fts_query(text: str) -> str:
+    """Words as an FTS5 query: each word quoted (so no FTS syntax gets
+    through), all of them required, the last one as a prefix."""
+    words = re.findall(r"[\w][\w.-]*", text.lower())[:12]
+    if not words:
+        return ""
+    quoted = ['"' + w.replace('"', '""') + '"' for w in words]
+    quoted[-1] += "*"
+    return " ".join(quoted)
+
+
+def _bbox_meets(a, b) -> bool:
+    return a[0] <= b[2] and b[0] <= a[2] and a[1] <= b[3] and b[1] <= a[3]
+
+
+def registry_search(params: dict[str, Any]) -> dict[str, Any]:
+    """Ranked registry cards for words, optionally limited to a kind, a theme
+    and a bounding box (lon/lat) the entry's coverage must meet."""
+    query = str(params.get("query") or "")
+    kind = params.get("kind")
+    theme = (params.get("theme") or "").lower() or None
+    bbox = params.get("bbox")
+    limit = max(1, min(int(params.get("limit") or 10), REGISTRY_LIMIT))
+    if bbox is not None and (not isinstance(bbox, list) or len(bbox) != 4):
+        raise WorkerError(INVALID_PARAMS, "bbox must be [min lon, min lat, max lon, max lat]")
+    db = _registry_db(params)
+    try:
+        meta = dict(db.execute("SELECT key, value FROM meta").fetchall())
+        fts = _fts_query(query)
+        if fts:
+            rows = db.execute(
+                "SELECT e.card, e.entry FROM entries_fts f JOIN entries e ON e.id = f.id "
+                "WHERE entries_fts MATCH ? ORDER BY bm25(entries_fts, 0, 10.0, 4.0, 2.0, 2.0, 1.0) LIMIT 500",
+                (fts,),
+            ).fetchall()
+        else:
+            rows = db.execute("SELECT card, entry FROM entries ORDER BY name LIMIT 2000").fetchall()
+    finally:
+        db.close()
+    cards = []
+    unchecked = []
+    for card_text, entry_text in rows:
+        card = json.loads(card_text)
+        entry = json.loads(entry_text)
+        if kind and card.get("kind") != kind:
+            continue
+        if theme and theme not in [str(t).lower() for t in card.get("themes") or []]:
+            continue
+        coverage = (entry.get("coverage") or {}).get("bbox")
+        card["coverage"] = entry.get("coverage")
+        card["last_verified"] = entry.get("last_verified")
+        if bbox is not None and card.get("kind") == "tool":
+            # An area says nothing about software: tools are left out of a
+            # search by place unless tools were asked for.
+            if kind != "tool":
+                continue
+        elif bbox is not None:
+            if not (isinstance(coverage, list) and len(coverage) == 4):
+                # No recorded extent: it may cover the area or not. Listed
+                # after the entries known to, and marked.
+                card["coverage_checked"] = False
+                unchecked.append(card)
+                continue
+            if not _bbox_meets([float(v) for v in bbox], [float(v) for v in coverage]):
+                continue
+            card["coverage_checked"] = True
+        cards.append(card)
+        if len(cards) >= limit:
+            break
+    cards.extend(unchecked[: max(0, limit - len(cards))])
+    return {
+        "cards": cards,
+        "registry": {"generated_at": meta.get("generated_at"), "count": meta.get("count"), "format_version": meta.get("format_version")},
+    }
+
+
+def registry_get(params: dict[str, Any]) -> dict[str, Any]:
+    entry_id = params.get("id")
+    if not isinstance(entry_id, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,127}", entry_id):
+        raise WorkerError(INVALID_PARAMS, "id must be a registry entry id (lower-case letters, digits and -)")
+    db = _registry_db(params)
+    try:
+        row = db.execute("SELECT entry FROM entries WHERE id = ?", (entry_id,)).fetchone()
+    finally:
+        db.close()
+    if row is None:
+        raise WorkerError(INVALID_PARAMS, f"no registry entry {entry_id!r}")
+    return {"entry": json.loads(row[0])}
+
+
 plugin = Plugin("columbus.core", VERSION)
 
 for _name, _fn in (
@@ -813,6 +917,8 @@ for _name, _fn in (
     ("query_layer", query_layer),
     ("vector_op", vector_op),
     ("verify_layer", verify_layer),
+    ("registry_search", registry_search),
+    ("registry_get", registry_get),
 ):
     plugin.tool(_name)(lambda ctx, fn=_fn: fn(ctx.params))
 

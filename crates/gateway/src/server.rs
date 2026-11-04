@@ -568,7 +568,7 @@ impl Gateway {
     pub fn new(state: State) -> Self {
         Gateway {
             state: Arc::new(state),
-            tool_router: Self::tool_router() + Self::gis_router(),
+            tool_router: Self::tool_router() + Self::gis_router() + Self::registry_router(),
         }
     }
 
