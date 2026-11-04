@@ -87,7 +87,8 @@ pub struct VectorOpArgs {
     pub inputs: serde_json::Map<String, Value>,
     /// reproject: {crs: "EPSG:…"}. buffer: {distance, unit: m|ft|us-ft|km|mi,
     /// dissolve?}. simplify: {tolerance, unit}. dissolve: {by?}. join:
-    /// {left_key, right_key?, how: left|inner}. spatial_join: {predicate:
+    /// {left_key, right_key?, how: left|inner, key_as_text?, trim?,
+    /// ignore_case?, pad? (zero-fill width)}. spatial_join: {predicate:
     /// intersects|within|contains|touches|crosses|overlaps, how}.
     #[serde(default)]
     pub params: serde_json::Map<String, Value>,

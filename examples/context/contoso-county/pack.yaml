@@ -7,6 +7,6 @@ default_crs: EPSG:3081
 review_interval_months: 12
 # Always-on rules: returned by whoami at the start of every session.
 rules:
-  - Deliverables are in EPSG:3081 (Texas-Centric Lambert Conformal) unless the requester asks otherwise.
+  - Deliverables are in EPSG:3081 (NAD83 / Texas State Mapping System) unless the requester asks otherwise.
   - Route measures are in miles; GIS geometry lengths are in feet. Convert before comparing.
   - Leave retired segments (STATUS = 'R') out of current-state work.

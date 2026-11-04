@@ -2078,6 +2078,11 @@ impl Gateway {
             Some(&prov),
             "sql_select",
         );
+        if hit_limit {
+            if let Some(p) = &file_path {
+                self.state.outputs.mark_truncated(p);
+            }
+        }
         let handle = file_path.as_ref().and_then(|f| self.ws_handle(f));
         rec.labels = self.labels();
         rec.rows = Some(rows_read);

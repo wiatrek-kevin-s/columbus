@@ -432,14 +432,38 @@ def _distance(params: dict, key: str, df: gpd.GeoDataFrame, what: str) -> float:
     if crs.is_geographic:
         raise GISError("crs.measure",
                        f"cannot {what} by {value:g} {unit}: the layer is in {_label(crs)}, whose units are degrees",
-                       fix="Reproject first to a projected CRS suited to the area (for Texas statewide, EPSG:3081), then run it again")
+                       fix=f"Reproject first to a projected CRS suited to the area ({suggest_crs(df)}), then run it again")
     if _pseudo_mercator(crs):
         raise GISError("crs.measure",
                        f"cannot {what} by {value:g} {unit} in {_label(crs)}: Web Mercator distances are stretched "
                        "away from the equator (about 15% at Austin, more further north)",
-                       fix="Reproject first to a projected CRS suited to the area (for Texas statewide, EPSG:3081), then run it again")
+                       fix=f"Reproject first to a projected CRS suited to the area ({suggest_crs(df)}), then run it again")
     per_unit = crs.axis_info[0].unit_conversion_factor
     return value * UNITS[unit] / per_unit
+
+
+# Texas, in lon/lat: EPSG:3081 and EPSG:3083 cover the whole state.
+_TEXAS = (-106.65, 25.84, -93.51, 36.50)
+
+
+def suggest_crs(df: gpd.GeoDataFrame) -> str:
+    """A projected CRS for measuring in the layer's area: the statewide
+    Texas systems inside Texas, otherwise the UTM zone of its centre (NAD83
+    in North America, WGS 84 elsewhere)."""
+    try:
+        b = df.to_crs(4326).total_bounds if not df.crs.equals(CRS.from_epsg(4326)) else df.total_bounds
+    except Exception:  # noqa: BLE001
+        return "a UTM zone or State Plane zone for the area"
+    if not all(math.isfinite(v) for v in b):
+        return "a UTM zone or State Plane zone for the area"
+    lon, lat = (b[0] + b[2]) / 2, (b[1] + b[3]) / 2
+    if b[0] >= _TEXAS[0] and b[1] >= _TEXAS[1] and b[2] <= _TEXAS[2] and b[3] <= _TEXAS[3]:
+        return ("for Texas, EPSG:3081 NAD83 / Texas State Mapping System for distances statewide, "
+                "EPSG:3083 Texas Centric Albers for areas, or the local State Plane zone")
+    zone = min(60, max(1, int((lon + 180) // 6) + 1))
+    if lat >= 0 and -172 <= lon <= -48 and 1 <= zone <= 23:
+        return f"UTM zone {zone}N on NAD83, EPSG:{26900 + zone}"
+    return f"UTM zone {zone}{'N' if lat >= 0 else 'S'}, EPSG:{(32600 if lat >= 0 else 32700) + zone}"
 
 
 def _pseudo_mercator(crs) -> bool:
@@ -480,11 +504,16 @@ def _join_checks(left: pd.DataFrame, right: pd.DataFrame, lk: str, rk: str, out_
             rstr = set(rkeys.dropna().astype(str))
             stripped = {s.lstrip("0") for s in rstr}
             fixable = int(lstr[~lstr.isin(rstr)].map(lambda s: s.lstrip("0") in stripped).astype(bool).sum())
+            norm = lambda v: v.strip().casefold()  # noqa: E731
+            rnorm = {norm(x) for x in rstr}
+            loose = int(lstr[~lstr.isin(rstr)].map(lambda v: norm(v) in rnorm).astype(bool).sum())
             if fixable:
-                width = int(rkeys.dropna().astype(str).str.len().max())
-                c["fix"] = f"{fixable} of them match once leading zeros are ignored: pad {lk} to {width} characters (zero-filled) before joining"
-            elif lkeys.dtype.kind != rkeys.dtype.kind:
-                c["fix"] = f"{lk} and {rk} have different types; convert both to text before joining"
+                width = int(max(lstr.str.len().max(), rkeys.dropna().astype(str).str.len().max()))
+                c["fix"] = (f"{fixable} of them match once leading zeros are ignored: join again with "
+                            f"\"key_as_text\": true, \"pad\": {width}")
+            elif loose:
+                c["fix"] = (f"{loose} of them match once spaces and letter case are ignored: join again with "
+                            "\"trim\": true, \"ignore_case\": true")
         out.append(c)
     dup = int(rkeys.dropna().duplicated().sum())
     if out_rows > n:
@@ -493,6 +522,37 @@ def _join_checks(left: pd.DataFrame, right: pd.DataFrame, lk: str, rk: str, out_
                          detail={"left": n, "out": out_rows},
                          fix="Deduplicate or aggregate the right side first, or confirm one-to-many is intended"))
     return out
+
+
+def _key_text(keys: pd.Series) -> pd.Series:
+    """Keys as text: whole numbers without a trailing ".0", nulls kept null."""
+    def one(v):
+        if v is None or (isinstance(v, float) and math.isnan(v)) or v is pd.NA:
+            return None
+        if isinstance(v, float) and v.is_integer():
+            return str(int(v))
+        return str(v)
+    return keys.map(one).astype(object)
+
+
+def _normalize_keys(keys: pd.Series, params: dict) -> pd.Series:
+    """Apply the join's key options: key_as_text, trim, ignore_case, pad."""
+    out = _key_text(keys)
+    if params.get("trim"):
+        out = out.map(lambda v: v.strip() if isinstance(v, str) else v)
+    if params.get("ignore_case"):
+        out = out.map(lambda v: v.casefold() if isinstance(v, str) else v)
+    pad = params.get("pad")
+    if pad is not None:
+        out = out.map(lambda v: v.zfill(pad) if isinstance(v, str) and v.isdigit() else v)
+    return out
+
+
+def _key_options(params: dict) -> bool:
+    pad = params.get("pad")
+    if pad is not None and (isinstance(pad, bool) or not isinstance(pad, int) or not 1 <= pad <= 64):
+        raise GISError("params", "pad must be a whole number of characters from 1 to 64")
+    return any(params.get(k) for k in ("key_as_text", "trim", "ignore_case")) or pad is not None
 
 
 def _usable_keys(keys: pd.Series) -> pd.Series:
@@ -559,6 +619,7 @@ def _op_simplify(inp, params, checks):
     tol = _distance(params, "tolerance", df, "simplify")
     out = df.copy()
     out.geometry = df.geometry.simplify(tol, preserve_topology=bool(params.get("preserve_topology", True)))
+    checks.append(check("crs.measure", "info", f"Simplified with a tolerance of {params['tolerance']} {params['unit']} in {_label(df.crs)}"))
     return out
 
 
@@ -620,8 +681,24 @@ def _op_join(inp, params, checks):
         if k not in df.columns:
             raise GISError("params", f"no field {k!r} in the {side} input")
     rdf = pd.DataFrame(right.drop(columns=right.geometry.name) if isinstance(right, gpd.GeoDataFrame) else right)
-    rdf = rdf[_usable_keys(rdf[rk])]
     ldf = pd.DataFrame(left)
+    if _key_options(params):
+        # The key fields come out as the normalized text they were joined on.
+        ldf[lk] = _normalize_keys(ldf[lk], params)
+        rdf[rk] = _normalize_keys(rdf[rk], params)
+        checks.append(check("join.keys_normalized", "info",
+                            f"Joined on {lk} and {rk} as text"
+                            + (", trimmed" if params.get("trim") else "")
+                            + (", ignoring case" if params.get("ignore_case") else "")
+                            + (f", zero-padded to {params['pad']} characters" if params.get("pad") is not None else "")))
+    else:
+        lnum = pd.api.types.is_numeric_dtype(ldf[lk]) and not pd.api.types.is_bool_dtype(ldf[lk])
+        rnum = pd.api.types.is_numeric_dtype(rdf[rk]) and not pd.api.types.is_bool_dtype(rdf[rk])
+        if lnum != rnum:
+            num, text = (lk, rk) if lnum else (rk, lk)
+            raise GISError("join.key_types", f"{num} is a number and {text} is text, so no rows would match",
+                           fix="Pass \"key_as_text\": true to join both as text (add \"pad\": N if codes lost their leading zeros)")
+    rdf = rdf[_usable_keys(rdf[rk])]
     usable = _usable_keys(ldf[lk])
     # Rows out = for each left key, the number of right rows with it (at least
     # one for a left join). Refuse before building something huge.
@@ -672,7 +749,7 @@ OPS: dict[str, tuple[Any, list[str], str]] = {
     "clip": (_op_clip, ["layer", "mask"], "no params"),
     "dissolve": (_op_dissolve, ["layer"], "params: by (field or list)?"),
     "intersect": (_op_intersect, ["a", "b"], "no params"),
-    "join": (_op_join, ["left", "right"], "params: left_key, right_key?, how (left|inner)"),
+    "join": (_op_join, ["left", "right"], "params: left_key, right_key?, how (left|inner), key_as_text?, trim?, ignore_case?, pad?"),
     "spatial_join": (_op_spatial_join, ["left", "right"], "params: predicate, how (left|inner)"),
 }
 

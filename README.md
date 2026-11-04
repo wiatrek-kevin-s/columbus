@@ -41,10 +41,12 @@ Columbus makes a GIS analyst, paired with whatever AI their organization already
 | `crs.measure` | Buffering or simplifying in degrees; refused, with the projected CRS to use for the data's area |
 | `crs.area_of_use` | Coordinates outside the CRS's area, including swapped X/Y and feet read as degrees |
 | `crs.agreement` | Inputs in different CRSs (aligned to the first, and said so) |
-| `join.unmatched`, `join.many_to_many` | Keys that do not match (with the padding or case fix when that is why) and joins that multiply rows |
+| `join.unmatched`, `join.many_to_many`, `join.key_types` | Keys that do not match (with the padding or spacing-and-case fix when that is why: join again with `key_as_text`, `pad`, `trim`, `ignore_case`), a number key joined to a text key, and joins that multiply rows |
 | `filter.zero_rows`, `filter.all_rows` | A filter that keeps nothing, or everything |
 | `geometry.valid`, `geometry.empty`, `geometry.duplicates`, `geometry.mixed_types` | Bad or surprising geometry |
-| `query.read_limit` | A result cut off at the limit |
+| `query.read_limit`, `input.truncated` | A result cut off at the limit, and anything built from one |
+
+Severities are `info`, `warn` and `fail`. A `fail` means the result should not be used as it is; once the export and edit tools exist they will refuse inputs with an unresolved `fail`, and until then the [skills](skills) tell agents to stop and tell the person.
 
 **Hidden fields and row filters.** The server rewrites every table a query reads into a filtered derived table that contains only the fields the policy does not hide: `FROM (SELECT <visible fields> FROM t WHERE <row filter> OFFSET 0) t`. Whatever the query does (`SELECT *`, UNION, column alias lists, `USING`/`NATURAL` joins, whole-row values like `to_jsonb(t)`), a hidden field is simply not there to reach. Each table name (with or without hidden fields) is resolved to exactly one listed table, and the allow and deny lists and row filters apply to that table, not to how the query spelled it by the database's own rules (quoted names exact, unquoted folded), and the rewritten query names that table in full, so the database cannot pick a different one; ambiguous or unlisted names are refused. Columns are always listed by name, so a column added after the list was taken (it is refreshed every five minutes) stays out until it has been seen. A query that names one is refused with a clear message. The `OFFSET 0` keeps the database from merging the filtered table into the outer query, so the caller's conditions only ever run on rows the row filter allows: an error raised by a condition cannot describe a row outside it. Database errors keep only their primary message, with quoted values removed unless the error is about a name in the query. Files in the workspace are fingerprinted when Columbus writes them, and the GIS tools refuse a file whose content has changed since.
 

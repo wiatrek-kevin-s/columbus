@@ -52,7 +52,13 @@ struct Run {
     stderr: String,
 }
 
+/// One launch at a time: the first launch at a level grants the test
+/// container access to the Python folders, which rewrites their ACLs, and a
+/// process starting during that rewrite can fail to load its DLLs.
+static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn run(level: &str, rw: &Path, extra: &[&str], py: &str, script: &str) -> Run {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
     let mut args: Vec<String> = vec![
         "--level".into(),
         level.into(),
@@ -219,6 +225,17 @@ fn level_c_reads_anywhere_but_writes_only_granted_folders() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let out = run("C", &d.ws, &[], &py, &script(&d, port));
+    if out.code != 0 && cfg!(windows) {
+        // What the low-integrity process could not read.
+        for dir in python_dirs(&py) {
+            if let Ok(o) = Command::new("icacls").arg(&dir).output() {
+                eprintln!("icacls {dir}:\n{}", String::from_utf8_lossy(&o.stdout));
+            }
+        }
+        if let Ok(o) = Command::new("whoami").arg("/groups").output() {
+            eprintln!("whoami /groups:\n{}", String::from_utf8_lossy(&o.stdout));
+        }
+    }
     for l in [
         "read_inside: ok",
         "write_inside: ok",

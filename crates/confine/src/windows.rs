@@ -59,12 +59,13 @@ use windows_sys::Win32::System::SystemServices::{
     SE_GROUP_INTEGRITY, SYSTEM_MANDATORY_LABEL_NO_WRITE_UP,
 };
 use windows_sys::Win32::System::Threading::{
-    CreateProcessAsUserW, CreateProcessW, DeleteProcThreadAttributeList, GetCurrentProcess,
-    GetExitCodeProcess, InitializeProcThreadAttributeList, OpenProcessToken, ResumeThread,
-    UpdateProcThreadAttribute, WaitForSingleObject, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT,
-    EXTENDED_STARTUPINFO_PRESENT, INFINITE, LPPROC_THREAD_ATTRIBUTE_LIST, PROCESS_INFORMATION,
-    PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
-    STARTF_USESTDHANDLES, STARTUPINFOEXW, STARTUPINFOW,
+    CreateMutexW, CreateProcessAsUserW, CreateProcessW, DeleteProcThreadAttributeList,
+    GetCurrentProcess, GetExitCodeProcess, InitializeProcThreadAttributeList, OpenProcessToken,
+    ReleaseMutex, ResumeThread, UpdateProcThreadAttribute, WaitForSingleObject, CREATE_SUSPENDED,
+    CREATE_UNICODE_ENVIRONMENT, EXTENDED_STARTUPINFO_PRESENT, INFINITE,
+    LPPROC_THREAD_ATTRIBUTE_LIST, PROCESS_INFORMATION, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+    PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, STARTF_USESTDHANDLES, STARTUPINFOEXW,
+    STARTUPINFOW,
 };
 
 use crate::{Error, Level, Spec};
@@ -126,6 +127,41 @@ fn string_sid(s: &str) -> Result<Sid, Error> {
         return Err(last_error("ConvertStringSidToSid"));
     }
     Ok(Sid::Local(sid))
+}
+
+/// Held while one launcher sets up confinement, so launchers starting at
+/// the same time do not race: two creating the same AppContainer profile
+/// get E_UNEXPECTED, or one starts its process before the other has
+/// finished registering the profile; and folder grants rewrite ACLs.
+struct SetupLock(HANDLE);
+
+impl SetupLock {
+    fn take() -> Result<Self, Error> {
+        let name = wide("Local\\columbus-confine-setup");
+        let h = unsafe { CreateMutexW(null(), 0, name.as_ptr()) };
+        if h.is_null() {
+            return Err(last_error("CreateMutexW"));
+        }
+        // WAIT_OBJECT_0 or WAIT_ABANDONED (a launcher that died holding it):
+        // either way this launcher now owns it.
+        let r = unsafe { WaitForSingleObject(h, 120_000) };
+        if r != 0 && r != 0x80 {
+            unsafe { CloseHandle(h) };
+            return Err(Error::Setup(
+                "timed out waiting for another launcher to finish setting up".into(),
+            ));
+        }
+        Ok(SetupLock(h))
+    }
+}
+
+impl Drop for SetupLock {
+    fn drop(&mut self) {
+        unsafe {
+            ReleaseMutex(self.0);
+            CloseHandle(self.0);
+        }
+    }
 }
 
 /// The AppContainer for this spec, created on first use.
@@ -519,6 +555,7 @@ pub fn launch(spec: &Spec, program: &str, args: &[String]) -> Result<i32, Error>
     let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
     let flags = EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT;
     let job = job(spec)?;
+    let setup = SetupLock::take()?;
 
     // Kept alive until the process has been created.
     let mut _capability_sid = vec![0u8; SECURITY_MAX_SID_SIZE as usize];
@@ -625,8 +662,10 @@ pub fn launch(spec: &Spec, program: &str, args: &[String]) -> Result<i32, Error>
             ok
         }
     };
-    if created == 0 {
-        return Err(last_error(&format!("starting {}", exe.display())));
+    let created_error = (created == 0).then(|| last_error(&format!("starting {}", exe.display())));
+    drop(setup);
+    if let Some(e) = created_error {
+        return Err(e);
     }
     let process = Owned(pi.hProcess);
     let thread = Owned(pi.hThread);

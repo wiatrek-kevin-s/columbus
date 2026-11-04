@@ -166,7 +166,26 @@ class WorkerGisTests(unittest.TestCase):
         c = next(c for c in j["checks"] if c["id"] == "join.unmatched")
         self.assertEqual(c["severity"], "fail")
         self.assertIn("10 of 10", c["message"])
-        self.assertIn("pad route_id", c["fix"])
+        self.assertIn('"pad": 4', c["fix"])
+        # The fix it names works, and says what it did.
+        j = self.op("join", {"left": roads, "right": csv},
+                    {"left_key": "route_id", "key_as_text": True, "pad": 4}, "joined_padded")
+        c = next(c for c in j["checks"] if c["id"] == "join.unmatched")
+        self.assertIn("0 of 10", c["message"])
+        self.assertIn("join.keys_normalized", [c["id"] for c in j["checks"]])
+        # Spacing and letter case.
+        pd.DataFrame({"route_id": [f" {i:04d} " for i in range(10)], "surface": ["asphalt"] * 10}).to_csv(csv, index=False)
+        j = self.op("join", {"left": roads, "right": csv}, {"left_key": "route_id"}, "joined_spaces")
+        c = next(c for c in j["checks"] if c["id"] == "join.unmatched")
+        self.assertIn('"trim": true', c.get("fix", ""))
+        # A number key against a text key is refused with the fix, not a crash.
+        pd.DataFrame({"district": ["14", "12"], "name": ["Austin", "Yoakum"]}).to_csv(csv, index=False)
+        with self.assertRaises(w.WorkerError) as cm:
+            self.op("join", {"left": roads, "right": csv}, {"left_key": "district"}, "joined_types")
+        self.assertIn("join.key_types", cm.exception.message)
+        j = self.op("join", {"left": roads, "right": csv}, {"left_key": "district", "key_as_text": True}, "joined_text")
+        c = next(c for c in j["checks"] if c["id"] == "join.unmatched")
+        self.assertIn("0 of 10", c["message"])
         # Duplicate keys on the right are flagged as many-to-many.
         pd.DataFrame({"route_id": ["0001", "0001", "0002"], "x": [1, 2, 3]}).to_csv(csv, index=False)
         j = self.op("join", {"left": roads, "right": csv}, {"left_key": "route_id"}, "joined2")
