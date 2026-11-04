@@ -55,9 +55,7 @@ const ENGINE_READY: &[&str] = &[
 #[derive(Debug, Clone, Copy, Serialize, JsonSchema, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum Severity {
-    /// Very likely wrong; blocks exports and edits. Raised by the verification
-    /// checks (design section 4), which land in a later milestone.
-    #[allow(dead_code)]
+    /// Very likely wrong; blocks exports and edits (design section 4).
     Fail,
     Warn,
     Info,
@@ -106,7 +104,36 @@ pub struct Output<T: JsonSchema> {
     pub provenance: Option<String>,
 }
 
-fn out<T: JsonSchema>(result: T) -> Json<Output<T>> {
+/// Checks in the verification report format, as engines return them.
+pub(crate) fn checks_from(v: Option<&Value>) -> Vec<Check> {
+    v.and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .map(|c| Check {
+                    id: c
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .unwrap_or("engine.check")
+                        .to_string(),
+                    severity: match c.get("severity").and_then(Value::as_str) {
+                        Some("fail") => Severity::Fail,
+                        Some("info") => Severity::Info,
+                        _ => Severity::Warn,
+                    },
+                    message: c
+                        .get("message")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string(),
+                    detail: c.get("detail").cloned(),
+                    fix: c.get("fix").and_then(Value::as_str).map(String::from),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+pub(crate) fn out<T: JsonSchema>(result: T) -> Json<Output<T>> {
     Json(Output {
         result,
         checks: vec![],
@@ -376,6 +403,8 @@ pub struct State {
     pub secrets: Arc<crate::secrets::SecretStore>,
     pub broker: columbus_broker::registry::Broker,
     pub plugins: crate::plugins::Plugins,
+    /// `describe_dataset` answers, per (connection, dataset), for this session.
+    pub datasets: std::sync::Mutex<std::collections::HashMap<(String, String), Value>>,
     pub flow: columbus_flow::FlowState,
     pub outputs: crate::providers::Outputs,
     pub session: String,
@@ -490,6 +519,7 @@ impl State {
         Ok(State {
             broker,
             plugins,
+            datasets: Default::default(),
             flow: columbus_flow::FlowState::new(),
             outputs: crate::providers::Outputs::default(),
             paths,
@@ -525,7 +555,7 @@ impl Gateway {
     pub fn new(state: State) -> Self {
         Gateway {
             state: Arc::new(state),
-            tool_router: Self::tool_router(),
+            tool_router: Self::tool_router() + Self::gis_router(),
         }
     }
 
@@ -550,7 +580,7 @@ impl Gateway {
     }
 
     /// Policy gate for every tool. Records the refusal when there is one.
-    fn gate(
+    pub(crate) fn gate(
         &self,
         ctx: &RequestContext<RoleServer>,
         tool: &str,
@@ -791,7 +821,7 @@ impl Gateway {
     }
 
     /// Record a governed read: label the session and the file it produced.
-    fn note_read(
+    pub(crate) fn note_read(
         &self,
         connection: &str,
         file: Option<&PathBuf>,
@@ -1952,8 +1982,11 @@ impl ServerHandler for Gateway {
             .with_instructions(
                 "Columbus gives you governed access to GIS data. Call whoami first. \
                  The server enforces permissions; you can ask for anything, and it will say \
-                 what it refuses and why. Read the `checks` on every result and never report \
-                 success over a warn or fail without saying so.",
+                 what it refuses and why. Before querying a dataset, call describe_dataset \
+                 (and sample_rows to see real values); prefer query_features to raw SQL. \
+                 Results are layers in the workspace, passed on as ws:// handles to \
+                 vector_op, verify or other tools. Read the `checks` on every result and never \
+                 report success over a warn or fail without saying so.",
             )
     }
 }

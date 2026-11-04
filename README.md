@@ -19,6 +19,11 @@ Columbus makes a GIS analyst, paired with whatever AI their organization already
 | `search_tools`, `describe_tool` | Find the right tool by describing the job |
 | `list_connections`, `describe_connection` | Connections, effective mode, allowed datasets, row filter, limits. Never secrets. |
 | `list_datasets` | Allowed tables with geometry type, SRS, extent and fields (hidden fields removed) |
+| `describe_dataset` | Fields, geometry column and type, CRS facts (code, units, projected or not, area of use), extent, and the row count under the row filter |
+| `sample_rows` | Up to 50 rows, to see real values (codes, padding, nulls) before filtering |
+| `query_features` | A structured query (fields, where, bbox in any EPSG CRS, order_by, limit) saved as a layer; returns the first rows and a handle |
+| `vector_op` | reproject, buffer, simplify, make_valid, clip, dissolve, intersect, join, spatial_join on handles or governed datasets |
+| `verify` | The spatial checks on any layer or dataset |
 | `sql_select` | One checked, read-only `SELECT` (details below) |
 | `list_providers` | Columbus's engines and connected MCP servers, their trust and state, and the data labels in force |
 | `run_tool` | Run a connected server's tool as `<provider>.<tool>`, under the rules below |
@@ -26,6 +31,18 @@ Columbus makes a GIS analyst, paired with whatever AI their organization already
 | `approval_status` | Check an approval the agent is waiting on; it cannot approve anything |
 
 **How `sql_select` is checked.** The SQL must parse, in the connection's dialect (Oracle, PostgreSQL, SQL Server, SQLite, DuckDB), as exactly one `SELECT`. Every table, including those in subqueries, must be on the connection's allow list and off its deny list; quoting does not get around this. System catalogs (`pg_catalog`, `information_schema`, `sys`, Oracle's `DBA_`/`ALL_`/`V$` views, `sqlite_master`) are refused even under an allow-everything pattern. `WITH`, `SELECT INTO`, `FOR UPDATE`, table functions and functions that reach files, the network or server internals (`pg_*`, `dbms_*`, `xp_*`, `load_extension`, `read_csv`…) are refused. The server then rewrites every table reference into a filtered derived table, so the connection's row filter and data-group filters always apply, and adds a row limit with one sentinel row so truncation is detected and reported rather than returned as a complete result. The worker opens the source read-only as well: SQLite files in read-only mode, PostgreSQL sessions with `default_transaction_read_only` and a statement timeout, so even a `SELECT` that calls a writing function is stopped by the database. Anything that does not parse is refused, never passed through.
+
+**GIS tools.** `query_features` builds its SQL from named fields (checked against the dataset, hidden fields refused) and a `where` clause that may use only comparisons, AND/OR/NOT, IN, LIKE, BETWEEN, IS NULL and simple functions, then runs it through the same checks as `sql_select`. Every result is a layer in the session workspace (GeoPackage, or CSV without geometry), passed to the next tool as a `ws://` handle, labelled with where its data came from, and recorded with a provenance file. `vector_op` reads a dataset input through the same permissions and refuses one cut off at the read limit, because processing part of a dataset gives wrong answers silently. Every result carries checks (design section 4), for example:
+
+| Check | Catches |
+| --- | --- |
+| `crs.measure` | Buffering or simplifying in degrees; refused, with the projected CRS to use for the data's area |
+| `crs.area_of_use` | Coordinates outside the CRS's area, including swapped X/Y and feet read as degrees |
+| `crs.agreement` | Inputs in different CRSs (aligned to the first, and said so) |
+| `join.unmatched`, `join.many_to_many` | Keys that do not match (with the padding or case fix when that is why) and joins that multiply rows |
+| `filter.zero_rows`, `filter.all_rows` | A filter that keeps nothing, or everything |
+| `geometry.valid`, `geometry.empty`, `geometry.duplicates`, `geometry.mixed_types` | Bad or surprising geometry |
+| `query.read_limit` | A result cut off at the limit |
 
 **Results.** At most 500 rows go back to the AI provider per call (organization policy can lower this). Larger results are written to the session workspace and the path returned. Fields matching the policy's `hide_fields` are stripped before anything leaves the server.
 
@@ -105,7 +122,7 @@ examples          a sample policy, connections, server manifests and the LRS che
 
 ## Build and run
 
-Requires Rust (stable, 1.85+) and Python 3.12+ (plus `pip install "psycopg[binary]"` for PostGIS).
+Requires Rust (stable, 1.85+) and Python 3.12+. For the GIS tools, `pip install -r workers/python/requirements-gis.txt` (geopandas, pyogrio, shapely, pyproj; the wheels include GDAL and PROJ). For PostGIS, also `pip install "psycopg[binary]"`.
 
 ```powershell
 cargo build --release
@@ -154,12 +171,12 @@ Each line records user, client, tool, connection, tables, row count, decision an
 
 ```powershell
 cargo test --workspace                                   # unit tests + an end-to-end MCP session
-python -m unittest discover -s workers/python/tests      # worker
+python -m unittest discover -s workers/python/tests      # worker and GIS engine
 ```
 
 PostGIS tests run when `COLUMBUS_TEST_PG_HOST` (and optionally `_PORT`, `_DB`) is set and [`tests/fixtures/postgis.sql`](crates/gateway/tests/fixtures/postgis.sql) is loaded; CI runs them against a PostGIS container. They connect with a login that *can* write, to show writes are refused anyway.
 
-The broker tests run the gateway against a scriptable MCP server ([`examples/fake_mcp_server.rs`](crates/gateway/examples/fake_mcp_server.rs)) and cover the change-1 gates: a changed description is switched off, a poisoned one is flagged, governed data cannot reach a connected server without the person's approval or past a deny rule. The end-to-end test starts the real binary as an MCP client would, with a policy, a GeoPackage connection and the Python worker, and checks over the wire that row filters apply, hidden fields never leave, denied tables and writes are refused, truncation is reported and the audit chain verifies.
+The broker tests run the gateway against a scriptable MCP server ([`examples/fake_mcp_server.rs`](crates/gateway/examples/fake_mcp_server.rs)) and cover the change-1 gates: a changed description is switched off, a poisoned one is flagged, governed data cannot reach a connected server without the person's approval or past a deny rule. The end-to-end test starts the real binary as an MCP client would, with a policy, a GeoPackage connection and the Python worker, and checks over the wire that row filters apply, hidden fields never leave, denied tables and writes are refused, truncation is reported and the audit chain verifies. The GIS test ([`tests/gis.rs`](crates/gateway/tests/gis.rs)) does a full session on a GeoPackage of Austin roads: describe, sample, structured queries, a bbox in lon/lat, buffering refused in degrees and done in feet, a clip, a join whose keys lost their zero padding (flagged with the fix), and verification; and the same queries on PostGIS.
 
 ## Roadmap
 
@@ -167,7 +184,7 @@ Phase 1 (this repository, in progress):
 
 - [x] Four-layer permission model, query checking, sandbox, approvals store, hash-chained audit log
 - [x] MCP server over stdio with structured output; Python worker; GeoPackage/SQLite engine
-- [ ] `query_features` (structured queries) and `describe_dataset`, `sample_rows`
+- [x] `query_features` (structured queries) and `describe_dataset`, `sample_rows`
 - [x] PostGIS engine in read-only sessions; system catalogs refused on every engine
 - [x] Secrets in Windows Credential Manager (`columbus-mcp secret set`)
 - [ ] SQL Server (ODBC 18, `ApplicationIntent=ReadOnly`) and Oracle (`python-oracledb` thin) engines
@@ -178,8 +195,10 @@ Phase 1 (this repository, in progress):
 - [x] Worker protocol v2 with progress and cancel; Python and Rust plugin SDKs; Columbus's engine rebuilt on it; engine plugins through `run_tool`
 - [ ] RustGIS native worker
 - [ ] Confinement levels A–C on Windows; OAuth for remote servers
-- [ ] `vector_op`, `raster_op`, `pointcloud_pipeline` through GDAL/PDAL in a pixi environment
-- [ ] Verification checks (design section 4) attached to every result
+- [x] `vector_op` and `verify` through GDAL (geopandas, pyogrio, shapely, pyproj)
+- [ ] `raster_op`, `pointcloud_pipeline` through GDAL/PDAL; a pinned environment (pixi) for the engine
+- [x] Verification checks (design section 4) attached to every result: CRS, units, geometry, joins, filters, limits
+- [ ] Remaining checks: topology, linear referencing, tolerance and accuracy, field-level data dictionary rules
 - [ ] ArcPy worker for enterprise geodatabases; signed `.mcpb` bundle and MSI
 
 Companion repositories: [`geo-registry`](https://github.com/wiatrek-kevin-s/geo-registry) (open catalogue of GIS tools and data sources). Planned: `gis-context-pack` (format for an organization's datasets, rules and SOPs) and `columbus-skills` (agent skills for sound GIS practice).

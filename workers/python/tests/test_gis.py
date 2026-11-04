@@ -1,0 +1,221 @@
+"""Tests for the GIS engine (columbus_gis) and the worker's GIS tools.
+
+Skipped when geopandas, pyogrio, shapely or pyproj are not installed.
+"""
+
+import math
+import os
+import sqlite3
+import sys
+import tempfile
+import unittest
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.dirname(HERE))
+
+try:
+    import geopandas as gpd
+    import pandas as pd
+    import shapely
+    from shapely.geometry import LineString, Point, Polygon
+
+    import columbus_gis as g
+
+    HAVE_GIS = True
+except ImportError:  # pragma: no cover
+    HAVE_GIS = False
+
+import columbus_worker as w  # noqa: E402
+
+
+def make_fixture(folder: str) -> str:
+    """Roads around Austin in EPSG:3081, a county polygon, and attributes
+    whose route codes are zero-padded on one side only."""
+    path = os.path.join(folder, "austin.gpkg")
+    lines = [
+        LineString([(-97.80 + i * 0.01, 30.20), (-97.80 + i * 0.01, 30.30)]) for i in range(10)
+    ]
+    roads = gpd.GeoDataFrame(
+        {"route_id": [f"{i:04d}" for i in range(10)], "district": [14] * 8 + [12] * 2, "lanes": [2, 4] * 5},
+        geometry=lines,
+        crs="EPSG:4326",
+    ).to_crs("EPSG:3081")
+    roads.to_file(path, layer="roads", driver="GPKG", engine="pyogrio")
+    county = gpd.GeoDataFrame(
+        {"name": ["Travis"]}, geometry=[Polygon([(-97.85, 30.15), (-97.74, 30.15), (-97.74, 30.35), (-97.85, 30.35)])], crs="EPSG:4326"
+    ).to_crs("EPSG:3081")
+    county.to_file(path, layer="county", driver="GPKG", engine="pyogrio")
+    return path
+
+
+@unittest.skipUnless(HAVE_GIS, "GIS engine not installed")
+class CrsTests(unittest.TestCase):
+    def test_facts(self):
+        f = g.crs_facts(g.crs_from_spec({"org": "EPSG", "org_id": 3081}))
+        self.assertEqual(f["code"], "EPSG:3081")
+        self.assertFalse(f["geographic"])
+        self.assertEqual(f["units"], "metre")
+        self.assertIsNone(g.crs_from_spec({"wkt": "undefined"}))
+        # Only authority codes: PROJ strings can point at init files.
+        self.assertIsNone(g.crs_from_spec({"code": "+init=/etc/passwd:x"}))
+        self.assertIsNone(g.crs_from_spec({"code": "EPSG:4326 +init=x"}))
+
+    def test_area_of_use(self):
+        wgs = g.crs_from_spec({"code": "EPSG:4326"})
+        self.assertEqual([c["id"] for c in g.crs_checks(wgs, [-97.8, 30.2, -97.7, 30.3])], ["crs.info"])
+        swapped = g.crs_checks(g.crs_from_spec({"code": "EPSG:4269"}), [30.2, -97.8, 30.3, -97.7])
+        self.assertEqual(swapped[-1]["id"], "crs.area_of_use")
+        self.assertIn("swapped", swapped[-1]["fix"])
+        feet = g.crs_checks(wgs, [3000000, 10000000, 3100000, 10100000])
+        self.assertEqual((feet[-1]["id"], feet[-1]["severity"]), ("crs.area_of_use", "fail"))
+        tx = g.crs_from_spec({"code": "EPSG:3081"})
+        far = g.crs_checks(tx, [-9e6, -9e6, -8.9e6, -8.9e6])
+        self.assertEqual(far[-1]["id"], "crs.area_of_use")
+        self.assertEqual(g.crs_checks(None, [0, 0, 1, 1])[0]["id"], "crs.present")
+
+    def test_geometry_checks(self):
+        bowtie = Polygon([(0, 0), (1, 1), (1, 0), (0, 1), (0, 0)])
+        gs = gpd.GeoSeries([bowtie, Point(0, 0), None, LineString()], crs="EPSG:3081")
+        ids = {c["id"]: c for c in g.geometry_checks(gs)}
+        self.assertEqual(ids["geometry.valid"]["detail"]["invalid"], 1)
+        self.assertEqual(ids["geometry.empty"]["detail"], {"null": 1, "empty": 1})
+        self.assertIn("geometry.mixed_types", ids)
+
+
+@unittest.skipUnless(HAVE_GIS, "GIS engine not installed")
+class WorkerGisTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.path = make_fixture(self.tmp.name)
+        self.conn = {"kind": "gpkg", "path": self.path}
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_describe_dataset(self):
+        d = w.describe_dataset({"connection": self.conn, "dataset": "roads", "count_sql": 'SELECT count(*) FROM "roads" WHERE district = 14'})
+        self.assertEqual(d["rows"], 8)
+        self.assertEqual(d["crs"]["code"], "EPSG:3081")
+        self.assertEqual(d["geometry_column"], "geom")
+        self.assertEqual([c["id"] for c in d["checks"]], ["crs.info"])
+        with self.assertRaises(w.WorkerError):
+            w.describe_dataset({"connection": self.conn, "dataset": "nope"})
+
+    def query(self, **kw):
+        p = {"connection": self.conn, "sql": "SELECT * FROM roads WHERE district = 14", "max_rows": 1000,
+             "geometry_column": "geom", "crs_spec": {"code": "EPSG:3081"},
+             "output_stem": os.path.join(self.tmp.name, "ws", "results", "q1")}
+        p.update(kw)
+        return w.query_layer(p)
+
+    def test_query_layer_writes_a_layer(self):
+        r = self.query(hide_fields=["lanes"])
+        self.assertEqual(r["rows_read"], 8)
+        self.assertTrue(r["output_path"].endswith(".gpkg"))
+        self.assertEqual(r["hidden_columns"], ["lanes"])
+        out = gpd.read_file(r["output_path"])
+        self.assertEqual(len(out), 8)
+        self.assertEqual(out.crs.to_epsg(), 3081)
+        self.assertNotIn("lanes", out.columns)
+        self.assertEqual(r["summary"]["crs"]["code"], "EPSG:3081")
+
+    def test_bbox_in_another_crs_is_applied_before_the_limit(self):
+        # Box around the first three roads, given in lon/lat.
+        r = self.query(bbox=[-97.805, 30.19, -97.775, 30.31], bbox_crs="EPSG:4326", max_rows=5)
+        self.assertEqual(r["rows_read"], 3)
+        self.assertFalse(r["hit_read_limit"])
+        i = r["columns"].index("route_id")
+        self.assertEqual(sorted(row[i] for row in r["rows"]), ["0000", "0001", "0002"])
+        with self.assertRaises(w.WorkerError):
+            self.query(bbox=[1, 1, 0, 0])
+        with self.assertRaises(w.WorkerError):
+            self.query(bbox=[0, 0, 1, 1], bbox_crs="+proj=longlat")
+
+    def layer(self, sql, stem):
+        return self.query(sql=sql, output_stem=os.path.join(self.tmp.name, "ws", "results", stem))["output_path"]
+
+    def op(self, op, inputs, params=None, stem="out"):
+        return w.vector_op({"op": op, "inputs": inputs, "params": params or {}, "output_stem": os.path.join(self.tmp.name, "ws", "results", stem)})
+
+    def test_buffer_refuses_degrees_and_works_in_feet(self):
+        roads = self.layer("SELECT * FROM roads", "roads")
+        wgs = self.op("reproject", {"layer": roads}, {"crs": "EPSG:4326"}, "wgs")
+        self.assertEqual(wgs["summary"]["crs"]["code"], "EPSG:4326")
+        with self.assertRaises(w.WorkerError) as cm:
+            self.op("buffer", {"layer": wgs["output_path"]}, {"distance": 100, "unit": "ft"})
+        self.assertIn("crs.measure", cm.exception.message)
+        self.assertIn("EPSG:3081", cm.exception.message)
+        with self.assertRaises(w.WorkerError):
+            self.op("buffer", {"layer": roads}, {"distance": 100})  # no unit
+        b = self.op("buffer", {"layer": roads}, {"distance": 100, "unit": "ft"}, "buf")
+        out = gpd.read_file(b["output_path"])
+        road = gpd.read_file(roads).geometry.iloc[0]
+        # The buffer's edge is 100 ft (30.48 m) from the road. Round ends are
+        # drawn with 8 segments per quarter circle, so the nearest edge point
+        # can sit up to r * (1 - cos(pi / 32)) inside the true circle.
+        chord = 30.48 * (1 - math.cos(math.pi / 32))
+        self.assertAlmostEqual(out.geometry.iloc[0].exterior.distance(road), 30.48, delta=chord + 0.01)
+        self.assertAlmostEqual(out.geometry.iloc[0].exterior.hausdorff_distance(road), 30.48, delta=0.5)
+        self.assertIn("crs.measure", [c["id"] for c in b["checks"]])
+
+    def test_join_flags_padded_keys(self):
+        roads = self.layer("SELECT * FROM roads", "roads")
+        csv = os.path.join(self.tmp.name, "ws", "results", "attrs.csv")
+        pd.DataFrame({"route_id": [str(i) for i in range(10)], "surface": ["asphalt"] * 10}).to_csv(csv, index=False)
+        j = self.op("join", {"left": roads, "right": csv}, {"left_key": "route_id"}, "joined")
+        c = next(c for c in j["checks"] if c["id"] == "join.unmatched")
+        self.assertEqual(c["severity"], "fail")
+        self.assertIn("10 of 10", c["message"])
+        self.assertIn("pad route_id", c["fix"])
+        # Duplicate keys on the right are flagged as many-to-many.
+        pd.DataFrame({"route_id": ["0001", "0001", "0002"], "x": [1, 2, 3]}).to_csv(csv, index=False)
+        j = self.op("join", {"left": roads, "right": csv}, {"left_key": "route_id"}, "joined2")
+        ids = [c["id"] for c in j["checks"]]
+        self.assertIn("join.many_to_many", ids)
+
+    def test_overlays_align_crs_and_report(self):
+        roads = self.layer("SELECT * FROM roads", "roads")
+        county = self.layer("SELECT * FROM county", "county")
+        county_wgs = self.op("reproject", {"layer": county}, {"crs": "EPSG:4326"}, "cw")["output_path"]
+        clip = self.op("clip", {"layer": roads, "mask": county_wgs}, stem="clip")
+        ids = [c["id"] for c in clip["checks"]]
+        self.assertIn("crs.agreement", ids)
+        self.assertEqual(clip["summary"]["crs"]["code"], "EPSG:3081")
+        sj = self.op("spatial_join", {"left": roads, "right": county}, {"predicate": "intersects"}, "sj")
+        self.assertEqual(sj["summary"]["rows"], 10)
+        self.assertIn("name", sj["summary"]["fields"])
+        d = self.op("dissolve", {"layer": roads}, {"by": "district"}, "diss")
+        self.assertEqual(d["summary"]["rows"], 2)
+        inter = self.op("intersect", {"a": county, "b": self.op("buffer", {"layer": roads}, {"distance": 10, "unit": "m"}, "b10")["output_path"]}, stem="inter")
+        self.assertGreater(inter["summary"]["rows"], 0)
+
+    def test_make_valid_and_verify(self):
+        bowtie = Polygon([(0, 0), (10, 10), (10, 0), (0, 10), (0, 0)])
+        path = os.path.join(self.tmp.name, "bad.gpkg")
+        gpd.GeoDataFrame({"a": [1, 2]}, geometry=[bowtie, bowtie], crs="EPSG:3081").to_file(path, engine="pyogrio")
+        v = w.verify_layer({"path": path})
+        ids = [c["id"] for c in v["checks"]]
+        self.assertIn("geometry.valid", ids)
+        self.assertIn("geometry.duplicates", ids)
+        fixed = self.op("make_valid", {"layer": path}, stem="fixed")
+        self.assertNotIn("geometry.valid", [c["id"] for c in w.verify_layer({"path": fixed["output_path"]})["checks"]])
+
+    def test_fid_columns_that_geopackage_would_refuse(self):
+        empty = self.query(sql="SELECT * FROM roads WHERE route_id = 'none'")
+        self.assertEqual(empty["rows_read"], 0)
+        self.assertTrue(empty["output_path"].endswith(".gpkg"))
+        dup = gpd.GeoDataFrame({"fid": [1, 1]}, geometry=[Point(0, 0), Point(1, 1)], crs="EPSG:3081")
+        path = g.write_layer(dup, os.path.join(self.tmp.name, "ws", "dup"))
+        self.assertEqual(list(gpd.read_file(path)["source_fid"]), [1, 1])
+
+    def test_unknown_op_and_wrong_inputs(self):
+        roads = self.layer("SELECT * FROM roads", "roads")
+        with self.assertRaises(w.WorkerError):
+            self.op("reproject", {"layer": roads}, {"crs": "EPSG:4326 +init=x"})
+        for op, inputs in [("explode_everything", {"layer": roads}), ("clip", {"layer": roads})]:
+            with self.assertRaises(w.WorkerError):
+                self.op(op, inputs)
+
+
+if __name__ == "__main__":
+    unittest.main()

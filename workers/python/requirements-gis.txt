@@ -1,0 +1,10 @@
+# The GIS engine for the Python worker (describe_dataset, query_features,
+# vector_op, verify). The worker's protocol, SQL reads and plugin host need
+# only the standard library; these add GDAL-backed reading and writing,
+# geometry and coordinate systems. All publish wheels for Windows, macOS and
+# Linux that bundle GDAL and PROJ, so no separate GDAL install is needed.
+geopandas>=1.0,<2
+pyogrio>=0.10,<1
+shapely>=2.0,<3
+pyproj>=3.6,<4
+pandas>=2.2,<4

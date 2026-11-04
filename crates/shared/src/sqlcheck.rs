@@ -451,6 +451,27 @@ pub fn check_select(
     access: &EffectiveAccess,
     max_rows: u64,
 ) -> Result<CheckedQuery, Denied> {
+    check_select_limited(sql, access, max_rows, true)
+}
+
+/// As [`check_select`], but without the SQL row limit, for queries whose
+/// rows the worker filters further (a bounding box) before counting them
+/// against `max_rows`. The worker still stops at `max_rows`; every other
+/// check and every row filter applies exactly as in `check_select`.
+pub fn check_select_unlimited(
+    sql: &str,
+    access: &EffectiveAccess,
+    max_rows: u64,
+) -> Result<CheckedQuery, Denied> {
+    check_select_limited(sql, access, max_rows, false)
+}
+
+fn check_select_limited(
+    sql: &str,
+    access: &EffectiveAccess,
+    max_rows: u64,
+    limit: bool,
+) -> Result<CheckedQuery, Denied> {
     let dialect = SqlDialect::for_connection_type(&access.kind);
     let mut query = single_select(sql, dialect)?;
     let tables = check_tables_and_functions(&query, access)?;
@@ -466,6 +487,14 @@ pub fn check_select(
     }
 
     let inner = query.to_string();
+    if !limit {
+        return Ok(CheckedQuery {
+            sql: inner,
+            tables,
+            max_rows,
+            dialect,
+        });
+    }
     // Ask the database for one row more than the worker may read, so the
     // worker can tell "exactly max_rows" from "cut off at max_rows" and
     // report the truncation instead of returning an incomplete result as if
@@ -642,6 +671,19 @@ datasets:
         )
         .unwrap();
         assert!(q.sql.starts_with("SELECT TOP (8)"), "{}", q.sql);
+    }
+
+    #[test]
+    fn unlimited_keeps_every_check_and_filter() {
+        let a = access("postgis", Some("DISTRICT_NBR = 14"));
+        let q = check_select_unlimited("SELECT * FROM ROADS.ROADWAY_INVENTORY", &a, 10).unwrap();
+        assert!(
+            q.sql.contains("DISTRICT_NBR = 14") && !q.sql.contains("LIMIT"),
+            "{}",
+            q.sql
+        );
+        assert!(check_select_unlimited("SELECT * FROM ROADS.ROADWAY_AUDIT", &a, 10).is_err());
+        assert!(check_select_unlimited("DELETE FROM ROADS.ROADWAY_INVENTORY", &a, 10).is_err());
     }
 
     #[test]

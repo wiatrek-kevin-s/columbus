@@ -24,6 +24,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - run: python -m pip install -r workers/python/requirements-gis.txt
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
@@ -41,6 +42,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - run: python -m pip install -r workers/python/requirements-gis.txt
       - run: python -m unittest discover -s workers/python/tests -v
 
   postgis:
@@ -66,7 +68,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: python -m pip install "psycopg[binary]"
+      - run: python -m pip install "psycopg[binary]" -r workers/python/requirements-gis.txt
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Load fixture
@@ -74,4 +76,4 @@ jobs:
       - name: Worker tests against PostGIS
         run: python -m unittest discover -s workers/python/tests -v
       - name: Gateway end to end against PostGIS
-        run: cargo test -p columbus-mcp --test postgis --locked -- --nocapture
+        run: cargo test -p columbus-mcp --test postgis --test gis --locked -- --nocapture

@@ -83,6 +83,7 @@ def ping(_params: dict[str, Any]) -> dict[str, Any]:
             "duckdb": _optional_version("duckdb"),
             "pdal": _optional_version("pdal"),
             "psycopg": _optional_version("psycopg"),
+            "gis": _gis_versions(),
         },
     }
 
@@ -152,6 +153,20 @@ def _sqlite_list(conn: dict[str, Any], timeout_s: float) -> list[dict[str, Any]]
                         "extent": [x0, y0, x1, y1] if None not in (x0, y0, x1, y1) else None,
                     }
                 )
+        if has_gpkg:
+            try:
+                srs = {
+                    r[0]: {"org": r[1], "org_id": r[2], "wkt": r[3]}
+                    for r in db.execute(
+                        "SELECT srs_id, organization, organization_coordsys_id, definition FROM gpkg_spatial_ref_sys"
+                    )
+                }
+            except sqlite3.Error:
+                # Not a complete GeoPackage: the srs_id is all there is.
+                srs = {}
+            for entry in tables.values():
+                if entry.get("srs_id") is not None and entry.get("geometry_column"):
+                    entry["crs_spec"] = srs.get(entry["srs_id"]) or {"org_id": entry["srs_id"]}
         for entry in tables.values():
             quoted = '"' + entry["name"].replace('"', '""') + '"'
             entry["fields"] = [
@@ -172,16 +187,19 @@ def _cell(value: Any) -> Any:
     return value
 
 
-def _sqlite_fetch(conn: dict[str, Any], sql: str, max_rows: int, timeout_s: float):
+def _sqlite_fetch(conn: dict[str, Any], sql: str, max_rows: int, timeout_s: float, keep_factory=None):
     """Returns (columns, rows, hit_limit, cell_fn)."""
     db = _open_sqlite(conn, timeout_s)
     try:
         try:
             cur = db.execute(sql)
             columns = [d[0] for d in (cur.description or [])]
+            keep = keep_factory(columns, "gpkg") if keep_factory else None
             rows = []
             hit = False
             for row in cur:
+                if keep is not None and not keep(row):
+                    continue
                 if len(rows) >= max_rows:
                     hit = True
                     break
@@ -280,7 +298,7 @@ def _pg_geom(value: Any) -> Any:
     return {"geometry": "ewkb", "bytes": len(bytes(value))}
 
 
-def _pg_fetch(conn: dict[str, Any], sql: str, max_rows: int, timeout_s: float):
+def _pg_fetch(conn: dict[str, Any], sql: str, max_rows: int, timeout_s: float, keep_factory=None):
     import psycopg
 
     db, scrub = _pg_connect(conn, timeout_s)
@@ -294,10 +312,15 @@ def _pg_fetch(conn: dict[str, Any], sql: str, max_rows: int, timeout_s: float):
                 cur.execute(sql)
                 rows = []
                 hit = False
+                keep = None
                 while True:
                     chunk = cur.fetchmany(2000)
                     if not chunk:
                         break
+                    if keep_factory is not None:
+                        if keep is None:
+                            keep = keep_factory([d.name for d in cur.description], "ewkb")
+                        chunk = [r for r in chunk if keep(r)]
                     room = max_rows - len(rows)
                     if len(chunk) > room:
                         rows.extend(chunk[:room])
@@ -370,7 +393,8 @@ def _pg_list(conn: dict[str, Any], timeout_s: float) -> list[dict[str, Any]]:
             entry = tables.get(f"{s}.{t}")
             if entry is None:
                 continue
-            entry.update({"geometry_column": col, "geometry_type": gtype, "srs_id": srid, "dimensions": dims})
+            entry.update({"geometry_column": col, "geometry_type": gtype, "srs_id": srid, "dimensions": dims,
+                          "crs_spec": {"org": "EPSG", "org_id": srid} if srid else None})
             try:
                 with db.transaction(), db.cursor() as cur:
                     cur.execute("SELECT ST_EstimatedExtent(%s, %s, %s)::box2d::text", (s, t, col))
@@ -403,12 +427,12 @@ def list_datasets(params: dict[str, Any]) -> dict[str, Any]:
     raise WorkerError(UNSUPPORTED, f"list_datasets does not support {conn['kind']!r} yet")
 
 
-def _fetch(conn: dict[str, Any], sql: str, max_rows: int, timeout_s: float):
+def _fetch(conn: dict[str, Any], sql: str, max_rows: int, timeout_s: float, keep_factory=None):
     kind = conn["kind"].lower()
     if kind in SQLITE_KINDS:
-        return _sqlite_fetch(conn, sql, max_rows, timeout_s)
+        return _sqlite_fetch(conn, sql, max_rows, timeout_s, keep_factory)
     if kind in PG_KINDS:
-        return _pg_fetch(conn, sql, max_rows, timeout_s)
+        return _pg_fetch(conn, sql, max_rows, timeout_s, keep_factory)
     raise WorkerError(UNSUPPORTED, f"reading {conn['kind']!r} connections is not supported yet")
 
 
@@ -545,9 +569,167 @@ def sql_select(params: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# ---------- GIS tools (GDAL, GEOS, PROJ through columbus_gis) ----------
+
+GIS_MISSING = "needs the GIS engine (geopandas with pyogrio/GDAL, shapely and pyproj) in the engine environment"
+
+
+def _gis():
+    try:
+        import columbus_gis
+
+        return columbus_gis
+    except ImportError as e:
+        raise WorkerError(UNSUPPORTED, f"{GIS_MISSING} ({e})") from None
+
+
+def _gis_versions():
+    try:
+        import columbus_gis
+
+        return columbus_gis.versions()
+    except Exception:  # noqa: BLE001 - absent is fine
+        return None
+
+
+def _refused(e) -> WorkerError:
+    return WorkerError(INVALID_PARAMS, str(e))
+
+
+def _find(entries, dataset: str):
+    want = dataset.replace('"', "").replace("[", "").replace("]", "").lower()
+    for e in entries:
+        if e["name"].lower() == want:
+            return e
+    return None
+
+
+def describe_dataset(params: dict[str, Any]) -> dict[str, Any]:
+    """Fields, geometry, CRS facts and extent of one dataset, the row count
+    under the connection's row filter (``count_sql``, checked by the
+    gateway), and CRS checks."""
+    g = _gis()
+    conn = _connection(params)
+    timeout_s = float(params.get("timeout_s", 60))
+    entries = list_datasets({"connection": conn, "timeout_s": timeout_s})["datasets"]
+    entry = _find(entries, str(params.get("dataset") or ""))
+    if entry is None:
+        raise WorkerError(INVALID_PARAMS, f"no dataset {params.get('dataset')!r} on this connection")
+    keep = _hidden_mask([f["name"] for f in entry.get("fields", [])], params.get("hide_fields"))
+    entry["fields"] = [f for f, k in zip(entry.get("fields", []), keep) if k]
+    rows = None
+    if isinstance(params.get("count_sql"), str):
+        _, r, _, _, _ = _fetch(conn, params["count_sql"], 2, timeout_s)
+        rows = int(r[0][0]) if r else 0
+    crs = g.crs_from_spec(entry.get("crs_spec")) if entry.get("geometry_column") else None
+    checks = g.crs_checks(crs, entry.get("extent"), has_geometry=bool(entry.get("geometry_column")), what="The dataset")
+    entry.update({"rows": rows, "crs": g.crs_facts(crs), "checks": checks})
+    return entry
+
+
+def query_layer(params: dict[str, Any]) -> dict[str, Any]:
+    """Run a checked query and save the result as a layer in the workspace
+    (GeoPackage with geometry, CSV without). Optional ``bbox`` keeps only
+    rows whose geometry meets the box (moved into the layer's CRS)."""
+    g = _gis()
+    conn = _connection(params)
+    sql = params.get("sql")
+    max_rows = params.get("max_rows")
+    if not isinstance(sql, str) or not isinstance(max_rows, int) or max_rows < 1:
+        raise WorkerError(INVALID_PARAMS, "sql and a positive max_rows are required")
+    return_rows = int(params.get("return_rows", 500))
+    timeout_s = float(params.get("timeout_s", 120))
+    geom_col = params.get("geometry_column")
+    layer_crs = g.crs_from_spec(params.get("crs_spec"))
+    bbox_crs = layer_crs
+    if params.get("bbox_crs"):
+        bbox_crs = g.crs_from_spec({"code": params.get("bbox_crs")})
+        if bbox_crs is None:
+            raise WorkerError(INVALID_PARAMS, 'bbox_crs must be an EPSG code such as "EPSG:4326"')
+    try:
+        keep_geom = g.bbox_filter(params.get("bbox"), bbox_crs, layer_crs)
+    except g.GISError as e:
+        raise _refused(e) from None
+
+    keep_factory = None
+    if keep_geom is not None:
+        if not geom_col:
+            raise WorkerError(INVALID_PARAMS, "bbox needs a dataset with geometry")
+
+        def keep_factory(columns, fmt):
+            i = columns.index(geom_col)
+            return lambda row: keep_geom(g.decode(row[i], fmt))
+
+    columns, rows, hit, cells, geoms = _fetch(conn, sql, max_rows, timeout_s, keep_factory)
+    keep = _hidden_mask(columns, params.get("hide_fields"))
+    hidden = [c for c, k in zip(columns, keep) if not k]
+    gi = columns.index(geom_col) if geom_col in columns else None
+    fmt = geoms.get(gi, "gpkg") if gi is not None else None
+    kept_idx = [i for i, k in enumerate(keep) if k and i != gi]
+    attr_cols = [columns[i] for i in kept_idx]
+    attr_rows = [[r[i] for i in kept_idx] for r in rows]
+    shapes = [g.decode(r[gi], fmt) for r in rows] if gi is not None else None
+    layer = g.build_layer(attr_cols, attr_rows, geom_col if gi is not None else None, shapes, layer_crs)
+    stem = params.get("output_stem")
+    path = g.write_layer(layer, stem, layer=str(params.get("layer_name") or "query")) if isinstance(stem, str) and stem else None
+    checks = []
+    if gi is not None:
+        summary = g.layer_summary(layer)
+        checks = g.crs_checks(layer_crs, summary["extent"], what="The result") + g.geometry_checks(layer.geometry, what="The result")
+    else:
+        summary = g.layer_summary(layer)
+    out_cols = attr_cols + ([geom_col] if gi is not None else [])
+    shown = []
+    for r in rows[:return_rows]:
+        vals = [cells[i](r[i]) for i in kept_idx]
+        if gi is not None:
+            vals.append(cells[gi](r[gi]))
+        shown.append(vals)
+    return {
+        "columns": out_cols,
+        "rows": shown,
+        "rows_read": len(rows),
+        "rows_returned": len(shown),
+        "hit_read_limit": hit,
+        "hidden_columns": hidden,
+        "output_path": path,
+        "summary": summary,
+        "checks": checks,
+    }
+
+
+def vector_op(params: dict[str, Any]) -> dict[str, Any]:
+    g = _gis()
+    inputs = params.get("inputs")
+    stem = params.get("output_stem")
+    if not isinstance(inputs, dict) or not isinstance(stem, str):
+        raise WorkerError(INVALID_PARAMS, "inputs and output_stem are required")
+    try:
+        return g.vector_op(str(params.get("op")), inputs, params.get("params") or {}, stem)
+    except g.GISError as e:
+        raise _refused(e) from None
+
+
+def verify_layer(params: dict[str, Any]) -> dict[str, Any]:
+    g = _gis()
+    path = params.get("path")
+    if not isinstance(path, str):
+        raise WorkerError(INVALID_PARAMS, "path is required")
+    return g.verify_layer(path)
+
+
 plugin = Plugin("columbus.core", VERSION)
 
-for _name, _fn in (("ping", ping), ("list_datasets", list_datasets), ("sql_select", sql_select), ("extract", extract)):
+for _name, _fn in (
+    ("ping", ping),
+    ("list_datasets", list_datasets),
+    ("sql_select", sql_select),
+    ("extract", extract),
+    ("describe_dataset", describe_dataset),
+    ("query_layer", query_layer),
+    ("vector_op", vector_op),
+    ("verify_layer", verify_layer),
+):
     plugin.tool(_name)(lambda ctx, fn=_fn: fn(ctx.params))
 
 

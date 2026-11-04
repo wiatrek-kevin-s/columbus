@@ -17,6 +17,7 @@
 mod approval_flow;
 mod approvals_page;
 mod config;
+mod gis_tools;
 mod plugin_run;
 mod plugins;
 mod providers;
