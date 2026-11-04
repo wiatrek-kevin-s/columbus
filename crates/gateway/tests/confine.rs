@@ -242,7 +242,20 @@ fn level_c_reads_anywhere_but_writes_only_granted_folders() {
             eprintln!("where {py}: {}", String::from_utf8_lossy(&o.stdout));
         }
         eprintln!("sys.executable: {exe}");
-        let probes: [(&str, &[&str]); 5] = [
+        let dir = Path::new(&exe).parent().unwrap().display().to_string();
+        let dll = format!("{dir}\\python312.dll");
+        let read_dll = format!("type \"{dll}\" > NUL && echo dll-readable");
+        let list_dir = format!("dir /b \"{dir}\"");
+        let run_py = format!("\"{exe}\" -c \"print(1)\" & echo py-exit-%ERRORLEVEL%");
+        for target in [dll.as_str(), exe.as_str(), dir.as_str()] {
+            if let Ok(o) = Command::new("icacls").arg(target).output() {
+                eprintln!("icacls {target}:\n{}", String::from_utf8_lossy(&o.stdout));
+            }
+        }
+        let probes: [(&str, &[&str]); 8] = [
+            ("cmd", &["/c", read_dll.as_str()]),
+            ("cmd", &["/c", list_dir.as_str()]),
+            ("cmd", &["/c", run_py.as_str()]),
             ("cmd", &["/c", "echo native-ok"]),
             (me.as_str(), &["--check", "A"]),
             (py.as_str(), &["-c", "print('py-ok')"]),
