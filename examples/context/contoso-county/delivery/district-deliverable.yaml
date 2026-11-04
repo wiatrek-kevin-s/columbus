@@ -1,0 +1,12 @@
+id: district-deliverable
+kind: delivery
+title: District deliverable
+summary: The format district offices expect for map and data deliverables.
+crs: EPSG:3081
+formats: [GeoPackage, PDF]
+fields:
+  rename: { FUNC_CLASS: FUNCTIONAL_CLASS }
+metadata: [title, abstract, source datasets, date, contact]
+owner: GIS Data Management
+last_confirmed: 2026-08-01
+status: reviewed

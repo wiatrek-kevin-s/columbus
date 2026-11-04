@@ -797,6 +797,16 @@ impl Gateway {
         if let Some(o) = info.as_object_mut() {
             o.remove("checks");
             o.remove("crs_spec");
+            // The context pack's entry for this dataset, if it has one.
+            if let Some(pack) = &self.state.context {
+                if let Some(e) = pack.dataset_entry(&conn.id, &args.dataset) {
+                    let today = chrono::Local::now().date_naive();
+                    o.insert(
+                        "context".into(),
+                        json!({"card": e.card_json(pack.info.review_interval_months, today), "body": e.body}),
+                    );
+                }
+            }
         }
         self.note_read(&conn.id, None, None, None, "describe_dataset");
         self.audit(&ctx, rec)?;

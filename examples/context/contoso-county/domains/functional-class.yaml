@@ -1,0 +1,16 @@
+id: functional-class
+kind: domain
+title: Functional class
+summary: Coded values for a roadway segment's functional class.
+type: coded
+values:
+  1: Interstate
+  2: Other freeway and expressway
+  3: Other principal arterial
+  4: Minor arterial
+  5: Major collector
+  6: Minor collector
+  7: Local
+owner: GIS Data Management
+last_confirmed: 2026-10-15
+status: reviewed

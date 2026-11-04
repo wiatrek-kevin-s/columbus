@@ -26,6 +26,8 @@ pub struct Paths {
     pub python: PathBuf,
     /// The geo-registry index (`registry.sqlite` and `index.sha256`).
     pub registry: PathBuf,
+    /// The organization's context pack (a folder with `pack.yaml`).
+    pub context: PathBuf,
 }
 
 fn env_path(name: &str) -> Option<PathBuf> {
@@ -52,6 +54,7 @@ impl Paths {
             worker_script: env_path("COLUMBUS_WORKER").unwrap_or_else(default_worker_script),
             registry: env_path("COLUMBUS_REGISTRY")
                 .unwrap_or_else(|| program_data.join("registry")),
+            context: env_path("COLUMBUS_CONTEXT").unwrap_or_else(|| program_data.join("context")),
             python: env_path("COLUMBUS_PYTHON").unwrap_or_else(|| {
                 PathBuf::from(if cfg!(windows) {
                     "python.exe"

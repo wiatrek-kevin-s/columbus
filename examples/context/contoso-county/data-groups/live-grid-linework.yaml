@@ -1,0 +1,12 @@
+id: live-grid-linework
+title: Live GRID linework
+summary: Everything needed to assemble current route linework with its assets.
+datasets:
+  - roadway-inventory
+  - { id: route-centerlines, filter: "STATUS <> 'R'" }
+  - asset-signs
+assembly:
+  - join: route-centerlines.ROUTE_ID = roadway-inventory.ROUTE_ID
+  - locate: asset-signs on route-centerlines by ROUTE_ID, MEASURE
+documents: [state-routes, monthly-lrs-qc, functional-class]
+mode: read

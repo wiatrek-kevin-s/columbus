@@ -1,0 +1,12 @@
+# Contoso County: a fictional sample context pack (design section 5).
+# Nothing here describes a real organization.
+name: Contoso County GIS
+format_version: 1
+owners: [GIS Data Management, contoso-gis@example.org]
+default_crs: EPSG:3081
+review_interval_months: 12
+# Always-on rules: returned by whoami at the start of every session.
+rules:
+  - Deliverables are in EPSG:3081 (Texas-Centric Lambert Conformal) unless the requester asks otherwise.
+  - Route measures are in miles; GIS geometry lengths are in feet. Convert before comparing.
+  - Leave retired segments (STATUS = 'R') out of current-state work.

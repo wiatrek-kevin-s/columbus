@@ -413,6 +413,8 @@ pub struct State {
     pub plugins: crate::plugins::Plugins,
     /// `describe_dataset` answers, per (connection, dataset), for this session.
     pub datasets: std::sync::Mutex<std::collections::HashMap<(String, String), Value>>,
+    /// The organization's context pack, if one is installed.
+    pub context: Option<crate::context::Pack>,
     /// Every column of every table, per connection, for keeping hidden
     /// fields out of queries (see sqlcheck::ApplyFilters). Loaded once.
     pub columns: std::sync::Mutex<
@@ -528,9 +530,30 @@ impl State {
             &server_ids,
         );
         notes.extend(plugins.notes.iter().cloned());
+        let context = if paths.context.join("pack.yaml").is_file() {
+            match crate::context::Pack::load(&paths.context) {
+                Ok(p) => {
+                    if !p.problems.is_empty() {
+                        notes.push(format!(
+                            "Context pack {}: {} file(s) skipped (run `columbus-mcp pack lint`).",
+                            p.info.name,
+                            p.problems.len()
+                        ));
+                    }
+                    Some(p)
+                }
+                Err(e) => {
+                    notes.push(format!("Context pack not loaded: {e}"));
+                    None
+                }
+            }
+        } else {
+            None
+        };
         Ok(State {
             broker,
             plugins,
+            context,
             datasets: Default::default(),
             columns: Default::default(),
             flow: columbus_flow::FlowState::new(),
@@ -568,7 +591,10 @@ impl Gateway {
     pub fn new(state: State) -> Self {
         Gateway {
             state: Arc::new(state),
-            tool_router: Self::tool_router() + Self::gis_router() + Self::registry_router(),
+            tool_router: Self::tool_router()
+                + Self::gis_router()
+                + Self::registry_router()
+                + Self::context_router(),
         }
     }
 
@@ -991,7 +1017,12 @@ impl Gateway {
             audit_log: self.state.audit.dir().display().to_string(),
             secret_store: self.state.secrets.describe(),
             approvals: self.approval_channel(&ctx),
-            always_on_rules: vec![],
+            always_on_rules: self
+                .state
+                .context
+                .as_ref()
+                .map(|p| p.info.rules.clone())
+                .unwrap_or_default(),
             engines,
             providers: self.provider_cards().await,
             labels: self.labels(),

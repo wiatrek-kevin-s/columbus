@@ -25,6 +25,7 @@ Columbus makes a GIS analyst, paired with whatever AI their organization already
 | `vector_op` | reproject, buffer, simplify, make_valid, clip, dissolve, intersect, join, spatial_join on handles or governed datasets |
 | `verify` | The spatial checks on any layer or dataset |
 | `sql_select` | One checked, read-only `SELECT` (details below) |
+| `context_search`, `context_get`, `describe_data_group` | The organization's context pack: what its datasets, codes, routes and procedures mean; `describe_dataset` attaches the dataset's entry, and `whoami` returns the pack's always-on rules |
 | `registry_search`, `registry_get` | The open geospatial registry: data sources (publisher, coverage, licence, access) and GIS tools; ranked cards by words, kind, theme and area |
 | `list_providers` | Columbus's engines and connected MCP servers, their trust and state, and the data labels in force |
 | `run_tool` | Run a connected server's tool as `<provider>.<tool>`, under the rules below |
@@ -113,6 +114,10 @@ Confinement fails closed. If a level cannot be provided (the launcher is missing
 Columbus's own engine worker is not confined: it is Columbus's code, it reads the connections (files, databases on the network or on this machine), and it is what enforces the rules on the data.
 
 Not yet: the RustGIS worker (milestone 2 of change 1), and Windows' own MCP containment as an extra level once it leaves preview.
+
+## Context pack
+
+An organization describes its GIS world in a **context pack**: a folder of Markdown and YAML (datasets with their gotchas, coded domains, linear referencing, data groups, delivery specs, SOPs, roles), installed under `%ProgramData%\Columbus\context` (or `COLUMBUS_CONTEXT`). Agents search it with `context_search` and read entries with `context_get`; `describe_dataset` attaches the matching dataset entry, `describe_data_group` resolves a group's datasets and says which this session can read, and `whoami` returns the pack's always-on rules. Entries past the pack's review interval come back marked `stale`. `columbus-mcp pack lint DIR` checks a pack. See the [format](docs/context-pack.md) and the fictional [Contoso County](examples/context/contoso-county) sample.
 
 ## Registry
 

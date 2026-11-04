@@ -12,6 +12,7 @@
 //! columbus-mcp servers signin ID    sign in to a remote server in the browser (OAuth)
 //! columbus-mcp servers signout ID   remove its tokens
 //! columbus-mcp registry update [--from DIR|URL]   install the registry index (checked)
+//! columbus-mcp pack lint [DIR]      check a context pack
 //! columbus-mcp plugins list         engine plugins, their versions, hashes and state
 //! columbus-mcp plugins approve ID   approve a plugin's exact contents
 //! columbus-mcp --version
@@ -20,6 +21,7 @@
 mod approval_flow;
 mod approvals_page;
 mod config;
+mod context;
 mod gis_tools;
 mod plugin_run;
 mod plugins;
@@ -71,6 +73,8 @@ async fn main() -> Result<()> {
         ["servers", "approve", id, "--accept-flags"] => review_cli::approve(id, true).await,
         ["servers", "signin", id] => review_cli::signin(id).await,
         ["registry", "update"] => registry_tools::update(None).await,
+        ["pack", "lint"] => context::lint_cli(None),
+        ["pack", "lint", dir] => context::lint_cli(Some(dir)),
         ["registry", "update", "--from", src] => registry_tools::update(Some(src)).await,
         ["servers", "signout", id] => review_cli::signout(id),
         ["secret", "delete", id] => {
