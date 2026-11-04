@@ -14,6 +14,8 @@
 //! columbus-mcp --version
 //! ```
 
+mod approval_flow;
+mod approvals_page;
 mod config;
 mod plugin_run;
 mod plugins;

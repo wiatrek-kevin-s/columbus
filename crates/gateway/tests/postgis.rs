@@ -81,7 +81,8 @@ async fn start(env: &Env, py: &str) -> RunningService<RoleClient, ()> {
                 .env("COLUMBUS_PYTHON", &py)
                 .env("COLUMBUS_DEV_SECRETS", "1")
                 .env("COLUMBUS_SECRET_ROADS_PG", PASSWORD)
-                .env("COLUMBUS_LOG", "warn");
+                .env("COLUMBUS_LOG", "warn")
+                .env("COLUMBUS_APPROVALS_BROWSER", "none");
         }),
     )
     .unwrap();

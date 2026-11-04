@@ -220,7 +220,8 @@ fn gateway_cmd(env: &Env, py: &str) -> tokio::process::Command {
             .env("COLUMBUS_AUDIT_DIR", root.join("audit"))
             .env("COLUMBUS_WORKER", &worker)
             .env("COLUMBUS_PYTHON", &py)
-            .env("COLUMBUS_LOG", "warn");
+            .env("COLUMBUS_LOG", "warn")
+            .env("COLUMBUS_APPROVALS_BROWSER", "none");
     })
 }
 

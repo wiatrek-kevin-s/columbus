@@ -140,6 +140,38 @@ pub struct OrgPolicy {
     /// Engine plugins (design change 1, section 7).
     #[serde(default)]
     pub plugins: PluginPolicy,
+    /// How people are asked to approve.
+    #[serde(default)]
+    pub approvals: ApprovalPolicy,
+}
+
+/// How approvals reach the person when their AI client cannot ask them.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApprovalPolicy {
+    /// Open Columbus's local approvals page in the person's browser.
+    #[serde(default = "yes")]
+    pub page: bool,
+    /// How long a tool call waits for the person's answer on the page
+    /// before returning `approval_required`. At most 300.
+    #[serde(default = "default_wait")]
+    pub wait_seconds: u64,
+}
+
+fn yes() -> bool {
+    true
+}
+
+fn default_wait() -> u64 {
+    45
+}
+
+impl Default for ApprovalPolicy {
+    fn default() -> Self {
+        ApprovalPolicy {
+            page: true,
+            wait_seconds: default_wait(),
+        }
+    }
 }
 
 /// What engine plugins may be used.
@@ -202,6 +234,7 @@ impl Default for OrgPolicy {
             servers: ServerPolicy::default(),
             flows: vec![],
             plugins: PluginPolicy::default(),
+            approvals: ApprovalPolicy::default(),
         }
     }
 }

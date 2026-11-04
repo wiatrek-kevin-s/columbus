@@ -61,7 +61,9 @@ columbus-mcp servers approve drive        # pins the definitions; asks you to ty
 
 Review flags descriptions with hidden characters, wording aimed at the model ("ignore previous", "do not tell the user"), references to other providers' or Columbus's tools, credentials and destinations. Flagged tools need `--accept-flags`.
 
-When a call needs approval, Columbus asks the person in their own MCP client (elicitation): the agent never sees or answers that prompt. Clients that cannot ask get `approval_required` with an id; the approvals page that lets the person answer those is the next build.
+When a call needs approval, Columbus asks the person in their own MCP client (elicitation); the agent never sees or answers that prompt. When the client cannot ask, Columbus opens its **local approvals page** in the person's browser and the call waits briefly (45 s by default) for the decision. If none comes in time, the agent gets `approval_required` with an id, tells the person, and calls again with that id once they have decided. `whoami` tells the agent which way approvals will reach the person.
+
+The approvals page is served only on 127.0.0.1 on a random port. The browser is opened on a single-use link that turns into a session cookie (`HttpOnly`, `SameSite=Strict`); every decision also needs a page token and a same-origin request, and requests for any other host name are refused, so other websites cannot approve anything. The page shows what would happen in plain words (destination, files and row counts, which connections the data came from, the flow rule that applied) and the exact request on demand. Every decision is written to the audit log, and the agent never receives the page's address. Organization policy can turn the page off or change the wait (`approvals: { page, wait_seconds }`).
 
 Not yet: OAuth sign-in for remote servers, Windows confinement levels A–C, the engine plugin SDK and RustGIS worker (milestones 1–2 of change 1).
 
@@ -168,7 +170,7 @@ Phase 1 (this repository, in progress):
 - [ ] Streamable HTTP on 127.0.0.1 with a per-session token
 - [x] Broker for connected MCP servers (stdio and HTTP): manifests, pinning with auto-disable, review flags, file handles, untrusted output, data labels and flow rules (change 1, Rules 1–4)
 - [x] Approvals in the person's own client through MCP elicitation
-- [ ] Local approvals page for clients without elicitation
+- [x] Local approvals page for clients without elicitation
 - [x] Worker protocol v2 with progress and cancel; Python and Rust plugin SDKs; Columbus's engine rebuilt on it; engine plugins through `run_tool`
 - [ ] RustGIS native worker
 - [ ] Confinement levels A–C on Windows; OAuth for remote servers

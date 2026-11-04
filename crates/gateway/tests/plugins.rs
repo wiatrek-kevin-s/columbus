@@ -195,7 +195,8 @@ async fn start(env: &Env, py: &str) -> RunningService<RoleClient, ()> {
                 .env("COLUMBUS_AUDIT_DIR", root.join("audit"))
                 .env("COLUMBUS_WORKER", &worker)
                 .env("COLUMBUS_PYTHON", &py)
-                .env("COLUMBUS_LOG", "warn");
+                .env("COLUMBUS_LOG", "warn")
+                .env("COLUMBUS_APPROVALS_BROWSER", "none");
         });
     ().serve(TokioChildProcess::new(cmd).unwrap())
         .await

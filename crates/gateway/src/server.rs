@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{DateTime, Local, Utc};
-use columbus_shared::approvals::{ApprovalStore, Decision, Risk};
+use columbus_shared::approvals::{ApprovalStore, Risk};
 use columbus_shared::audit::{AuditLog, AuditRecord};
 use columbus_shared::canon::request_hash;
 use columbus_shared::policy::{Connection, EffectiveAccess, Mode, OrgPolicy, ProjectScope};
@@ -265,6 +265,8 @@ pub struct WhoAmI {
     pub audit_log: String,
     /// Where connection passwords are kept.
     pub secret_store: String,
+    /// Where the person is asked when a step needs their approval.
+    pub approvals: String,
     /// Organization rules that always apply (from the context pack, once loaded).
     pub always_on_rules: Vec<String>,
     pub engines: Value,
@@ -367,8 +369,9 @@ pub struct State {
     pub connections: Vec<Connection>,
     pub scope: ProjectScope,
     pub sandbox: Sandbox,
-    pub audit: AuditLog,
-    pub approvals: ApprovalStore,
+    pub audit: Arc<AuditLog>,
+    pub approvals: Arc<ApprovalStore>,
+    pub page: crate::approvals_page::ApprovalsPage,
     pub worker: Worker,
     pub secrets: Arc<crate::secrets::SecretStore>,
     pub broker: columbus_broker::registry::Broker,
@@ -425,6 +428,23 @@ impl State {
                 AuditLog::new(fallback)?
             }
         };
+        let audit = Arc::new(audit);
+        let approvals = Arc::new(ApprovalStore::new());
+        let user = current_user();
+        let opener = crate::approvals_page::Opener::from_env();
+        if let crate::approvals_page::Opener::File(f) = &opener {
+            notes.push(format!(
+                "Development: approvals page links are written to {} (COLUMBUS_APPROVALS_LAUNCH_FILE) instead of opening the browser. Do not use in production.",
+                f.display()
+            ));
+        }
+        let page = crate::approvals_page::ApprovalsPage::new(
+            approvals.clone(),
+            audit.clone(),
+            user.clone(),
+            session.clone(),
+            opener,
+        );
         let worker = Worker::new(crate::worker::Launch::core(
             paths.python.clone(),
             paths.worker_script.clone(),
@@ -479,11 +499,12 @@ impl State {
             scope: ProjectScope::default(),
             sandbox,
             audit,
-            approvals: ApprovalStore::new(),
+            approvals,
+            page,
             worker,
             secrets,
             session,
-            user: current_user(),
+            user,
             notes,
         })
     }
@@ -823,6 +844,7 @@ impl Gateway {
                 .collect(),
             audit_log: self.state.audit.dir().display().to_string(),
             secret_store: self.state.secrets.describe(),
+            approvals: self.approval_channel(&ctx),
             always_on_rules: vec![],
             engines,
             providers: self.provider_cards().await,
@@ -1384,92 +1406,57 @@ impl Gateway {
                 &labels,
                 reason,
             );
-            let now = self.now();
-            if let Some(id) = &args.approval_id {
-                if let Err(e) = self.state.approvals.consume(id, "run_tool", &request, now) {
-                    return Err(self.deny(&ctx, rec, e));
+            let flow_rule = match &decision {
+                columbus_flow::FlowDecision::Approve { rule: Some(i), .. } => {
+                    Some(format!("organization flow rule {}", i + 1))
                 }
-                rec.approval = Some(id.clone());
-            } else if self.state.approvals.standing_allows("run_tool", &request) {
-                rec.approval = Some("standing".into());
-            } else {
-                let risk = if rule.egress {
+                _ => None,
+            };
+            let detail = json!({
+                "destination": p.loaded.manifest.display_name(),
+                "files": files.iter().map(|(n, r)| json!({"name": n, "rows": r})).collect::<Vec<_>>(),
+                "labels": labels.iter().map(|l| l.trim_start_matches("connection:").to_string()).collect::<Vec<_>>(),
+                "flow_rule": flow_rule,
+                "egress": rule.egress,
+            });
+            let ask = crate::approval_flow::Ask {
+                tool: "run_tool",
+                label: &args.name,
+                request: &request,
+                risk: if rule.egress {
                     Risk::Export
                 } else {
                     Risk::Edit
-                };
-                let ap =
-                    self.state
-                        .approvals
-                        .request("run_tool", &request, risk, summary.clone(), now);
-                match crate::providers::ask_person(
-                    &ctx,
-                    &format!("Columbus: allow {}?", args.name),
-                    &summary,
-                    Duration::from_secs(600),
-                )
-                .await
-                {
-                    crate::providers::Asked::Allowed { always } => {
-                        let d = if always {
-                            Decision::AlwaysThisSession
-                        } else {
-                            Decision::AllowOnce
-                        };
-                        let consumed =
-                            self.state
-                                .approvals
-                                .decide(&ap.id, d, self.now())
-                                .and_then(|_| {
-                                    self.state.approvals.consume(
-                                        &ap.id,
-                                        "run_tool",
-                                        &request,
-                                        self.now(),
-                                    )
-                                });
-                        if let Err(e) = consumed {
-                            return Err(self.deny(&ctx, rec, e));
-                        }
-                        rec.approval = Some(ap.id.clone());
-                    }
-                    crate::providers::Asked::Declined => {
-                        let _ = self
-                            .state
-                            .approvals
-                            .decide(&ap.id, Decision::Decline, self.now());
-                        rec.approval = Some(ap.id.clone());
-                        return Err(self.deny(
-                            &ctx,
-                            rec,
-                            format!("the person declined: {summary}"),
-                        ));
-                    }
-                    crate::providers::Asked::Unsupported => {
-                        rec.approval = Some(ap.id.clone());
-                        self.audit(
-                            &ctx,
-                            AuditRecord {
-                                decision: "approval_required".into(),
-                                ..rec
-                            },
-                        )?;
-                        return Ok(out(RunToolResult {
-                            provider: ns.to_string(),
-                            tool: tool.to_string(),
-                            status: "approval_required".into(),
-                            approval: Some(ApprovalNeeded {
-                                id: ap.id.clone(),
-                                summary,
-                                expires: ap.expires.with_timezone(&Local).to_rfc3339(),
-                                next: "This client cannot show approval prompts. Tell the person what is waiting; once they approve it, call run_tool again with the same name and args plus approval_id. (The Columbus approvals page that lets them do this is in the next build.)".into(),
-                            }),
-                            external: None,
-                            summary: None,
-                            saved: vec![],
-                        }));
-                    }
+                },
+                summary,
+                detail: Some(detail),
+                approval_id: args.approval_id.as_deref(),
+            };
+            match self.seek_approval(&ctx, ask).await {
+                Ok(crate::approval_flow::Sought::Granted(id)) => rec.approval = Some(id),
+                Ok(crate::approval_flow::Sought::Declined(msg)) => {
+                    return Err(self.deny(&ctx, rec, msg))
                 }
+                Ok(crate::approval_flow::Sought::Pending(needed)) => {
+                    rec.approval = Some(needed.id.clone());
+                    self.audit(
+                        &ctx,
+                        AuditRecord {
+                            decision: "approval_required".into(),
+                            ..rec
+                        },
+                    )?;
+                    return Ok(out(RunToolResult {
+                        provider: ns.to_string(),
+                        tool: tool.to_string(),
+                        status: "approval_required".into(),
+                        approval: Some(needed),
+                        external: None,
+                        summary: None,
+                        saved: vec![],
+                    }));
+                }
+                Err(e) => return Err(self.deny(&ctx, rec, e)),
             }
         }
 
@@ -1677,6 +1664,16 @@ impl Gateway {
                 expires: None,
             },
         };
+        if status.state == "pending"
+            && self.state.policy.approvals.page
+            && !self.state.page.is_open()
+            && !ctx
+                .peer
+                .supported_elicitation_modes()
+                .contains(&rmcp::service::ElicitationMode::Form)
+        {
+            let _ = self.state.page.show().await;
+        }
         self.audit(&ctx, rec)?;
         Ok(out(status))
     }

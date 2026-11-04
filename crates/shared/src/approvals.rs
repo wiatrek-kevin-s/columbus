@@ -61,6 +61,15 @@ pub struct Approval {
     pub created: DateTime<Utc>,
     pub expires: DateTime<Utc>,
     pub state: State,
+    /// Structured facts for the approval card: files and row counts,
+    /// data labels, destination, the flow rule that applied.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decided_at: Option<DateTime<Utc>>,
+    /// Where the person decided: `client` (in-client prompt) or `page`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decided_via: Option<String>,
 }
 
 #[derive(Default)]
@@ -89,6 +98,19 @@ impl ApprovalStore {
         summary: String,
         now: DateTime<Utc>,
     ) -> Approval {
+        self.request_with_detail(tool, args, risk, summary, None, now)
+    }
+
+    /// Open a pending approval with structured detail for the card.
+    pub fn request_with_detail(
+        &self,
+        tool: &str,
+        args: &Value,
+        risk: Risk,
+        summary: String,
+        detail: Option<Value>,
+        now: DateTime<Utc>,
+    ) -> Approval {
         let hash = request_hash(tool, args);
         let approval = Approval {
             id: format!("ap_{}", &uuid::Uuid::new_v4().simple().to_string()[..12]),
@@ -100,6 +122,9 @@ impl ApprovalStore {
             created: now,
             expires: now + Duration::minutes(APPROVAL_TTL_MINUTES),
             state: State::Pending,
+            detail,
+            decided_at: None,
+            decided_via: None,
         };
         let mut inner = self.inner.lock().expect("approval store poisoned");
         inner
@@ -127,6 +152,17 @@ impl ApprovalStore {
         decision: Decision,
         now: DateTime<Utc>,
     ) -> Result<Approval, Denied> {
+        self.decide_via(id, decision, now, "client")
+    }
+
+    /// As [`decide`](Self::decide), recording where the person decided.
+    pub fn decide_via(
+        &self,
+        id: &str,
+        decision: Decision,
+        now: DateTime<Utc>,
+        via: &str,
+    ) -> Result<Approval, Denied> {
         let mut inner = self.inner.lock().expect("approval store poisoned");
         let a = inner
             .approvals
@@ -145,6 +181,8 @@ impl ApprovalStore {
             Decision::Decline => State::Declined,
             Decision::AllowOnce | Decision::AlwaysThisSession => State::Approved,
         };
+        a.decided_at = Some(now);
+        a.decided_via = Some(via.to_string());
         let out = a.clone();
         if decision == Decision::AlwaysThisSession {
             inner.standing.insert(out.hash.clone(), out.tool.clone());
@@ -211,6 +249,29 @@ impl ApprovalStore {
         v.sort_by_key(|a| a.created);
         v
     }
+
+    /// Approvals no longer pending, newest first, for the approvals page.
+    pub fn recent(&self, limit: usize, now: DateTime<Utc>) -> Vec<Approval> {
+        let mut inner = self.inner.lock().expect("approval store poisoned");
+        for a in inner.approvals.values_mut() {
+            if a.state == State::Pending && now > a.expires {
+                a.state = State::Expired;
+            }
+        }
+        let mut v: Vec<_> = inner
+            .approvals
+            .values()
+            .filter(|a| a.state != State::Pending)
+            .cloned()
+            .collect();
+        v.sort_by(|a, b| {
+            b.decided_at
+                .unwrap_or(b.expires)
+                .cmp(&a.decided_at.unwrap_or(a.expires))
+        });
+        v.truncate(limit);
+        v
+    }
 }
 
 #[cfg(test)]
@@ -275,6 +336,17 @@ mod tests {
         s.decide(&a.id, Decision::Decline, now).unwrap();
         assert!(s.consume(&a.id, "apply_edits", &args, now).is_err());
         assert!(s.decide(&a.id, Decision::AllowOnce, now).is_err());
+    }
+
+    #[test]
+    fn decisions_record_where_and_appear_in_recent() {
+        let (s, a, _, now) = setup();
+        assert!(s.recent(10, now).is_empty());
+        s.decide_via(&a.id, Decision::Decline, now, "page").unwrap();
+        let r = s.recent(10, now);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].decided_via.as_deref(), Some("page"));
+        assert!(s.pending(now).is_empty());
     }
 
     #[test]

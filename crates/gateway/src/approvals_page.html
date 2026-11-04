@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="columbus-csrf" content="{{CSRF}}">
+<title>Columbus approvals</title>
+<style nonce="{{NONCE}}">
+:root {
+  --bg: #f6f7f9; --card: #ffffff; --ink: #1c2128; --muted: #59636e; --line: #d8dee4;
+  --accent: #0b5cad; --accent-ink: #ffffff; --warn-bg: #fff8e6; --warn-line: #e3b341;
+  --ok: #1a7f37; --bad: #b42318; --chip: #eef1f4;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0d1117; --card: #161b22; --ink: #e6edf3; --muted: #9aa5b1; --line: #30363d;
+    --accent: #4493f8; --accent-ink: #0d1117; --warn-bg: #2b2111; --warn-line: #9e6a03;
+    --ok: #3fb950; --bad: #f85149; --chip: #21262d;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+header { border-bottom: 1px solid var(--line); background: var(--card); }
+.wrap { max-width: 46rem; margin: 0 auto; padding: 16px; }
+h1 { font-size: 1.15rem; margin: 0; }
+.sub { color: var(--muted); font-size: .85rem; }
+h2 { font-size: .8rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 24px 0 8px; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin: 0 0 12px; }
+.card.waiting { border-color: var(--warn-line); box-shadow: 0 0 0 3px var(--warn-bg); }
+.summary { font-size: 1.02rem; margin: 0 0 10px; }
+.meta { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 10px; }
+.chip { background: var(--chip); border-radius: 999px; padding: 2px 10px; font-size: .8rem; color: var(--muted); }
+dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 0 0 10px; font-size: .9rem; }
+dt { color: var(--muted); }
+dd { margin: 0; overflow-wrap: anywhere; }
+details { margin: 0 0 12px; font-size: .85rem; }
+summary { cursor: pointer; color: var(--accent); }
+pre { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 10px; overflow: auto; max-height: 18rem; margin: 8px 0 0; font-size: .8rem; }
+.actions { display: flex; flex-wrap: wrap; gap: 8px; }
+button { font: inherit; border-radius: 8px; padding: 8px 14px; cursor: pointer; border: 1px solid var(--line); background: var(--card); color: var(--ink); }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+button.danger { color: var(--bad); }
+button:disabled { opacity: .5; cursor: default; }
+.empty { color: var(--muted); padding: 8px 0; }
+.recent { display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: .88rem; }
+.recent:last-child { border-bottom: 0; }
+.state-approved, .state-used { color: var(--ok); }
+.state-declined, .state-expired { color: var(--bad); }
+#notice { display: none; background: var(--warn-bg); border: 1px solid var(--warn-line); border-radius: 8px; padding: 10px 12px; margin: 16px 0 0; }
+.hint { color: var(--muted); font-size: .8rem; margin: 8px 0 0; }
+</style>
+</head>
+<body>
+<header><div class="wrap">
+  <h1>Columbus approvals</h1>
+  <div class="sub">Requests from your AI assistant that need your decision. Session {{SESSION}}.</div>
+</div></header>
+<main class="wrap">
+  <div id="notice" role="status"></div>
+  <h2>Waiting for you</h2>
+  <div id="pending"><div class="empty">Nothing is waiting.</div></div>
+  <h2>Recent decisions</h2>
+  <div class="card" id="recent"><div class="empty">None yet.</div></div>
+</main>
+<script nonce="{{NONCE}}">
+(function () {
+  "use strict";
+  var csrf = document.querySelector('meta[name="columbus-csrf"]').getAttribute("content");
+  var busy = {};
+
+  function el(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined && text !== null) e.textContent = String(text);
+    return e;
+  }
+  function time(iso) {
+    try { return new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }); } catch (e) { return iso; }
+  }
+  function notice(text) {
+    var n = document.getElementById("notice");
+    n.textContent = text || "";
+    n.style.display = text ? "block" : "none";
+  }
+  function row(dl, label, value) {
+    if (value === undefined || value === null || value === "") return;
+    dl.appendChild(el("dt", null, label));
+    dl.appendChild(el("dd", null, Array.isArray(value) ? value.join(", ") : value));
+  }
+
+  function card(a) {
+    var c = el("div", "card waiting");
+    c.appendChild(el("p", "summary", a.summary));
+    var meta = el("div", "meta");
+    meta.appendChild(el("span", "chip", a.tool));
+    meta.appendChild(el("span", "chip", a.risk.replace("_", " ")));
+    meta.appendChild(el("span", "chip", "expires " + time(a.expires)));
+    c.appendChild(meta);
+    var d = a.detail || {};
+    var dl = el("dl");
+    row(dl, "Destination", d.destination);
+    if (Array.isArray(d.files)) {
+      row(dl, "Files", d.files.map(function (f) { return f.rows != null ? f.name + " (" + f.rows + " rows)" : f.name; }));
+    }
+    row(dl, "Data from", d.labels);
+    row(dl, "Flow rule", d.flow_rule);
+    if (dl.childNodes.length) c.appendChild(dl);
+    var det = el("details");
+    det.appendChild(el("summary", null, "Show the exact request"));
+    det.appendChild(el("pre", null, JSON.stringify(a.request, null, 2)));
+    c.appendChild(det);
+    var actions = el("div", "actions");
+    [["allow_once", "Allow once", "primary"], ["always_this_session", "Allow for this session", ""], ["decline", "Decline", "danger"]]
+      .forEach(function (b) {
+        var btn = el("button", b[2], b[1]);
+        btn.type = "button";
+        btn.disabled = !!busy[a.id];
+        btn.addEventListener("click", function () { decide(a.id, b[0]); });
+        actions.appendChild(btn);
+      });
+    c.appendChild(actions);
+    c.appendChild(el("p", "hint", "Allow for this session allows this exact request again until the assistant's session ends."));
+    return c;
+  }
+
+  function render(data) {
+    var p = document.getElementById("pending");
+    p.replaceChildren();
+    if (!data.pending.length) p.appendChild(el("div", "empty", "Nothing is waiting."));
+    data.pending.forEach(function (a) { p.appendChild(card(a)); });
+    document.title = data.pending.length ? "(" + data.pending.length + ") Columbus approvals" : "Columbus approvals";
+    var r = document.getElementById("recent");
+    r.replaceChildren();
+    if (!data.recent.length) r.appendChild(el("div", "empty", "None yet."));
+    data.recent.forEach(function (a) {
+      var line = el("div", "recent");
+      line.appendChild(el("span", null, a.summary));
+      var right = el("span", "state-" + a.state, a.state + (a.decided_via ? " (" + a.decided_via + ")" : "") + (a.decided_at ? " " + time(a.decided_at) : ""));
+      line.appendChild(right);
+      r.appendChild(line);
+    });
+  }
+
+  function refresh() {
+    fetch("/api/approvals", { credentials: "same-origin", cache: "no-store" })
+      .then(function (res) {
+        if (res.status === 403) { notice("This page is no longer connected. If a request is waiting, ask your assistant to check on it and Columbus will open a fresh page."); return null; }
+        return res.json();
+      })
+      .then(function (data) { if (data) { notice(""); render(data); } })
+      .catch(function () { notice("Columbus is not answering. It may have stopped when your assistant's session ended."); });
+  }
+
+  function decide(id, decision) {
+    busy[id] = true;
+    refresh();
+    fetch("/api/approvals/" + encodeURIComponent(id), {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json", "X-Columbus-CSRF": csrf },
+      body: JSON.stringify({ decision: decision })
+    })
+      .then(function (res) { return res.json().then(function (j) { return { ok: res.ok, body: j }; }); })
+      .then(function (r) { if (!r.ok) notice(r.body.error || "That did not work."); })
+      .catch(function () { notice("Columbus is not answering."); })
+      .then(function () { delete busy[id]; refresh(); });
+  }
+
+  refresh();
+  setInterval(refresh, 2000);
+})();
+</script>
+</body>
+</html>

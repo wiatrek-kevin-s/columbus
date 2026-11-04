@@ -46,3 +46,9 @@ flows:
 plugins:
   allow_personal: false          # only plugins installed under %ProgramData%
   allow: []                      # plugin ids allowed at all; empty = any installed plugin
+
+# Approvals. People are asked in their AI client when it can show prompts;
+# otherwise on Columbus's local approvals page in their browser.
+approvals:
+  page: true                     # false: clients without prompts cannot get approvals
+  wait_seconds: 45               # how long a call waits for the person on the page (max 300)

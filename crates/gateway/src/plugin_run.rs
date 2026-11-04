@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use chrono::Local;
 use columbus_broker::manifest::Risk as ToolRisk;
-use columbus_shared::approvals::{Decision, Risk};
+use columbus_shared::approvals::Risk;
 use columbus_shared::audit::AuditRecord;
 use columbus_shared::sqlcheck::{check_select, check_where, SqlDialect};
 use rmcp::model::ProgressNotificationParam;
@@ -19,10 +19,9 @@ use rmcp::{Json, RoleServer};
 use serde_json::{json, Value};
 
 use crate::plugins::{ParamSpec, Plugin};
-use crate::providers::{ask_person, Asked, OutputMeta, SavedFile};
+use crate::providers::{OutputMeta, SavedFile};
 use crate::server::{
-    client_name, new_prov_id, ApprovalNeeded, Check, Gateway, Output, RunToolResult, Severity,
-    SERVER_NAME,
+    client_name, new_prov_id, Check, Gateway, Output, RunToolResult, Severity, SERVER_NAME,
 };
 
 /// A dataset argument: `"conn:dataset"` or `{connection, dataset, where}`.
@@ -315,82 +314,48 @@ impl Gateway {
                 p.manifest.display_name(),
                 spec.risk
             );
-            let now = self.now();
-            if let Some(id) = &approval_id {
-                if let Err(e) = self.state.approvals.consume(id, "run_tool", request, now) {
-                    return Err(self.deny(ctx, rec, e));
+            let detail = json!({
+                "destination": p.manifest.display_name(),
+                "labels": labels.iter().map(|l| l.trim_start_matches("connection:").to_string()).collect::<Vec<_>>(),
+            });
+            let ask = crate::approval_flow::Ask {
+                tool: "run_tool",
+                label: &full,
+                request,
+                risk: Risk::Edit,
+                summary,
+                detail: Some(detail),
+                approval_id: approval_id.as_deref(),
+            };
+            match self.seek_approval(ctx, ask).await {
+                Ok(crate::approval_flow::Sought::Granted(id)) => rec.approval = Some(id),
+                Ok(crate::approval_flow::Sought::Declined(msg)) => {
+                    return Err(self.deny(ctx, rec, msg))
                 }
-                rec.approval = Some(id.clone());
-            } else if !self.state.approvals.standing_allows("run_tool", request) {
-                let ap = self.state.approvals.request(
-                    "run_tool",
-                    request,
-                    Risk::Edit,
-                    summary.clone(),
-                    now,
-                );
-                rec.approval = Some(ap.id.clone());
-                match ask_person(
-                    ctx,
-                    &format!("Columbus: allow {full}?"),
-                    &summary,
-                    Duration::from_secs(600),
-                )
-                .await
-                {
-                    Asked::Allowed { always } => {
-                        let d = if always {
-                            Decision::AlwaysThisSession
-                        } else {
-                            Decision::AllowOnce
-                        };
-                        if let Err(e) =
-                            self.state
-                                .approvals
-                                .decide(&ap.id, d, self.now())
-                                .and_then(|_| {
-                                    self.state.approvals.consume(
-                                        &ap.id,
-                                        "run_tool",
-                                        request,
-                                        self.now(),
-                                    )
-                                })
-                        {
-                            return Err(self.deny(ctx, rec, e));
-                        }
-                    }
-                    Asked::Declined => {
-                        return Err(self.deny(ctx, rec, format!("the person declined: {summary}")))
-                    }
-                    Asked::Unsupported => {
-                        self.audit(
-                            ctx,
-                            AuditRecord {
-                                decision: "approval_required".into(),
-                                ..rec
-                            },
-                        )?;
-                        return Ok(Json(Output {
-                            result: RunToolResult {
-                                provider: p.id().to_string(),
-                                tool: tool.to_string(),
-                                status: "approval_required".into(),
-                                approval: Some(ApprovalNeeded {
-                                    id: ap.id.clone(),
-                                    summary,
-                                    expires: ap.expires.with_timezone(&Local).to_rfc3339(),
-                                    next: "This client cannot show approval prompts. Once the person approves it, call run_tool again with approval_id.".into(),
-                                }),
-                                external: None,
-                                summary: None,
-                                saved: vec![],
-                            },
-                            checks: vec![],
-                            provenance: None,
-                        }));
-                    }
+                Ok(crate::approval_flow::Sought::Pending(needed)) => {
+                    rec.approval = Some(needed.id.clone());
+                    self.audit(
+                        ctx,
+                        AuditRecord {
+                            decision: "approval_required".into(),
+                            ..rec
+                        },
+                    )?;
+                    return Ok(Json(Output {
+                        result: RunToolResult {
+                            provider: p.id().to_string(),
+                            tool: tool.to_string(),
+                            status: "approval_required".into(),
+                            approval: Some(needed),
+                            external: None,
+                            summary: None,
+                            saved: vec![],
+                        },
+                        checks: vec![],
+                        provenance: None,
+                    }));
                 }
+                Err(e) => return Err(self.deny(ctx, rec, e)),
             }
         }
 
