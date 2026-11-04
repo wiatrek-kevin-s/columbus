@@ -252,6 +252,10 @@ def _pg_connect(conn: dict[str, Any], timeout_s: float):
     if not _SEARCH_PATH_OK.match(search_path):
         raise WorkerError(INVALID_PARAMS, "search_path must be a comma-separated list of schema names")
     ms = max(1, int(timeout_s * 1000))
+    # pg_catalog first, always: otherwise a function, type or operator of the
+    # same name in a configured schema would be found before the built-in
+    # one, and the server's checks are about the built-in ones.
+    search_path = ",".join(["pg_catalog"] + [p for p in search_path.split(",") if p and p != "pg_catalog"])
     # Read-only at the server, for every transaction in this session.
     options = (
         f"-c default_transaction_read_only=on -c statement_timeout={ms} "
@@ -452,8 +456,36 @@ def list_datasets(params: dict[str, Any]) -> dict[str, Any]:
     if kind in SQLITE_KINDS:
         return {"datasets": _sqlite_list(conn, timeout_s)}
     if kind in PG_KINDS:
-        return {"datasets": _pg_list(conn, timeout_s)}
+        out = {"datasets": _pg_list(conn, timeout_s)}
+        if params.get("extension_functions"):
+            out["extension_functions"] = _pg_extension_functions(conn, timeout_s)
+        return out
     raise WorkerError(UNSUPPORTED, f"list_datasets does not support {conn['kind']!r} yet")
+
+
+POSTGIS_EXTENSIONS = ("postgis", "postgis_raster", "postgis_sfcgal", "postgis_topology")
+
+
+def _pg_extension_functions(conn: dict[str, Any], timeout_s: float) -> dict[str, str]:
+    """Functions the PostGIS extensions installed (upper-case name -> schema),
+    from pg_depend: only these may be called as spatial functions in free SQL,
+    not whatever else in the database happens to be named st_..."""
+    db, scrub = _pg_connect(conn, timeout_s)
+    try:
+        with db.cursor() as cur:
+            cur.execute(
+                "SELECT DISTINCT upper(p.proname), n.nspname FROM pg_depend d "
+                "JOIN pg_extension e ON d.refclassid = 'pg_extension'::regclass AND d.refobjid = e.oid "
+                "JOIN pg_proc p ON d.classid = 'pg_proc'::regclass AND d.objid = p.oid "
+                "JOIN pg_namespace n ON n.oid = p.pronamespace "
+                "WHERE e.extname = ANY(%s)",
+                (list(POSTGIS_EXTENSIONS),),
+            )
+            return {name: schema for name, schema in cur.fetchall()}
+    except Exception as e:  # noqa: BLE001
+        raise WorkerError(ENGINE_ERROR, scrub(f"could not list PostGIS functions: {e}")) from None
+    finally:
+        db.close()
 
 
 def _fetch(conn: dict[str, Any], sql: str, max_rows: int, timeout_s: float, keep_factory=None):
@@ -634,11 +666,17 @@ def _refused(e) -> WorkerError:
 
 
 def _find(entries, dataset: str):
-    want = dataset.replace('"', "").replace("[", "").replace("]", "").lower()
+    """The dataset a GIS tool names: an exact match, else the one entry that
+    matches without regard to case. Two entries differing only by case
+    (roads."County" and roads.county) are refused, not guessed."""
+    want = dataset.replace('"', "").replace("[", "").replace("]", "")
     for e in entries:
-        if e["name"].lower() == want:
+        if e["name"] == want:
             return e
-    return None
+    folded = [e for e in entries if e["name"].lower() == want.lower()]
+    if len(folded) > 1:
+        raise WorkerError(INVALID_PARAMS, f"{dataset!r} matches more than one dataset that differ only by case; use sql_select with a quoted name")
+    return folded[0] if folded else None
 
 
 def describe_dataset(params: dict[str, Any]) -> dict[str, Any]:

@@ -411,10 +411,7 @@ pub struct State {
     /// Every column of every table, per connection, for keeping hidden
     /// fields out of queries (see sqlcheck::ApplyFilters). Loaded once.
     pub columns: std::sync::Mutex<
-        std::collections::HashMap<
-            String,
-            (std::time::Instant, Vec<columbus_shared::sqlcheck::Relation>),
-        >,
+        std::collections::HashMap<String, (std::time::Instant, columbus_shared::sqlcheck::Catalog)>,
     >,
     pub flow: columbus_flow::FlowState,
     pub outputs: crate::providers::Outputs,
@@ -659,22 +656,23 @@ impl Gateway {
         ENGINE_READY.iter().any(|k| k.eq_ignore_ascii_case(kind))
     }
 
-    /// Every relation on a connection with its exact name parts and all
-    /// its columns, for keeping hidden fields out of queries. Needed only
-    /// when the policy hides fields (empty otherwise); refreshed after
-    /// COLUMNS_TTL so a changed table is seen.
+    /// What the server knows of a connection's database for checking free
+    /// SQL: every relation with its exact name and all its columns, and the
+    /// functions the PostGIS extensions installed. Refreshed after
+    /// COLUMNS_TTL so a changed table is seen. Connections whose engine is
+    /// not ready get an empty catalog (their queries are refused anyway).
     pub(crate) async fn table_columns(
         &self,
         access: &columbus_shared::policy::EffectiveAccess,
         conn: &Connection,
-    ) -> Result<Vec<columbus_shared::sqlcheck::Relation>, String> {
-        use columbus_shared::sqlcheck::Relation;
-        if access.hide_fields.is_empty() {
-            return Ok(Vec::new());
+    ) -> Result<columbus_shared::sqlcheck::Catalog, String> {
+        use columbus_shared::sqlcheck::{Catalog, Relation};
+        if !Self::engine_ready(&conn.kind) {
+            return Ok(Catalog::default());
         }
-        if let Some((at, rels)) = self.state.columns.lock().expect("columns").get(&conn.id) {
+        if let Some((at, cat)) = self.state.columns.lock().expect("columns").get(&conn.id) {
             if at.elapsed() < COLUMNS_TTL {
-                return Ok(rels.clone());
+                return Ok(cat.clone());
             }
         }
         let handle = self.handle(conn)?;
@@ -684,12 +682,12 @@ impl Gateway {
             .worker
             .core(
                 "list_datasets",
-                json!({"connection": handle, "timeout_s": timeout}),
+                json!({"connection": handle, "timeout_s": timeout, "extension_functions": true}),
                 Duration::from_secs(timeout + 10),
             )
             .await
             .map_err(Self::worker_error)?;
-        let rels: Vec<Relation> = reply
+        let relations: Vec<Relation> = reply
             .get("datasets")
             .and_then(Value::as_array)
             .into_iter()
@@ -708,12 +706,26 @@ impl Gateway {
                 })
             })
             .collect();
+        let extension_functions = reply
+            .get("extension_functions")
+            .and_then(Value::as_object)
+            .map(|m| {
+                m.iter()
+                    .filter_map(|(k, v)| Some((k.to_ascii_uppercase(), v.as_str()?.to_string())))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let cat = Catalog {
+            resolve: true,
+            relations,
+            extension_functions,
+        };
         self.state
             .columns
             .lock()
             .expect("columns")
-            .insert(conn.id.clone(), (std::time::Instant::now(), rels.clone()));
-        Ok(rels)
+            .insert(conn.id.clone(), (std::time::Instant::now(), cat.clone()));
+        Ok(cat)
     }
 
     /// The short-lived handle a worker gets for one request: where to

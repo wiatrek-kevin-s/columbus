@@ -43,6 +43,14 @@ INSERT INTO hr.employees VALUES (1, '123-45-6789');
 CREATE FUNCTION roads.log_visit() RETURNS integer LANGUAGE sql VOLATILE AS
 $$ INSERT INTO roads.roadway_audit (who) VALUES ('visit') RETURNING id $$;
 
+-- A function in public named like a PostGIS one, that reads a hidden field
+-- of every row (security definer, as a helper an administrator might add).
+-- Free SQL must not be able to call it: only functions the PostGIS
+-- extension installed pass as spatial functions.
+CREATE OR REPLACE FUNCTION public.st_owner_summary() RETURNS text LANGUAGE sql STABLE SECURITY DEFINER AS
+$$ SELECT string_agg(owner_name, ',') FROM roads.roadway_inventory $$;
+GRANT EXECUTE ON FUNCTION public.st_owner_summary() TO PUBLIC;
+
 ANALYZE roads.roadway_inventory;
 
 CREATE ROLE columbus_ro LOGIN PASSWORD 'columbus_ro_test';

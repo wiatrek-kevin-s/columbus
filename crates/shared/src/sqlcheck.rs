@@ -254,29 +254,85 @@ const SELECT_FUNCTIONS: &[&str] = &[
     // GeoPackage helpers GDAL registers
     "GPKGISASSIGNGEOMETRYCOLUMN",
     "ST_ISEMPTY",
+    // arrays and sets (set-returning ones only in the select list: FROM
+    // accepts plain tables only)
+    "STRING_TO_ARRAY",
+    "ARRAY_TO_STRING",
+    "ARRAY_LENGTH",
+    "REGEXP_SPLIT_TO_ARRAY",
+    "UNNEST",
+    "GENERATE_SERIES",
+    "CARDINALITY",
+    // more JSON
+    "JSON_EXTRACT_PATH_TEXT",
+    "JSONB_EXTRACT_PATH_TEXT",
+    "JSON_ARRAY_LENGTH",
+    "JSONB_ARRAY_LENGTH",
+    "JSON_ARRAY_ELEMENTS",
+    "JSONB_ARRAY_ELEMENTS",
+    "JSONB_PRETTY",
+    // more text, dates and statistics
+    "FORMAT",
+    "CHR",
+    "ASCII",
+    "RANDOM",
+    "MAKE_INTERVAL",
+    "LOCALTIMESTAMP",
+    "REGR_SLOPE",
+    "REGR_INTERCEPT",
+    "REGR_R2",
+    "REGR_COUNT",
+    "REGR_AVGX",
+    "REGR_AVGY",
+    "REGR_SXX",
+    "REGR_SYY",
+    "REGR_SXY",
 ];
+
+/// PostGIS functions not named `ST_*`. Like `ST_*`, on PostgreSQL they are
+/// callable only when the PostGIS extension provides them.
+const SPATIAL_OTHER: &[&str] = &["GEOMETRY", "GEOGRAPHY", "BOX2D", "BOX3D", "GEOMETRYTYPE"];
+
+/// Types a cast may name beyond the built-in ones the parser knows.
+const CAST_TYPES: &[&str] = &["GEOMETRY", "GEOGRAPHY", "BOX2D", "BOX3D", "REGCLASS"];
 
 /// `ST_*` functions refused: they read a table by name (and so outside the
 /// row filter), or they are PostGIS internals.
 const ST_DENIED: &[&str] = &["ST_ESTIMATEDEXTENT", "ST_FIND_EXTENT", "ST_FINDEXTENT"];
 
-fn select_function_allowed(name: &str) -> bool {
-    // Schema-qualified names are allowed only in the built-in schemas: a
-    // function of the database's own (roads.log_visit) can do anything.
+/// May free SQL call this function (upper-case, possibly schema-qualified)?
+///
+/// On PostgreSQL a spatial function must be one the PostGIS extension
+/// installed ([`Catalog::extension_functions`]): any function in `public`
+/// can be named `st_…`, and one the database owner wrote can read anything.
+/// SQLite databases cannot define functions, so there the name suffices.
+fn select_function_allowed(name: &str, dialect: SqlDialect, catalog: &Catalog) -> bool {
     let (schema, bare) = match name.rsplit_once('.') {
         Some((s, b)) => (Some(s), b),
         None => (None, name),
     };
-    if schema.is_some_and(|s| !matches!(s, "PUBLIC" | "PG_CATALOG")) {
+    if bare.starts_with('_') || bare.starts_with("POSTGIS") {
         return false;
     }
-    if bare.starts_with("_") || bare.starts_with("POSTGIS") {
-        return false;
+    let spatial = bare.starts_with("ST_") || SPATIAL_OTHER.contains(&bare);
+    if spatial {
+        if ST_DENIED.contains(&bare) {
+            return false;
+        }
+        return match dialect {
+            SqlDialect::Postgres | SqlDialect::DuckDb => {
+                match catalog.extension_functions.get(bare) {
+                    Some(ext_schema) => schema.is_none_or(|s| s.eq_ignore_ascii_case(ext_schema)),
+                    None => false,
+                }
+            }
+            _ => schema.is_none(),
+        };
     }
-    if bare.starts_with("ST_") {
-        return !ST_DENIED.contains(&bare);
-    }
-    SELECT_FUNCTIONS.contains(&bare)
+    // Ordinary functions: unqualified (pg_catalog is searched first) or
+    // explicitly pg_catalog. A function of the database's own
+    // (roads.log_visit) can do anything.
+    schema.is_none_or(|s| s == "PG_CATALOG") && SELECT_FUNCTIONS.contains(&bare)
 }
 
 /// Function name prefixes refused anywhere in free SQL: these reach the file
@@ -487,11 +543,32 @@ fn check_set_expr(body: &SetExpr) -> Result<(), Denied> {
 fn check_tables_and_functions(
     query: &Query,
     access: &EffectiveAccess,
+    dialect: SqlDialect,
+    catalog: &Catalog,
 ) -> Result<Vec<String>, Denied> {
     let mut tables = Vec::new();
     let mut problem: Option<Denied> = None;
     let _ = visit_relations(query, |rel| {
-        let name = normalize_identifier(&rel.to_string());
+        // Every rule applies to the table the database will read, never to
+        // the caller's spelling of it (a bare name that resolves to a denied
+        // schema.table must be denied).
+        let name = if catalog.resolve {
+            match resolve(rel, &catalog.relations, dialect) {
+                Ok(r) => r.parts.join("."),
+                // Not a table the connection lists (system catalogs, other
+                // schemas, tables the login cannot see): not allowed.
+                Err(e) if e.starts_with("cannot check") => {
+                    problem = Some(Denied::Dataset(normalize_identifier(&rel.to_string())));
+                    return ControlFlow::Break(());
+                }
+                Err(e) => {
+                    problem = Some(Denied::Query(e));
+                    return ControlFlow::Break(());
+                }
+            }
+        } else {
+            normalize_identifier(&rel.to_string())
+        };
         if !access.dataset_allowed(&name) {
             problem = Some(Denied::Dataset(name));
             return ControlFlow::Break(());
@@ -543,13 +620,44 @@ fn check_tables_and_functions(
             if DENIED_FUNCTION_PREFIXES
                 .iter()
                 .any(|p| name.starts_with(p) || bare.starts_with(p))
-                || !select_function_allowed(&name)
+                || !select_function_allowed(&name, dialect, catalog)
             {
                 problem = Some(Denied::Query(format!(
-                    "function {name} is not allowed (ordinary scalar, aggregate and window functions and ST_* spatial functions are)"
+                    "function {name} is not allowed (ordinary scalar, aggregate and window functions and PostGIS ST_* functions are)"
                 )));
                 return ControlFlow::Break(());
             }
+        }
+        // Operators and casts a database can define run its own code.
+        match e {
+            Expr::BinaryOp {
+                op:
+                    sqlparser::ast::BinaryOperator::PGCustomBinaryOperator(_)
+                    | sqlparser::ast::BinaryOperator::Custom(_),
+                ..
+            } => {
+                problem = Some(Denied::Query(format!(
+                    "operator in `{e}` is not allowed; use the standard operators"
+                )));
+                return ControlFlow::Break(());
+            }
+            Expr::Cast {
+                data_type: sqlparser::ast::DataType::Custom(t, _),
+                ..
+            } => {
+                let last =
+                    t.0.last()
+                        .and_then(|p| p.as_ident())
+                        .map(|i| i.value.to_ascii_uppercase())
+                        .unwrap_or_default();
+                if t.0.len() > 1 || !CAST_TYPES.contains(&last.as_str()) {
+                    problem = Some(Denied::Query(format!(
+                        "cast to {t} is not allowed; cast to a built-in type"
+                    )));
+                    return ControlFlow::Break(());
+                }
+            }
+            _ => {}
         }
         ControlFlow::Continue(())
     });
@@ -600,11 +708,27 @@ pub struct Relation {
     pub columns: Vec<String>,
 }
 
-/// The relations a query may read when the policy hides fields.
-pub type Relations<'a> = &'a [Relation];
+/// What the server knows of a connection's database, for checking free SQL.
+#[derive(Debug, Clone, Default)]
+pub struct Catalog {
+    /// Resolve every table name to one of `relations` and check and read it
+    /// by that relation's exact name. On whenever the server could list the
+    /// connection; off only where it cannot (then, if the policy hides
+    /// fields, any query on a table is refused).
+    pub resolve: bool,
+    pub relations: Vec<Relation>,
+    /// Functions installed by the PostGIS extensions, by upper-case name,
+    /// with the schema they live in.
+    pub extension_functions: std::collections::BTreeMap<String, String>,
+}
 
-/// No relation information: fine when the policy hides no fields.
-pub const NO_RELATIONS: Relations<'static> = &[];
+/// No catalog: table names are taken as written. For unit tests and
+/// connections the server cannot list.
+pub static NO_CATALOG: Catalog = Catalog {
+    resolve: false,
+    relations: Vec::new(),
+    extension_functions: std::collections::BTreeMap::new(),
+};
 
 /// Does a name part as the query writes it denote `listed`, by the
 /// dialect's rules? Quoted parts are exact; unquoted fold to lower case on
@@ -627,7 +751,7 @@ fn part_matches(written: &Ident, listed: &str, dialect: SqlDialect) -> bool {
 /// will read.
 fn resolve<'r>(
     name: &ObjectName,
-    relations: Relations<'r>,
+    relations: &'r [Relation],
     dialect: SqlDialect,
 ) -> Result<&'r Relation, String> {
     let mut written = Vec::new();
@@ -658,6 +782,13 @@ fn resolve<'r>(
         _ => Err(format!(
             "{name} could mean more than one table; qualify it with its schema"
         )),
+    }
+}
+
+fn quote_char(dialect: SqlDialect) -> char {
+    match dialect {
+        SqlDialect::MsSql => '[',
+        _ => '"',
     }
 }
 
@@ -692,7 +823,7 @@ fn barrier(dialect: SqlDialect) -> &'static str {
 struct ApplyFilters<'a> {
     access: &'a EffectiveAccess,
     dialect: SqlDialect,
-    relations: Relations<'a>,
+    catalog: &'a Catalog,
     hidden: Vec<String>,
     error: Option<Denied>,
 }
@@ -700,26 +831,66 @@ struct ApplyFilters<'a> {
 impl VisitorMut for ApplyFilters<'_> {
     type Break = ();
 
+    // Call PostGIS functions by their extension's schema, so a function of
+    // the same name earlier on the search path is never the one that runs.
+    fn post_visit_expr(&mut self, e: &mut Expr) -> ControlFlow<()> {
+        if !matches!(self.dialect, SqlDialect::Postgres | SqlDialect::DuckDb) {
+            return ControlFlow::Continue(());
+        }
+        if let Expr::Function(f) = e {
+            let upper = function_name(&f.name);
+            let bare = upper.rsplit('.').next().unwrap_or(&upper).to_string();
+            if let Some(schema) = self.catalog.extension_functions.get(&bare) {
+                f.name = ObjectName::from(vec![
+                    Ident::with_quote('"', schema.clone()),
+                    Ident::new(bare.to_ascii_lowercase()),
+                ]);
+            }
+        }
+        ControlFlow::Continue(())
+    }
+
     // Post-visit, so the derived table we insert is not visited again.
     fn post_visit_table_factor(&mut self, tf: &mut TableFactor) -> ControlFlow<()> {
         let TableFactor::Table { name, alias, .. } = tf else {
             return ControlFlow::Continue(());
         };
-        let key = normalize_identifier(&name.to_string());
-        let filters = self.access.filters_for(&key);
-        let mut select = "*".to_string();
-        let mut source = name.to_string();
-        if !self.access.hide_fields.is_empty() {
-            // Read the one listed relation the name denotes, by its exact
-            // quoted name, and only its visible columns, always listed by
-            // name: a column added since the list was taken is left out
-            // rather than let in by `*`.
-            let rel = match resolve(name, self.relations, self.dialect) {
-                Ok(r) => r,
+        // The relation the database will read: resolved against the
+        // catalog and named in full, so search_path or case cannot swap it.
+        let rel = if self.catalog.resolve {
+            match resolve(name, &self.catalog.relations, self.dialect) {
+                Ok(r) => Some(r),
                 Err(e) => {
                     self.error = Some(Denied::Query(e));
                     return ControlFlow::Break(());
                 }
+            }
+        } else {
+            None
+        };
+        let key = match rel {
+            Some(r) => r.parts.join("."),
+            None => normalize_identifier(&name.to_string()),
+        };
+        let filters = self.access.filters_for(&key);
+        let mut select = "*".to_string();
+        let source = match rel {
+            Some(r) => r
+                .parts
+                .iter()
+                .map(|p| quote_ident(p, self.dialect))
+                .collect::<Vec<_>>()
+                .join("."),
+            None => name.to_string(),
+        };
+        if !self.access.hide_fields.is_empty() {
+            // Only the visible columns, always listed by name: a column added
+            // since the list was taken is left out rather than let in by `*`.
+            let Some(rel) = rel else {
+                self.error = Some(Denied::Query(format!(
+                    "cannot check the fields of {key}; name it as list_datasets shows it"
+                )));
+                return ControlFlow::Break(());
             };
             let visible: Vec<&String> = rel
                 .columns
@@ -742,14 +913,17 @@ impl VisitorMut for ApplyFilters<'_> {
                 .map(|c| quote_ident(c, self.dialect))
                 .collect::<Vec<_>>()
                 .join(", ");
-            source = rel
-                .parts
-                .iter()
-                .map(|p| quote_ident(p, self.dialect))
-                .collect::<Vec<_>>()
-                .join(".");
         }
         if filters.is_empty() && select == "*" {
+            if let Some(r) = rel {
+                // Nothing to filter: just read it by its exact name.
+                *name = ObjectName::from(
+                    r.parts
+                        .iter()
+                        .map(|p| Ident::with_quote(quote_char(self.dialect), p.clone()))
+                        .collect::<Vec<_>>(),
+                );
+            }
             return ControlFlow::Continue(());
         }
         let mut checked = Vec::new();
@@ -803,15 +977,16 @@ impl VisitorMut for ApplyFilters<'_> {
 
 /// Check free SQL against the effective access and rewrite it.
 ///
-/// `relations` lists the tables and their columns; it is needed whenever
-/// the policy hides fields (pass [`NO_RELATIONS`] otherwise).
+/// `catalog` is what the server listed of the database: the tables (with
+/// their columns) and the PostGIS functions. Pass [`NO_CATALOG`] only where
+/// the connection cannot be listed.
 pub fn check_select(
     sql: &str,
     access: &EffectiveAccess,
     max_rows: u64,
-    relations: Relations<'_>,
+    catalog: &Catalog,
 ) -> Result<CheckedQuery, Denied> {
-    check_select_limited(sql, access, max_rows, true, relations)
+    check_select_limited(sql, access, max_rows, true, catalog)
 }
 
 /// As [`check_select`], but without the SQL row limit, for queries whose
@@ -822,9 +997,9 @@ pub fn check_select_unlimited(
     sql: &str,
     access: &EffectiveAccess,
     max_rows: u64,
-    relations: Relations<'_>,
+    catalog: &Catalog,
 ) -> Result<CheckedQuery, Denied> {
-    check_select_limited(sql, access, max_rows, false, relations)
+    check_select_limited(sql, access, max_rows, false, catalog)
 }
 
 fn check_select_limited(
@@ -832,17 +1007,17 @@ fn check_select_limited(
     access: &EffectiveAccess,
     max_rows: u64,
     limit: bool,
-    relations: Relations<'_>,
+    catalog: &Catalog,
 ) -> Result<CheckedQuery, Denied> {
     let dialect = SqlDialect::for_connection_type(&access.kind);
     let mut query = single_select(sql, dialect)?;
-    let tables = check_tables_and_functions(&query, access)?;
+    let tables = check_tables_and_functions(&query, access, dialect, catalog)?;
     check_hidden_references(&query, access)?;
 
     let mut apply = ApplyFilters {
         access,
         dialect,
-        relations,
+        catalog,
         hidden: Vec::new(),
         error: None,
     };
@@ -915,6 +1090,29 @@ datasets:
         a
     }
 
+    fn cat() -> Catalog {
+        let mut extension_functions = std::collections::BTreeMap::new();
+        for f in [
+            "ST_ASGEOJSON",
+            "ST_TRANSFORM",
+            "ST_LENGTH",
+            "ST_AREA",
+            "GEOMETRY",
+        ] {
+            extension_functions.insert(f.to_string(), "public".to_string());
+        }
+        let mut relations = rels();
+        relations.push(Relation {
+            parts: vec!["roads".into(), "control_section".into()],
+            columns: ["csj", "district_nbr"].map(String::from).to_vec(),
+        });
+        Catalog {
+            resolve: true,
+            relations,
+            extension_functions,
+        }
+    }
+
     fn rels() -> Vec<Relation> {
         vec![
             Relation {
@@ -956,7 +1154,7 @@ datasets:
             "SELECT route_id FROM roads.roadway_inventory ORDER BY owner_name",
             "SELECT x FROM (SELECT owner_name AS x FROM roads.roadway_inventory) AS t",
         ] {
-            let e = check_select(sql, &a, 10, &rels()).unwrap_err().to_string();
+            let e = check_select(sql, &a, 10, &cat()).unwrap_err().to_string();
             assert!(e.contains("hidden"), "{sql}: {e}");
         }
     }
@@ -978,26 +1176,22 @@ datasets:
             "SELECT row_to_json(r.*) FROM roads.roadway_inventory r",
             "SELECT * FROM roads.roadway_inventory ORDER BY 3",
         ] {
-            let q = check_select(sql, &a, 10, &rels()).unwrap_or_else(|e| panic!("{sql}: {e}"));
+            let q = check_select(sql, &a, 10, &cat()).unwrap_or_else(|e| panic!("{sql}: {e}"));
             let inner = "(SELECT \"fid\", \"route_id\", \"district_nbr\", \"geom\" FROM \"roads\".\"roadway_inventory\" WHERE (DISTRICT_NBR = 14) OFFSET 0)";
             assert!(q.sql.contains(inner), "{sql}\n=> {}", q.sql);
             assert!(!q.sql.contains("FROM roads.roadway_inventory AS") && !q.sql.contains("FROM roads.roadway_inventory p"), "every reference wrapped: {}", q.sql);
         }
         // A table whose columns are unknown cannot be checked, so it is refused.
-        assert!(check_select(
-            "SELECT * FROM roads.roadway_inventory",
-            &a,
-            10,
-            NO_RELATIONS
-        )
-        .is_err());
+        assert!(
+            check_select("SELECT * FROM roads.roadway_inventory", &a, 10, &NO_CATALOG).is_err()
+        );
         // Without hidden fields no column list is needed.
         let plain = access("postgis", None);
         let q = check_select(
             "SELECT * FROM roads.roadway_inventory",
             &plain,
             10,
-            NO_RELATIONS,
+            &NO_CATALOG,
         )
         .unwrap();
         assert!(!q.sql.contains("OFFSET 0"), "{}", q.sql);
@@ -1008,7 +1202,7 @@ datasets:
             "SELECT route_id FROM roads.roadway_inventory",
             &b,
             10,
-            &rels()
+            &cat()
         )
         .is_ok());
     }
@@ -1016,7 +1210,7 @@ datasets:
     #[test]
     fn names_resolve_to_exactly_one_listed_table() {
         let a = hiding("postgis");
-        let r = rels();
+        let r = cat();
         // Quoted mixed case is its own table, with its own hidden column.
         let q = check_select("SELECT * FROM roads.\"County\"", &a, 10, &r).unwrap();
         assert!(
@@ -1068,7 +1262,7 @@ datasets:
             "SELECT _postgis_stats('roads.roadway_inventory', 'geom') FROM roads.roadway_inventory",
             "SELECT postgis_full_version() FROM roads.roadway_inventory",
         ] {
-            let e = check_select(sql, &a, 10, NO_RELATIONS).unwrap_err().to_string();
+            let e = check_select(sql, &a, 10, &NO_CATALOG).unwrap_err().to_string();
             assert!(e.contains("not allowed"), "{sql}: {e}");
         }
         for sql in [
@@ -1077,9 +1271,91 @@ datasets:
             "SELECT ROUTE_ID, ROW_NUMBER() OVER (PARTITION BY DISTRICT_NBR ORDER BY ROUTE_ID) FROM roads.roadway_inventory",
             "SELECT UPPER(TRIM(ROUTE_ID)), COALESCE(LPAD(CSJ, 9, '0'), '') FROM roads.roadway_inventory",
             "SELECT public.ST_Area(GEOM) FROM roads.roadway_inventory",
+            "SELECT ROUTE_ID, GEOM::geography FROM roads.roadway_inventory",
+            "SELECT array_to_string(string_to_array(ROUTE_ID, '-'), ' ') FROM roads.roadway_inventory",
         ] {
-            assert!(check_select(sql, &a, 10, NO_RELATIONS).is_ok(), "{sql}");
+            let q = check_select(sql, &a, 10, &cat()).unwrap_or_else(|e| panic!("{sql}: {e}"));
+            // PostGIS functions are called by the extension's schema.
+            if sql.contains("ST_") {
+                assert!(q.sql.contains("\"public\".st_"), "{}", q.sql);
+            }
         }
+        // ST_ names the PostGIS extension did not install are refused: a
+        // function in public can be called anything.
+        let e = check_select(
+            "SELECT st_helper_summary() FROM roads.roadway_inventory",
+            &a,
+            10,
+            &cat(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(e.contains("not allowed"), "{e}");
+        assert!(check_select(
+            "SELECT ST_Area(GEOM) FROM roads.roadway_inventory",
+            &a,
+            10,
+            &NO_CATALOG
+        )
+        .is_err());
+        assert!(check_select(
+            "SELECT roads.ST_Area(GEOM) FROM roads.roadway_inventory",
+            &a,
+            10,
+            &cat()
+        )
+        .is_err());
+        // Operators and casts the database could have defined.
+        for sql in [
+            "SELECT ROUTE_ID FROM roads.roadway_inventory WHERE ROUTE_ID ~~~ 'x'",
+            "SELECT CAST(ROUTE_ID AS roads.secret_domain) FROM roads.roadway_inventory",
+            "SELECT CAST(ROUTE_ID AS my_type) FROM roads.roadway_inventory",
+        ] {
+            assert!(check_select(sql, &a, 10, &cat()).is_err(), "{sql}");
+        }
+    }
+
+    #[test]
+    fn rules_apply_to_the_table_read_not_its_spelling() {
+        // Allow everything, deny one table: its bare name must be denied too.
+        let mut conn: Connection = serde_yaml::from_str(
+            "id: x\ntype: postgis\ndatasets:\n  allow: [\"*\"]\n  deny: [\"roads.secret\"]\n",
+        )
+        .unwrap();
+        conn.kind = "postgis".into();
+        let org = OrgPolicy {
+            connection_types: vec!["postgis".into()],
+            ..OrgPolicy::default()
+        };
+        let a =
+            EffectiveAccess::resolve(&org, &conn, &ProjectScope::default(), Utc::now()).unwrap();
+        let c = Catalog {
+            resolve: true,
+            relations: vec![
+                Relation {
+                    parts: vec!["roads".into(), "secret".into()],
+                    columns: vec!["id".into()],
+                },
+                Relation {
+                    parts: vec!["roads".into(), "open".into()],
+                    columns: vec!["id".into()],
+                },
+            ],
+            ..Catalog::default()
+        };
+        for sql in [
+            "SELECT * FROM secret",
+            "SELECT * FROM ROADS.SECRET",
+            "SELECT * FROM \"roads\".\"secret\"",
+        ] {
+            assert!(
+                matches!(check_select(sql, &a, 10, &c), Err(Denied::Dataset(_))),
+                "{sql}"
+            );
+        }
+        let q = check_select("SELECT * FROM open", &a, 10, &c).unwrap();
+        assert!(q.sql.contains("FROM \"roads\".\"open\""), "{}", q.sql);
+        assert_eq!(q.tables, vec!["roads.open"]);
     }
 
     #[test]
@@ -1088,7 +1364,7 @@ datasets:
             "SELECT * FROM ROADS.ROADWAY_INVENTORY WHERE ROUTE_ID = 'x'",
             &access("postgis", Some("DISTRICT_NBR = 14")),
             10,
-            NO_RELATIONS,
+            &NO_CATALOG,
         )
         .unwrap();
         assert!(
@@ -1100,7 +1376,7 @@ datasets:
             "SELECT * FROM main.roads",
             &access("gpkg", Some("DISTRICT_NBR = 14")),
             10,
-            NO_RELATIONS,
+            &NO_CATALOG,
         )
         .unwrap();
         assert!(lite.sql.contains("LIMIT -1 OFFSET 0)"), "{}", lite.sql);
@@ -1138,7 +1414,7 @@ datasets:
             "SELECT r.ROUTE_ID, c.CSJ FROM ROADS.ROADWAY_INVENTORY r JOIN ROADS.CONTROL_SECTION c ON r.CSJ = c.CSJ",
             &a,
             500,
-            NO_RELATIONS,
+            &NO_CATALOG,
         )
         .unwrap();
         assert_eq!(
@@ -1172,7 +1448,7 @@ datasets:
             "SELECT ROADWAY_INVENTORY.ROUTE_ID FROM ROADS.ROADWAY_INVENTORY",
             &a,
             10,
-            NO_RELATIONS,
+            &NO_CATALOG,
         )
         .unwrap();
         assert!(q.sql.contains(") AS ROADWAY_INVENTORY"), "{}", q.sql);
@@ -1185,7 +1461,7 @@ datasets:
             "SELECT * FROM ROADS.ROADWAY_INVENTORY WHERE CSJ IN (SELECT CSJ FROM ROADS.CONTROL_SECTION)",
             &a,
             10,
-            NO_RELATIONS,
+            &NO_CATALOG,
         )
         .unwrap();
         assert_eq!(q.sql.matches("DISTRICT_NBR = 14").count(), 2, "{}", q.sql);
@@ -1193,7 +1469,7 @@ datasets:
             "SELECT * FROM ROADS.ROADWAY_INVENTORY WHERE CSJ IN (SELECT CSJ FROM ROADS.ROADWAY_AUDIT)",
             &a,
             10,
-            NO_RELATIONS,
+            &NO_CATALOG,
         );
         assert!(matches!(err, Err(Denied::Dataset(_))));
     }
@@ -1214,7 +1490,7 @@ datasets:
             "SELECT 1",
             "this is not sql",
         ] {
-            assert!(check_select(bad, &a, 10, NO_RELATIONS).is_err(), "{bad}");
+            assert!(check_select(bad, &a, 10, &NO_CATALOG).is_err(), "{bad}");
         }
     }
 
@@ -1225,15 +1501,15 @@ datasets:
             "SELECT * FROM \"ROADS\".\"ROADWAY_AUDIT\"",
             &a,
             10,
-            NO_RELATIONS
+            &NO_CATALOG
         )
         .is_err());
-        assert!(check_select("SELECT * FROM \"HR\".\"EMPLOYEES\"", &a, 10, NO_RELATIONS).is_err());
+        assert!(check_select("SELECT * FROM \"HR\".\"EMPLOYEES\"", &a, 10, &NO_CATALOG).is_err());
         assert!(check_select(
             "SELECT * FROM \"ROADS\".\"ROADWAY_INVENTORY\"",
             &a,
             10,
-            NO_RELATIONS
+            &NO_CATALOG
         )
         .is_ok());
     }
@@ -1244,7 +1520,7 @@ datasets:
             "SELECT * FROM ROADS.ROADWAY_INVENTORY",
             &access("oracle", None),
             7,
-            NO_RELATIONS,
+            &NO_CATALOG,
         )
         .unwrap();
         assert!(q.sql.ends_with("FETCH FIRST 8 ROWS ONLY"), "{}", q.sql);
@@ -1252,7 +1528,7 @@ datasets:
             "SELECT * FROM ROADS.ROADWAY_INVENTORY",
             &access("sqlserver", None),
             7,
-            NO_RELATIONS,
+            &NO_CATALOG,
         )
         .unwrap();
         assert!(q.sql.starts_with("SELECT TOP (8)"), "{}", q.sql);
@@ -1261,40 +1537,33 @@ datasets:
     #[test]
     fn unlimited_keeps_every_check_and_filter() {
         let a = access("postgis", Some("DISTRICT_NBR = 14"));
-        let q = check_select_unlimited(
-            "SELECT * FROM ROADS.ROADWAY_INVENTORY",
-            &a,
-            10,
-            NO_RELATIONS,
-        )
-        .unwrap();
+        let q =
+            check_select_unlimited("SELECT * FROM ROADS.ROADWAY_INVENTORY", &a, 10, &NO_CATALOG)
+                .unwrap();
         assert!(
             q.sql.contains("DISTRICT_NBR = 14") && !q.sql.contains("LIMIT"),
             "{}",
             q.sql
         );
         assert!(
-            check_select_unlimited("SELECT * FROM ROADS.ROADWAY_AUDIT", &a, 10, NO_RELATIONS)
+            check_select_unlimited("SELECT * FROM ROADS.ROADWAY_AUDIT", &a, 10, &NO_CATALOG)
                 .is_err()
         );
-        assert!(check_select_unlimited(
-            "DELETE FROM ROADS.ROADWAY_INVENTORY",
-            &a,
-            10,
-            NO_RELATIONS
-        )
-        .is_err());
+        assert!(
+            check_select_unlimited("DELETE FROM ROADS.ROADWAY_INVENTORY", &a, 10, &NO_CATALOG)
+                .is_err()
+        );
     }
 
     #[test]
     fn sqlite_table_functions_refused() {
         let a = access("gpkg", None);
-        assert!(check_select("SELECT * FROM main.roads", &a, 10, NO_RELATIONS).is_ok());
+        assert!(check_select("SELECT * FROM main.roads", &a, 10, &NO_CATALOG).is_ok());
         assert!(check_select(
             "SELECT load_extension('evil') FROM main.roads",
             &a,
             10,
-            NO_RELATIONS
+            &NO_CATALOG
         )
         .is_err());
     }

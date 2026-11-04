@@ -251,7 +251,9 @@ async fn postgis_governed_session() {
         ),
         (
             "SELECT * FROM dblink('x', 'y') AS t(a int)",
-            "are not allowed",
+            // Refused as a table the connection does not list, before the
+            // table-function check would refuse it.
+            "allowed",
         ),
         ("DELETE FROM roads.roadway_inventory", "only SELECT"),
         // Hidden fields cannot be reached by renaming, filtering, casting
@@ -273,6 +275,14 @@ async fn postgis_governed_session() {
         .await);
         assert!(e.contains(expect), "{sql}: {e}");
     }
+
+    // Real PostGIS functions work, called by the extension's own schema.
+    let g = ok(&call(&client, "sql_select", json!({"connection": "roads-pg", "sql": "SELECT route_id, ST_Length(geom) AS len, ST_AsText(ST_StartPoint(geom)) AS p FROM roads.roadway_inventory ORDER BY route_id LIMIT 2"})).await);
+    assert_eq!(g["result"]["rows_returned"], 2, "{g}");
+    assert!(g["result"]["executed_sql"]
+        .as_str()
+        .unwrap()
+        .contains("\"public\".st_length"));
 
     // Forms an independent review used to get hidden values past name
     // checks. The table each one reads holds only visible columns, so they
@@ -318,6 +328,9 @@ async fn postgis_governed_session() {
         "SELECT query_to_xml('SELECT * FROM roads.roadway_inventory', true, false, '') FROM roads.roadway_inventory",
         "SELECT table_to_xml('roads.roadway_inventory', true, false, '') FROM roads.roadway_inventory",
         "SELECT ts_stat('SELECT to_tsvector(owner_name) FROM roads.roadway_inventory') FROM roads.roadway_inventory",
+        // Named like PostGIS, but not installed by it.
+        "SELECT st_owner_summary() FROM roads.roadway_inventory",
+        "SELECT public.st_owner_summary() FROM roads.roadway_inventory",
     ] {
         let e = err(&call(&client, "sql_select", json!({"connection": "roads-pg", "sql": sql})).await);
         assert!(e.contains("not allowed"), "{sql}: {e}");
@@ -331,10 +344,10 @@ async fn postgis_governed_session() {
         json!({"connection": "roads-pg", "sql": "SELECT * FROM hr.employees"}),
     )
     .await);
-    // With fields hidden, the server also needs to see a table's columns to
-    // read it; a table the login cannot see is refused before it is queried.
+    // The server reads only tables it can list, and the login cannot see
+    // this one, so it is refused before the database is asked.
     assert!(
-        e.contains("permission denied") || e.contains("cannot check the fields"),
+        e.contains("permission denied") || e.contains("not in this connection's allowed datasets"),
         "{e}"
     );
     assert!(!e.contains(PASSWORD));
