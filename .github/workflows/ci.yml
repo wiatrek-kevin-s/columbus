@@ -28,6 +28,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # The confinement launcher first: if it fails, everything that starts a
+      # local server or plugin does, and its own tests say why.
+      - run: cargo test -p columbus-mcp --test confine --locked -- --nocapture
       - run: cargo test --workspace --locked
 
   python-worker:

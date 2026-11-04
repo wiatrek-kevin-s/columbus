@@ -380,13 +380,32 @@ impl Broker {
                         .map(PathBuf::from)
                         .unwrap_or_else(|| self.workspace.clone()),
                 );
+                // The server's (and the launcher's) error output goes to a log
+                // in its temp folder, so a failed start can say why.
+                let log = tmp.join("stderr.log");
+                let stderr = std::fs::File::create(&log)
+                    .map(Stdio::from)
+                    .unwrap_or_else(|_| Stdio::null());
                 let (transport, _) = TokioChildProcess::builder(cmd)
-                    .stderr(Stdio::null())
+                    .stderr(stderr)
                     .spawn()
                     .map_err(|e| format!("could not start {command:?}: {e}"))?;
-                ().serve(transport)
-                    .await
-                    .map_err(|e| format!("MCP handshake failed: {e}"))?
+                match ().serve(transport).await {
+                    Ok(c) => c,
+                    Err(e) => {
+                        let tail = std::fs::read_to_string(&log)
+                            .map(|t| {
+                                let lines: Vec<&str> = t.lines().rev().take(5).collect();
+                                lines.into_iter().rev().collect::<Vec<_>>().join(" | ")
+                            })
+                            .unwrap_or_default();
+                        return Err(if tail.trim().is_empty() {
+                            format!("MCP handshake failed: {e}")
+                        } else {
+                            format!("MCP handshake failed: {e}; the server said: {tail}")
+                        });
+                    }
+                }
             }
             Transport::Http { url } => {
                 let mut cfg = StreamableHttpClientTransportConfig::with_uri(url.clone());
