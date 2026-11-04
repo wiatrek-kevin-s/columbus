@@ -497,6 +497,22 @@ impl State {
             paths.python.clone(),
             paths.worker_script.clone(),
         ));
+        // A deny rule written for connected servers only does not reach
+        // export folders; say so, so an administrator notices.
+        if !policy.exports.is_empty() {
+            for (i, r) in policy.flows.iter().enumerate() {
+                let reaches_folders = r.to.iter().any(|t| {
+                    t == "*" || t == "*:*" || t.to_ascii_lowercase().starts_with("folder:")
+                });
+                if r.action == columbus_shared::policy::FlowAction::Deny && !reaches_folders {
+                    notes.push(format!(
+                        "Flow rule {} denies only connected servers ({}); it does not stop exports to folders. Use `to: [\"*\"]` or add `folder:*` if it should.",
+                        i + 1,
+                        r.to.join(", ")
+                    ));
+                }
+            }
+        }
         let secrets = Arc::new(crate::secrets::SecretStore::from_env());
         if secrets.is_dev() {
             notes.push(
@@ -966,6 +982,7 @@ impl Gateway {
                     rows,
                     source: crate::providers::OutputSource::Engine,
                     truncated: false,
+                    inherited: vec![],
                     sha256: None,
                 },
             );
@@ -1748,6 +1765,7 @@ impl Gateway {
                         rows: None,
                         source: crate::providers::OutputSource::Provider,
                         truncated: false,
+                        inherited: vec![],
                         sha256: None,
                     },
                 );
@@ -2106,10 +2124,11 @@ impl Gateway {
             Some(&prov),
             "sql_select",
         );
-        if hit_limit {
-            if let Some(p) = &file_path {
+        if let Some(p) = &file_path {
+            if hit_limit {
                 self.state.outputs.mark_truncated(p);
             }
+            self.state.outputs.note_fails(p, &checks, &prov);
         }
         let handle = file_path.as_ref().and_then(|f| self.ws_handle(f));
         rec.labels = self.labels();

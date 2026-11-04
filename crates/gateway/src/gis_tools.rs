@@ -941,10 +941,11 @@ impl Gateway {
             Some(&prov),
             "query_features",
         );
-        if r.hit_limit {
-            if let Some(p) = &r.path {
+        if let Some(p) = &r.path {
+            if r.hit_limit {
                 self.state.outputs.mark_truncated(p);
             }
+            self.state.outputs.note_fails(p, &checks, &prov);
         }
         let layer = r.path.as_ref().and_then(|p| {
             Some(LayerOut {
@@ -1090,6 +1091,13 @@ impl Gateway {
         };
         let summary = reply.get("summary").cloned().unwrap_or(Value::Null);
         let rows = summary.get("rows").and_then(Value::as_u64);
+        let mut checks = warnings;
+        checks.extend(checks_from(reply.get("checks")));
+        let inherit = self
+            .state
+            .outputs
+            .inherit(&files)
+            .with_step_fails(&checks, &prov);
         self.state.flow.record_file(&path, &labels);
         self.state.outputs.record(
             &path,
@@ -1098,12 +1106,11 @@ impl Gateway {
                 provenance: Some(prov.clone()),
                 rows,
                 source: OutputSource::Engine,
-                truncated: !warnings.is_empty(),
+                truncated: inherit.truncated || checks.iter().any(|c| c.id == "input.truncated"),
+                inherited: inherit.fails,
                 sha256: None,
             },
         );
-        let mut checks = warnings;
-        checks.extend(checks_from(reply.get("checks")));
         if !labels.is_empty() {
             checks.push(Check {
                 id: "flow.labels".into(),

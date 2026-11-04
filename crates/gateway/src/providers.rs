@@ -79,11 +79,56 @@ pub struct OutputMeta {
     /// The rows were cut off at a limit: the layer is not the whole result.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub truncated: bool,
+    /// Fails from every step this file was built from, carried forward in
+    /// memory as each tool writes its output, so neither a long chain nor an
+    /// edited provenance file can lose one. Exports refuse while any remain.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub inherited: Vec<InheritedFail>,
     /// SHA-256 of the file when it was recorded. Trust in a file (its
     /// source) holds only while its content is unchanged: a connected
     /// server handed the path could overwrite it.
     #[serde(skip)]
     pub sha256: Option<String>,
+}
+
+/// A `fail` check from a step a file was built from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct InheritedFail {
+    pub id: String,
+    pub message: String,
+    /// The provenance record of the step that raised it.
+    pub provenance: Option<String>,
+}
+
+/// What a new output inherits from its inputs: their fails and whether any
+/// was cut off at a row limit.
+#[derive(Debug, Clone, Default)]
+pub struct Inheritance {
+    pub fails: Vec<InheritedFail>,
+    pub truncated: bool,
+}
+
+impl Inheritance {
+    /// Add this step's own fail checks.
+    pub fn with_step_fails<'a>(
+        mut self,
+        checks: impl IntoIterator<Item = &'a crate::server::Check>,
+        provenance: &str,
+    ) -> Self {
+        for c in checks {
+            if c.severity == crate::server::Severity::Fail {
+                let f = InheritedFail {
+                    id: c.id.clone(),
+                    message: c.message.clone(),
+                    provenance: Some(provenance.to_string()),
+                };
+                if !self.fails.contains(&f) {
+                    self.fails.push(f);
+                }
+            }
+        }
+        self
+    }
 }
 
 #[derive(Default)]
@@ -119,6 +164,43 @@ impl Outputs {
             m.truncated = true;
         }
     }
+    /// Add a tool's own fail checks to the file it wrote.
+    pub fn note_fails<'a>(
+        &self,
+        path: &Path,
+        checks: impl IntoIterator<Item = &'a crate::server::Check>,
+        provenance: &str,
+    ) {
+        let add = Inheritance::default()
+            .with_step_fails(checks, provenance)
+            .fails;
+        if let Some(m) = self.inner.lock().expect("outputs poisoned").get_mut(path) {
+            for f in add {
+                if !m.inherited.contains(&f) {
+                    m.inherited.push(f);
+                }
+            }
+        }
+    }
+
+    /// What an output made from `inputs` inherits. An input Columbus did
+    /// not record contributes nothing (the tools refuse those anyway).
+    pub fn inherit(&self, inputs: &[PathBuf]) -> Inheritance {
+        let map = self.inner.lock().expect("outputs poisoned");
+        let mut out = Inheritance::default();
+        for p in inputs {
+            if let Some(m) = map.get(p) {
+                out.truncated |= m.truncated;
+                for f in &m.inherited {
+                    if !out.fails.contains(f) {
+                        out.fails.push(f.clone());
+                    }
+                }
+            }
+        }
+        out
+    }
+
     pub fn get(&self, path: &Path) -> Option<OutputMeta> {
         self.inner
             .lock()

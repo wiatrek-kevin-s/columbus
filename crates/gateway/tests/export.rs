@@ -175,6 +175,19 @@ fn err(r: &CallToolResult) -> String {
     serde_json::to_string(&r.content).unwrap()
 }
 
+fn walk_files(dir: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            out.extend(walk_files(&p));
+        } else {
+            out.push(p);
+        }
+    }
+    out
+}
+
 fn check_ids(v: &Value) -> Vec<String> {
     v["checks"]
         .as_array()
@@ -330,6 +343,66 @@ async fn read_and_export_outputs() {
     let c = check(&x, "join.unmatched");
     assert_eq!(c["severity"], "fail");
     assert!(c["message"].as_str().unwrap().starts_with("Earlier step"));
+
+    // The fail survives a long chain and an erased provenance record: it is
+    // carried in memory, not read back from files the workspace can change.
+    let prov_dir = walk_files(&env.root.join("workspaces"))
+        .into_iter()
+        .filter(|p| {
+            p.extension().is_some_and(|e| e == "json") && p.to_string_lossy().contains("provenance")
+        })
+        .collect::<Vec<_>>();
+    for p in &prov_dir {
+        std::fs::write(p, "{}").unwrap();
+    }
+    let mut h = buffered.clone();
+    for _ in 0..55 {
+        let b = ok(&call(
+            &client,
+            "vector_op",
+            json!({"op": "simplify", "inputs": {"layer": h}, "params": {"tolerance": 0.01, "unit": "m"}}),
+        )
+        .await);
+        h = b["result"]["layer"]["handle"].as_str().unwrap().to_string();
+    }
+    let x = ok(&call(
+        &client,
+        "export_output",
+        json!({"handle": h, "folder": "share", "name": "long chain"}),
+    )
+    .await);
+    assert_eq!(x["result"]["status"], "approval_required", "{x}");
+    assert_eq!(check(&x, "join.unmatched")["severity"], "fail");
+
+    // Something else already named like the export (a GeoPackage's -wal
+    // file) counts as in the way.
+    std::fs::write(env.root.join("share").join("wal.gpkg-wal"), b"x").unwrap();
+    let e = err(&call(
+        &client,
+        "export_output",
+        json!({"handle": roads, "folder": "share", "name": "wal"}),
+    )
+    .await);
+    assert!(e.contains("wal.gpkg-wal"), "{e}");
+
+    // Required metadata must have something in it.
+    let x = ok(&call(
+        &client,
+        "export_output",
+        json!({"handle": roads, "folder": "share", "name": "falsy", "delivery": "district",
+               "metadata": {"title": false, "contact": ""}}),
+    )
+    .await);
+    assert_eq!(check(&x, "delivery.metadata")["severity"], "fail");
+
+    // Nothing is left half-written in the folder.
+    for f in std::fs::read_dir(env.root.join("share")).unwrap().flatten() {
+        assert!(
+            !f.file_name().to_string_lossy().starts_with(".columbus-"),
+            "{:?}",
+            f.path()
+        );
+    }
 
     // Names cannot leave the folder; unknown folders are named.
     for bad in ["../escape", "a/b", "CON"] {

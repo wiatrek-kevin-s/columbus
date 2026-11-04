@@ -338,38 +338,20 @@ impl Gateway {
                 })
                 .unwrap_or_default();
         }
-        let norm = |f: &str| f.trim().to_ascii_lowercase();
         let format = match (&args.format, formats.is_empty()) {
             (Some(f), _) => f.clone(),
             (None, true) => "gpkg".into(),
             (None, false) => formats
                 .iter()
-                .find(|f| {
-                    [
-                        "gpkg",
-                        "geopackage",
-                        "geojson",
-                        "fgb",
-                        "flatgeobuf",
-                        "shp",
-                        "shapefile",
-                        "csv",
-                    ]
-                    .contains(&norm(f).as_str())
-                })
+                .find(|f| canon_format(f).is_some())
                 .cloned()
                 .unwrap_or_else(|| "gpkg".into()),
         };
-        let same_format = |a: &str, b: &str| {
-            let canon = |s: &str| match norm(s).as_str() {
-                "geopackage" => "gpkg".to_string(),
-                "flatgeobuf" => "fgb".to_string(),
-                "shapefile" => "shp".to_string(),
-                x => x.to_string(),
-            };
-            canon(a) == canon(b)
-        };
-        if !formats.is_empty() && !formats.iter().any(|f| same_format(f, &format)) {
+        if !formats.is_empty()
+            && !formats
+                .iter()
+                .any(|f| canon_format(f).is_some() && canon_format(f) == canon_format(&format))
+        {
             checks.push(fail(
                 "delivery.format",
                 format!(
@@ -384,51 +366,39 @@ impl Gateway {
             .as_ref()
             .map(|m| {
                 m.iter()
-                    .filter(|(_, v)| {
-                        v.as_str().is_none_or(|s| !s.trim().is_empty()) && !v.is_null()
-                    })
+                    .filter(|(_, v)| meaningful(v))
                     .map(|(k, _)| norm(k))
                     .collect()
             })
             .unwrap_or_default();
-        let missing: Vec<&String> = required_meta
+        let missing: Vec<&str> = required_meta
             .iter()
             .filter(|k| !given.contains(&norm(k)))
+            .map(String::as_str)
             .collect();
         if !missing.is_empty() {
             checks.push(fail(
                 "delivery.metadata",
                 format!(
                     "The delivery spec requires metadata the export does not have: {}",
-                    missing
-                        .iter()
-                        .map(|s| s.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ")
+                    missing.join(", ")
                 ),
                 Some("Pass them in metadata (ask the person for anything you do not know)"),
             ));
         }
 
-        // Everything the layer was built from: a fail anywhere carries over.
-        let lineage = self.lineage(meta.provenance.as_deref());
-        for r in &lineage {
-            for c in checks_from(r.get("checks")) {
-                if c.severity == Severity::Fail {
-                    let from = r
-                        .get("id")
-                        .and_then(Value::as_str)
-                        .unwrap_or("?")
-                        .to_string();
-                    checks.push(Check {
-                        id: c.id.clone(),
-                        severity: Severity::Fail,
-                        message: format!("Earlier step {from}: {}", c.message),
-                        detail: Some(json!({"provenance": from})),
-                        fix: c.fix.clone(),
-                    });
-                }
-            }
+        // Every fail the layer was built over, carried in memory by the tools
+        // that made it. Provenance files are only a record: they can be
+        // edited, and are not what decides.
+        for f in &meta.inherited {
+            let from = f.provenance.clone().unwrap_or_else(|| "?".into());
+            checks.push(Check {
+                id: f.id.clone(),
+                severity: Severity::Fail,
+                message: format!("Earlier step {from}: {}", f.message),
+                detail: Some(json!({"provenance": from})),
+                fix: None,
+            });
         }
         if meta.truncated {
             checks.push(fail(
@@ -437,22 +407,50 @@ impl Gateway {
                 Some("Narrow the original query so it is complete, and rebuild the layer"),
             ));
         }
+        let lineage = self.lineage(meta.provenance.as_deref());
 
-        // Write the delivery copy in the workspace, then check it.
-        let stage_stem = match self
-            .state
-            .sandbox
-            .resolve(&format!("exports/{prov}/{}", args.name))
+        // Work in a folder of the server's own, outside the workspace that
+        // confined servers and plugins can write. The engine reads a copy of
+        // the source whose content is checked against what Columbus wrote,
+        // and each file it makes is hashed as soon as it is made.
+        let stage = match tempfile::Builder::new()
+            .prefix("columbus-export-")
+            .tempdir()
         {
-            Ok(p) => p,
-            Err(e) => return Err(self.deny(&ctx, rec, e)),
+            Ok(d) => d,
+            Err(e) => {
+                return Err(self.deny(&ctx, rec, format!("could not make a staging folder: {e}")))
+            }
         };
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("dat")
+            .to_ascii_lowercase();
+        let src_copy = stage.path().join(format!("source.{ext}"));
+        match copy_hashed(&path, &src_copy) {
+            Ok(h) if Some(&h) == meta.sha256.as_ref() => {}
+            Ok(_) => {
+                return Err(self.deny(
+                    &ctx,
+                    rec,
+                    format!("{} changed after Columbus wrote it", args.handle),
+                ))
+            }
+            Err(e) => {
+                return Err(self.deny(&ctx, rec, format!("could not read {}: {e}", args.handle)))
+            }
+        }
+        let out_dir = stage.path().join("out");
+        if let Err(e) = std::fs::create_dir(&out_dir) {
+            return Err(self.deny(&ctx, rec, format!("could not make a staging folder: {e}")));
+        }
         let reply = match self
             .state
             .worker
             .core(
                 "export_layer",
-                json!({"path": path, "out_stem": stage_stem, "format": format, "crs": crs, "rename": rename}),
+                json!({"path": src_copy, "out_stem": out_dir.join(&args.name), "format": format, "crs": crs, "rename": rename}),
                 Duration::from_secs(300),
             )
             .await
@@ -461,42 +459,59 @@ impl Gateway {
             Err(e) => return Err(self.deny(&ctx, rec, e.to_string())),
         };
         checks.extend(checks_from(reply.get("checks")));
-        let staged: Vec<PathBuf> = reply
+        let mut staged: Vec<(PathBuf, String)> = Vec::new();
+        for f in reply
             .get("files")
             .and_then(Value::as_array)
-            .map(|a| {
-                a.iter()
-                    .filter_map(Value::as_str)
-                    .map(PathBuf::from)
-                    .collect()
-            })
-            .unwrap_or_default();
-        let root = self.state.sandbox.root().to_path_buf();
-        if staged.is_empty() || !staged.iter().all(|p| p.starts_with(&root) && p.is_file()) {
-            return Err(self.deny(
-                &ctx,
-                rec,
-                "the engine did not write the export where expected",
-            ));
+            .into_iter()
+            .flatten()
+        {
+            let p = PathBuf::from(f.as_str().unwrap_or_default());
+            let direct = p.parent() == Some(out_dir.as_path());
+            let regular = std::fs::symlink_metadata(&p).is_ok_and(|m| m.file_type().is_file());
+            match (direct && regular, columbus_shared::canon::sha256_file(&p)) {
+                (true, Ok((h, _))) => staged.push((p, h)),
+                _ => {
+                    return Err(self.deny(
+                        &ctx,
+                        rec,
+                        "the engine did not write the export where expected",
+                    ))
+                }
+            }
+        }
+        if staged.is_empty() {
+            return Err(self.deny(&ctx, rec, "the engine wrote no export"));
+        }
+        if canon_format(&format) == Some("geojson")
+            && crs
+                .as_deref()
+                .is_some_and(|c| !c.eq_ignore_ascii_case("EPSG:4326"))
+        {
+            checks.push(Check {
+                id: "export.geojson_crs".into(),
+                severity: Severity::Warn,
+                message: format!("GeoJSON is meant to be in EPSG:4326 (RFC 7946); this one is in {}, which many readers will ignore", crs.clone().unwrap_or_default()),
+                detail: None,
+                fix: Some("Deliver GeoPackage, or GeoJSON in EPSG:4326".into()),
+            });
         }
 
-        // Where it would go, and whether anything is in the way.
+        // Where it would go, and what is in the way: the files themselves,
+        // the provenance file, and anything else named <name>.* (shapefile
+        // parts and indexes, GeoPackage -wal and -shm files).
         let targets: Vec<PathBuf> = staged
             .iter()
-            .map(|p| dest_dir.join(p.file_name().unwrap()))
+            .map(|(p, _)| dest_dir.join(p.file_name().unwrap()))
             .collect();
         let sidecar = dest_dir.join(format!("{}.prov.json", args.name));
-        let existing: Vec<String> = targets
-            .iter()
-            .chain(std::iter::once(&sidecar))
-            .filter(|p| std::fs::symlink_metadata(p).is_ok())
-            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
-            .collect();
+        let existing = same_name(&dest_dir, &args.name);
+        let existing_names: Vec<String> = existing.iter().map(|(n, _)| n.clone()).collect();
         if !existing.is_empty() && !args.overwrite {
             return Err(self.deny(
                 &ctx,
                 rec,
-                format!("{} already exist(s) in {}; choose another name, or pass overwrite: true (needs approval)", existing.join(", "), folder.id),
+                format!("{} already exist(s) in {}; choose another name, or pass overwrite: true (needs approval)", existing_names.join(", "), folder.id),
             ));
         }
 
@@ -533,7 +548,7 @@ impl Gateway {
             reasons.push("an organization flow rule asks for approval".into());
         }
         if !existing.is_empty() {
-            reasons.push(format!("it replaces {}", existing.join(", ")));
+            reasons.push(format!("it replaces {}", existing_names.join(", ")));
         }
         if !fails.is_empty() {
             reasons.push(format!(
@@ -576,12 +591,15 @@ impl Gateway {
             let detail = json!({
                 "destination": dest_dir,
                 "files": targets,
+                "replaces": existing_names,
                 "failed_checks": fails.iter().map(|c| json!({"id": c.id, "message": c.message})).collect::<Vec<_>>(),
                 "delivery": args.delivery,
                 "labels": from,
             });
-            // Bound to the request and the exact source content.
-            let bound = json!({"request": request, "source_sha256": meta.sha256, "fails": fails.iter().map(|c| &c.id).collect::<Vec<_>>()});
+            // Bound to the request, the exact source content, the fails the
+            // person saw and the exact files that would be replaced.
+            let bound = json!({"request": request, "source_sha256": meta.sha256,
+                "fails": fails.iter().map(|c| &c.id).collect::<Vec<_>>(), "replaces": existing});
             let ask = Ask {
                 tool: "export_output",
                 label: &format!("export to {}", folder.id),
@@ -612,66 +630,128 @@ impl Gateway {
                 Err(e) => return Err(self.deny(&ctx, rec, e)),
             }
         }
-        // The source must still be what was checked and approved.
-        if !self.state.outputs.unchanged(&path) {
+        // What will be replaced must still be exactly what was seen.
+        if same_name(&dest_dir, &args.name) != existing {
             return Err(self.deny(
                 &ctx,
                 rec,
-                format!("{} changed while waiting for approval", args.handle),
+                format!(
+                    "files named {} in {} changed while this export waited; ask again",
+                    args.name, folder.id
+                ),
             ));
         }
 
-        // Copy out. New files are created, never followed through a link.
-        let mut written = Vec::new();
-        for (from, to) in staged.iter().zip(&targets) {
-            if args.overwrite && std::fs::symlink_metadata(to).is_ok() {
-                if let Err(e) = std::fs::remove_file(to) {
-                    return Err(self.deny(
-                        &ctx,
-                        rec,
-                        format!("could not replace {}: {e}", to.display()),
-                    ));
-                }
-            }
-            if let Err(e) = copy_new(from, to) {
-                return Err(self.deny(&ctx, rec, format!("could not write {}: {e}", to.display())));
-            }
-            let sha = columbus_shared::canon::sha256_file(to)
-                .map(|(h, _)| h)
-                .unwrap_or_default();
-            written.push(json!({"path": to, "sha256": sha}));
-        }
-        let record = json!({
+        // Recorded before anything leaves: a call that cannot be audited
+        // does not run.
+        let mut record = json!({
             "id": prov,
             "created": started.to_rfc3339(),
-            "finished": Local::now().to_rfc3339(),
             "user": self.state.user,
             "client": client_name(&ctx),
-            "export": {"folder": folder.id, "files": written, "format": format, "delivery": args.delivery,
-                       "crs": crs, "rename": rename, "approval": rec.approval},
+            "export": {"folder": folder.id, "files": targets, "format": format, "delivery": args.delivery,
+                       "crs": crs, "rename": rename, "approval": rec.approval, "replaces": existing_names},
             "metadata": args.metadata,
             "labels": labels,
             "checks": checks,
             "lineage": lineage,
             "server": format!("{SERVER_NAME} {}", env!("CARGO_PKG_VERSION")),
         });
+        self.audit(
+            &ctx,
+            columbus_shared::audit::AuditRecord {
+                decision: "exporting".into(),
+                prov: Some(prov.clone()),
+                ..rec.clone()
+            },
+        )?;
+
+        // Copy to hidden temporary names beside the targets, checking each
+        // staged file's hash as it is read; then move them all into place.
+        let tmp_for = |t: &Path| {
+            dest_dir.join(format!(
+                ".columbus-{prov}-{}",
+                t.file_name().unwrap().to_string_lossy()
+            ))
+        };
+        let mut temps: Vec<PathBuf> = Vec::new();
+        let mut written = Vec::new();
+        let mut failure: Option<String> = None;
+        for ((from, want), to) in staged.iter().zip(&targets) {
+            let tmp = tmp_for(to);
+            match copy_hashed(from, &tmp) {
+                Ok(h) => {
+                    temps.push(tmp);
+                    if &h != want {
+                        failure = Some(format!(
+                            "{} changed while it was being exported",
+                            from.display()
+                        ));
+                        break;
+                    }
+                    written.push(json!({"path": to, "sha256": h}));
+                }
+                Err(e) => {
+                    failure = Some(format!("could not write {}: {e}", to.display()));
+                    break;
+                }
+            }
+        }
+        record["finished"] = json!(Local::now().to_rfc3339());
+        record["export"]["files"] = json!(written);
+        if failure.is_none() {
+            let tmp = tmp_for(&sidecar);
+            match write_new(
+                &tmp,
+                serde_json::to_string_pretty(&record)
+                    .unwrap_or_default()
+                    .as_bytes(),
+            ) {
+                Ok(()) => temps.push(tmp),
+                Err(e) => failure = Some(format!("could not write {}: {e}", sidecar.display())),
+            }
+        }
+        if let Some(why) = failure {
+            for t in &temps {
+                let _ = std::fs::remove_file(t);
+            }
+            return Err(self.deny(&ctx, rec, format!("{why}; nothing was exported")));
+        }
+        // Replacing: old files of this name that the new ones will not
+        // overwrite (stale indexes, other parts) go, so nothing mismatched stays.
+        let finals: Vec<PathBuf> = targets
+            .iter()
+            .cloned()
+            .chain(std::iter::once(sidecar.clone()))
+            .collect();
+        for (n, _) in &existing {
+            if !finals.iter().any(|f| {
+                f.file_name()
+                    .is_some_and(|x| x.to_string_lossy().eq_ignore_ascii_case(n))
+            }) {
+                let _ = std::fs::remove_file(dest_dir.join(n));
+            }
+        }
+        let mut moved: Vec<String> = Vec::new();
+        for (tmp, fin) in temps.iter().zip(&finals) {
+            if let Err(e) = std::fs::rename(tmp, fin) {
+                for t in &temps {
+                    let _ = std::fs::remove_file(t);
+                }
+                let left = if moved.is_empty() {
+                    "nothing was moved".to_string()
+                } else {
+                    format!("already in place: {}", moved.join(", "))
+                };
+                return Err(self.deny(
+                    &ctx,
+                    rec,
+                    format!("could not move {} into place: {e}; {left}", fin.display()),
+                ));
+            }
+            moved.push(fin.display().to_string());
+        }
         let _ = self.write_provenance(&prov, &record);
-        if args.overwrite && std::fs::symlink_metadata(&sidecar).is_ok() {
-            let _ = std::fs::remove_file(&sidecar);
-        }
-        if let Err(e) = write_new(
-            &sidecar,
-            serde_json::to_string_pretty(&record)
-                .unwrap_or_default()
-                .as_bytes(),
-        ) {
-            return Err(self.deny(
-                &ctx,
-                rec,
-                format!("exported, but could not write {}: {e}", sidecar.display()),
-            ));
-        }
-        let _ = std::fs::remove_dir_all(stage_stem.parent().unwrap_or(Path::new("")));
         rec.prov = Some(prov.clone());
         rec.rows = meta.rows;
         self.audit(&ctx, rec)?;
@@ -684,16 +764,79 @@ impl Gateway {
     }
 }
 
-/// Create `to` (failing if anything is there, including a link) and copy
-/// `from` into it.
-fn copy_new(from: &Path, to: &Path) -> std::io::Result<()> {
+fn norm(f: &str) -> String {
+    f.trim().to_ascii_lowercase()
+}
+
+/// A delivery format's canonical name, or None for one Columbus cannot write
+/// (a spec may also list PDF and the like).
+fn canon_format(f: &str) -> Option<&'static str> {
+    match norm(f).as_str() {
+        "gpkg" | "geopackage" => Some("gpkg"),
+        "geojson" => Some("geojson"),
+        "fgb" | "flatgeobuf" => Some("fgb"),
+        "shp" | "shapefile" => Some("shp"),
+        "csv" => Some("csv"),
+        _ => None,
+    }
+}
+
+/// Required metadata counts as given only with something in it.
+fn meaningful(v: &Value) -> bool {
+    match v {
+        Value::String(t) => !t.trim().is_empty(),
+        Value::Number(_) => true,
+        Value::Array(a) => !a.is_empty(),
+        Value::Object(o) => !o.is_empty(),
+        Value::Bool(_) | Value::Null => false,
+    }
+}
+
+/// Everything in `dir` named `<name>` or `<name>.*` (any case), with its
+/// content hash, sorted.
+fn same_name(dir: &Path, name: &str) -> Vec<(String, Option<String>)> {
+    let prefix = format!("{name}.").to_ascii_lowercase();
+    let mut out: Vec<(String, Option<String>)> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let n = e.file_name().to_string_lossy().into_owned();
+            let l = n.to_ascii_lowercase();
+            (l == name.to_ascii_lowercase() || l.starts_with(&prefix)).then(|| {
+                let h = columbus_shared::canon::sha256_file(&e.path())
+                    .ok()
+                    .map(|(h, _)| h);
+                (n, h)
+            })
+        })
+        .collect();
+    out.sort();
+    out
+}
+
+/// Create `to` (failing if anything is there, including a link), copy
+/// `from` into it, and return the SHA-256 of exactly what was copied.
+fn copy_hashed(from: &Path, to: &Path) -> std::io::Result<String> {
+    use sha2::{Digest, Sha256};
+    use std::io::{Read, Write};
     let mut src = std::fs::File::open(from)?;
     let mut dst = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(to)?;
-    std::io::copy(&mut src, &mut dst)?;
-    dst.sync_all()
+    let mut h = Sha256::new();
+    let mut buf = vec![0u8; 1 << 16];
+    loop {
+        let n = src.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        h.update(&buf[..n]);
+        dst.write_all(&buf[..n])?;
+    }
+    dst.sync_all()?;
+    Ok(format!("{:x}", h.finalize()))
 }
 
 fn write_new(to: &Path, bytes: &[u8]) -> std::io::Result<()> {

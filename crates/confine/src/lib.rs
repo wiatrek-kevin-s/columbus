@@ -231,7 +231,16 @@ pub fn available(level: Level) -> Result<(), Error> {
     }
     #[cfg(windows)]
     {
-        let _ = level;
+        // Level C runs the program at low integrity so it can read but not
+        // write outside granted folders. On the Windows systems tested, a
+        // low-integrity process is refused reads of ordinary program folders
+        // (Python cannot even load its own DLL), so the level would not do
+        // what it says; it stays unavailable, and confinement fails closed.
+        if level == Level::C {
+            return Err(Error::Unsupported(
+                "level C is not available on Windows yet: a low-integrity process cannot read ordinary program folders here. Use level A or B with the folders the server needs granted".into(),
+            ));
+        }
         Ok(())
     }
     #[cfg(not(any(target_os = "linux", windows)))]
@@ -296,6 +305,7 @@ fn program_dir(program: &str) -> Option<PathBuf> {
 /// (on Linux the program replaces this process) or, on Windows, with the
 /// program's exit code once it ends.
 pub fn launch(spec: &Spec, program: &str, args: &[String]) -> Result<i32, Error> {
+    available(spec.level)?;
     for p in spec.read_write.iter().chain(&spec.read_only) {
         if !p.is_absolute() {
             return Err(Error::Usage(format!(

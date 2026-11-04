@@ -51,6 +51,11 @@ fn matches(pattern: &str, value: &str) -> Option<u8> {
     if pattern.eq_ignore_ascii_case(value) {
         return Some(2);
     }
+    // `*` (or `*:*`): every destination, connected servers and export
+    // folders alike, and every label. Least specific.
+    if pattern == "*" || pattern == "*:*" {
+        return Some(0);
+    }
     let (pk, pv) = pattern.split_once(':')?;
     let (vk, _) = value.split_once(':')?;
     (pv == "*" && pk.eq_ignore_ascii_case(vk)).then_some(1)
@@ -286,5 +291,25 @@ mod tests {
             f.labels_for(&[p]),
             set(&["connection:gis", "connection:roads-prod"])
         );
+    }
+
+    #[test]
+    fn a_star_reaches_export_folders_too() {
+        use columbus_shared::policy::{FlowAction, FlowRule};
+        let rules = vec![FlowRule {
+            from: vec!["connection:roads-prod".into()],
+            to: vec!["*".into()],
+            action: FlowAction::Deny,
+        }];
+        let labels: std::collections::BTreeSet<String> =
+            ["connection:roads-prod".to_string()].into();
+        assert!(matches!(
+            super::evaluate_to(&rules, &labels, "folder:share"),
+            super::FlowDecision::Deny { .. }
+        ));
+        assert!(matches!(
+            super::evaluate(&rules, &labels, "drive", true),
+            super::FlowDecision::Deny { .. }
+        ));
     }
 }

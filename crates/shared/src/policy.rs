@@ -279,8 +279,8 @@ pub enum FlowAction {
 }
 
 /// `from` holds labels (`connection:roads-prod`, `connection:*`); `to`
-/// holds destinations (`server:drive`, `server:*`, and export folders as
-/// `folder:<id>` or `folder:*`).
+/// holds destinations (`server:drive`, `server:*`, export folders as
+/// `folder:<id>` or `folder:*`, and `*` for every destination).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FlowRule {
     pub from: Vec<String>,
