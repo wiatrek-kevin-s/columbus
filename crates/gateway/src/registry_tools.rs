@@ -91,7 +91,7 @@ impl Gateway {
     }
 
     /// The index, checked; and a check to attach when it has no manifest.
-    fn registry_ready(&self) -> Result<(PathBuf, Option<Check>), String> {
+    pub(crate) fn registry_ready(&self) -> Result<(PathBuf, Option<Check>), String> {
         let dir = self.registry_dir();
         let verified = verify_index(&dir)?;
         let warn = (!verified).then(|| Check {

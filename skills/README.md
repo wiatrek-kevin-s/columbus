@@ -22,7 +22,7 @@ Every skill gives general practice first, so it helps an agent with or without C
 | [sop-conversion](sop-conversion) | Turning Word, PDF or Excel procedures into context-pack entries, with fidelity checks and sign-off |
 | [writing-clearly-and-concisely](writing-clearly-and-concisely) | Prose people will read: documentation, summaries, reports (third-party, public domain; see its [SOURCE](writing-clearly-and-concisely/SOURCE.md)) |
 
-Some skills describe Columbus tools that are planned but not built yet (`pointcloud_pipeline`, `run_python`, `propose_edits`, `registry_fetch`); they say so where it matters.
+Some skills describe Columbus tools that are planned but not built yet (`pointcloud_pipeline`, `run_python`, `propose_edits`); they say so where it matters.
 
 ## Using them
 

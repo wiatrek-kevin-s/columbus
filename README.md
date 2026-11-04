@@ -28,6 +28,7 @@ Columbus makes a GIS analyst, paired with whatever AI their organization already
 | `sql_select` | One checked, read-only `SELECT` (details below) |
 | `context_search`, `context_get`, `describe_data_group` | The organization's context pack: what its datasets, codes, routes and procedures mean; `describe_dataset` attaches the dataset's entry, and `whoami` returns the pack's always-on rules |
 | `registry_search`, `registry_get` | The open geospatial registry: data sources (publisher, coverage, licence, access) and GIS tools; ranked cards by words, kind, theme and area |
+| `registry_fetch` | An entry's open data downloaded into the workspace as a layer (OGC API Features, ArcGIS REST, GeoJSON), within a bbox; approval for hosts not on `fetch_hosts` |
 | `list_providers` | Columbus's engines and connected MCP servers, their trust and state, and the data labels in force |
 | `run_tool` | Run a connected server's tool as `<provider>.<tool>`, under the rules below |
 | `list_outputs` | Workspace files as handles (`ws://<session>/<path>`), with row counts, labels and provenance |
@@ -134,7 +135,7 @@ An organization describes its GIS world in a **context pack**: a folder of Markd
 
 ## Registry
 
-`registry_search` and `registry_get` read the [geo-registry](https://github.com/wiatrek-kevin-s/geo-registry) index (`registry.sqlite`, full-text search), installed with `columbus-mcp registry update` (from the registry's rolling release, or `--from` a folder for offline installs) under `%ProgramData%\Columbus\registry`. The index is checked against its `index.sha256` when installed and again before each use; a damaged or altered index is refused. Entries are community-written, so results are marked untrusted and say which entries no person has reviewed yet. A search by area leaves out entries known not to cover it and lists those with no recorded extent last, marked as unchecked. Not yet: `registry_fetch` (running an entry's access recipe), which waits for entries that carry machine-readable access recipes; the seeded entries have web links only.
+`registry_search` and `registry_get` read the [geo-registry](https://github.com/wiatrek-kevin-s/geo-registry) index (`registry.sqlite`, full-text search), installed with `columbus-mcp registry update` (from the registry's rolling release, or `--from` a folder for offline installs) under `%ProgramData%\Columbus\registry`. The index is checked against its `index.sha256` when installed and again before each use; a damaged or altered index is refused. Entries are community-written, so results are marked untrusted and say which entries no person has reviewed yet. A search by area leaves out entries known not to cover it and lists those with no recorded extent last, marked as unchecked. `registry_fetch` downloads an entry's data into the workspace as a layer: OGC API Features collections and ArcGIS REST feature layers (paged, optionally within a lon/lat bbox, at most the read limit of features) and GeoJSON files. Because the entry is community-written, its URL must be HTTPS to a public address (checked after DNS, and that address is the one connected to), redirects are not followed, downloads are capped at 200 MB, and the download is parsed as JSON by the engine, never handed to GDAL. Hosts listed in policy `fetch_hosts` download without asking; any other host needs the person's approval, with the URL and the entry's licence on the card. Other access types (WMS, STAC, EPT, zip files) are not fetched yet.
 
 ## Skills
 
@@ -265,7 +266,8 @@ Phase 1 (this repository, in progress):
 - [x] GIS skills library (15 skills, checked against the server in CI)
 - [x] `read_output`, `export_output` (export folders, delivery specs applied and checked, provenance beside every export)
 - [x] `fail` checks anywhere in a layer's history block its export without an approved override
-- [ ] `run_python`, `propose_edits`/`apply_edits`, `registry_fetch`; domains enforced in verification; export as a runnable script
+- [x] `registry_fetch` (OGC API Features, ArcGIS REST, GeoJSON; public HTTPS only, approval outside `fetch_hosts`)
+- [ ] `run_python`, `propose_edits`/`apply_edits`; STAC and EPT fetching; domains enforced in verification; export as a runnable script
 - [ ] Bounding boxes pushed into the database's spatial index in `query_features`
 - [ ] Desktop app (Tauri)
 - [ ] ArcPy worker for enterprise geodatabases; signed `.mcpb` bundle and MSI

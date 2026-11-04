@@ -178,8 +178,8 @@ What helps today:
 - **Find imagery sources and STAC catalogues** in the geospatial registry:
   `registry_search {"query": "sentinel-2 stac", "kind": "data"}`, then
   `registry_get {"id": "..."}` for the endpoint, licence and access. Entries are community
-  written and marked untrusted. Running an entry's access recipe (`registry_fetch`) is planned,
-  not available.
+  written and marked untrusted. `registry_fetch` reads vector services (OGC API Features,
+  ArcGIS REST, GeoJSON) only; it does not fetch STAC imagery yet.
 - **Build the search area from governed data**: pull the boundary with `query_features`,
   reproject it with
   `vector_op {"op": "reproject", "inputs": {"layer": "<handle>"}, "params": {"crs": "EPSG:4326"}}`

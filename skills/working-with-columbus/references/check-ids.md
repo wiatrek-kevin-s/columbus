@@ -103,4 +103,8 @@ Some ids also appear as **refusals**: the tool returns an error
 | `registry.unreviewed` | info | Seeded entries no person has reviewed |
 | `registry.coverage_unchecked` | info | Entries with no recorded extent |
 | `registry.status` | warn | Entry has a non-active status |
+| `registry.license_unknown` | warn | registry_fetch: the entry states no licence; find the publisher's terms |
+| `fetch.truncated` | warn | registry_fetch stopped at the limit and the source has more; narrow the bbox |
+| `fetch.empty` | warn | registry_fetch returned no features; check the bbox (lon/lat) and layer |
+| `fetch.skipped` | warn | Malformed downloaded features were left out |
 | `registry.no_match` | info | Nothing matched |

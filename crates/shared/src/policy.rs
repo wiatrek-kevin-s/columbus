@@ -147,6 +147,10 @@ pub struct OrgPolicy {
     /// Nothing can be exported anywhere else.
     #[serde(default)]
     pub exports: Vec<ExportFolder>,
+    /// Hosts `registry_fetch` may download from without asking the person
+    /// (`*.arcgis.com`, `hazards.fema.gov`). Any other host needs approval.
+    #[serde(default)]
+    pub fetch_hosts: Vec<String>,
 }
 
 /// A folder `export_output` may write to, named by `id`.
@@ -307,6 +311,7 @@ impl Default for OrgPolicy {
             plugins: PluginPolicy::default(),
             approvals: ApprovalPolicy::default(),
             exports: vec![],
+            fetch_hosts: vec![],
         }
     }
 }
@@ -320,6 +325,15 @@ impl OrgPolicy {
     pub fn tool_allowed(&self, tool: &str) -> bool {
         let listed = self.tools.is_empty() || self.tools.iter().any(|t| t == tool);
         listed && !self.deny_tools.iter().any(|t| t == tool)
+    }
+
+    /// May `registry_fetch` download from this host without approval?
+    pub fn fetch_host_allowed(&self, host: &str) -> bool {
+        let rules = DatasetRules {
+            allow: self.fetch_hosts.clone(),
+            deny: vec![],
+        };
+        rules.permits(host).unwrap_or(false)
     }
 
     pub fn host_allowed(&self, host: &str) -> bool {

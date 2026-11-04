@@ -210,7 +210,7 @@ What helps today:
   `registry_search {"query": "lidar point cloud", "kind": "data", "bbox": [-98.0, 30.0, -97.5, 30.5]}`
   and `registry_get {"id": "..."}` for coverage, licence and access links. Results are
   community-written and marked untrusted; entries with no recorded extent come last and are
-  marked unchecked. Fetching through the registry (`registry_fetch`) is planned, not available.
+  marked unchecked. `registry_fetch` reads vector services only; it does not fetch point clouds (EPT, COPC, LAZ).
   `registry_search {"query": "PDAL", "kind": "tool"}` finds tool entries.
 - **Check the organization's own lidar notes** (vertical datum, tile scheme, vendor class
   conventions): `context_search {"query": "lidar"}`, then `context_get {"id": "..."}`.

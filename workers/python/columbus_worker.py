@@ -860,6 +860,21 @@ def read_rows(params: dict[str, Any]) -> dict[str, Any]:
         raise _refused(e) from None
 
 
+def geojson_layer(params: dict[str, Any]) -> dict[str, Any]:
+    g = _gis()
+    pages, stem = params.get("pages"), params.get("out_stem")
+    if not isinstance(pages, list) or not all(isinstance(x, str) for x in pages) or not isinstance(stem, str):
+        raise WorkerError(INVALID_PARAMS, "pages and out_stem are required")
+    try:
+        cap = max(1, int(params.get("max_features") or 200_000))
+    except (TypeError, ValueError):
+        raise WorkerError(INVALID_PARAMS, "max_features must be a whole number") from None
+    try:
+        return g.geojson_pages_to_layer(pages, stem, cap)
+    except g.GISError as e:
+        raise _refused(e) from None
+
+
 def export_layer(params: dict[str, Any]) -> dict[str, Any]:
     g = _gis()
     path, stem = params.get("path"), params.get("out_stem")
@@ -1037,6 +1052,7 @@ for _name, _fn in (
     ("verify_layer", verify_layer),
     ("read_rows", read_rows),
     ("export_layer", export_layer),
+    ("geojson_layer", geojson_layer),
     ("describe_raster", describe_raster),
     ("raster_op", raster_op),
     ("registry_search", registry_search),

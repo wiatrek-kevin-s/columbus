@@ -442,6 +442,63 @@ def read_rows(path: str, offset: int = 0, limit: int = 50, fields: list[str] | N
             "offset": offset, "summary": layer_summary(df)}
 
 
+def geojson_pages_to_layer(pages: list[str], out_stem: str, max_features: int) -> dict[str, Any]:
+    """Build a layer from downloaded GeoJSON pages, parsed as JSON (never
+    handed to GDAL, which picks drivers by content). Coordinates are
+    EPSG:4326, as GeoJSON requires."""
+    import json as _json
+    from shapely.geometry import shape
+
+    rows: list[dict[str, Any]] = []
+    geoms = []
+    skipped = 0
+    truncated = False
+    for path in pages:
+        with open(path, "rb") as f:
+            try:
+                doc = _json.load(f)
+            except ValueError as e:
+                raise GISError("fetch.format", f"a downloaded page is not JSON: {e}") from None
+        feats = doc.get("features") if isinstance(doc, dict) else None
+        if not isinstance(feats, list):
+            raise GISError("fetch.format", "a downloaded page is not a GeoJSON FeatureCollection")
+        for feat in feats:
+            if len(rows) >= max_features:
+                truncated = True
+                break
+            if not isinstance(feat, dict):
+                skipped += 1
+                continue
+            g = feat.get("geometry")
+            try:
+                geom = shape(g) if isinstance(g, dict) else None
+            except Exception:  # noqa: BLE001 - malformed geometry
+                skipped += 1
+                continue
+            props = feat.get("properties") if isinstance(feat.get("properties"), dict) else {}
+            row = {}
+            for k, v in props.items():
+                key = str(k)[:63]
+                row[key] = v if isinstance(v, (str, int, float, bool)) or v is None else _json.dumps(v)[:10000]
+            rows.append(row)
+            geoms.append(geom)
+        if truncated:
+            break
+    df = gpd.GeoDataFrame(pd.DataFrame(rows), geometry=geoms, crs="EPSG:4326")
+    checks = []
+    if skipped:
+        checks.append(check("fetch.skipped", "warn", f"{skipped} downloaded features were malformed and left out"))
+    if truncated:
+        checks.append(check("fetch.truncated", "warn", f"Stopped at {max_features} features; the source has more",
+                            fix="Narrow the bbox, or raise the limit within the read limit"))
+    if df.empty:
+        checks.append(check("fetch.empty", "warn", "The download returned no features",
+                            fix="Check the bbox (lon/lat) and the layer"))
+    path = write_layer(df, out_stem)
+    checks.extend(_layer_checks(df, "The downloaded layer"))
+    return {"output_path": path, "summary": layer_summary(df), "checks": checks, "truncated": truncated}
+
+
 # Delivery format names (as a context pack writes them) -> (driver, extension).
 EXPORT_FORMATS = {
     "gpkg": ("GPKG", ".gpkg"), "geopackage": ("GPKG", ".gpkg"),

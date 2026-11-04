@@ -616,6 +616,7 @@ impl Gateway {
                 + Self::registry_router()
                 + Self::context_router()
                 + Self::export_router()
+                + Self::fetch_router()
                 + Self::raster_router(),
         }
     }
