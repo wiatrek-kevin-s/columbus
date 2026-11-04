@@ -1,0 +1,18 @@
+# Alternative engine environment from conda-forge (identical GDAL and PDAL
+# builds on every machine). `pixi install` in this folder creates
+# engine\.pixi\envs\default, which columbus-mcp finds by itself.
+[workspace]
+name = "columbus-engine"
+channels = ["conda-forge"]
+platforms = ["win-64", "linux-64", "osx-arm64"]
+
+[dependencies]
+python = "3.12.*"
+gdal = ">=3.10"
+geopandas = ">=1.0,<2"
+pyogrio = ">=0.10,<1"
+shapely = ">=2.0,<3"
+pyproj = ">=3.6,<4"
+pandas = ">=2.2,<4"
+rasterio = ">=1.4,<2"
+psycopg = ">=3.2"

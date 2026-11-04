@@ -1,0 +1,56 @@
+name: Release
+
+# A tag v* builds the Windows server and publishes a zip and a .mcpb bundle
+# (the MCP project's one-click format for local servers) to a GitHub release.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build
+        run: cargo build --release --locked -p columbus-mcp
+      - name: Assemble
+        shell: pwsh
+        run: |
+          $version = (cargo metadata --format-version 1 --no-deps | ConvertFrom-Json).packages |
+            Where-Object name -eq "columbus-mcp" | Select-Object -ExpandProperty version
+          $out = "dist\columbus"
+          New-Item -ItemType Directory -Force $out | Out-Null
+          Copy-Item target\release\columbus-mcp.exe, target\release\columbus-confine.exe $out
+          New-Item -ItemType Directory -Force "$out\workers" | Out-Null
+          Copy-Item -Recurse workers\python "$out\workers\python"
+          Remove-Item -Recurse -Force "$out\workers\python\tests" -ErrorAction SilentlyContinue
+          Get-ChildItem -Recurse -Directory -Filter __pycache__ $out | Remove-Item -Recurse -Force
+          Copy-Item -Recurse packaging\engine "$out\engine"
+          Copy-Item -Recurse skills, docs, examples $out
+          Copy-Item README.md, LICENSE $out
+          $m = Get-Content packaging\mcpb\manifest.json -Raw | ConvertFrom-Json
+          $m.version = $version
+          $m | ConvertTo-Json -Depth 10 | Set-Content "$out\manifest.json" -Encoding utf8
+          Compress-Archive -Path "$out\*" -DestinationPath "dist\columbus-$version-windows-x64.zip"
+          Copy-Item "dist\columbus-$version-windows-x64.zip" "dist\columbus-$version.mcpb"
+          "VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append
+      - name: Smoke test
+        shell: pwsh
+        run: dist\columbus\columbus-mcp.exe --version
+      - name: Publish
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          gh release create $env:GITHUB_REF_NAME --title "Columbus $env:VERSION" --notes-file docs\install.md --prerelease 2>$null
+          gh release upload $env:GITHUB_REF_NAME "dist\columbus-$env:VERSION-windows-x64.zip" "dist\columbus-$env:VERSION.mcpb" --clobber
+      - uses: actions/upload-artifact@v4
+        with:
+          name: columbus-windows
+          path: dist/*.zip

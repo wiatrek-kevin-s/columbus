@@ -55,13 +55,15 @@ impl Paths {
             registry: env_path("COLUMBUS_REGISTRY")
                 .unwrap_or_else(|| program_data.join("registry")),
             context: env_path("COLUMBUS_CONTEXT").unwrap_or_else(|| program_data.join("context")),
-            python: env_path("COLUMBUS_PYTHON").unwrap_or_else(|| {
-                PathBuf::from(if cfg!(windows) {
-                    "python.exe"
-                } else {
-                    "python3"
-                })
-            }),
+            python: env_path("COLUMBUS_PYTHON")
+                .or_else(bundled_engine)
+                .unwrap_or_else(|| {
+                    PathBuf::from(if cfg!(windows) {
+                        "python.exe"
+                    } else {
+                        "python3"
+                    })
+                }),
         }
     }
 }
@@ -88,6 +90,29 @@ fn platform_dirs() -> (PathBuf, PathBuf, PathBuf) {
             data.join("columbus"),
         )
     }
+}
+
+/// The engine environment a release sets up beside the executable
+/// (`engine\setup-engine.ps1` makes `engine\venv`; a pixi environment works
+/// too), so no separate Python install has to be on PATH.
+fn bundled_engine() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?;
+    let candidates: &[&[&str]] = if cfg!(windows) {
+        &[
+            &["engine", "venv", "Scripts", "python.exe"],
+            &["engine", ".pixi", "envs", "default", "python.exe"],
+        ]
+    } else {
+        &[
+            &["engine", "venv", "bin", "python3"],
+            &["engine", ".pixi", "envs", "default", "bin", "python3"],
+        ]
+    };
+    candidates
+        .iter()
+        .map(|parts| parts.iter().fold(dir.to_path_buf(), |p, s| p.join(s)))
+        .find(|p| p.is_file())
 }
 
 /// The worker script ships beside the executable in releases

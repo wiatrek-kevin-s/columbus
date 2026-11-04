@@ -178,6 +178,10 @@ docs              worker protocol v2 and plugin.yaml
 examples          a sample policy, connections, server manifests and the LRS checker plugin
 ```
 
+## Install
+
+Releases ship a Windows zip and a `.mcpb` bundle (the MCP project's one-click format for local servers). [docs/install.md](docs/install.md) walks through unpacking, setting up the GIS engine (`engine\setup-engine.ps1`), the policy and connections, and connecting Claude desktop or any MCP client. A tag `v*` builds them ([release workflow](.github/workflows/release.yml)).
+
 ## Build and run
 
 Requires Rust (stable, 1.85+) and Python 3.12+. For the GIS tools, `pip install -r workers/python/requirements-gis.txt` (geopandas, pyogrio, shapely, pyproj, rasterio; the wheels include GDAL and PROJ). For PostGIS, also `pip install "psycopg[binary]"`.
