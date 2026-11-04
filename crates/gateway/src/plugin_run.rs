@@ -84,6 +84,9 @@ impl Gateway {
         // Scalars first: they are cheap to refuse.
         for (name, ps) in &spec.params {
             let v = args.get(name).cloned();
+            if v.is_none() && ps.may_be_absent() {
+                continue;
+            }
             let checked = match (ps, v) {
                 (ParamSpec::Dataset { .. } | ParamSpec::File, _) => continue,
                 (
@@ -105,7 +108,12 @@ impl Gateway {
                     }
                     json!(n)
                 }
-                (ParamSpec::Integer { default, min, max }, v) => {
+                (
+                    ParamSpec::Integer {
+                        default, min, max, ..
+                    },
+                    v,
+                ) => {
                     let n = match v {
                         Some(Value::Number(n)) => n.as_i64(),
                         None => *default,
@@ -119,7 +127,12 @@ impl Gateway {
                     }
                     json!(n)
                 }
-                (ParamSpec::String { choices, default }, v) => {
+                (
+                    ParamSpec::String {
+                        choices, default, ..
+                    },
+                    v,
+                ) => {
                     let s = match v {
                         Some(Value::String(s)) => Some(s),
                         None => default.clone(),
@@ -137,7 +150,7 @@ impl Gateway {
                     }
                     json!(s)
                 }
-                (ParamSpec::Boolean { default }, v) => match v
+                (ParamSpec::Boolean { default, .. }, v) => match v
                     .as_ref()
                     .and_then(Value::as_bool)
                     .or(*default)

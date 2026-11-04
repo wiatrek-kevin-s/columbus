@@ -364,11 +364,7 @@ impl Pack {
                 }
             }
             if let Some(s) = e.str_field("summary") {
-                let sentences = s
-                    .split_terminator(['.', '!', '?'])
-                    .filter(|x| !x.trim().is_empty())
-                    .count();
-                if sentences > 2 {
+                if sentence_count(&s) > 2 {
                     out.push(p(
                         "summary is more than two sentences; move detail to the body".into(),
                     ));
@@ -495,6 +491,36 @@ impl Pack {
     }
 }
 
+/// Sentences in a summary. A `.`, `!` or `?` ends one when it ends the
+/// text, or is followed by a space and then anything but a lower-case letter
+/// or a digit; so decimals (`0.005 mi`) and abbreviations before lower case
+/// (`e.g. ramps`) do not count.
+fn sentence_count(s: &str) -> usize {
+    let chars: Vec<char> = s.trim().chars().collect();
+    let mut n = 0;
+    let mut open = false;
+    for (i, c) in chars.iter().enumerate() {
+        if matches!(c, '.' | '!' | '?') {
+            let rest = &chars[i + 1..];
+            let ends = match rest.first() {
+                None => true,
+                Some(w) if w.is_whitespace() => rest
+                    .iter()
+                    .find(|c| !c.is_whitespace())
+                    .is_none_or(|c| !c.is_lowercase() && !c.is_ascii_digit()),
+                _ => false,
+            };
+            if ends && open {
+                n += 1;
+                open = false;
+            }
+        } else if !c.is_whitespace() {
+            open = true;
+        }
+    }
+    n + usize::from(open)
+}
+
 /// `columbus-mcp pack lint [DIR]`.
 pub fn lint_cli(dir: Option<&str>) -> anyhow::Result<()> {
     let dir = dir
@@ -589,6 +615,21 @@ mod tests {
         ] {
             assert!(l.contains(want), "missing {want:?} in:\n{l}");
         }
+    }
+    #[test]
+    fn sentences_are_counted_by_their_ends() {
+        use super::sentence_count;
+        assert_eq!(
+            sentence_count("Overlaps over 0.001 mi are errors. Gaps over 0.005 mi too."),
+            2
+        );
+        assert_eq!(
+            sentence_count("Ramps, e.g. frontage roads, are excluded"),
+            1
+        );
+        assert_eq!(sentence_count("One. Two. Three."), 3);
+        assert_eq!(sentence_count("Deliverables in EPSG:3081."), 1);
+        assert_eq!(sentence_count(""), 0);
     }
 }
 

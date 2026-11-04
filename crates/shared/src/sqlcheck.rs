@@ -251,9 +251,6 @@ const SELECT_FUNCTIONS: &[&str] = &[
     "JSON_OBJECT",
     "JSON_ARRAY",
     "JSON_EXTRACT",
-    // GeoPackage helpers GDAL registers
-    "GPKGISASSIGNGEOMETRYCOLUMN",
-    "ST_ISEMPTY",
     // arrays and sets (set-returning ones only in the select list: FROM
     // accepts plain tables only)
     "STRING_TO_ARRAY",
@@ -305,7 +302,7 @@ const ST_DENIED: &[&str] = &["ST_ESTIMATEDEXTENT", "ST_FIND_EXTENT", "ST_FINDEXT
 /// On PostgreSQL a spatial function must be one the PostGIS extension
 /// installed ([`Catalog::extension_functions`]): any function in `public`
 /// can be named `st_…`, and one the database owner wrote can read anything.
-/// SQLite databases cannot define functions, so there the name suffices.
+/// On GeoPackage and SQLite files none are available (see below).
 fn select_function_allowed(name: &str, dialect: SqlDialect, catalog: &Catalog) -> bool {
     let (schema, bare) = match name.rsplit_once('.') {
         Some((s, b)) => (Some(s), b),
@@ -326,6 +323,9 @@ fn select_function_allowed(name: &str, dialect: SqlDialect, catalog: &Catalog) -
                     None => false,
                 }
             }
+            // The engine opens GeoPackage and SQLite files with plain SQLite:
+            // no spatial functions are registered, so they would only fail.
+            SqlDialect::Sqlite => false,
             _ => schema.is_none(),
         };
     }
@@ -588,6 +588,15 @@ fn check_tables_and_functions(
         fn pre_visit_table_factor(&mut self, tf: &TableFactor) -> ControlFlow<()> {
             match tf {
                 TableFactor::Table {
+                    sample: Some(_), ..
+                } => {
+                    self.0 = Some(
+                        "TABLESAMPLE is not allowed; use sample_rows, or LIMIT with ORDER BY"
+                            .into(),
+                    );
+                    ControlFlow::Break(())
+                }
+                TableFactor::Table {
                     args: None,
                     version: None,
                     ..
@@ -622,9 +631,12 @@ fn check_tables_and_functions(
                 .any(|p| name.starts_with(p) || bare.starts_with(p))
                 || !select_function_allowed(&name, dialect, catalog)
             {
-                problem = Some(Denied::Query(format!(
-                    "function {name} is not allowed (ordinary scalar, aggregate and window functions and PostGIS ST_* functions are)"
-                )));
+                let spatial = bare.starts_with("ST_") || SPATIAL_OTHER.contains(&bare);
+                problem = Some(Denied::Query(if spatial && dialect == SqlDialect::Sqlite {
+                    format!("function {name} is not available: spatial SQL functions do not run on GeoPackage or SQLite connections; use query_features with bbox, or vector_op")
+                } else {
+                    format!("function {name} is not allowed (ordinary scalar, aggregate and window functions and PostGIS ST_* functions are)")
+                }));
                 return ControlFlow::Break(());
             }
         }
@@ -942,7 +954,12 @@ impl VisitorMut for ApplyFilters<'_> {
         if !checked.is_empty() {
             inner_sql.push_str(&format!(" WHERE {}", checked.join(" AND ")));
         }
-        inner_sql.push_str(barrier(self.dialect));
+        // The barrier is only needed when rows are filtered out: with hidden
+        // fields alone there is no excluded row to protect, and leaving it off
+        // lets the database merge the table and use its spatial index.
+        if !checked.is_empty() {
+            inner_sql.push_str(barrier(self.dialect));
+        }
         let d = self.dialect.parser_dialect();
         let inner = match Parser::parse_sql(d.as_ref(), &inner_sql) {
             Ok(mut s) if s.len() == 1 => match s.remove(0) {
@@ -1566,5 +1583,55 @@ datasets:
             &NO_CATALOG
         )
         .is_err());
+    }
+
+    #[test]
+    fn the_barrier_is_only_added_when_rows_are_filtered() {
+        // Hidden fields alone: no excluded rows, so the database may merge
+        // the table and use its indexes.
+        let mut a = access("postgis", None);
+        a.hide_fields = vec!["OWNER_NAME".into()];
+        let q = check_select(
+            "SELECT route_id FROM roads.roadway_inventory WHERE ST_Length(geom) > 10",
+            &a,
+            10,
+            &cat(),
+        )
+        .unwrap();
+        assert!(!q.sql.contains("OFFSET 0"), "{}", q.sql);
+        assert!(!q.sql.to_lowercase().contains("owner_name"), "{}", q.sql);
+        // With a row filter the barrier is there.
+        let q = check_select(
+            "SELECT route_id FROM roads.roadway_inventory",
+            &hiding("postgis"),
+            10,
+            &cat(),
+        )
+        .unwrap();
+        assert!(q.sql.contains("OFFSET 0"), "{}", q.sql);
+    }
+
+    #[test]
+    fn tablesample_is_refused_not_dropped() {
+        let e = check_select(
+            "SELECT * FROM roads.roadway_inventory TABLESAMPLE SYSTEM (1)",
+            &hiding("postgis"),
+            10,
+            &cat(),
+        )
+        .unwrap_err();
+        assert!(e.to_string().contains("TABLESAMPLE"), "{e}");
+    }
+
+    #[test]
+    fn spatial_functions_are_refused_on_file_connections() {
+        let e = check_select(
+            "SELECT ST_Area(geom) FROM roads.roadway_inventory",
+            &access("gpkg", None),
+            10,
+            &NO_CATALOG,
+        )
+        .unwrap_err();
+        assert!(e.to_string().contains("query_features"), "{e}");
     }
 }

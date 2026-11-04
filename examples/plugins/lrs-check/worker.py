@@ -3,14 +3,19 @@
 Events need a route id and from/to measures; routes need a route id and an
 end measure (a begin measure defaults to 0). Column names are matched
 case-insensitively against common names (ROUTE_ID / RTE_ID, FROM_MEAS /
-BEGIN_MEAS, TO_MEAS / END_MEAS, …).
+BEGIN_MEAS, TO_MEAS / END_MEAS, …), or named with route_field, from_field
+and to_field. A route on several rows (one per section) spans from its
+lowest begin to its highest end measure.
+
+Tolerances are given in miles and converted to the data's measure unit
+(measure_unit). gap_tolerance and overlap_tolerance default to tolerance.
 """
 
 from collections import defaultdict
 
 from columbus_plugin import Plugin, Severity, ToolError, write_csv, write_geojson
 
-plugin = Plugin("contoso.lrs-check", "1.2.0")
+plugin = Plugin("contoso.lrs-check", "1.3.0")
 
 ROUTE = ("route_id", "rte_id", "routeid", "route")
 FROM = ("from_meas", "from_measure", "begin_meas", "bmp", "frm_meas")
@@ -19,8 +24,16 @@ ROUTE_END = ("to_meas", "end_meas", "max_meas", "length_mi", "route_length", "em
 ROUTE_BEGIN = ("from_meas", "begin_meas", "min_meas", "bmp")
 
 
-def pick(columns, names, what, required=True):
+# Miles in one of each measure unit.
+MILES = {"mile": 1.0, "foot": 1 / 5280, "kilometer": 0.621371192, "meter": 0.000621371192}
+
+
+def pick(columns, names, what, required=True, named=None):
     lower = {c.lower(): c for c in columns}
+    if named:
+        if named.lower() in lower:
+            return lower[named.lower()]
+        raise ToolError(f"no column {named!r} for the {what}")
     for n in names:
         if n in lower:
             return lower[n]
@@ -36,9 +49,23 @@ def first_point(geom):
     return {"type": "Point", "coordinates": [x, y]}
 
 
-@plugin.tool("check_events", params=["events", "routes", "tolerance"], outputs=["findings", "report"])
+@plugin.tool(
+    "check_events",
+    params=["events", "routes", "tolerance", "gap_tolerance", "overlap_tolerance",
+            "measure_unit", "route_field", "from_field", "to_field"],
+    outputs=["findings", "report"],
+)
 def check_events(ctx):
-    tol = float(ctx.param("tolerance", 0.001))
+    unit = ctx.param("measure_unit", "mile") or "mile"
+    if unit not in MILES:
+        raise ToolError(f"measure_unit must be one of {', '.join(MILES)}")
+    per_mile = 1.0 / MILES[unit]  # data units in one mile
+    tol_mi = float(ctx.param("tolerance", 0.001))
+    gap_mi = ctx.param("gap_tolerance", None)
+    overlap_mi = ctx.param("overlap_tolerance", None)
+    tol = tol_mi * per_mile
+    gap_tol = (float(gap_mi) if gap_mi is not None else tol_mi) * per_mile
+    overlap_tol = (float(overlap_mi) if overlap_mi is not None else tol_mi) * per_mile
     routes = ctx.dataset("routes")
     events = ctx.dataset("events")
 
@@ -47,11 +74,18 @@ def check_events(ctx):
     r_begin = pick(routes.columns, ROUTE_BEGIN, "route begin measure", required=False)
     extent = {}
     for row in routes.rows():
-        extent[str(row[r_id])] = (float(row[r_begin]) if r_begin and row[r_begin] is not None else 0.0, float(row[r_end]))
+        if row[r_end] is None:
+            continue
+        lo = float(row[r_begin]) if r_begin and row[r_begin] is not None else 0.0
+        hi = float(row[r_end])
+        rid = str(row[r_id])
+        if rid in extent:
+            lo, hi = min(lo, extent[rid][0]), max(hi, extent[rid][1])
+        extent[rid] = (lo, hi)
 
-    e_id = pick(events.columns, ROUTE, "route id")
-    e_from = pick(events.columns, FROM, "from measure")
-    e_to = pick(events.columns, TO, "to measure")
+    e_id = pick(events.columns, ROUTE, "route id", named=ctx.param("route_field", None))
+    e_from = pick(events.columns, FROM, "from measure", named=ctx.param("from_field", None))
+    e_to = pick(events.columns, TO, "to measure", named=ctx.param("to_field", None))
 
     findings = []  # (check, severity, route, from, to, message, geometry)
     by_route = defaultdict(list)
@@ -80,9 +114,9 @@ def check_events(ctx):
         spans.sort(key=lambda s: (s[0], s[1]))
         reach = spans[0][1]
         for f, t, geom in spans[1:]:
-            if f < reach - tol:
+            if f < reach - overlap_tol:
                 findings.append(("lrs.overlap", Severity.WARN, rid, f, t, f"overlaps the previous event by {reach - f:g}", geom))
-            elif f > reach + tol:
+            elif f > reach + gap_tol:
                 findings.append(("lrs.gap", Severity.WARN, rid, reach, f, f"gap of {f - reach:g} before this event", geom))
             reach = max(reach, t)
 
@@ -106,7 +140,8 @@ def check_events(ctx):
         severity[c] = s
     for c in sorted(counts):
         ctx.warn(c, severity[c], f"{counts[c]} event(s): {c.split('.', 1)[1].replace('_', ' ')}", detail={"count": counts[c]})
-    return {"events_checked": events.row_count, "routes": len(extent), "findings": len(findings)}
+    return {"events_checked": events.row_count, "routes": len(extent), "findings": len(findings),
+            "measure_unit": unit, "tolerances_mi": {"range": tol_mi, "gap": gap_tol / per_mile, "overlap": overlap_tol / per_mile}}
 
 
 if __name__ == "__main__":

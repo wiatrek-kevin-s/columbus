@@ -25,7 +25,7 @@ Result:
 ```json
 {
   "protocol": 2,
-  "plugin": {"id": "contoso.lrs-check", "version": "1.2.0"},
+  "plugin": {"id": "contoso.lrs-check", "version": "1.3.0"},
   "tools": [
     {"name": "check_events", "params": ["events", "routes", "tolerance"], "outputs": ["findings", "report"]}
   ]
@@ -105,7 +105,7 @@ The SDKs read extracts for plugins and decode geometry to WKB.
 ```yaml
 id: contoso.lrs-check          # lower case, dots allowed; becomes the tool namespace
 name: LRS event checker
-version: 1.2.0
+version: 1.3.0
 runtime: python                # python | rust
 entry: worker.py               # python: script; rust: executable (".exe" added on Windows)
 engine_env: columbus-py        # the managed pixi environment, or arcpy

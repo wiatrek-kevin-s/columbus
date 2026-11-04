@@ -3,7 +3,7 @@
 # approving it with `columbus-mcp plugins approve contoso.lrs-check`.
 id: contoso.lrs-check
 name: LRS event checker
-version: 1.2.0
+version: 1.3.0
 runtime: python
 entry: worker.py
 engine_env: columbus-py
@@ -13,7 +13,14 @@ tools:
     params:
       events:    { type: dataset, access: read }
       routes:    { type: dataset, access: read }
+      # Tolerances are in miles whatever the data's measure unit.
       tolerance: { type: number, unit: mile, default: 0.001, min: 0, max: 1 }
+      gap_tolerance:     { type: number, unit: mile, min: 0, max: 1, optional: true }
+      overlap_tolerance: { type: number, unit: mile, min: 0, max: 1, optional: true }
+      measure_unit: { type: string, enum: [mile, foot, kilometer, meter], default: mile }
+      route_field:  { type: string, optional: true }
+      from_field:   { type: string, optional: true }
+      to_field:     { type: string, optional: true }
     outputs:
       findings: { type: layer, geometry: point }
       report:   { type: table }

@@ -226,14 +226,35 @@ fn level_c_reads_anywhere_but_writes_only_granted_folders() {
     let port = listener.local_addr().unwrap().port();
     let out = run("C", &d.ws, &[], &py, &script(&d, port));
     if out.code != 0 && cfg!(windows) {
-        // What the low-integrity process could not read.
-        for dir in python_dirs(&py) {
-            if let Ok(o) = Command::new("icacls").arg(&dir).output() {
-                eprintln!("icacls {dir}:\n{}", String::from_utf8_lossy(&o.stdout));
-            }
-        }
-        if let Ok(o) = Command::new("whoami").arg("/groups").output() {
-            eprintln!("whoami /groups:\n{}", String::from_utf8_lossy(&o.stdout));
+        // Which programs start at level C here: a system one, a Rust one
+        // from this build, and Python without isolated mode.
+        let me = launcher().display().to_string();
+        let probes: [(&str, &[&str]); 4] = [
+            ("cmd", &["/c", "echo native-ok"]),
+            (me.as_str(), &["--check", "A"]),
+            (py.as_str(), &["-c", "print('py-ok')"]),
+            (py.as_str(), &["-S", "-c", "print('py-S-ok')"]),
+        ];
+        for (program, args) in probes {
+            let ws = d.ws.display().to_string();
+            let mut a: Vec<&str> = vec![
+                "--level",
+                "C",
+                "--name",
+                "test.probe",
+                "--rw",
+                &ws,
+                "--",
+                program,
+            ];
+            a.extend(args);
+            let o = Command::new(launcher()).args(&a).output().unwrap();
+            eprintln!(
+                "probe {program} {args:?}: exit {:?} out {:?} err {:?}",
+                o.status.code(),
+                String::from_utf8_lossy(&o.stdout),
+                String::from_utf8_lossy(&o.stderr)
+            );
         }
     }
     for l in [

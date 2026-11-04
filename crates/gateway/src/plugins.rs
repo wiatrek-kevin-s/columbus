@@ -51,6 +51,9 @@ pub enum ParamSpec {
         min: Option<f64>,
         #[serde(default)]
         max: Option<f64>,
+        /// No default, and may be left out.
+        #[serde(default)]
+        optional: bool,
     },
     Integer {
         #[serde(default)]
@@ -59,16 +62,25 @@ pub enum ParamSpec {
         min: Option<i64>,
         #[serde(default)]
         max: Option<i64>,
+        /// No default, and may be left out.
+        #[serde(default)]
+        optional: bool,
     },
     String {
         #[serde(default, rename = "enum")]
         choices: Option<Vec<String>>,
         #[serde(default)]
         default: Option<String>,
+        /// No default, and may be left out.
+        #[serde(default)]
+        optional: bool,
     },
     Boolean {
         #[serde(default)]
         default: Option<bool>,
+        /// No default, and may be left out.
+        #[serde(default)]
+        optional: bool,
     },
     File,
 }
@@ -199,6 +211,25 @@ impl PluginManifest {
     }
 }
 
+impl ParamSpec {
+    /// A scalar that may be left out: optional, with no default.
+    pub fn may_be_absent(&self) -> bool {
+        match self {
+            ParamSpec::Number {
+                default, optional, ..
+            } => *optional && default.is_none(),
+            ParamSpec::Integer {
+                default, optional, ..
+            } => *optional && default.is_none(),
+            ParamSpec::String {
+                default, optional, ..
+            } => *optional && default.is_none(),
+            ParamSpec::Boolean { default, optional } => *optional && default.is_none(),
+            ParamSpec::Dataset { .. } | ParamSpec::File => false,
+        }
+    }
+}
+
 /// JSON Schema for a tool's arguments, as the agent sees it.
 pub fn input_schema(t: &PluginTool) -> Value {
     let mut props = serde_json::Map::new();
@@ -217,6 +248,7 @@ pub fn input_schema(t: &PluginTool) -> Value {
                 default,
                 min,
                 max,
+                optional,
             } => {
                 let mut s = json!({"type": "number"});
                 if let Some(u) = unit {
@@ -231,9 +263,14 @@ pub fn input_schema(t: &PluginTool) -> Value {
                 if let Some(m) = max {
                     s["maximum"] = json!(m);
                 }
-                (s, default.is_none())
+                (s, default.is_none() && !optional)
             }
-            ParamSpec::Integer { default, min, max } => {
+            ParamSpec::Integer {
+                default,
+                min,
+                max,
+                optional,
+            } => {
                 let mut s = json!({"type": "integer"});
                 if let Some(d) = default {
                     s["default"] = json!(d);
@@ -244,9 +281,13 @@ pub fn input_schema(t: &PluginTool) -> Value {
                 if let Some(m) = max {
                     s["maximum"] = json!(m);
                 }
-                (s, default.is_none())
+                (s, default.is_none() && !optional)
             }
-            ParamSpec::String { choices, default } => {
+            ParamSpec::String {
+                choices,
+                default,
+                optional,
+            } => {
                 let mut s = json!({"type": "string"});
                 if let Some(c) = choices {
                     s["enum"] = json!(c);
@@ -254,14 +295,14 @@ pub fn input_schema(t: &PluginTool) -> Value {
                 if let Some(d) = default {
                     s["default"] = json!(d);
                 }
-                (s, default.is_none())
+                (s, default.is_none() && !optional)
             }
-            ParamSpec::Boolean { default } => {
+            ParamSpec::Boolean { default, optional } => {
                 let mut s = json!({"type": "boolean"});
                 if let Some(d) = default {
                     s["default"] = json!(d);
                 }
-                (s, default.is_none())
+                (s, default.is_none() && !optional)
             }
             ParamSpec::File => (
                 json!({"type": "string", "description": "A workspace file handle, ws://<session>/<path>"}),
