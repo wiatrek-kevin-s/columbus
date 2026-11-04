@@ -33,6 +33,21 @@ const PLUGIN_ENV_ALLOW: &[&str] = &[
     "LC_ALL",
     "NUMBER_OF_PROCESSORS",
     "PROCESSOR_ARCHITECTURE",
+    // Windows starts an AppContainer process relative to the person's
+    // profile and fails (ERROR_ENVVAR_NOT_FOUND) without these; they are
+    // folder names, and the container cannot read those folders anyway.
+    "USERPROFILE",
+    "LOCALAPPDATA",
+    "APPDATA",
+    "ProgramData",
+    "ALLUSERSPROFILE",
+    "PUBLIC",
+    "USERNAME",
+    "USERDOMAIN",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "ProgramFiles",
+    "CommonProgramFiles",
 ];
 
 /// How to start a worker.

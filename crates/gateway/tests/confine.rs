@@ -306,3 +306,66 @@ fn exit_codes_and_bad_arguments() {
         Some(columbus_confine::EXIT_CONFINE_FAILED)
     );
 }
+
+#[test]
+fn level_a_starts_with_the_small_environment_plugins_get() {
+    let Some(py) = python() else { return };
+    if !can_confine() {
+        return;
+    }
+    let d = dirs();
+    let keep = [
+        "PATH",
+        "PATHEXT",
+        "SystemRoot",
+        "SystemDrive",
+        "windir",
+        "COMSPEC",
+        "USERPROFILE",
+        "LOCALAPPDATA",
+        "APPDATA",
+        "ProgramData",
+        "ALLUSERSPROFILE",
+        "PUBLIC",
+        "USERNAME",
+        "USERDOMAIN",
+        "HOMEDRIVE",
+        "HOMEPATH",
+        "ProgramFiles",
+        "CommonProgramFiles",
+    ];
+    let mut args: Vec<String> = vec![
+        "--level".into(),
+        "A".into(),
+        "--name".into(),
+        "test.env".into(),
+        "--rw".into(),
+        d.ws.display().to_string(),
+    ];
+    for dir in python_dirs(&py) {
+        args.push("--ro".into());
+        args.push(dir);
+    }
+    args.extend([
+        "--".into(),
+        py.clone(),
+        "-I".into(),
+        "-c".into(),
+        "print('started')".into(),
+    ]);
+    let mut cmd = Command::new(launcher());
+    cmd.args(&args).env_clear().current_dir(&d.ws);
+    for k in keep {
+        if let Some(v) = std::env::var_os(k) {
+            cmd.env(k, v);
+        }
+    }
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let o = cmd.output().unwrap();
+    assert!(
+        String::from_utf8_lossy(&o.stdout).contains("started"),
+        "exit {:?}: {}",
+        o.status.code(),
+        String::from_utf8_lossy(&o.stderr)
+    );
+}
