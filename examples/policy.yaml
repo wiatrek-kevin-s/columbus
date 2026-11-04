@@ -1,0 +1,26 @@
+# Organization policy: %ProgramData%\Columbus\policy.yaml
+# Writable only by administrators; can be pushed by Intune. Every setting can
+# only narrow what Columbus allows. With no file, the defaults are: local
+# GeoPackage/SQLite only, read-only, no scripts, no edits.
+
+# Connection types allowed at all.
+connection_types: [gpkg, sqlite, oracle, sqlserver, postgis]
+
+# Hosts any connection may reach (wildcards allowed).
+hosts: ["*.corp.example", "oraprod.corp.example"]
+
+# Tools: leave empty to allow all built-in tools; deny_tools always wins.
+tools: []
+deny_tools: []
+
+allow_scripts: false   # run_python (always approved per call when allowed)
+allow_edits: false     # read-write connections are treated as read-only while false
+
+limits:
+  rows: 200000         # rows read per query
+  seconds: 120         # query time
+
+return_rows: 500       # rows sent to the AI provider per call (500 is the maximum)
+
+# Fields never returned to the agent (wildcards, case-insensitive).
+hide_fields: ["*SSN*", "OWNER_NAME", "*_PHONE"]

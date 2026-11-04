@@ -1,0 +1,30 @@
+[package]
+name = "columbus-mcp"
+description = "Governed GIS MCP server: the gateway that enforces Columbus's rules and delegates GIS work to engine workers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "columbus-mcp"
+path = "src/main.rs"
+
+[dependencies]
+columbus-shared = { path = "../shared" }
+rmcp.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+schemars.workspace = true
+tokio.workspace = true
+anyhow.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+rmcp = { workspace = true, features = ["client", "transport-child-process"] }

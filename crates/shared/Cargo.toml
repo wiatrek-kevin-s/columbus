@@ -1,0 +1,24 @@
+[package]
+name = "columbus-shared"
+description = "Connections, permissions, query checking, approvals, sandbox and audit for Columbus"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+thiserror.workspace = true
+globset.workspace = true
+sha2.workspace = true
+hex.workspace = true
+chrono.workspace = true
+sqlparser.workspace = true
+uuid.workspace = true
+schemars.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

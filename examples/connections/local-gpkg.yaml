@@ -1,0 +1,8 @@
+# A local GeoPackage. This engine works today.
+id: local-roads
+type: gpkg
+path: C:\GIS\data\roads.gpkg
+description: Local copy of the roads layer
+datasets:
+  allow: ["*"]
+  deny: ["*audit*"]

@@ -1,0 +1,15 @@
+# A connection: %APPDATA%\Columbus\connections\roads-prod.yaml
+# Added by the person, never by the agent. Secrets live in Windows
+# Credential Manager under the connection id, never in this file.
+id: roads-prod
+type: oracle
+dsn: ORAPROD
+host: oraprod.corp.example
+description: Roadway inventory, District 14, read-only
+mode: read
+datasets:
+  allow: ["ROADS.ROADWAY_*", "ROADS.CONTROL_SECTION"]
+  deny:  ["ROADS.*_AUDIT"]
+row_filter: "DISTRICT_NBR = 14"
+limits: { rows: 200000, seconds: 120 }
+expires: 2027-06-30
