@@ -249,7 +249,32 @@ fn run_args() -> Value {
     json!({"name": RUN, "args": {"events": "lrs:events", "routes": {"connection": "lrs", "dataset": "routes"}}})
 }
 
+/// Columbus has no sandbox on macOS yet, so an approved plugin is blocked
+/// there and a run is refused, never started unconfined.
+#[cfg(target_os = "macos")]
 #[tokio::test]
+async fn plugins_are_refused_on_macos() {
+    let Some(py) = python() else { return };
+    let env = setup(&py);
+    env.approve();
+    let c = start(&env, &py).await;
+    let lp = ok(&call(&c, "list_providers", json!({})).await);
+    let status = &provider(&lp, "contoso.lrs-check")["status"];
+    assert_eq!(status["state"], "blocked", "{status}");
+    assert!(
+        status.to_string().contains("not available on macOS"),
+        "{status}"
+    );
+    let e = err(&call(&c, "run_tool", run_args()).await);
+    assert!(e.contains("not available on macOS"), "{e}");
+    c.cancel().await.unwrap();
+}
+
+#[tokio::test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "no sandbox on macOS yet: plugins_are_refused_on_macos covers it"
+)]
 async fn unapproved_and_changed_plugins_stay_off() {
     let Some(py) = python() else { return };
     let env = setup(&py);
@@ -277,6 +302,10 @@ async fn unapproved_and_changed_plugins_stay_off() {
 }
 
 #[tokio::test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "no sandbox on macOS yet: plugins_are_refused_on_macos covers it"
+)]
 async fn a_worker_that_does_not_match_its_manifest_is_refused() {
     let Some(py) = python() else { return };
     let env = setup(&py);
@@ -295,6 +324,10 @@ async fn a_worker_that_does_not_match_its_manifest_is_refused() {
 }
 
 #[tokio::test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "no sandbox on macOS yet: plugins_are_refused_on_macos covers it"
+)]
 async fn the_lrs_checker_runs_on_governed_data() {
     let Some(py) = python() else { return };
     let env = setup(&py);
@@ -428,6 +461,10 @@ async fn the_lrs_checker_runs_on_governed_data() {
 }
 
 #[tokio::test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "no sandbox on macOS yet: plugins_are_refused_on_macos covers it"
+)]
 async fn a_rust_plugin_reads_governed_geometry_and_stops_on_time() {
     let Some(py) = python() else { return };
     let env = setup_with(&py, 3);

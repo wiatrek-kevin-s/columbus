@@ -27,7 +27,7 @@
     "connections": {
       "type": "directory",
       "title": "Connections folder",
-      "description": "Your personal connection files. Leave empty to use the organization's (%ProgramData%\\Columbus\\connections).",
+      "description": "Your connection files. Leave empty to use %APPDATA%\\Columbus\\connections.",
       "required": false
     },
     "context_pack": {
@@ -39,7 +39,7 @@
     "python": {
       "type": "file",
       "title": "Engine Python",
-      "description": "Leave empty to use the engine set up beside the server (engine\\venv).",
+      "description": "The engine's Python: engine\\setup-engine.ps1 prints the path to paste here.",
       "required": false
     }
   },

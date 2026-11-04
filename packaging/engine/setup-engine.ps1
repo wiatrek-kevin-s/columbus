@@ -45,4 +45,7 @@ $odbc = & $vpy -c "import pyodbc; print('ODBC Driver 18 for SQL Server' in pyodb
 if ($odbc -ne "True") {
     Write-Host "Note: ODBC Driver 18 for SQL Server is not installed; SQL Server connections need it (https://learn.microsoft.com/sql/connect/odbc/download-odbc-driver-for-sql-server)."
 }
-Write-Host "Done. columbus-mcp finds this environment by itself."
+Write-Host ""
+Write-Host "Done. columbus-mcp finds this environment by itself when it runs from this folder."
+Write-Host "If you install the .mcpb extension in Claude desktop, paste this as its Engine Python:"
+Write-Host "  $vpy"

@@ -2,7 +2,7 @@
 
 Columbus is a governed GIS server for AI agents. It runs on your computer, beside the AI client you already use (Claude desktop, GitHub Copilot in VS Code, or any MCP client), and enforces what the agent may read, write, run and send.
 
-This release is the server alone. The Columbus desktop app (chat, map and approvals in one window) comes later.
+This release is the server alone. The Columbus desktop app (chat, map and approvals in one window) comes later. For a Mac, see [install-macos.md](install-macos.md).
 
 ## 1. Unpack
 
@@ -16,14 +16,14 @@ Columbus's GIS engine needs Python 3.12. If you don't have it, install it from p
 powershell -ExecutionPolicy Bypass -File engine\setup-engine.ps1
 ```
 
-This creates `engine\venv` with GDAL, PROJ, GeoPandas and rasterio (about 300 MB). Columbus finds it by itself. On a machine without internet access, run it with `-Wheels <folder>` pointing at a folder of downloaded wheels.
+This creates `engine\venv` with GDAL, PROJ, GeoPandas and rasterio (about 300 MB). At the end it prints the engine's Python path; keep it for step 4. On a machine without internet access, run it with `-Wheels <folder>` pointing at a folder of downloaded wheels.
 
 ## 3. Tell Columbus what it may use
 
-Columbus reads its settings from `%ProgramData%\Columbus`. In an organization, IT manages these files. On your own machine you set them up yourself.
+Columbus reads the organization's settings from `%ProgramData%\Columbus` and your connections from `%APPDATA%\Columbus\connections`. In an organization, IT manages these files. On your own machine you set them up yourself.
 
 - `policy.yaml` holds what is allowed at all: connection types, limits, hidden fields, export folders, download hosts. Start from `examples\policy.yaml`. With no file, Columbus allows only local GeoPackage and SQLite files, read-only, with no scripts and no edits.
-- `connections\*.yaml` has one file per database or folder. See `examples\connections`. Passwords never go in these files:
+- `%APPDATA%\Columbus\connections\*.yaml` has one file per database or folder. See `examples\connections`. Passwords never go in these files:
 
   ```powershell
   columbus-mcp secret set roads-prod
@@ -35,7 +35,7 @@ Columbus reads its settings from `%ProgramData%\Columbus`. In an organization, I
 
 ## 4. Connect your AI client
 
-**Claude desktop:** install the `.mcpb` file from the release as an extension (Claude desktop opens `.mcpb` files). When asked, leave the fields empty to use the folders above.
+**Claude desktop:** install `columbus-<version>-windows-x64.mcpb` from the release as an extension (Claude desktop opens `.mcpb` files). When asked, leave the folder fields empty to use the folders above, and paste the Python path that `setup-engine.ps1` printed at the end into **Engine Python** (the extension runs from its own folder, so it does not find the engine by itself).
 
 **Any MCP client (stdio):** add a server entry like this one, using your own path:
 

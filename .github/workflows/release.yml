@@ -1,7 +1,8 @@
 name: Release
 
-# A tag v* builds the Windows server and publishes a zip and a .mcpb bundle
-# (the MCP project's one-click format for local servers) to a GitHub release.
+# A tag v* (or a manual run with a tag name) builds the server for Windows
+# and macOS and publishes, for each, a zip and a .mcpb bundle (the MCP
+# project's one-click format for local servers) to a GitHub release.
 on:
   push:
     tags: ["v*"]
@@ -20,6 +21,9 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - uses: dtolnay/rust-toolchain@stable
       - name: Build
         run: cargo build --release --locked -p columbus-mcp
@@ -35,37 +39,98 @@ jobs:
           Copy-Item -Recurse workers\python "$out\workers\python"
           Remove-Item -Recurse -Force "$out\workers\python\tests" -ErrorAction SilentlyContinue
           Get-ChildItem -Recurse -Directory -Filter __pycache__ $out | Remove-Item -Recurse -Force
-          Copy-Item -Recurse packaging\engine "$out\engine"
+          New-Item -ItemType Directory -Force "$out\engine" | Out-Null
+          Copy-Item packaging\engine\setup-engine.ps1, packaging\engine\pixi.toml "$out\engine"
           Copy-Item -Recurse skills, docs, examples $out
           Copy-Item README.md, LICENSE $out
-          $m = Get-Content packaging\mcpb\manifest.json -Raw | ConvertFrom-Json
-          $m.version = $version
-          $m | ConvertTo-Json -Depth 10 | Set-Content "$out\manifest.json" -Encoding utf8
+          python packaging\mcpb\make_manifest.py windows $version "$out\manifest.json"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
           Compress-Archive -Path "$out\*" -DestinationPath "dist\columbus-$version-windows-x64.zip"
-          Copy-Item "dist\columbus-$version-windows-x64.zip" "dist\columbus-$version.mcpb"
-          "VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Copy-Item "dist\columbus-$version-windows-x64.zip" "dist\columbus-$version-windows-x64.mcpb"
       - name: Smoke test
         shell: pwsh
         run: dist\columbus\columbus-mcp.exe --version
-      - name: Publish
-        if: startsWith(github.ref, 'refs/tags/') || inputs.tag != ''
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ inputs.tag != '' && inputs.tag || github.ref_name }}
-        shell: pwsh
-        run: |
-          # The tag must name the version that was built, so the files, the
-          # title and `columbus-mcp --version` all agree with it.
-          if ($env:TAG -ne "v$env:VERSION") {
-            Write-Error "Tag $env:TAG does not match the built version $env:VERSION: change the version in Cargo.toml first."
-            exit 1
-          }
-          gh release view $env:TAG 2>$null
-          if ($LASTEXITCODE -ne 0) {
-            gh release create $env:TAG --target $env:GITHUB_SHA --title "Columbus $env:VERSION (test release)" --notes-file docs\install.md --prerelease
-          }
-          gh release upload $env:TAG "dist\columbus-$env:VERSION-windows-x64.zip" "dist\columbus-$env:VERSION.mcpb" --clobber
       - uses: actions/upload-artifact@v4
         with:
           name: columbus-windows
-          path: dist/*.zip
+          path: |
+            dist/*.zip
+            dist/*.mcpb
+
+  macos:
+    # Apple Silicon. The binaries are signed ad hoc (the linker does this),
+    # not with an Apple Developer ID; docs/install-macos.md says what that
+    # means for opening them.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build
+        run: cargo build --release --locked -p columbus-mcp
+      - name: Assemble
+        run: |
+          set -eu
+          version=$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"]=="columbus-mcp"))')
+          out=dist/columbus
+          mkdir -p "$out/workers" "$out/engine"
+          cp target/release/columbus-mcp target/release/columbus-confine "$out/"
+          cp -R workers/python "$out/workers/python"
+          rm -rf "$out/workers/python/tests"
+          find "$out" -type d -name __pycache__ -prune -exec rm -rf {} +
+          cp packaging/engine/setup-engine.sh packaging/engine/pixi.toml "$out/engine/"
+          chmod +x "$out/engine/setup-engine.sh"
+          cp -R skills docs examples README.md LICENSE "$out/"
+          python3 packaging/mcpb/make_manifest.py macos "$version" "$out/manifest.json"
+          (cd "$out" && zip -qry "../columbus-$version-macos-arm64.zip" .)
+          cp "dist/columbus-$version-macos-arm64.zip" "dist/columbus-$version-macos-arm64.mcpb"
+      - name: Smoke test
+        run: |
+          set -eu
+          dist/columbus/columbus-mcp --version
+          # The engine setup on a copy, so the release does not ship a venv.
+          cp -R dist/columbus "$RUNNER_TEMP/try"
+          sh "$RUNNER_TEMP/try/engine/setup-engine.sh" --python "$(command -v python3.12 || command -v python3)"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: columbus-macos
+          path: |
+            dist/*.zip
+            dist/*.mcpb
+
+  publish:
+    needs: [windows, macos]
+    if: startsWith(github.ref, 'refs/tags/') || inputs.tag != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag != '' && inputs.tag || github.ref_name }}
+        run: |
+          set -eu
+          version=$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"]=="columbus-mcp"))')
+          # The tag must name the version that was built, so the files, the
+          # title and `columbus-mcp --version` all agree with it.
+          if [ "$TAG" != "v$version" ]; then
+            echo "Tag $TAG does not match the built version $version: change the version in Cargo.toml first." >&2
+            exit 1
+          fi
+          # Only a commit whose CI passed is released.
+          passed=$(gh run list --workflow ci.yml --commit "$GITHUB_SHA" --json conclusion -q '[.[] | select(.conclusion == "success")] | length')
+          if [ "$passed" -lt 1 ]; then
+            echo "CI has not passed for $GITHUB_SHA; wait for it, or fix it, before releasing." >&2
+            exit 1
+          fi
+          ls -l dist
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --target "$GITHUB_SHA" --title "Columbus $version (test release)" --notes-file packaging/release-notes.md --prerelease
+          fi
+          gh release upload "$TAG" dist/*.zip dist/*.mcpb --clobber
