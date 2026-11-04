@@ -143,6 +143,21 @@ pub struct OrgPolicy {
     /// How people are asked to approve.
     #[serde(default)]
     pub approvals: ApprovalPolicy,
+    /// Folders outside the workspace that `export_output` may write to.
+    /// Nothing can be exported anywhere else.
+    #[serde(default)]
+    pub exports: Vec<ExportFolder>,
+}
+
+/// A folder `export_output` may write to, named by `id`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExportFolder {
+    pub id: String,
+    pub path: std::path::PathBuf,
+    /// Exports here need no approval (when every check passes and no flow
+    /// rule says otherwise). Default: each export is approved by a person.
+    #[serde(default)]
+    pub granted: bool,
 }
 
 /// How approvals reach the person when their AI client cannot ask them.
@@ -264,7 +279,8 @@ pub enum FlowAction {
 }
 
 /// `from` holds labels (`connection:roads-prod`, `connection:*`); `to`
-/// holds destinations (`server:drive`, `server:*`).
+/// holds destinations (`server:drive`, `server:*`, and export folders as
+/// `folder:<id>` or `folder:*`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FlowRule {
     pub from: Vec<String>,
@@ -290,6 +306,7 @@ impl Default for OrgPolicy {
             flows: vec![],
             plugins: PluginPolicy::default(),
             approvals: ApprovalPolicy::default(),
+            exports: vec![],
         }
     }
 }

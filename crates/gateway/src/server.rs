@@ -297,6 +297,9 @@ pub struct WhoAmI {
     pub connections_folder: String,
     pub workspace: String,
     pub granted_folders: Vec<String>,
+    /// Where export_output may write: {id, path, granted}. Granted folders
+    /// need no approval when every check passes.
+    pub export_folders: Vec<Value>,
     pub audit_log: String,
     /// Where connection passwords are kept.
     pub secret_store: String,
@@ -594,7 +597,8 @@ impl Gateway {
             tool_router: Self::tool_router()
                 + Self::gis_router()
                 + Self::registry_router()
-                + Self::context_router(),
+                + Self::context_router()
+                + Self::export_router(),
         }
     }
 
@@ -1013,6 +1017,11 @@ impl Gateway {
                 .granted()
                 .iter()
                 .map(|g| g.display().to_string())
+                .collect(),
+            export_folders: p
+                .exports
+                .iter()
+                .map(|f| json!({"id": f.id, "path": f.path, "granted": f.granted}))
                 .collect(),
             audit_log: self.state.audit.dir().display().to_string(),
             secret_store: self.state.secrets.describe(),

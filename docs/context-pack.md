@@ -69,7 +69,7 @@ The datasets a recurring job needs, how they join and the documents that explain
 
 ### Delivery
 
-Adds the spec a deliverable must meet: `crs`, `formats`, field renames, required metadata.
+Adds the spec a deliverable must meet: `crs`, `formats`, `fields: {rename: {OLD: NEW}}` and required `metadata` items. `export_output` with `delivery: <id>` applies the CRS and renames and refuses (as a `fail`, overridable only by a person) a format the spec does not list or missing metadata.
 
 ## What lint checks
 
@@ -77,4 +77,4 @@ Front matter present and valid; required fields per kind; ids unique and well-fo
 
 ## Not yet
 
-Columbus does not yet enforce domains in verification or delivery specs before export, draft entries from a geodatabase (`draft_context_from_geodatabase`), or propose updates when a live schema drifts from its entry. Those come with the edit and export tools.
+Columbus does not yet enforce domains in verification, draft entries from a geodatabase (`draft_context_from_geodatabase`), or propose updates when a live schema drifts from its entry. Those come with the edit and export tools.

@@ -840,6 +840,39 @@ def verify_layer(params: dict[str, Any]) -> dict[str, Any]:
         raise _refused(e) from None
 
 
+def read_rows(params: dict[str, Any]) -> dict[str, Any]:
+    g = _gis()
+    path = params.get("path")
+    if not isinstance(path, str):
+        raise WorkerError(INVALID_PARAMS, "path is required")
+    try:
+        offset = max(0, int(params.get("offset") or 0))
+        limit = max(1, min(500, int(params.get("limit") or 50)))
+    except (TypeError, ValueError):
+        raise WorkerError(INVALID_PARAMS, "offset and limit must be whole numbers") from None
+    fields = params.get("fields")
+    if fields is not None and (not isinstance(fields, list) or not all(isinstance(f, str) for f in fields)):
+        raise WorkerError(INVALID_PARAMS, "fields must be a list of names")
+    try:
+        return g.read_rows(path, offset, limit, fields)
+    except g.GISError as e:
+        raise _refused(e) from None
+
+
+def export_layer(params: dict[str, Any]) -> dict[str, Any]:
+    g = _gis()
+    path, stem = params.get("path"), params.get("out_stem")
+    if not isinstance(path, str) or not isinstance(stem, str):
+        raise WorkerError(INVALID_PARAMS, "path and out_stem are required")
+    rename = params.get("rename") or None
+    if rename is not None and (not isinstance(rename, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in rename.items())):
+        raise WorkerError(INVALID_PARAMS, "rename must map field names to field names")
+    try:
+        return g.export_layer(path, stem, str(params.get("format") or "gpkg"), params.get("crs"), rename)
+    except g.GISError as e:
+        raise _refused(e) from None
+
+
 # ---------- Registry (design section 6) ----------
 
 REGISTRY_LIMIT = 50
@@ -955,6 +988,8 @@ for _name, _fn in (
     ("query_layer", query_layer),
     ("vector_op", vector_op),
     ("verify_layer", verify_layer),
+    ("read_rows", read_rows),
+    ("export_layer", export_layer),
     ("registry_search", registry_search),
     ("registry_get", registry_get),
 ):

@@ -23,7 +23,7 @@ MAX_BODY_LINES = 500
 # them only to say they are not available.
 PLANNED = {
     "raster_op", "pointcloud_pipeline", "run_python", "propose_edits",
-    "apply_edits", "read_output", "export_output", "registry_fetch",
+    "apply_edits", "registry_fetch",
     "draft_context_from_geodatabase",
 }
 

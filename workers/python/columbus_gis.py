@@ -398,6 +398,118 @@ def verify_layer(path: str) -> dict[str, Any]:
     return {"summary": layer_summary(df), "checks": checks}
 
 
+def _row_value(v: Any) -> Any:
+    if v is None:
+        return None
+    try:
+        if pd.isna(v):
+            return None
+    except (TypeError, ValueError):
+        pass
+    if isinstance(v, (bool, int, float, str)):
+        return v
+    if hasattr(v, "item"):  # numpy scalars
+        try:
+            return v.item()
+        except (TypeError, ValueError):
+            pass
+    return str(v)
+
+
+def read_rows(path: str, offset: int = 0, limit: int = 50, fields: list[str] | None = None) -> dict[str, Any]:
+    """Rows of a workspace layer, a page at a time. Geometry comes back as its
+    type and bounding box, not coordinates."""
+    df = read_layer(path)
+    geo = isinstance(df, gpd.GeoDataFrame)
+    gname = df.geometry.name if geo else None
+    cols = [c for c in df.columns if c != gname]
+    if fields:
+        missing = [f for f in fields if f not in cols]
+        if missing:
+            raise GISError("params", f"no field(s) {', '.join(missing)} in the layer")
+        cols = list(fields)
+    page = df.iloc[offset: offset + limit]
+    rows = []
+    for _, r in page.iterrows():
+        row = [_row_value(r[c]) for c in cols]
+        if geo:
+            g = r[gname]
+            row.append(None if g is None or g.is_empty else {"type": g.geom_type, "bbox": [float(x) for x in g.bounds]})
+        rows.append(row)
+    return {"columns": cols + ([gname] if geo else []), "rows": rows, "total": int(len(df)),
+            "offset": offset, "summary": layer_summary(df)}
+
+
+# Delivery format names (as a context pack writes them) -> (driver, extension).
+EXPORT_FORMATS = {
+    "gpkg": ("GPKG", ".gpkg"), "geopackage": ("GPKG", ".gpkg"),
+    "geojson": ("GeoJSON", ".geojson"),
+    "fgb": ("FlatGeobuf", ".fgb"), "flatgeobuf": ("FlatGeobuf", ".fgb"),
+    "shp": ("ESRI Shapefile", ".shp"), "shapefile": ("ESRI Shapefile", ".shp"),
+    "csv": ("CSV", ".csv"),
+}
+
+
+def export_layer(path: str, out_stem: str, fmt: str, crs: str | None = None,
+                 rename: dict[str, str] | None = None) -> dict[str, Any]:
+    """Write a workspace layer in a delivery format, reprojected and with
+    fields renamed as asked. Returns the files written and checks."""
+    key = str(fmt).strip().lower()
+    if key not in EXPORT_FORMATS:
+        raise GISError("params", f"format must be one of {', '.join(sorted(set(EXPORT_FORMATS)))}")
+    driver, ext = EXPORT_FORMATS[key]
+    df = read_layer(path)
+    checks: list[dict] = []
+    geo = isinstance(df, gpd.GeoDataFrame)
+    if crs:
+        if not isinstance(crs, str) or not EPSG_CODE.fullmatch(crs.strip()):
+            raise GISError("params", "crs must be an EPSG code such as \"EPSG:3081\"")
+        if not geo:
+            raise GISError("export.crs", f"the layer has no geometry, so it cannot be delivered in {crs}")
+        if df.crs is None:
+            raise GISError("crs.present", "the layer has no coordinate reference system, so it cannot be reprojected for delivery")
+        target = CRS.from_user_input(crs.strip().upper())
+        if not df.crs.equals(target):
+            checks.append(check("export.reprojected", "info", f"Reprojected from {_label(df.crs)} to {_label(target)} for delivery"))
+            df = df.to_crs(target)
+    if rename:
+        missing = [k for k in rename if k not in df.columns]
+        present = {k: v for k, v in rename.items() if k in df.columns}
+        if missing:
+            checks.append(check("export.rename_missing", "warn",
+                                f"The delivery spec renames {', '.join(missing)}, which the layer does not have",
+                                fix="Check the field names against the spec; the layer may come from a different dataset"))
+        clash = [v for v in present.values() if v in df.columns and v not in present]
+        if clash:
+            raise GISError("export.rename", f"renaming would duplicate field(s) {', '.join(clash)}")
+        df = df.rename(columns=present)
+        if present:
+            checks.append(check("export.renamed", "info", "Renamed " + ", ".join(f"{k} to {v}" for k, v in present.items())))
+    if key in ("shp", "shapefile"):
+        gname = df.geometry.name if geo else None
+        long = [c for c in df.columns if c != gname and len(str(c)) > 10]
+        if long:
+            raise GISError("export.format", f"Shapefile field names are at most 10 characters; {', '.join(map(str, long))} would be cut",
+                           fix="Rename them in the delivery spec, or deliver GeoPackage")
+    os.makedirs(os.path.dirname(out_stem) or ".", exist_ok=True)
+    out = out_stem + ext
+    if driver == "CSV":
+        frame = pd.DataFrame(df.drop(columns=df.geometry.name)) if geo else pd.DataFrame(df)
+        if geo:
+            frame["wkt"] = df.geometry.to_wkt()
+        frame.to_csv(out, index=False)
+    else:
+        if not geo:
+            raise GISError("export.format", f"{fmt} needs geometry; this layer has none (deliver it as csv)")
+        _fid_safe(df).to_file(out, driver=driver, engine="pyogrio")
+    files = [out]
+    if driver == "ESRI Shapefile":
+        base = out_stem
+        files = [base + e for e in (".shp", ".shx", ".dbf", ".prj", ".cpg") if os.path.exists(base + e)]
+    checks.extend(_layer_checks(df, "The delivered layer") if geo else [])
+    return {"files": files, "summary": layer_summary(df), "checks": checks}
+
+
 # ---------------------------------------------------------------------------
 # Vector operations
 # ---------------------------------------------------------------------------

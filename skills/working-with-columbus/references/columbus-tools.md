@@ -62,6 +62,8 @@ Every tool returns `{result, checks, provenance}`.
 | --- | --- | --- |
 | `run_tool` | `name` (`<provider>.<tool>`), `args`, `approval_id?` | `status` is `"done"` or `"approval_required"`; `approval` {`id`, `summary`, `expires`, `next`}; `external` (wrapped, untrusted) or `saved` files |
 | `list_outputs` | none | `handle`, `bytes`, `made_by`, `rows`, `labels`, `provenance` |
+| `read_output` | `handle`, `offset?`, `limit?` (at most the per-call limit), `fields?` | `columns`, `rows` (geometry as `{type, bbox}`), `total`, `summary` |
+| `export_output` | `handle`, `folder` (an id from the export folders whoami lists), `name`, `format?` (gpkg, geojson, fgb, shp, csv), `delivery?` (context pack entry id), `metadata?`, `overwrite?`, `approval_id?` | `status` ("exported" or "approval_required"), `files` with sha256, `provenance_file`; checks include `delivery.format`, `delivery.metadata`, `export.*` and any `fail` from earlier steps |
 | `approval_status` | `id` | `state`: `pending`, `approved`, `declined`, `used`, `expired`, `unknown` |
 
 Engine plugin tools are called through `run_tool` too, for example

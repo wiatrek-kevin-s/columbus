@@ -160,8 +160,8 @@ context_get {"id": "district-deliverable"}
 A delivery entry carries `crs`, `formats`, field renames (for example
 `fields: {rename: {FUNC_CLASS: FUNCTIONAL_CLASS}}`) and required `metadata` items. `whoami`
 also returns the pack's always-on rules ("deliverables in EPSG:3081"). An entry marked
-`stale` is past its review date: say so and ask whether it still applies. Columbus does not
-yet enforce delivery specs itself, so checking against the entry is your job.
+`stale` is past its review date: say so and ask whether it still applies. Pass the entry's
+id to `export_output` and Columbus applies and checks it for you.
 
 **Prepare and check the layers:**
 
@@ -175,14 +175,32 @@ yet enforce delivery specs itself, so checking against the entry is your job.
 - `list_outputs` lists the session's files with row counts, data labels and provenance;
   include the provenance (sources, filters, steps) in the readme and metadata lineage.
 
-**What is not available yet:**
+**Export:**
 
-- **Exporting to the delivery format and folder** (`export_output`, which will apply the
-  delivery entry's CRS, formats, renames and metadata) is planned and not yet available.
-  Columbus's results stay in the session workspace as GeoPackage (or CSV) handles. Tell the
-  person which handles are final, and give them the field renames and metadata text to apply
-  when they export in Pro or QGIS.
-- Columbus has no tool to rename fields or write metadata files today.
+```json
+export_output {"handle": "ws://<session>/results/<file>.gpkg", "folder": "share",
+               "name": "district 14 roads", "delivery": "district-deliverable",
+               "metadata": {"title": "...", "abstract": "...", "source datasets": "...",
+                            "date": "2026-11-04", "contact": "..."}}
+```
+
+- `folder` is one of the export folders `whoami` lists; nothing can be exported anywhere
+  else. A folder marked `granted` needs no approval when every check passes; any other
+  folder asks the person.
+- With `delivery`, Columbus reprojects to the spec's `crs`, applies its field renames, and
+  checks that the format is one of its `formats` (`delivery.format`) and that every
+  required metadata item is given (`delivery.metadata`). Ask the person for metadata you do
+  not know; do not invent a contact or an abstract.
+- Formats: `gpkg` (default), `geojson`, `fgb`, `shp` (field names of 10 characters at most)
+  and `csv` (geometry as WKT). PDF maps are not produced by Columbus.
+- Before writing, it runs the layer's checks and looks back through the layer's whole
+  history: a `fail` anywhere (a join that lost 40% of rows, a truncated read) blocks the
+  export unless the person approves an override. Do not ask them to override without
+  explaining the fail.
+- `<name>.prov.json` is written beside the export: sources, steps, checks, metadata and
+  approval. Point the person to it.
+- A name that already exists is refused; `overwrite: true` replaces it, with approval.
+
 - Any upload of governed data to a connected server (Drive, a portal) needs the person's
   approval while its data labels are active, and organization flow rules can forbid it. The
   approval goes to the person, never to you.

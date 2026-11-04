@@ -64,10 +64,18 @@ pub fn evaluate(
     server: &str,
     outbound: bool,
 ) -> FlowDecision {
-    if labels.is_empty() || !outbound {
+    if !outbound {
         return FlowDecision::Allow;
     }
-    let dest = format!("server:{server}");
+    evaluate_to(rules, labels, &format!("server:{server}"))
+}
+
+/// Decide data with `labels` leaving for `dest`, a destination such as
+/// `server:drive` or `folder:district-share` (an export folder's id).
+pub fn evaluate_to(rules: &[FlowRule], labels: &BTreeSet<String>, dest: &str) -> FlowDecision {
+    if labels.is_empty() {
+        return FlowDecision::Allow;
+    }
     let all: Vec<String> = labels.iter().cloned().collect();
     let mut applied: Option<usize> = None;
     for label in labels {
@@ -75,7 +83,7 @@ pub fn evaluate(
         let mut best: Option<(u8, FlowAction, usize)> = None;
         for (i, r) in rules.iter().enumerate() {
             let from = r.from.iter().filter_map(|p| matches(p, label)).max();
-            let to = r.to.iter().filter_map(|p| matches(p, &dest)).max();
+            let to = r.to.iter().filter_map(|p| matches(p, dest)).max();
             if let (Some(f), Some(t)) = (from, to) {
                 let score = f + t;
                 let better = match best {

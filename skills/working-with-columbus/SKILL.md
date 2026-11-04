@@ -244,7 +244,10 @@ person can trace them.
 
 `list_outputs {}` lists the workspace's `results` and `external` files with `handle`,
 `bytes`, `made_by`, `rows`, `labels` and `provenance`. Use it to find a layer from earlier in
-the session instead of re-running a query.
+the session instead of re-running a query. `read_output {handle, offset, limit}` pages
+through one. `export_output` copies one out to an export folder `whoami` lists, after the
+full checks; a `fail` anywhere in the layer's history blocks it unless the person approves
+an override (see the maps-and-deliverables skill).
 
 ### Worked session (illustrative values)
 
