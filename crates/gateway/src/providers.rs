@@ -266,17 +266,24 @@ pub fn copy_hashed(from: &Path, to: &Path) -> std::io::Result<String> {
     Ok(format!("{:x}", h.finalize()))
 }
 
-/// Copy each file the approval covered into the server's folder, refusing
-/// any whose content is not what was approved.
-pub fn do_copies(copies: &[(PathBuf, PathBuf, Option<String>)]) -> Result<(), String> {
+/// Copy each file the approval covered into a confined process's folder
+/// (below `root`, the workspace), refusing any whose content is not what was
+/// approved. The destination folders belong to that process, so they are
+/// walked from the workspace root without following links (a planted link
+/// is refused, not written through).
+pub fn do_copies(root: &Path, copies: &[(PathBuf, PathBuf, Option<String>)]) -> Result<(), String> {
     for (from, to, want) in copies {
-        if let Some(dir) = to.parent() {
-            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-        }
-        let got = copy_hashed(from, to)
-            .map_err(|e| format!("could not hand {} to the server: {e}", from.display()))?;
+        let comps = crate::safefs::below(root, to).map_err(|e| e.to_string())?;
+        let (name, dirs) = comps.split_last().ok_or("no file name")?;
+        let dirs: Vec<&str> = dirs.iter().map(String::as_str).collect();
+        let dir = crate::safefs::Dir::open_beneath(root, &dirs, true)
+            .map_err(|e| format!("could not hand {} over: {e}", from.display()))?;
+        let mut src = std::fs::File::open(from)
+            .map_err(|e| format!("cannot read {}: {e}", from.display()))?;
+        let (got, _) = crate::safefs::copy_into(&mut src, &dir, name, None)
+            .map_err(|e| format!("could not hand {} over: {e}", from.display()))?;
         if want.as_ref() != Some(&got) {
-            let _ = std::fs::remove_file(to);
+            let _ = std::fs::remove_file(dir.path().join(name));
             return Err(format!(
                 "{} changed after it was checked; ask again",
                 from.display()

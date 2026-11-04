@@ -361,6 +361,13 @@ impl Broker {
                                     f.display()
                                 ));
                             }
+                            let ws_root = self.workspace.parent().unwrap_or(&self.workspace);
+                            if f.starts_with(ws_root) || ws_root.starts_with(&f) {
+                                return Err(format!(
+                                    "declared folder {} overlaps Columbus's workspaces",
+                                    f.display()
+                                ));
+                            }
                             rw.push(f);
                         }
                         let spec = columbus_confine::Spec {
@@ -400,8 +407,19 @@ impl Broker {
                         .unwrap_or_else(|| own.clone()),
                 );
                 // The server's (and the launcher's) error output goes to a log
-                // in its temp folder, so a failed start can say why.
-                let log = tmp.join("stderr.log");
+                // outside its own folder (where it could swap the file for a
+                // link the gateway would then read), so a failed start can
+                // say why.
+                let logs = self.workspace.join("logs");
+                let _ = std::fs::create_dir_all(&logs);
+                let log = logs.join(format!(
+                    "server-{}.stderr.log",
+                    server_dir(&self.workspace, &m.id)
+                        .file_name()
+                        .map(|f| f.to_string_lossy().into_owned())
+                        .unwrap_or_default()
+                ));
+                let _ = std::fs::remove_file(&log);
                 let stderr = std::fs::File::create(&log)
                     .map(Stdio::from)
                     .unwrap_or_else(|_| Stdio::null());

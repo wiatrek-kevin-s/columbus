@@ -291,7 +291,7 @@ async fn scripts_need_policy_and_the_persons_approval() {
     assert!(r["result"]["approval"]["summary"]
         .as_str()
         .unwrap()
-        .contains("Run a Python script (1 line)"));
+        .contains("Run a Python script (1 line, "));
     let e = err(&call(
         &c,
         "run_python",

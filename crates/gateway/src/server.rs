@@ -1715,7 +1715,7 @@ impl Gateway {
             return Err(self.deny(&ctx, rec, e));
         }
         // Only now, allowed and checked, does the server get its copies.
-        if let Err(e) = crate::providers::do_copies(&prepared.copies) {
+        if let Err(e) = crate::providers::do_copies(self.state.sandbox.root(), &prepared.copies) {
             return Err(self.deny(&ctx, rec, e));
         }
         let timeout = self.state.policy.limits.seconds.unwrap_or(120).max(1);

@@ -369,3 +369,46 @@ fn level_a_starts_with_the_small_environment_plugins_get() {
         String::from_utf8_lossy(&o.stderr)
     );
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn level_a_has_no_unix_sockets_and_cannot_leave_its_process_group() {
+    let Some(py) = python() else { return };
+    if !can_confine() {
+        return;
+    }
+    let d = dirs();
+    // A listening Unix socket outside the confinement.
+    let sock = d.outside.join("bus.sock");
+    let _listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+    let s = [
+        format!(
+            "import socket, os\n{}",
+            attempt(
+                "unix",
+                &format!(
+                    "socket.socket(socket.AF_UNIX).connect({:?})",
+                    sock.display().to_string()
+                )
+            )
+        ),
+        attempt("abstract", "socket.socket(socket.AF_UNIX).connect('\\0x')"),
+        attempt("setsid", "os.setsid()"),
+        attempt("pair", "socket.socketpair()"),
+    ]
+    .concat();
+    let out = run("A", &d.ws, &[], &py, &s);
+    for l in [
+        "unix: refused",
+        "abstract: refused",
+        "setsid: refused",
+        "pair: ok",
+    ] {
+        assert!(
+            has(&out, l),
+            "expected {l:?}:\n{}{}",
+            out.stdout,
+            out.stderr
+        );
+    }
+}

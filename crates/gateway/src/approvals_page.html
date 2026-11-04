@@ -35,7 +35,9 @@ dd { margin: 0; overflow-wrap: anywhere; }
 details { margin: 0 0 12px; font-size: .85rem; }
 summary { cursor: pointer; color: var(--accent); }
 pre { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 10px; overflow: auto; max-height: 18rem; margin: 8px 0 0; font-size: .8rem; }
-pre.code { max-height: 32rem; white-space: pre; }
+pre.code { max-height: 32rem; white-space: pre-wrap; overflow-wrap: anywhere; counter-reset: line; }
+pre.code span.ln { display: block; }
+pre.code span.ln::before { counter-increment: line; content: counter(line); display: inline-block; width: 3em; margin-right: .75em; text-align: right; opacity: .55; user-select: none; }
 .actions { display: flex; flex-wrap: wrap; gap: 8px; }
 button { font: inherit; border-radius: 8px; padding: 8px 14px; cursor: pointer; border: 1px solid var(--line); background: var(--card); color: var(--ink); }
 button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
@@ -120,7 +122,14 @@ button:disabled { opacity: .5; cursor: default; }
     if (typeof d.code === "string") {
       // A script is always shown in full before it runs.
       c.appendChild(el("p", "sub", "The code that will run" + (d.lines ? " (" + d.lines + " lines)" : "") + ":"));
-      c.appendChild(el("pre", "code", d.code));
+      // Numbered, wrapped lines (never scrolled sideways), one per line the
+      // way Python reads them; the server refuses carriage returns and
+      // invisible or reordering characters before this card exists.
+      const pre = el("pre", "code", "");
+      for (const line of d.code.split("\n")) {
+        pre.appendChild(el("span", "ln", line === "" ? " " : line));
+      }
+      c.appendChild(pre);
     }
     var det = el("details");
     det.appendChild(el("summary", null, "Show the exact request"));

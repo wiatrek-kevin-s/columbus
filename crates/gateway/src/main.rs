@@ -31,6 +31,7 @@ mod providers;
 mod raster_tools;
 mod registry_tools;
 mod review_cli;
+mod safefs;
 mod script_tools;
 mod secrets;
 mod server;
@@ -127,6 +128,12 @@ fn secret_set(id: &str) -> Result<()> {
 }
 
 async fn serve() -> Result<()> {
+    // Other processes of the same user (a confined server or script among
+    // them) must not read this one's memory or environment through /proc.
+    #[cfg(target_os = "linux")]
+    unsafe {
+        libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0);
+    }
     let paths = config::Paths::from_env();
     let state = server::State::load(paths)?;
     tracing::info!(session = %state.session, workspace = %state.sandbox.root().display(), "starting");

@@ -119,7 +119,15 @@ fn restrict_files(spec: &Spec) -> Result<(), Error> {
     Ok(())
 }
 
-fn deny_network() -> Result<(), Error> {
+/// The system calls each level refuses (with EACCES).
+///
+/// - Levels A and B: Unix sockets (a sandbox could connect to the session
+///   bus, a Docker socket or an ssh agent outside it; socketpair stays
+///   allowed), raw packet sockets, netlink, and leaving the process group
+///   (setsid, setpgid), so stopping the program stops everything it started.
+/// - Level A also: internet sockets.
+/// - io_uring everywhere confined: it can open sockets without socket().
+fn syscall_filter(level: Level) -> Result<(), Error> {
     use seccompiler::{
         SeccompAction, SeccompCmpArgLen, SeccompCmpOp, SeccompCondition, SeccompFilter,
         SeccompRule, TargetArch,
@@ -136,17 +144,26 @@ fn deny_network() -> Result<(), Error> {
         .map_err(|e| Error::Setup(e.to_string()))?])
         .map_err(|e| Error::Setup(e.to_string()))
     };
+    let mut families = vec![libc::AF_PACKET];
+    if matches!(level, Level::A | Level::B) {
+        families.extend([libc::AF_UNIX, libc::AF_NETLINK]);
+    }
+    if level == Level::A {
+        families.extend([libc::AF_INET, libc::AF_INET6]);
+    }
     let mut rules = std::collections::BTreeMap::new();
     rules.insert(
         libc::SYS_socket,
-        vec![
-            family(libc::AF_INET)?,
-            family(libc::AF_INET6)?,
-            family(libc::AF_PACKET)?,
-        ],
+        families
+            .into_iter()
+            .map(family)
+            .collect::<Result<Vec<_>, _>>()?,
     );
-    // io_uring can open sockets without the socket() system call.
     rules.insert(libc::SYS_io_uring_setup, vec![]);
+    if matches!(level, Level::A | Level::B) {
+        rules.insert(libc::SYS_setsid, vec![]);
+        rules.insert(libc::SYS_setpgid, vec![]);
+    }
     let filter = SeccompFilter::new(
         rules,
         SeccompAction::Allow,
@@ -158,6 +175,52 @@ fn deny_network() -> Result<(), Error> {
         .try_into()
         .map_err(|e: seccompiler::BackendError| Error::Setup(e.to_string()))?;
     seccompiler::apply_filter(&program).map_err(|e| Error::Setup(e.to_string()))
+}
+
+/// Run as root, a confined program would keep every capability (reading
+/// any process's memory and environment, loading kernel modules). Drop them
+/// all, including the bounding and ambient sets, before anything else.
+fn drop_capabilities() -> Result<(), Error> {
+    if unsafe { libc::geteuid() } != 0 {
+        return Ok(());
+    }
+    unsafe {
+        libc::prctl(
+            libc::PR_CAP_AMBIENT,
+            libc::PR_CAP_AMBIENT_CLEAR_ALL,
+            0,
+            0,
+            0,
+        );
+        for cap in 0..64 {
+            libc::prctl(libc::PR_CAPBSET_DROP, cap, 0, 0, 0);
+        }
+    }
+    #[repr(C)]
+    struct Header {
+        version: u32,
+        pid: i32,
+    }
+    #[repr(C)]
+    #[derive(Default, Clone, Copy)]
+    struct Data {
+        effective: u32,
+        permitted: u32,
+        inheritable: u32,
+    }
+    let mut h = Header {
+        version: 0x2008_0522, // _LINUX_CAPABILITY_VERSION_3
+        pid: 0,
+    };
+    let d = [Data::default(); 2];
+    let r = unsafe { libc::syscall(libc::SYS_capset, &mut h as *mut Header, d.as_ptr()) };
+    if r != 0 {
+        return Err(Error::Setup(format!(
+            "dropping capabilities: {}",
+            std::io::Error::last_os_error()
+        )));
+    }
+    Ok(())
 }
 
 fn limit_memory(mb: u64) -> Result<(), Error> {
@@ -180,10 +243,9 @@ pub fn launch(spec: &Spec, program: &str, args: &[String]) -> Result<i32, Error>
     if let Some(mb) = spec.memory_mb {
         limit_memory(mb)?;
     }
+    drop_capabilities()?;
     restrict_files(spec)?;
-    if spec.level == Level::A {
-        deny_network()?;
-    }
+    syscall_filter(spec.level)?;
     // Replace this process with the program: it inherits the pipes, the
     // rules and the limits, and nothing can lift them.
     let err = std::process::Command::new(program).args(args).exec();

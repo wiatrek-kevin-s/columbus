@@ -452,7 +452,7 @@ impl Gateway {
             copies.push((src, dst.clone(), want));
             spec_in["path"] = json!(dst);
         }
-        if let Err(e) = crate::providers::do_copies(&copies) {
+        if let Err(e) = crate::providers::do_copies(self.state.sandbox.root(), &copies) {
             return Err(self.deny(ctx, rec, e));
         }
 
@@ -552,10 +552,16 @@ impl Gateway {
         for (name, written, path) in &out_paths {
             // A regular file directly where the plugin was told to write it,
             // copied into results/ with the hash of exactly what was copied.
-            if !std::fs::symlink_metadata(written).is_ok_and(|m| m.file_type().is_file()) {
-                continue;
-            }
-            let sha = match crate::providers::copy_hashed(written, path) {
+            // The plugin owns every folder on the way: read without following
+            // a link it may have planted.
+            let mut src = match crate::safefs::open_beneath(self.state.sandbox.root(), written) {
+                Ok(f) => f,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => {
+                    return Err(self.deny(ctx, rec, format!("output {name} was not taken: {e}")))
+                }
+            };
+            let sha = match crate::safefs::copy_to_new(&mut src, path) {
                 Ok(h) => h,
                 Err(e) => {
                     return Err(self.deny(ctx, rec, format!("could not save output {name}: {e}")))

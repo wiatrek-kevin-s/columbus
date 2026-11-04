@@ -179,6 +179,31 @@ fn script_env(run: &Path) -> Vec<(String, OsString)> {
         if let Some(p) = std::env::var_os("SystemRoot").or_else(|| std::env::var_os("SYSTEMROOT")) {
             env.push(("SYSTEMROOT".into(), p));
         }
+        // Windows starts an AppContainer process relative to the person's
+        // profile and fails (ERROR_ENVVAR_NOT_FOUND) without these folder
+        // names; the container cannot read those folders.
+        for k in [
+            "SystemDrive",
+            "windir",
+            "USERPROFILE",
+            "LOCALAPPDATA",
+            "APPDATA",
+            "ProgramData",
+            "ALLUSERSPROFILE",
+            "PUBLIC",
+            "USERNAME",
+            "USERDOMAIN",
+            "HOMEDRIVE",
+            "HOMEPATH",
+            "ProgramFiles",
+            "CommonProgramFiles",
+            "NUMBER_OF_PROCESSORS",
+            "PROCESSOR_ARCHITECTURE",
+        ] {
+            if let Some(v) = std::env::var_os(k) {
+                env.push((k.into(), v));
+            }
+        }
     }
     let tmp = run.join("tmp").into_os_string();
     for k in ["TEMP", "TMP", "TMPDIR"] {
@@ -196,43 +221,13 @@ fn script_env(run: &Path) -> Vec<(String, OsString)> {
     env
 }
 
-/// Open a file for reading without following a link at its last component.
-fn open_no_follow(p: &Path) -> std::io::Result<std::fs::File> {
-    let mut o = std::fs::OpenOptions::new();
-    o.read(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        o.custom_flags(libc::O_NOFOLLOW);
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        // FILE_FLAG_OPEN_REPARSE_POINT: open a link or junction itself.
-        o.custom_flags(0x0020_0000);
-    }
-    o.open(p)
-}
-
-/// Copy a file the script left (a regular file, not a link, with one name)
-/// to a new file of the gateway's, at most `cap` bytes. Returns its SHA-256
-/// and size.
-fn take_output(from: &Path, to: &Path, cap: u64) -> Result<(String, u64), String> {
+/// Copy one file the script left (opened through the safe folder walk: a
+/// regular file with one name, never a link, FIFO or device) to a new file
+/// of the gateway's, at most `cap` bytes. Returns its SHA-256 and size.
+fn take_output(src: std::fs::File, to: &Path, cap: u64) -> Result<(String, u64), String> {
     use sha2::{Digest, Sha256};
     use std::io::{Read, Write};
-    let src =
-        open_no_follow(from).map_err(|_| "it could not be opened as a plain file".to_string())?;
     let m = src.metadata().map_err(|e| e.to_string())?;
-    if !m.file_type().is_file() || m.file_type().is_symlink() {
-        return Err("it is not a regular file".into());
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        if m.nlink() > 1 {
-            return Err("it has more than one name (a hard link)".into());
-        }
-    }
     if m.len() > cap {
         return Err(format!("it is larger than {} MB", cap / 1024 / 1024));
     }
@@ -271,76 +266,63 @@ struct Taken {
     bytes: u64,
 }
 
-/// Every regular file directly in `out/`, copied to `<results>/<prefix>-<name>`;
-/// the rest (links, folders, odd names, too many or too large) is listed as
-/// skipped.
-fn collect_outputs(out_dir: &Path, results: &Path, prefix: &str) -> (Vec<Taken>, Vec<String>) {
+/// Every regular file directly in `out/` (below `root`, reached without
+/// following links: the script owns the run folder and could have replaced
+/// `out` with a link), copied to `<results>/<prefix>-<name>`; the rest
+/// (links, folders, odd names, too many or too large) is listed as skipped.
+/// Called only once the script's processes have all ended.
+fn collect_outputs(
+    root: &Path,
+    out_dir: &Path,
+    results: &Path,
+    prefix: &str,
+) -> (Vec<Taken>, Vec<String>) {
     let mut taken = Vec::new();
     let mut skipped = Vec::new();
-    let mut entries: Vec<std::fs::DirEntry> = match std::fs::read_dir(out_dir) {
-        Ok(d) => d.flatten().collect(),
+    let dir = match crate::safefs::below(root, out_dir).and_then(|comps| {
+        let comps: Vec<&str> = comps.iter().map(String::as_str).collect();
+        crate::safefs::Dir::open_beneath(root, &comps, false)
+    }) {
+        Ok(d) => d,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (taken, skipped),
+        Err(e) => {
+            skipped.push(format!("out/ ({e}; nothing was taken)"));
+            return (taken, skipped);
+        }
+    };
+    let names = match dir.entries() {
+        Ok(n) => n,
         Err(_) => return (taken, skipped),
     };
-    entries.sort_by_key(|e| e.file_name());
     let mut total: u64 = 0;
-    for e in entries {
-        let raw = e.file_name();
-        let Some(name) = raw.to_str().map(String::from) else {
-            skipped.push(format!(
-                "{} (its name is not valid text)",
-                raw.to_string_lossy()
-            ));
-            continue;
-        };
-        let meta = match std::fs::symlink_metadata(e.path()) {
-            Ok(m) => m,
-            Err(_) => {
-                skipped.push(format!("{name} (could not be read)"));
-                continue;
-            }
-        };
-        let ft = meta.file_type();
-        if ft.is_symlink() {
-            skipped.push(format!("{name} (a link; only plain files are taken)"));
-            continue;
-        }
-        if ft.is_dir() {
-            skipped.push(format!(
-                "{name}/ (a folder; only files directly in out/ are taken)"
-            ));
-            continue;
-        }
-        if !ft.is_file() {
-            skipped.push(format!("{name} (not a regular file)"));
-            continue;
-        }
+    for name in names {
         if !crate::export_tools::valid_name(&name) {
             skipped.push(format!(
                 "{name} (names may use letters, digits, space, -, _ and ., at most 80 characters)"
             ));
             continue;
         }
+        let src = match dir.open_file(&name) {
+            Ok(f) => f,
+            Err(e) => {
+                skipped.push(format!(
+                    "{name} ({e}; only plain files directly in out/ are taken)"
+                ));
+                continue;
+            }
+        };
         if taken.len() >= MAX_OUTPUTS {
             skipped.push(format!("{name} (more than {MAX_OUTPUTS} files)"));
             continue;
         }
         let room = MAX_TOTAL_BYTES.saturating_sub(total);
-        if meta.len() > room.min(MAX_OUTPUT_BYTES) {
-            skipped.push(format!(
-                "{name} ({} bytes; each output may be {} MB and all together {} MB)",
-                meta.len(),
-                MAX_OUTPUT_BYTES / 1024 / 1024,
-                MAX_TOTAL_BYTES / 1024 / 1024
-            ));
-            continue;
-        }
         if let Err(e) = std::fs::create_dir_all(results) {
             skipped.push(format!("{name} (could not make the results folder: {e})"));
             continue;
         }
         // A fresh name, created new (never a file or link already there).
         let to = results.join(format!("{prefix}-{name}"));
-        match take_output(&e.path(), &to, room.min(MAX_OUTPUT_BYTES)) {
+        match take_output(src, &to, room.min(MAX_OUTPUT_BYTES)) {
             Ok((sha256, bytes)) => {
                 total += bytes;
                 taken.push(Taken {
@@ -354,6 +336,55 @@ fn collect_outputs(out_dir: &Path, results: &Path, prefix: &str) -> (Vec<Taken>,
         }
     }
     (taken, skipped)
+}
+
+/// Longest line the approval card shows without scrolling.
+const MAX_LINE: usize = 200;
+
+/// Code is run exactly as the person reads it: no characters that display
+/// differently from how Python reads them. Refused: carriage returns (Python
+/// breaks a line at a lone CR that a browser shows as one line), other
+/// control characters but tab and newline, bidirectional and invisible
+/// formatting characters (Trojan Source), and lines too long to see whole.
+fn shown_as_run(code: &str) -> Result<(), String> {
+    for (i, line) in code.split('\n').enumerate() {
+        let n = i + 1;
+        if line.chars().count() > MAX_LINE {
+            return Err(format!(
+                "line {n} is longer than {MAX_LINE} characters; split it, so the person can read every line of the script"
+            ));
+        }
+        for c in line.chars() {
+            let bad = match c {
+                '\t' => false,
+                '\r' => true,
+                c if c.is_control() => true,
+                '\u{200B}'..='\u{200F}'
+                | '\u{202A}'..='\u{202E}'
+                | '\u{2060}'..='\u{206F}'
+                | '\u{FEFF}'
+                | '\u{00AD}'
+                | '\u{034F}'
+                | '\u{061C}'
+                | '\u{115F}'
+                | '\u{1160}'
+                | '\u{17B4}'
+                | '\u{17B5}'
+                | '\u{180E}'
+                | '\u{3164}'
+                | '\u{FFA0}'
+                | '\u{E0000}'..='\u{E007F}' => true,
+                _ => false,
+            };
+            if bad {
+                return Err(format!(
+                    "line {n} contains the character U+{:04X}, which displays differently from how Python reads it; scripts must be plain text",
+                    c as u32
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn check(id: &str, severity: Severity, message: String, fix: Option<&str>) -> Check {
@@ -531,8 +562,8 @@ impl Gateway {
                 ),
             ));
         }
-        if args.code.contains('\0') {
-            return Err(self.deny(&ctx, rec, "code contains a NUL byte"));
+        if let Err(why) = shown_as_run(&args.code) {
+            return Err(self.deny(&ctx, rec, why));
         }
         // Confined at level A or not at all.
         let launcher = match columbus_confine::ready(columbus_confine::Level::A) {
@@ -585,9 +616,12 @@ impl Gateway {
 
         // The person reads the code and says yes to this run.
         let lines = args.code.lines().count();
+        let digest = columbus_shared::canon::sha256_hex(args.code.as_bytes());
         let summary = format!(
-            "Run a Python script ({lines} line{}) on {}; no network; can write only its own run folder; stopped after {timeout} s.{} Scripts are approved one run at a time.",
+            "Run a Python script ({lines} line{}, {} bytes, sha256 {}) on {}; no network; can write only its own run folder; stopped after {timeout} s.{} Scripts are approved one run at a time.",
             if lines == 1 { "" } else { "s" },
+            args.code.len(),
+            &digest[..12],
             if inputs.is_empty() {
                 "no inputs".to_string()
             } else {
@@ -806,8 +840,12 @@ impl Gateway {
                 return Err(self.deny(&ctx, rec, e));
             }
         };
-        let (taken, skipped) =
-            collect_outputs(&run.join("out"), &results, &format!("script-{prov}"));
+        let (taken, skipped) = collect_outputs(
+            self.state.sandbox.root(),
+            &run.join("out"),
+            &results,
+            &format!("script-{prov}"),
+        );
         cleanup(&run);
         if !skipped.is_empty() {
             checks.push(Check {
@@ -999,7 +1037,8 @@ mod tests {
         std::fs::hard_link(d.path().join("secret.txt"), out.join("hard.csv")).unwrap();
         std::fs::create_dir(out.join("sub")).unwrap();
         let dest = d.path().join("dest");
-        let (taken, skipped) = collect_outputs(&out, &dest, "script-p_1");
+        let root = d.path();
+        let (taken, skipped) = collect_outputs(root, &out, &dest, "script-p_1");
         assert_eq!(taken.len(), 1, "{skipped:?}");
         assert_eq!(taken[0].name, "a.csv");
         assert_eq!(std::fs::read_to_string(&taken[0].path).unwrap(), "x\n1\n");
@@ -1008,7 +1047,27 @@ mod tests {
         assert!(!dest.join("script-p_1-link.csv").exists());
         assert!(!dest.join("script-p_1-hard.csv").exists());
         // A name already taken in results is never written through.
-        let (taken, skipped) = collect_outputs(&out, &dest, "script-p_1");
+        let (taken, skipped) = collect_outputs(root, &out, &dest, "script-p_1");
         assert!(taken.is_empty() && skipped.len() == 4, "{skipped:?}");
+        // out/ itself replaced by a link: nothing is taken through it.
+        std::fs::rename(&out, d.path().join("real-out")).unwrap();
+        std::os::unix::fs::symlink(d.path().join("real-out"), &out).unwrap();
+        let (taken, skipped) = collect_outputs(root, &out, &d.path().join("dest2"), "script-p_2");
+        assert!(taken.is_empty(), "{skipped:?}");
+    }
+
+    #[test]
+    fn code_must_read_as_it_runs() {
+        use super::shown_as_run;
+        assert!(shown_as_run("import os\nprint(1)\n\tpass").is_ok());
+        for bad in [
+            "# tidy\r__import__('os').system('x')",
+            "x = 1 # \u{202E}gnirts",
+            "a\u{200B}b = 1",
+            "\u{1b}[2J",
+            &"x".repeat(201),
+        ] {
+            assert!(shown_as_run(bad).is_err(), "{bad:?}");
+        }
     }
 }
