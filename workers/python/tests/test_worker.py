@@ -105,5 +105,90 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(replies[3]["result"]["rows"], [[1]])
 
 
+PG_HOST = os.environ.get("COLUMBUS_TEST_PG_HOST")
+
+
+def pg_conn(user="columbus_ro", password="columbus_ro_test", **extra):
+    c = {
+        "kind": "postgis",
+        "host": PG_HOST,
+        "port": int(os.environ.get("COLUMBUS_TEST_PG_PORT", "5432")),
+        "database": os.environ.get("COLUMBUS_TEST_PG_DB", "gis"),
+        "user": user,
+        "password": password,
+        "sslmode": "disable",
+    }
+    c.update(extra)
+    return c
+
+
+@unittest.skipUnless(PG_HOST, "set COLUMBUS_TEST_PG_HOST (and load crates/gateway/tests/fixtures/postgis.sql)")
+class PostgresTests(unittest.TestCase):
+    def test_select_with_geometry_summary(self):
+        r = w.sql_select(
+            {
+                "connection": pg_conn(),
+                "sql": "SELECT route_id, district_nbr, geom FROM roads.roadway_inventory WHERE district_nbr = 14 ORDER BY fid",
+                "max_rows": 1000,
+                "return_rows": 5,
+            }
+        )
+        self.assertEqual(r["rows_read"], 600)
+        self.assertEqual(len(r["rows"]), 5)
+        self.assertEqual(r["columns"], ["route_id", "district_nbr", "geom"])
+        self.assertEqual(r["rows"][0][2]["geometry"], "ewkb")
+        self.assertFalse(r["hit_read_limit"])
+
+    def test_read_limit_on_server_cursor(self):
+        r = w.sql_select({"connection": pg_conn(), "sql": "SELECT fid FROM roads.roadway_inventory", "max_rows": 2500})
+        self.assertEqual(r["rows_read"], 1200)
+        r = w.sql_select({"connection": pg_conn(), "sql": "SELECT fid FROM roads.roadway_inventory", "max_rows": 1000})
+        self.assertEqual(r["rows_read"], 1000)
+        self.assertTrue(r["hit_read_limit"])
+
+    def test_database_refuses_writes_even_for_a_login_that_can_write(self):
+        rw = pg_conn("columbus_rw", "columbus_rw_test")
+        # Plain write statements cannot even be declared as a cursor.
+        for sql in ["INSERT INTO roads.roadway_audit (who) VALUES ('agent')", "DELETE FROM roads.roadway_audit"]:
+            with self.assertRaises(w.WorkerError, msg=sql):
+                w.sql_select({"connection": rw, "sql": sql, "max_rows": 10})
+        # A SELECT with side effects gets through the parser; the read-only
+        # transaction is what stops it.
+        for sql in ["SELECT roads.log_visit()", "SELECT nextval('roads.roadway_audit_id_seq')"]:
+            with self.assertRaises(w.WorkerError, msg=sql) as cm:
+                w.sql_select({"connection": rw, "sql": sql, "max_rows": 10})
+            self.assertIn("read-only", cm.exception.message, sql)
+        r = w.sql_select({"connection": rw, "sql": "SELECT count(*) FROM roads.roadway_audit", "max_rows": 1})
+        self.assertEqual(r["rows"], [[1]])
+
+    def test_statement_timeout(self):
+        with self.assertRaises(w.WorkerError) as cm:
+            w.sql_select({"connection": pg_conn(), "sql": "SELECT pg_sleep(5)", "max_rows": 1, "timeout_s": 0.5})
+        self.assertEqual(cm.exception.code, w.TIMEOUT)
+
+    def test_wrong_password_is_scrubbed_from_errors(self):
+        secret = "not-the-password-xyz"
+        with self.assertRaises(w.WorkerError) as cm:
+            w.sql_select({"connection": pg_conn(password=secret), "sql": "SELECT 1", "max_rows": 1})
+        self.assertNotIn(secret, cm.exception.message)
+        self.assertIn("cannot connect", cm.exception.message)
+
+    def test_list_datasets_reflects_database_grants(self):
+        r = w.list_datasets({"connection": pg_conn()})
+        by_name = {d["name"]: d for d in r["datasets"]}
+        self.assertIn("roads.roadway_inventory", by_name)
+        self.assertNotIn("hr.employees", by_name, "columbus_ro has no grant on hr")
+        inv = by_name["roads.roadway_inventory"]
+        self.assertEqual(inv["srs_id"], 3081)
+        self.assertEqual(inv["geometry_type"], "LINESTRING")
+        self.assertEqual(inv["estimated_rows"], 1200)
+        self.assertEqual(len(inv["extent"]), 4)
+        self.assertIn("owner_name", [f["name"] for f in inv["fields"]])
+
+    def test_bad_search_path_refused(self):
+        with self.assertRaises(w.WorkerError):
+            w.sql_select({"connection": pg_conn(search_path="public; drop"), "sql": "SELECT 1", "max_rows": 1})
+
+
 if __name__ == "__main__":
     unittest.main()

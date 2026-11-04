@@ -4,10 +4,13 @@
 //! columbus-mcp                      serve MCP over stdio (default)
 //! columbus-mcp serve                same
 //! columbus-mcp audit verify FILE    check a month's audit log hash chain
+//! columbus-mcp secret set ID        store a connection's password (prompted, not echoed)
+//! columbus-mcp secret delete ID     remove it
 //! columbus-mcp --version
 //! ```
 
 mod config;
+mod secrets;
 mod server;
 mod worker;
 
@@ -43,12 +46,50 @@ async fn main() -> Result<()> {
                 Err(e) => bail!("audit log check failed: {e:?}"),
             }
         }
+        ["secret", "set", id] => secret_set(id),
+        ["secret", "delete", id] => {
+            let store = secrets::SecretStore::from_env();
+            if store.delete(id)? {
+                println!("deleted the secret for {id}");
+            } else {
+                println!("no secret was stored for {id}");
+            }
+            Ok(())
+        }
         ["--version"] | ["-V"] => {
             println!("{} {}", server::SERVER_NAME, env!("CARGO_PKG_VERSION"));
             Ok(())
         }
-        _ => bail!("usage: columbus-mcp [serve] | audit verify FILE | --version"),
+        _ => bail!(
+            "usage: columbus-mcp [serve] | audit verify FILE | secret set|delete CONNECTION_ID | --version"
+        ),
     }
+}
+
+/// Store a connection's password in the credential store. Run by the
+/// person at the keyboard, never by an agent: the gateway exposes no tool
+/// for it.
+fn secret_set(id: &str) -> Result<()> {
+    let paths = config::Paths::from_env();
+    let known = config::load_connections(&paths)?;
+    if !known.iter().any(|c| c.id == *id) {
+        eprintln!(
+            "note: no connection {id:?} in {} yet; storing the secret anyway",
+            paths.connections.display()
+        );
+    }
+    let store = secrets::SecretStore::from_env();
+    let first = rpassword::prompt_password(format!("Password for {id}: "))?;
+    let second = rpassword::prompt_password("Again: ")?;
+    if first != second {
+        bail!("the two entries did not match; nothing stored");
+    }
+    if first.is_empty() {
+        bail!("empty password; nothing stored (integrated sign-in needs no stored secret)");
+    }
+    store.set(id, &first)?;
+    println!("stored the secret for {id} in {}", store.describe());
+    Ok(())
 }
 
 async fn serve() -> Result<()> {

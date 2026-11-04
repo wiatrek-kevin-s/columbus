@@ -34,7 +34,15 @@ pub const SERVER_NAME: &str = "columbus-mcp";
 /// Connection types the engines can serve today. Others are accepted in
 /// configuration and reported, but queries on them are refused until their
 /// worker lands.
-const ENGINE_READY: &[&str] = &["gpkg", "geopackage", "sqlite", "spatialite"];
+const ENGINE_READY: &[&str] = &[
+    "gpkg",
+    "geopackage",
+    "sqlite",
+    "spatialite",
+    "postgis",
+    "postgres",
+    "postgresql",
+];
 
 // ---------- standard output envelope ----------
 
@@ -170,6 +178,8 @@ pub struct WhoAmI {
     pub workspace: String,
     pub granted_folders: Vec<String>,
     pub audit_log: String,
+    /// Where connection passwords are kept.
+    pub secret_store: String,
     /// Organization rules that always apply (from the context pack, once loaded).
     pub always_on_rules: Vec<String>,
     pub engines: Value,
@@ -252,6 +262,7 @@ pub struct State {
     pub audit: AuditLog,
     pub approvals: ApprovalStore,
     pub worker: Worker,
+    pub secrets: crate::secrets::SecretStore,
     pub session: String,
     pub user: String,
     pub notes: Vec<String>,
@@ -303,6 +314,14 @@ impl State {
             }
         };
         let worker = Worker::new(paths.python.clone(), paths.worker_script.clone());
+        let secrets = crate::secrets::SecretStore::from_env();
+        if secrets.is_dev() {
+            notes.push(
+                "Development secrets are on (COLUMBUS_DEV_SECRETS=1): passwords come from \
+                 environment variables, not the credential store. Do not use in production."
+                    .into(),
+            );
+        }
         Ok(State {
             paths,
             policy,
@@ -313,6 +332,7 @@ impl State {
             audit,
             approvals: ApprovalStore::new(),
             worker,
+            secrets,
             session,
             user: current_user(),
             notes,
@@ -423,8 +443,40 @@ impl Gateway {
         ENGINE_READY.iter().any(|k| k.eq_ignore_ascii_case(kind))
     }
 
-    fn handle(conn: &Connection) -> Value {
-        json!({"kind": conn.kind, "path": conn.path})
+    /// The short-lived handle a worker gets for one request: where to
+    /// connect and, for databases, the login secret from the credential
+    /// store. It goes to the worker over its private pipe and nowhere else.
+    fn handle(&self, conn: &Connection) -> Result<Value, String> {
+        let mut h = json!({"kind": conn.kind});
+        let m = h.as_object_mut().expect("object");
+        for (k, v) in [
+            ("path", conn.path.clone()),
+            ("host", conn.host.clone()),
+            ("database", conn.database.clone()),
+            ("user", conn.user.clone()),
+            ("sslmode", conn.sslmode.clone()),
+            ("search_path", conn.search_path.clone()),
+            ("dsn", conn.dsn.clone()),
+        ] {
+            if let Some(v) = v {
+                m.insert(k.into(), Value::String(v));
+            }
+        }
+        if let Some(port) = conn.port {
+            m.insert("port".into(), json!(port));
+        }
+        if conn.path.is_none() {
+            // A database login. No stored secret is fine: the login may use
+            // integrated (Windows/Kerberos) authentication.
+            match self.state.secrets.get(&conn.id) {
+                Ok(Some(secret)) => {
+                    m.insert("password".into(), Value::String(secret));
+                }
+                Ok(None) => {}
+                Err(e) => return Err(format!("cannot read the secret for {:?}: {e}", conn.id)),
+            }
+        }
+        Ok(h)
     }
 
     fn worker_error(e: WorkerError) -> String {
@@ -515,6 +567,7 @@ impl Gateway {
                 .map(|g| g.display().to_string())
                 .collect(),
             audit_log: self.state.audit.dir().display().to_string(),
+            secret_store: self.state.secrets.describe(),
             always_on_rules: vec![],
             engines,
             notes: self.state.notes.clone(),
@@ -681,12 +734,16 @@ impl Gateway {
             ));
         }
         let timeout = access.limits.seconds.unwrap_or(120);
+        let handle = match self.handle(conn) {
+            Ok(h) => h,
+            Err(e) => return Err(self.deny(&ctx, rec, e)),
+        };
         let reply = self
             .state
             .worker
             .call(
                 "list_datasets",
-                json!({"connection": Self::handle(conn), "timeout_s": timeout}),
+                json!({"connection": handle, "timeout_s": timeout}),
                 Duration::from_secs(timeout + 10),
             )
             .await;
@@ -806,6 +863,10 @@ impl Gateway {
             .resolve(&format!("results/{prov}.csv"))
             .map_err(|e| e.to_string())?;
         let timeout = access.limits.seconds.unwrap_or(120);
+        let handle = match self.handle(conn) {
+            Ok(h) => h,
+            Err(e) => return Err(self.deny(&ctx, rec, e)),
+        };
         let started = Local::now();
         let reply = self
             .state
@@ -813,7 +874,7 @@ impl Gateway {
             .call(
                 "sql_select",
                 json!({
-                    "connection": Self::handle(conn),
+                    "connection": handle,
                     "sql": checked.sql,
                     "max_rows": max_rows,
                     "return_rows": access.return_rows,
@@ -937,7 +998,7 @@ impl Gateway {
             }],
             "steps": [{
                 "tool": "sql_select",
-                "engine": "python-worker/sqlite",
+                "engine": format!("python-worker/{}", conn.kind.to_ascii_lowercase()),
                 "executed_sql": checked.sql,
                 "seconds": reply.get("seconds"),
             }],

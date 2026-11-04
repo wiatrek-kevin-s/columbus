@@ -1,0 +1,22 @@
+# A PostGIS database. The password is NOT here: store it once with
+#   columbus-mcp secret set gis-postgis
+# which keeps it in Windows Credential Manager. Leave it unset to use
+# integrated (Kerberos/SSPI) sign-in.
+#
+# Best practice: give Columbus its own login with SELECT grants only. The
+# server keeps every session read-only anyway, but the database's grants are
+# the control nothing can bypass.
+id: gis-postgis
+type: postgis
+host: gisdb.corp.example
+port: 5432
+database: gis
+user: columbus_ro
+sslmode: verify-full
+search_path: public
+description: Enterprise PostGIS, transportation schemas
+datasets:
+  allow: ["transportation.*", "boundaries.*"]
+  deny: ["*.*_audit", "*.*_history"]
+row_filter: "district_nbr = 14"
+limits: { rows: 200000, seconds: 120 }

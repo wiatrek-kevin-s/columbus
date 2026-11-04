@@ -182,6 +182,21 @@ pub struct Connection {
     pub path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
+    /// Database name (PostgreSQL, SQL Server).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub database: Option<String>,
+    /// Login name. The password is never here: it lives in the operating
+    /// system's credential store under this connection's id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
+    /// PostgreSQL `sslmode` (`disable`, `prefer`, `require`, `verify-full`…).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sslmode: Option<String>,
+    /// Schemas searched for unqualified table names. Defaults to `public`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub search_path: Option<String>,
     #[serde(default = "default_mode")]
     pub mode: Mode,
     pub datasets: DatasetRules,
@@ -366,8 +381,14 @@ impl EffectiveAccess {
         })
     }
 
-    /// Whether a dataset (physical name) may be read at all.
+    /// Whether a dataset (physical name) may be read at all. System
+    /// catalogs are never allowed, whatever the allow list says, so a
+    /// broad pattern like `*` cannot expose logins, settings or other
+    /// schemas' metadata.
     pub fn dataset_allowed(&self, name: &str) -> bool {
+        if is_system_catalog(name, &self.kind) {
+            return false;
+        }
         if !self.datasets.permits(name).unwrap_or(false) {
             return false;
         }
@@ -399,6 +420,58 @@ impl EffectiveAccess {
         }
         .permits(field)
         .unwrap_or(false)
+    }
+}
+
+/// Schemas that hold database internals on the supported engines.
+const SYSTEM_SCHEMAS: &[&str] = &[
+    "PG_CATALOG",
+    "INFORMATION_SCHEMA",
+    "PG_TOAST",
+    "SYS",
+    "SYSTEM",
+    "MDSYS",
+    "CTXSYS",
+    "XDB",
+    "LBACSYS",
+    "DVSYS",
+    "AUDSYS",
+    "OUTLN",
+    "SYSIBM",
+    "MASTER",
+    "MSDB",
+    "TEMPDB",
+    "MODEL",
+];
+
+/// True for system catalog tables and views on the connection's engine,
+/// including the unqualified names that resolve to them (PostgreSQL always
+/// searches `pg_catalog` first; Oracle's `DBA_`/`ALL_`/`USER_`/`V$` views
+/// are public synonyms; SQL Server's `sys*` compatibility views).
+pub fn is_system_catalog(name: &str, kind: &str) -> bool {
+    let norm = normalize_identifier(name).to_ascii_uppercase();
+    let parts: Vec<&str> = norm.split('.').collect();
+    let last = *parts.last().unwrap_or(&"");
+    if parts.len() >= 2
+        && parts[..parts.len() - 1]
+            .iter()
+            .any(|p| SYSTEM_SCHEMAS.contains(p))
+    {
+        return true;
+    }
+    match kind.to_ascii_lowercase().as_str() {
+        "postgis" | "postgres" | "postgresql" | "duckdb" | "geoparquet" => {
+            parts.len() == 1 && (last.starts_with("PG_") || last.starts_with("DUCKDB_"))
+        }
+        "oracle" | "sde-oracle" => {
+            parts.len() == 1
+                && ["DBA_", "ALL_", "USER_", "CDB_", "V$", "GV$", "V_$", "GV_$"]
+                    .iter()
+                    .any(|p| last.starts_with(p))
+        }
+        "sqlserver" | "mssql" | "azure-sql" => parts.len() == 1 && last.starts_with("SYS"),
+        "gpkg" | "geopackage" | "sqlite" | "spatialite" => last.starts_with("SQLITE_"),
+        _ => false,
     }
 }
 
@@ -531,6 +604,42 @@ expires: 2027-06-30
             a.filters_for("roads.roadway_centerline"),
             vec!["DISTRICT_NBR = 14".to_string(), "STATUS <> 'R'".to_string()]
         );
+    }
+
+    #[test]
+    fn system_catalogs_never_allowed() {
+        let mut conn = roads();
+        conn.datasets.allow = vec!["*".into()];
+        conn.datasets.deny = vec![];
+        for (kind, name, system) in [
+            ("postgis", "pg_catalog.pg_authid", true),
+            ("postgis", "pg_roles", true),
+            ("postgis", "information_schema.tables", true),
+            ("postgis", "\"PG_CATALOG\".\"PG_SETTINGS\"", true),
+            ("postgis", "public.roads", false),
+            ("postgis", "roads.pg_style_lookup", false),
+            ("oracle", "SYS.USER$", true),
+            ("oracle", "DBA_USERS", true),
+            ("oracle", "V$SESSION", true),
+            ("oracle", "ROADS.ALL_SEGMENTS", false),
+            ("sqlserver", "sys.sql_logins", true),
+            ("sqlserver", "sysobjects", true),
+            ("sqlserver", "master.dbo.spt_values", true),
+            ("sqlserver", "dbo.roads", false),
+            ("gpkg", "sqlite_master", true),
+            ("gpkg", "roads", false),
+        ] {
+            assert_eq!(is_system_catalog(name, kind), system, "{kind} {name}");
+            conn.kind = kind.into();
+            let mut o = org();
+            o.connection_types = vec![kind.into()];
+            let a = EffectiveAccess::resolve(&o, &conn, &ProjectScope::default(), now()).unwrap();
+            assert_eq!(
+                a.dataset_allowed(name),
+                !system,
+                "{kind} {name} under allow *"
+            );
+        }
     }
 
     #[test]
