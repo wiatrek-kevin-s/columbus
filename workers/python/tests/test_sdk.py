@@ -16,7 +16,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SDK_DIR = os.path.dirname(HERE)
 sys.path.insert(0, SDK_DIR)
 
-from columbus_plugin import Extract, GeometryError, decode_geometry, write_csv, write_geojson  # noqa: E402
+from columbus_plugin import Extract, GeometryError, decode_geometry, readonly_uri, write_csv, write_geojson  # noqa: E402
 
 
 def wkb(code, body, little=True, srid=None):
@@ -70,6 +70,17 @@ class GeometryTests(unittest.TestCase):
         with self.assertRaises(GeometryError):
             decode_geometry(b"\x01\x02")
         self.assertIsNone(decode_geometry(None))
+
+
+class UriTests(unittest.TestCase):
+    def test_windows_paths(self):
+        self.assertEqual(readonly_uri(r"\\?\D:\a\ws\inputs\r1-x.sqlite", windows=True), "file:///D:/a/ws/inputs/r1-x.sqlite?mode=ro")
+        self.assertEqual(readonly_uri(r"C:\GIS\My Data\roads#1.gpkg", windows=True), "file:///C:/GIS/My%20Data/roads%231.gpkg?mode=ro")
+        self.assertEqual(readonly_uri(r"\\server\gis\roads.gpkg", windows=True), "file://server/gis/roads.gpkg?mode=ro")
+        self.assertEqual(readonly_uri(r"\\?\UNC\server\gis\roads.gpkg", windows=True), "file://server/gis/roads.gpkg?mode=ro")
+
+    def test_posix_paths(self):
+        self.assertEqual(readonly_uri("/tmp/a b?.sqlite", windows=False), "file:///tmp/a%20b%3F.sqlite?mode=ro")
 
 
 class WriterTests(unittest.TestCase):

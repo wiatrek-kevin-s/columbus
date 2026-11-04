@@ -34,6 +34,7 @@ import csv
 import json
 import math
 import os
+import pathlib
 import queue
 import sqlite3
 import struct
@@ -45,6 +46,7 @@ from typing import Any, Callable, Iterable, Iterator
 
 __all__ = [
     "PROTOCOL_VERSION",
+    "readonly_uri",
     "Plugin",
     "Context",
     "Extract",
@@ -256,6 +258,25 @@ def decode_geometry(blob: bytes | memoryview | None, fmt: str = "auto") -> Geome
 # ---------------------------------------------------------------------------
 
 
+def readonly_uri(path: str, windows: bool | None = None) -> str:
+    """A SQLite URI that opens ``path`` read-only.
+
+    Handles Windows drive letters, UNC shares and verbatim (``\\\\?\\``) paths,
+    and percent-encodes characters such as ``?``, ``#`` and spaces.
+    """
+    if windows is None:
+        windows = os.name == "nt"
+    if windows:
+        if path.startswith("\\\\?\\UNC\\"):
+            path = "\\\\" + path[8:]
+        elif path.startswith("\\\\?\\"):
+            path = path[4:]
+        uri = pathlib.PureWindowsPath(path).as_uri()
+    else:
+        uri = pathlib.PurePosixPath(os.path.abspath(path)).as_uri()
+    return uri + "?mode=ro"
+
+
 class Row:
     __slots__ = ("_values", "_index", "_extract")
 
@@ -286,7 +307,7 @@ class Extract:
 
     def __init__(self, path: str):
         self.path = path
-        self._db = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        self._db = sqlite3.connect(readonly_uri(path), uri=True)
         self.meta = dict(self._db.execute("SELECT key, value FROM columbus_extract"))
         self.columns = [r[1] for r in self._db.execute('PRAGMA table_info("data")')]
         self._index = {c: i for i, c in enumerate(self.columns)}

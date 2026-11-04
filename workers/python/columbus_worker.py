@@ -42,7 +42,7 @@ from typing import Any
 # keeps the script's folder off the import path, so add it explicitly.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from columbus_plugin import PROTOCOL_VERSION, Plugin, ToolError, decode_geometry  # noqa: E402
+from columbus_plugin import PROTOCOL_VERSION, Plugin, ToolError, decode_geometry, readonly_uri  # noqa: E402
 
 VERSION = "0.3.0"
 
@@ -102,7 +102,7 @@ def _open_sqlite(conn: dict[str, Any], timeout_s: float) -> sqlite3.Connection:
     if not isinstance(path, str) or not path:
         raise WorkerError(INVALID_PARAMS, "file connection has no path")
     # Read-only at the engine: URI mode=ro plus query_only.
-    uri = "file:" + path.replace("?", "%3f").replace("#", "%23") + "?mode=ro"
+    uri = readonly_uri(path)
     try:
         db = sqlite3.connect(uri, uri=True, timeout=5, check_same_thread=False)
     except sqlite3.Error as e:
