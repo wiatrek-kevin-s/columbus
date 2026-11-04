@@ -61,6 +61,6 @@ The `skills` folder holds GIS skills: CRS choice, joins, QA, spatial SQL, raster
 
 ## Known limits in this release
 
-- Oracle and SQL Server connections are checked but cannot be read yet. PostGIS, GeoPackage, SQLite and GeoTIFF folders can.
+- Oracle (`oracle`, `sde-oracle`) and SQL Server (`sqlserver`, `mssql`, `sde-sqlserver`, `azure-sql`) connections read through `engine\setup-engine.ps1`'s database drivers: python-oracledb in thin mode (no Oracle Client) and pyodbc, which also needs Microsoft ODBC Driver 18 for SQL Server installed. SQL Server has no read-only session: Columbus rolls back every query's transaction, but give it a login with SELECT only. Esri `ST_Geometry` columns on Oracle are reported as unsupported geometry, not read.
 - On Windows, confinement level C is not available yet. Servers and plugins run at A or B.
 - No point-cloud processing, no edits to geodatabases, no ArcPy.

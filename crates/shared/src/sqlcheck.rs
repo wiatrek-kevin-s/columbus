@@ -46,7 +46,7 @@ impl SqlDialect {
         match kind.to_ascii_lowercase().as_str() {
             "oracle" | "sde-oracle" => SqlDialect::Oracle,
             "postgis" | "postgres" | "postgresql" => SqlDialect::Postgres,
-            "sqlserver" | "mssql" | "azure-sql" => SqlDialect::MsSql,
+            "sqlserver" | "mssql" | "azure-sql" | "sde-sqlserver" => SqlDialect::MsSql,
             "gpkg" | "geopackage" | "sqlite" | "spatialite" => SqlDialect::Sqlite,
             "duckdb" | "geoparquet" => SqlDialect::DuckDb,
             _ => SqlDialect::Generic,
@@ -297,19 +297,198 @@ const CAST_TYPES: &[&str] = &["GEOMETRY", "GEOGRAPHY", "BOX2D", "BOX3D", "REGCLA
 /// row filter), or they are PostGIS internals.
 const ST_DENIED: &[&str] = &["ST_ESTIMATEDEXTENT", "ST_FIND_EXTENT", "ST_FINDEXTENT"];
 
+/// The functions free SQL may call on Oracle: the built-in SQL functions
+/// among [`SELECT_FUNCTIONS`] (plus DECODE and NVL2), never a name Oracle
+/// lacks. Oracle resolves a name that is not a built-in to the login's own
+/// schema or a public synonym, so `SPLIT_PART(...)` would run whatever
+/// function someone created under that name.
+const ORACLE_FUNCTIONS: &[&str] = &[
+    "COUNT",
+    "SUM",
+    "AVG",
+    "MIN",
+    "MAX",
+    "STDDEV",
+    "STDDEV_POP",
+    "STDDEV_SAMP",
+    "VARIANCE",
+    "VAR_POP",
+    "VAR_SAMP",
+    "PERCENTILE_CONT",
+    "PERCENTILE_DISC",
+    "CORR",
+    "COVAR_POP",
+    "COVAR_SAMP",
+    "MEDIAN",
+    "LISTAGG",
+    "ROW_NUMBER",
+    "RANK",
+    "DENSE_RANK",
+    "PERCENT_RANK",
+    "CUME_DIST",
+    "NTILE",
+    "LAG",
+    "LEAD",
+    "FIRST_VALUE",
+    "LAST_VALUE",
+    "NTH_VALUE",
+    "ABS",
+    "CEIL",
+    "FLOOR",
+    "ROUND",
+    "TRUNC",
+    "SIGN",
+    "SQRT",
+    "POWER",
+    "EXP",
+    "LN",
+    "LOG",
+    "MOD",
+    "SIN",
+    "COS",
+    "TAN",
+    "ASIN",
+    "ACOS",
+    "ATAN",
+    "ATAN2",
+    "WIDTH_BUCKET",
+    "GREATEST",
+    "LEAST",
+    "COALESCE",
+    "NULLIF",
+    "NVL",
+    "NVL2",
+    "DECODE",
+    "LOWER",
+    "UPPER",
+    "LENGTH",
+    "TRIM",
+    "LTRIM",
+    "RTRIM",
+    "LPAD",
+    "RPAD",
+    "SUBSTR",
+    "REPLACE",
+    "CONCAT",
+    "INSTR",
+    "INITCAP",
+    "REGEXP_REPLACE",
+    "REGEXP_SUBSTR",
+    "TRANSLATE",
+    "CHR",
+    "ASCII",
+    "TO_CHAR",
+    "TO_NUMBER",
+    "TO_DATE",
+    "TO_TIMESTAMP",
+    "CURRENT_DATE",
+    "CURRENT_TIMESTAMP",
+    "LOCALTIMESTAMP",
+    "EXTRACT",
+    "JSON_OBJECT",
+    "JSON_ARRAY",
+    "REGR_SLOPE",
+    "REGR_INTERCEPT",
+    "REGR_R2",
+    "REGR_COUNT",
+    "REGR_AVGX",
+    "REGR_AVGY",
+    "REGR_SXX",
+    "REGR_SYY",
+    "REGR_SXY",
+];
+
+/// Oracle Spatial operators free SQL may call (index operators; written
+/// bare or as `MDSYS.<name>`).
+const SDO_OPERATORS: &[&str] = &["SDO_RELATE", "SDO_FILTER", "SDO_WITHIN_DISTANCE"];
+/// Oracle Spatial packages and types whose members free SQL may call
+/// (`SDO_GEOM.SDO_AREA(...)`, `SDO_UTIL.TO_WKTGEOMETRY(...)`), with the
+/// members allowed (`*` for every one: SDO_GEOM only computes).
+const SDO_PACKAGES: &[(&str, &[&str])] = &[
+    ("SDO_GEOM", &["*"]),
+    (
+        "SDO_UTIL",
+        &[
+            "TO_WKTGEOMETRY",
+            "TO_WKBGEOMETRY",
+            "FROM_WKTGEOMETRY",
+            "FROM_WKBGEOMETRY",
+            "TO_GEOJSON",
+        ],
+    ),
+];
+/// Oracle Spatial type constructors.
+const SDO_TYPES: &[&str] = &[
+    "SDO_GEOMETRY",
+    "SDO_POINT_TYPE",
+    "SDO_ELEM_INFO_ARRAY",
+    "SDO_ORDINATE_ARRAY",
+];
+
+/// An Oracle Spatial name as free SQL wrote it (upper-case parts), as the
+/// name parts to call it by: always in MDSYS, so a function or synonym of
+/// the same name in the login's schema (which Oracle would find first)
+/// never runs instead.
+fn oracle_spatial(parts: &[String]) -> Option<Vec<String>> {
+    let rest: &[String] = match parts {
+        [first, rest @ ..] if first == "MDSYS" && !rest.is_empty() => rest,
+        _ => parts,
+    };
+    let ok = match rest {
+        [one] => SDO_OPERATORS.contains(&one.as_str()) || SDO_TYPES.contains(&one.as_str()),
+        [pkg, member] => SDO_PACKAGES
+            .iter()
+            .any(|(p, m)| p == pkg && (m.contains(&"*") || m.contains(&member.as_str()))),
+        _ => false,
+    };
+    ok.then(|| {
+        std::iter::once("MDSYS".to_string())
+            .chain(rest.iter().cloned())
+            .collect()
+    })
+}
+
+/// Upper-case name parts of a function, or None when a part is not a
+/// plain identifier.
+fn function_parts(name: &ObjectName) -> Option<Vec<String>> {
+    name.0
+        .iter()
+        .map(|p| p.as_ident().map(|i| i.value.to_ascii_uppercase()))
+        .collect()
+}
+
 /// May free SQL call this function (upper-case, possibly schema-qualified)?
 ///
 /// On PostgreSQL a spatial function must be one the PostGIS extension
 /// installed ([`Catalog::extension_functions`]): any function in `public`
 /// can be named `st_…`, and one the database owner wrote can read anything.
-/// On GeoPackage and SQLite files none are available (see below).
-fn select_function_allowed(name: &str, dialect: SqlDialect, catalog: &Catalog) -> bool {
+/// On GeoPackage and SQLite files none are available (see below). On Oracle
+/// only built-ins and Oracle Spatial in MDSYS; on SQL Server only
+/// unqualified built-ins (it calls user-defined scalar functions only by a
+/// two-part name, and a two-part name could as well be a geometry method).
+fn select_function_allowed(
+    name: &str,
+    parts: Option<&[String]>,
+    dialect: SqlDialect,
+    catalog: &Catalog,
+) -> bool {
     let (schema, bare) = match name.rsplit_once('.') {
         Some((s, b)) => (Some(s), b),
         None => (None, name),
     };
     if bare.starts_with('_') || bare.starts_with("POSTGIS") {
         return false;
+    }
+    match dialect {
+        SqlDialect::Oracle => {
+            return parts.is_some_and(|p| oracle_spatial(p).is_some())
+                || (schema.is_none() && ORACLE_FUNCTIONS.contains(&bare));
+        }
+        SqlDialect::MsSql => {
+            let spatial = bare.starts_with("ST_") || SPATIAL_OTHER.contains(&bare);
+            return schema.is_none() && !spatial && SELECT_FUNCTIONS.contains(&bare);
+        }
+        _ => {}
     }
     let spatial = bare.starts_with("ST_") || SPATIAL_OTHER.contains(&bare);
     if spatial {
@@ -329,11 +508,48 @@ fn select_function_allowed(name: &str, dialect: SqlDialect, catalog: &Catalog) -
             _ => schema.is_none(),
         };
     }
-    // Ordinary functions: unqualified (pg_catalog is searched first) or
-    // explicitly pg_catalog. A function of the database's own
-    // (roads.log_visit) can do anything.
-    schema.is_none_or(|s| s == "PG_CATALOG") && SELECT_FUNCTIONS.contains(&bare)
+    // Ordinary functions: unqualified (pg_catalog is searched first) or,
+    // on PostgreSQL and DuckDB, explicitly pg_catalog. A function of the
+    // database's own (roads.log_visit) can do anything.
+    let pg = matches!(dialect, SqlDialect::Postgres | SqlDialect::DuckDb);
+    schema.is_none_or(|s| pg && s == "PG_CATALOG") && SELECT_FUNCTIONS.contains(&bare)
 }
+
+/// Why a function free SQL may not call is refused, in the dialect's terms.
+fn function_refusal(name: &str, dialect: SqlDialect) -> String {
+    let bare = name.rsplit('.').next().unwrap_or(name);
+    let spatial = bare.starts_with("ST_") || SPATIAL_OTHER.contains(&bare);
+    match dialect {
+        SqlDialect::Sqlite if spatial => format!(
+            "function {name} is not available: spatial SQL functions do not run on GeoPackage or SQLite connections; use query_features with bbox, or vector_op"
+        ),
+        SqlDialect::Oracle if spatial || bare.starts_with("SDO_") => format!(
+            "function {name} is not allowed on Oracle: spatial SQL there is Oracle Spatial's, called in MDSYS (SDO_RELATE, SDO_FILTER, SDO_WITHIN_DISTANCE, SDO_GEOM.*, SDO_UTIL.TO_WKTGEOMETRY); or use query_features with bbox, or vector_op"
+        ),
+        SqlDialect::Oracle => format!(
+            "function {name} is not allowed (Oracle's built-in scalar, aggregate and window functions and Oracle Spatial in MDSYS are; the database's own functions are not)"
+        ),
+        SqlDialect::MsSql if spatial || name.contains('.') => format!(
+            "{name} is not allowed on SQL Server: geometry methods (col.STIntersects(...)) and schema functions cannot be told apart safely, so neither is called; use query_features with bbox, or vector_op, for spatial work"
+        ),
+        SqlDialect::MsSql => format!(
+            "function {name} is not allowed (ordinary built-in scalar, aggregate and window functions are)"
+        ),
+        _ => format!(
+            "function {name} is not allowed (ordinary scalar, aggregate and window functions and PostGIS ST_* functions are)"
+        ),
+    }
+}
+
+/// Built-in Oracle types a cast may name that the parser does not know.
+const ORACLE_CAST_TYPES: &[&str] = &[
+    "NUMBER",
+    "VARCHAR2",
+    "NVARCHAR2",
+    "NCHAR",
+    "BINARY_DOUBLE",
+    "BINARY_FLOAT",
+];
 
 /// Function name prefixes refused anywhere in free SQL: these reach the file
 /// system, the network or server internals on at least one supported database.
@@ -474,7 +690,17 @@ pub fn check_where(text: &str, dialect: SqlDialect) -> Result<String, Denied> {
     });
     match problem {
         Some(p) => Err(Denied::Query(p)),
-        None => Ok(expr.to_string()),
+        None => {
+            let out = expr.to_string();
+            let same = parse_expr(&out, dialect).is_ok_and(|again| again.to_string() == out);
+            if same {
+                Ok(out)
+            } else {
+                Err(Denied::Query(
+                    "the where clause could not be checked reliably (a name or literal does not read back as written)".into(),
+                ))
+            }
+        }
     }
 }
 
@@ -629,17 +855,16 @@ fn check_tables_and_functions(
         if let Expr::Function(f) = e {
             let name = function_name(&f.name);
             let bare = name.rsplit('.').next().unwrap_or(&name);
-            if DENIED_FUNCTION_PREFIXES
-                .iter()
-                .any(|p| name.starts_with(p) || bare.starts_with(p))
-                || !select_function_allowed(&name, dialect, catalog)
+            let parts = function_parts(&f.name);
+            let spatial_ok = dialect == SqlDialect::Oracle
+                && parts.as_deref().and_then(oracle_spatial).is_some();
+            if (!spatial_ok
+                && DENIED_FUNCTION_PREFIXES
+                    .iter()
+                    .any(|p| name.starts_with(p) || bare.starts_with(p)))
+                || !select_function_allowed(&name, parts.as_deref(), dialect, catalog)
             {
-                let spatial = bare.starts_with("ST_") || SPATIAL_OTHER.contains(&bare);
-                problem = Some(Denied::Query(if spatial && dialect == SqlDialect::Sqlite {
-                    format!("function {name} is not available: spatial SQL functions do not run on GeoPackage or SQLite connections; use query_features with bbox, or vector_op")
-                } else {
-                    format!("function {name} is not allowed (ordinary scalar, aggregate and window functions and PostGIS ST_* functions are)")
-                }));
+                problem = Some(Denied::Query(function_refusal(&name, dialect)));
                 return ControlFlow::Break(());
             }
         }
@@ -656,8 +881,21 @@ fn check_tables_and_functions(
                 )));
                 return ControlFlow::Break(());
             }
+            // `a::t` is PostgreSQL's cast; SQL Server's `geometry::Point(...)`
+            // (a static method) parses the same way but is something else.
             Expr::Cast {
-                data_type: sqlparser::ast::DataType::Custom(t, _),
+                kind: sqlparser::ast::CastKind::DoubleColon,
+                ..
+            } if !matches!(dialect, SqlDialect::Postgres | SqlDialect::DuckDb) => {
+                problem = Some(Denied::Query(if dialect == SqlDialect::MsSql {
+                    format!("`{e}` is not allowed on SQL Server: static geometry methods (geometry::Point, geography::STGeomFromText) are not checked; use query_features with bbox, or vector_op")
+                } else {
+                    format!("`{e}` is not allowed; use CAST(... AS ...)")
+                }));
+                return ControlFlow::Break(());
+            }
+            Expr::Cast {
+                data_type: sqlparser::ast::DataType::Custom(t, modifiers),
                 ..
             } => {
                 let last =
@@ -665,7 +903,17 @@ fn check_tables_and_functions(
                         .and_then(|p| p.as_ident())
                         .map(|i| i.value.to_ascii_uppercase())
                         .unwrap_or_default();
-                if t.0.len() > 1 || !CAST_TYPES.contains(&last.as_str()) {
+                let known = match dialect {
+                    SqlDialect::Oracle => ORACLE_CAST_TYPES.contains(&last.as_str()),
+                    SqlDialect::MsSql => ["GEOMETRY", "GEOGRAPHY"].contains(&last.as_str()),
+                    _ => CAST_TYPES.contains(&last.as_str()),
+                };
+                // Type modifiers are written back as they were read, quotes
+                // and all removed: only plain words and numbers may be there.
+                let plain = modifiers.iter().all(|m| {
+                    !m.is_empty() && m.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                });
+                if t.0.len() > 1 || !known || !plain {
                     problem = Some(Denied::Query(format!(
                         "cast to {t} is not allowed; cast to a built-in type"
                     )));
@@ -819,16 +1067,28 @@ fn quote_ident(name: &str, dialect: SqlDialect) -> String {
 const PG_SYNTAX_FUNCTIONS: &[&str] = &["COALESCE", "NULLIF", "GREATEST", "LEAST"];
 
 /// Text that stops the database from merging the filtered table into the
-/// outer query. Without it PostgreSQL may evaluate the caller's conditions on
-/// rows the row filter excludes (they are reordered freely), and an error
-/// raised there ("invalid input syntax: <value>") reports those rows.
-fn barrier(dialect: SqlDialect) -> &'static str {
+/// outer query, as (after `SELECT`, after the `WHERE`). Without it the
+/// database may evaluate the caller's conditions on rows the row filter
+/// excludes (they are reordered freely), and an error raised there
+/// ("invalid input syntax: <value>", "Conversion failed when converting the
+/// varchar value '<value>'") reports those rows.
+///
+/// * PostgreSQL, DuckDB: `OFFSET 0` (a subquery with OFFSET is never pulled up).
+/// * SQLite: `LIMIT -1 OFFSET 0` (the same rule: no flattening with LIMIT).
+/// * Oracle: `AND ROWNUM > 0`. A view whose query uses ROWNUM can be neither
+///   merged nor have predicates pushed into it, because either would change
+///   which rows get which ROWNUM. `NO_MERGE` is not enough: it stops view
+///   merging only, and Oracle still pushes the outer WHERE into the view's
+///   own WHERE ("filter push-down"), where it may run before the row filter.
+///   A hint is also only a hint, silently ignored when misspelt.
+/// * SQL Server: `TOP (9223372036854775807)`. A filter above a TOP cannot be
+///   moved below it without changing which rows TOP returns, so it is not.
+fn barrier(dialect: SqlDialect) -> (&'static str, &'static str) {
     match dialect {
-        SqlDialect::Postgres | SqlDialect::DuckDb | SqlDialect::Generic => " OFFSET 0",
-        SqlDialect::Sqlite => " LIMIT -1 OFFSET 0",
-        // Not run yet (no engine): revisit with the Oracle and SQL Server
-        // engines (NO_MERGE / TOP with ORDER BY).
-        SqlDialect::Oracle | SqlDialect::MsSql => "",
+        SqlDialect::Postgres | SqlDialect::DuckDb | SqlDialect::Generic => ("", " OFFSET 0"),
+        SqlDialect::Sqlite => ("", " LIMIT -1 OFFSET 0"),
+        SqlDialect::Oracle => ("", " AND ROWNUM > 0"),
+        SqlDialect::MsSql => ("TOP (9223372036854775807) ", ""),
     }
 }
 
@@ -853,6 +1113,17 @@ impl VisitorMut for ApplyFilters<'_> {
     // Call PostGIS functions by their extension's schema, so a function of
     // the same name earlier on the search path is never the one that runs.
     fn post_visit_expr(&mut self, e: &mut Expr) -> ControlFlow<()> {
+        // Oracle Spatial is always called in MDSYS: Oracle would find a
+        // function or synonym of the same name in the login's schema first.
+        if self.dialect == SqlDialect::Oracle {
+            if let Expr::Function(f) = e {
+                if let Some(parts) = function_parts(&f.name).as_deref().and_then(oracle_spatial) {
+                    f.name =
+                        ObjectName::from(parts.into_iter().map(Ident::new).collect::<Vec<_>>());
+                }
+            }
+            return ControlFlow::Continue(());
+        }
         if !matches!(self.dialect, SqlDialect::Postgres | SqlDialect::DuckDb) {
             return ControlFlow::Continue(());
         }
@@ -972,16 +1243,19 @@ impl VisitorMut for ApplyFilters<'_> {
                 }
             }
         }
-        let mut inner_sql = format!("SELECT {select} FROM {source}");
-        if !checked.is_empty() {
-            inner_sql.push_str(&format!(" WHERE {}", checked.join(" AND ")));
-        }
         // The barrier is only needed when rows are filtered out: with hidden
         // fields alone there is no excluded row to protect, and leaving it off
         // lets the database merge the table and use its spatial index.
+        let (before, after) = if checked.is_empty() {
+            ("", "")
+        } else {
+            barrier(self.dialect)
+        };
+        let mut inner_sql = format!("SELECT {before}{select} FROM {source}");
         if !checked.is_empty() {
-            inner_sql.push_str(barrier(self.dialect));
+            inner_sql.push_str(&format!(" WHERE {}", checked.join(" AND ")));
         }
+        inner_sql.push_str(after);
         let d = self.dialect.parser_dialect();
         let inner = match Parser::parse_sql(d.as_ref(), &inner_sql) {
             Ok(mut s) if s.len() == 1 => match s.remove(0) {
@@ -1041,6 +1315,77 @@ pub fn check_select_unlimited(
     check_select_limited(sql, access, max_rows, false, catalog)
 }
 
+/// The checked query must read back as itself. The SQL that runs is the
+/// parsed query written out again, and in a few places the parser writes
+/// back less than it read (a type modifier's quotes, a `]` inside a
+/// `[bracketed]` name), which could turn a value into SQL the checks never
+/// saw. Parsing the text that will run and writing it out once more must
+/// give the same text; anything else is refused.
+fn reads_back(sql: &str, dialect: SqlDialect) -> Result<(), Denied> {
+    let d = dialect.parser_dialect();
+    let same = match Parser::parse_sql(d.as_ref(), sql) {
+        Ok(s) => s.len() == 1 && s[0].to_string() == sql,
+        Err(_) => false,
+    };
+    if same {
+        Ok(())
+    } else {
+        Err(Denied::Query(
+            "the query could not be checked reliably (a name or literal does not read back as written); write names without brackets or quotes inside them, and type modifiers as plain numbers".into(),
+        ))
+    }
+}
+
+/// The query with its row limit (`fetch`, or none for an unlimited read),
+/// in the dialect's syntax, keeping its own ORDER BY in force.
+///
+/// SQL Server allows ORDER BY in a derived table only with TOP or OFFSET,
+/// and needs a name for every column of one, so the limit goes onto the
+/// query itself where it can: `TOP` on a plain SELECT, `OFFSET 0 ROWS FETCH
+/// FIRST n ROWS ONLY` on an ordered UNION. An unlimited ordered query gets
+/// TOP (max) too, so the engine can still wrap it to convert geometry.
+/// Oracle takes `FETCH FIRST n ROWS ONLY` on any query without one.
+fn with_row_limit(mut query: Query, dialect: SqlDialect, fetch: Option<u64>) -> String {
+    let no_limit = query.limit_clause.is_none() && query.fetch.is_none();
+    match dialect {
+        SqlDialect::Oracle => match fetch {
+            None => query.to_string(),
+            Some(n) if no_limit => format!("{query} FETCH FIRST {n} ROWS ONLY"),
+            Some(n) => format!("SELECT * FROM ({query}) columbus_q FETCH FIRST {n} ROWS ONLY"),
+        },
+        SqlDialect::MsSql => {
+            if no_limit && (fetch.is_some() || query.order_by.is_some()) {
+                let n = fetch.unwrap_or(i64::MAX as u64);
+                let select = matches!(query.body.as_ref(), SetExpr::Select(_));
+                if let SetExpr::Select(s) = query.body.as_mut() {
+                    // A caller's own TOP cannot be combined with OFFSET: wrap.
+                    if s.top.is_none() {
+                        s.top = Some(sqlparser::ast::Top {
+                            with_ties: false,
+                            percent: false,
+                            quantity: Some(sqlparser::ast::TopQuantity::Expr(Expr::value(
+                                sqlparser::ast::Value::Number(n.to_string(), false),
+                            ))),
+                        });
+                        return query.to_string();
+                    }
+                }
+                if !select && query.order_by.is_some() {
+                    return format!("{query} OFFSET 0 ROWS FETCH FIRST {n} ROWS ONLY");
+                }
+            }
+            match fetch {
+                None => query.to_string(),
+                Some(n) => format!("SELECT TOP ({n}) * FROM ({query}) AS columbus_q"),
+            }
+        }
+        _ => match fetch {
+            None => query.to_string(),
+            Some(n) => format!("SELECT * FROM ({query}) AS columbus_q LIMIT {n}"),
+        },
+    }
+}
+
 fn check_select_limited(
     sql: &str,
     access: &EffectiveAccess,
@@ -1065,28 +1410,14 @@ fn check_select_limited(
         return Err(e);
     }
 
-    let inner = query.to_string();
-    if !limit {
-        return Ok(CheckedQuery {
-            sql: inner,
-            tables,
-            max_rows,
-            dialect,
-            hidden: apply.hidden,
-        });
-    }
+    reads_back(&query.to_string(), dialect)?;
     // Ask the database for one row more than the worker may read, so the
     // worker can tell "exactly max_rows" from "cut off at max_rows" and
     // report the truncation instead of returning an incomplete result as if
     // it were whole.
-    let fetch = max_rows.saturating_add(1);
-    let sql = match dialect {
-        SqlDialect::Oracle => {
-            format!("SELECT * FROM ({inner}) columbus_q FETCH FIRST {fetch} ROWS ONLY")
-        }
-        SqlDialect::MsSql => format!("SELECT TOP ({fetch}) * FROM ({inner}) AS columbus_q"),
-        _ => format!("SELECT * FROM ({inner}) AS columbus_q LIMIT {fetch}"),
-    };
+    let fetch = limit.then(|| max_rows.saturating_add(1));
+    let sql = with_row_limit(query, dialect, fetch);
+    reads_back(&sql, dialect)?;
     Ok(CheckedQuery {
         sql,
         tables,
@@ -1689,5 +2020,326 @@ datasets:
             q.sql
         );
         assert!(q.sql.contains("\"public\".st_length("), "{}", q.sql);
+    }
+
+    /// The catalog an Oracle connection lists: upper-case names.
+    fn ora_cat() -> Catalog {
+        Catalog {
+            resolve: true,
+            relations: vec![Relation {
+                parts: vec!["ROADS".into(), "ROADWAY_INVENTORY".into()],
+                columns: ["ID", "ROUTE_CODE", "DISTRICT_NBR", "OWNER_NAME", "GEOM"]
+                    .map(String::from)
+                    .to_vec(),
+            }],
+            ..Catalog::default()
+        }
+    }
+
+    fn ms_cat() -> Catalog {
+        Catalog {
+            resolve: true,
+            relations: vec![Relation {
+                parts: vec!["roads".into(), "roadway_inventory".into()],
+                columns: ["id", "route_code", "district_nbr", "owner_name", "geom"]
+                    .map(String::from)
+                    .to_vec(),
+            }],
+            ..Catalog::default()
+        }
+    }
+
+    #[test]
+    fn oracle_barrier_is_rownum_and_names_fold_to_upper_case() {
+        let q = check_select(
+            "SELECT id FROM roads.roadway_inventory WHERE TO_NUMBER(route_code) = 1",
+            &hiding("oracle"),
+            10,
+            &ora_cat(),
+        )
+        .unwrap();
+        assert!(
+            q.sql.contains("(SELECT \"ID\", \"ROUTE_CODE\", \"DISTRICT_NBR\", \"GEOM\" FROM \"ROADS\".\"ROADWAY_INVENTORY\" WHERE (DISTRICT_NBR = 14) AND ROWNUM > 0) roadway_inventory WHERE"),
+            "{}",
+            q.sql
+        );
+        // The caller's condition is outside the barrier, never beside the filter.
+        let inner_end = q.sql.find("ROWNUM > 0)").unwrap();
+        assert!(q.sql[inner_end..].contains("TO_NUMBER(route_code) = 1"));
+        assert!(q.sql.ends_with("FETCH FIRST 11 ROWS ONLY"), "{}", q.sql);
+        assert!(
+            !q.sql.contains(" AS roadway_inventory"),
+            "Oracle has no AS for tables"
+        );
+        // No row filter: no barrier, the table read by its exact name.
+        let mut a = access("oracle", None);
+        a.hide_fields = vec![];
+        let q = check_select("SELECT * FROM roads.roadway_inventory", &a, 10, &ora_cat()).unwrap();
+        assert!(!q.sql.contains("ROWNUM"), "{}", q.sql);
+        assert!(
+            q.sql.contains("FROM \"ROADS\".\"ROADWAY_INVENTORY\""),
+            "{}",
+            q.sql
+        );
+        // Quoted lower case is another table, which the connection does not list.
+        assert!(check_select(
+            "SELECT * FROM \"roads\".\"roadway_inventory\"",
+            &a,
+            10,
+            &ora_cat()
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn sql_server_barrier_is_top_and_limits_keep_order_by_legal() {
+        let q = check_select(
+            "SELECT id FROM roads.roadway_inventory WHERE CAST(route_code AS INT) = 1 ORDER BY id",
+            &hiding("sqlserver"),
+            10,
+            &ms_cat(),
+        )
+        .unwrap();
+        assert!(
+            q.sql.contains("(SELECT TOP (9223372036854775807) [id], [route_code], [district_nbr], [geom] FROM [roads].[roadway_inventory] WHERE (DISTRICT_NBR = 14)) AS roadway_inventory WHERE CAST(route_code AS INT) = 1"),
+            "{}",
+            q.sql
+        );
+        // TOP goes on the query itself, so its ORDER BY stays legal and in force.
+        assert!(q.sql.starts_with("SELECT TOP (11) id FROM"), "{}", q.sql);
+        assert!(q.sql.ends_with("ORDER BY id"), "{}", q.sql);
+        // An ordered UNION gets OFFSET/FETCH; an unordered one is wrapped.
+        let a = access("sqlserver", None);
+        let q = check_select(
+            "SELECT id FROM roads.roadway_inventory UNION SELECT id FROM roads.roadway_inventory ORDER BY id",
+            &a,
+            10,
+            &ms_cat(),
+        )
+        .unwrap();
+        assert!(
+            q.sql
+                .ends_with("ORDER BY id OFFSET 0 ROWS FETCH FIRST 11 ROWS ONLY"),
+            "{}",
+            q.sql
+        );
+        let q = check_select(
+            "SELECT id FROM roads.roadway_inventory UNION SELECT id FROM roads.roadway_inventory",
+            &a,
+            10,
+            &ms_cat(),
+        )
+        .unwrap();
+        assert!(q.sql.starts_with("SELECT TOP (11) * FROM ("), "{}", q.sql);
+        // A caller's own TOP: wrapped, TOP with ORDER BY is legal in a derived table.
+        let q = check_select(
+            "SELECT TOP 5 id FROM roads.roadway_inventory ORDER BY id",
+            &a,
+            10,
+            &ms_cat(),
+        )
+        .unwrap();
+        assert!(
+            q.sql.starts_with("SELECT TOP (11) * FROM (SELECT TOP 5"),
+            "{}",
+            q.sql
+        );
+        // Unlimited (bbox) reads that are ordered still get a TOP, so the
+        // engine can wrap them to convert geometry.
+        let q = check_select_unlimited(
+            "SELECT id FROM roads.roadway_inventory ORDER BY id",
+            &a,
+            10,
+            &ms_cat(),
+        )
+        .unwrap();
+        assert!(
+            q.sql.starts_with("SELECT TOP (9223372036854775807) id"),
+            "{}",
+            q.sql
+        );
+        let q = check_select_unlimited("SELECT id FROM roads.roadway_inventory", &a, 10, &ms_cat())
+            .unwrap();
+        assert!(!q.sql.contains("TOP"), "{}", q.sql);
+    }
+
+    #[test]
+    fn oracle_allows_builtins_and_oracle_spatial_in_mdsys_only() {
+        let a = access("oracle", Some("DISTRICT_NBR = 14"));
+        let c = ora_cat();
+        let q = check_select(
+            "SELECT id, SDO_GEOM.SDO_LENGTH(geom, 0.005) AS len, SDO_UTIL.TO_WKTGEOMETRY(geom) AS wkt, DECODE(district_nbr, 14, 'x', 'y') AS d FROM roads.roadway_inventory r WHERE SDO_RELATE(r.geom, SDO_GEOMETRY(2001, 4326, SDO_POINT_TYPE(1, 2, NULL), NULL, NULL), 'mask=ANYINTERACT') = 'TRUE'",
+            &a,
+            10,
+            &c,
+        )
+        .unwrap();
+        for want in [
+            "MDSYS.SDO_GEOM.SDO_LENGTH(",
+            "MDSYS.SDO_UTIL.TO_WKTGEOMETRY(",
+            "MDSYS.SDO_RELATE(",
+            "MDSYS.SDO_GEOMETRY(2001",
+            "MDSYS.SDO_POINT_TYPE(",
+        ] {
+            assert!(q.sql.contains(want), "{want}: {}", q.sql);
+        }
+        assert!(check_select(
+            "SELECT MDSYS.SDO_GEOM.SDO_AREA(geom, 0.005) FROM roads.roadway_inventory",
+            &a,
+            10,
+            &c
+        )
+        .is_ok());
+        for (sql, expect) in [
+            // PostGIS names mean nothing here
+            (
+                "SELECT ST_Length(geom) FROM roads.roadway_inventory",
+                "Oracle Spatial",
+            ),
+            // a name Oracle lacks resolves to whatever someone created
+            (
+                "SELECT SPLIT_PART(route_code, '-', 1) FROM roads.roadway_inventory",
+                "not allowed",
+            ),
+            (
+                "SELECT MD5(route_code) FROM roads.roadway_inventory",
+                "not allowed",
+            ),
+            // the database's own code, or Spatial outside MDSYS
+            (
+                "SELECT roads.log_visit() FROM roads.roadway_inventory",
+                "not allowed",
+            ),
+            (
+                "SELECT ROADS.SDO_RELATE(geom, geom, 'x') FROM roads.roadway_inventory",
+                "not allowed",
+            ),
+            (
+                "SELECT SDO_UTIL.SOMETHING_ELSE(geom) FROM roads.roadway_inventory",
+                "not allowed",
+            ),
+            (
+                "SELECT r.geom.GET_WKT() FROM roads.roadway_inventory r",
+                "not allowed",
+            ),
+            (
+                "SELECT DBMS_LOB.GETLENGTH(route_code) FROM roads.roadway_inventory",
+                "not allowed",
+            ),
+            (
+                "SELECT SYS_CONTEXT('USERENV', 'SESSION_USER') FROM roads.roadway_inventory",
+                "not allowed",
+            ),
+            (
+                "SELECT CAST(route_code AS roads.my_type) FROM roads.roadway_inventory",
+                "cast",
+            ),
+            ("SELECT * FROM all_tables", "allowed"),
+            ("SELECT * FROM dual", "allowed"),
+        ] {
+            let e = check_select(sql, &a, 10, &c).unwrap_err().to_string();
+            assert!(e.contains(expect), "{sql}: {e}");
+        }
+        assert!(check_select(
+            "SELECT CAST(route_code AS NUMBER(10)) FROM roads.roadway_inventory",
+            &a,
+            10,
+            &c
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn sql_server_refuses_methods_static_calls_and_schema_functions() {
+        let a = access("sqlserver", Some("DISTRICT_NBR = 14"));
+        let c = ms_cat();
+        for (sql, expect) in [
+            (
+                "SELECT geom.STLength() FROM roads.roadway_inventory",
+                "query_features",
+            ),
+            (
+                "SELECT id FROM roads.roadway_inventory r WHERE r.geom.STIntersects(r.geom) = 1",
+                "query_features",
+            ),
+            (
+                "SELECT roads.owner_list() FROM roads.roadway_inventory",
+                "query_features",
+            ),
+            (
+                "SELECT dbo.anything(id) FROM roads.roadway_inventory",
+                "not allowed",
+            ),
+            (
+                "SELECT geometry::Point(1, 2, 0) FROM roads.roadway_inventory",
+                "static geometry methods",
+            ),
+            (
+                "SELECT ST_Length(geom) FROM roads.roadway_inventory",
+                "not allowed",
+            ),
+            (
+                "SELECT pg_catalog.upper(route_code) FROM roads.roadway_inventory",
+                "not allowed",
+            ),
+            (
+                "SELECT OPENROWSET('x', 'y') FROM roads.roadway_inventory",
+                "not allowed",
+            ),
+            ("SELECT * FROM sys.objects", "allowed"),
+            ("SELECT * FROM INFORMATION_SCHEMA.TABLES", "allowed"),
+            ("SELECT * FROM otherdb.roads.roadway_inventory", "allowed"),
+            ("SELECT * INTO #t FROM roads.roadway_inventory", "INTO"),
+            (
+                "SELECT id FROM roads.roadway_inventory FOR JSON AUTO",
+                "not allowed",
+            ),
+        ] {
+            let e = check_select(sql, &a, 10, &c).unwrap_err().to_string();
+            assert!(e.contains(expect), "{sql}: {e}");
+        }
+        assert!(check_select(
+            "SELECT UPPER(route_code), COUNT(*) AS n, IIF(id > 1, 'a', 'b') AS x FROM roads.roadway_inventory GROUP BY route_code, id",
+            &a,
+            10,
+            &c
+        )
+        .is_ok());
+        // NEXT VALUE FOR advances a sequence, which a rollback does not undo.
+        assert!(check_select(
+            "SELECT NEXT VALUE FOR roads.seq FROM roads.roadway_inventory",
+            &a,
+            10,
+            &c
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn what_runs_is_what_was_checked() {
+        // The parser writes a type modifier back without its quotes and a
+        // `]` inside a bracketed name unescaped: either would turn a value
+        // into SQL that reads a table no check saw. Such queries are refused.
+        let pg = access("postgis", None);
+        for sql in [
+            "SELECT CAST(geom AS geometry('1) FROM hr.employees --')) FROM roads.roadway_inventory",
+            "SELECT fid FROM roads.roadway_inventory WHERE CAST(geom AS geometry('a b')) IS NULL",
+        ] {
+            assert!(check_select(sql, &pg, 10, &cat()).is_err(), "{sql}");
+        }
+        assert!(check_select(
+            "SELECT CAST(geom AS geometry(Point, 3081)) FROM roads.roadway_inventory",
+            &pg,
+            10,
+            &cat()
+        )
+        .is_ok());
+        for kind in ["sqlserver", "gpkg"] {
+            let a = access(kind, None);
+            let sql = "SELECT 1 AS [x]] FROM hr.employees --] FROM roads.roadway_inventory";
+            let r = check_select(sql, &a, 10, &NO_CATALOG);
+            assert!(r.is_err(), "{kind}: {:?}", r.map(|q| q.sql));
+        }
+        assert!(check_where("CAST(x AS geometry('1) OR 1=1 --'))", SqlDialect::Postgres).is_err());
     }
 }

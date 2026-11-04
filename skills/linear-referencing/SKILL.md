@@ -149,7 +149,7 @@ The connection and table names come from the Contoso sample pack. Use the names 
 - **A route on several rows** (one per section) spans from its lowest begin to its highest end measure. Gaps between its sections are not checked; the events are.
 - **Routes without an end measure** are not treated as missing: their events get `lrs.route_missing_end` (the range could not be checked) instead of `lrs.unknown_route`. Events with no route id get `lrs.missing_route`.
 - **When the plugin does not fit** (other column names, or routes measured only by M), the gap and overlap query in section 4 passes `sql_select {connection, sql}` as written, and the server adds the row filter. Out-of-range checks need the route end measures, which you get with `ST_M(ST_EndPoint(geom))` on PostGIS.
-- **Reading Oracle and SQL Server connections is not supported yet.** The call is refused with "reading oracle connections is not supported yet". Today it works on PostGIS, GeoPackage and SQLite connections.
+- **It works on PostGIS, Oracle, SQL Server, GeoPackage and SQLite connections.** The gateway reads the events and routes through the connection's permissions and hands the plugin an extract. On Oracle, write the dataset as `list_datasets` shows it (upper case, `LRS.EVENTS`); the end measure from geometry is `SDO_LRS.GEOM_SEGMENT_END_MEASURE` there, which `sql_select` does not allow, so use a measure column.
 
 ### What it returns
 

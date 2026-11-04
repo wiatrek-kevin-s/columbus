@@ -645,7 +645,9 @@ pub fn is_system_catalog(name: &str, kind: &str) -> bool {
                     .iter()
                     .any(|p| last.starts_with(p))
         }
-        "sqlserver" | "mssql" | "azure-sql" => parts.len() == 1 && last.starts_with("SYS"),
+        "sqlserver" | "mssql" | "azure-sql" | "sde-sqlserver" => {
+            parts.len() == 1 && last.starts_with("SYS")
+        }
         "gpkg" | "geopackage" | "sqlite" | "spatialite" => last.starts_with("SQLITE_"),
         _ => false,
     }

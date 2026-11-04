@@ -13,7 +13,8 @@ unlike third-party plugins, this core engine receives connection handles,
 because it is the component that opens governed connections.
 
 Engines: the standard library's sqlite3 handles GeoPackage and SQLite;
-psycopg handles PostgreSQL/PostGIS when installed. GDAL/OGR, DuckDB, PDAL
+psycopg handles PostgreSQL/PostGIS, python-oracledb (thin mode) Oracle and
+pyodbc with ODBC Driver 18 SQL Server, when installed. GDAL/OGR, DuckDB, PDAL
 and the other database drivers are optional imports that light up when
 present in the pixi environment (design section 2).
 
@@ -30,10 +31,12 @@ import fnmatch
 import importlib
 import importlib.metadata
 import json
+import math
 import os
 import re
 import platform
 import sqlite3
+import struct
 import sys
 import time
 import traceback
@@ -85,6 +88,8 @@ def ping(_params: dict[str, Any]) -> dict[str, Any]:
             "pdal": _optional_version("pdal"),
             "rasterio": _optional_version("rasterio"),
             "psycopg": _optional_version("psycopg"),
+            "oracledb": _optional_version("oracledb"),
+            "pyodbc": _optional_version("pyodbc"),
             "gis": _gis_versions(),
         },
     }
@@ -485,6 +490,654 @@ def _pg_list(conn: dict[str, Any], timeout_s: float) -> list[dict[str, Any]]:
         db.close()
 
 
+# ---------- shared by the Oracle and SQL Server engines ----------
+
+
+def _ewkb(wkb, srid) -> bytes | None:
+    """WKB as the database wrote it, plus its SRID, as EWKB: what the GIS
+    engine and the plugin SDK read (the same as PostGIS hands over). ISO
+    Z/M type codes (1000s) become EWKB flags, so every reader agrees."""
+    if wkb is None:
+        return None
+    raw = bytes(wkb)
+    if len(raw) < 5:
+        return raw
+    endian = "<" if raw[0] == 1 else ">"
+    (code,) = struct.unpack_from(endian + "I", raw, 1)
+    base = code & 0x0FFFFFFF
+    flags = code & 0xE0000000
+    if base >= 3000:
+        flags |= 0xC0000000
+        base -= 3000
+    elif base >= 2000:
+        flags |= 0x40000000
+        base -= 2000
+    elif base >= 1000:
+        flags |= 0x80000000
+        base -= 1000
+    if isinstance(srid, (int, float)) and int(srid) > 0 and not flags & 0x20000000:
+        return raw[:1] + struct.pack(endian + "II", base | flags | 0x20000000, int(srid)) + raw[5:]
+    return raw[:1] + struct.pack(endian + "I", base | flags) + raw[5:]
+
+
+def _like_patterns(globs) -> list[str] | None:
+    """Dataset allow patterns' schema parts (`ROADS`, `GIS_*`) as LIKE
+    patterns, or None when one of them could match any schema."""
+    if not isinstance(globs, list) or not globs:
+        return None
+    out = []
+    for g in globs:
+        if not isinstance(g, str) or not g or g in ("*", "%"):
+            return None
+        p = g.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        out.append(p.replace("*", "%").replace("?", "_").upper())
+    return out
+
+
+def _scrub_quoted(text: str) -> str:
+    return re.sub(r'"[^"]*"|\'[^\']*\'', '"…"', text)
+
+
+def _quote_dq(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
+
+
+def _quote_br(name: str) -> str:
+    return "[" + name.replace("]", "]]") + "]"
+
+
+def _end(db) -> None:
+    """Roll back and close. A session a timeout already broke cannot roll
+    back; the database rolls back when it goes, so that error is not the
+    one to report."""
+    try:
+        db.rollback()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        db.close()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _fetch_rows(cur, max_rows: int, convert, keep_factory, columns, fmt):
+    """Rows from an open cursor, at most ``max_rows`` (after the bbox
+    filter, when there is one), and whether there were more."""
+    rows: list = []
+    keep = keep_factory(columns, fmt) if keep_factory is not None else None
+    while True:
+        chunk = cur.fetchmany(2000)
+        if not chunk:
+            return rows, False
+        chunk = [convert(r) for r in chunk]
+        if keep is not None:
+            chunk = [r for r in chunk if keep(r)]
+        room = max_rows - len(rows)
+        if len(chunk) > room:
+            rows.extend(chunk[:room])
+            return rows, True
+        rows.extend(chunk)
+
+
+# ---------- Oracle (python-oracledb, thin mode) ----------
+
+ORACLE_KINDS = {"oracle", "sde-oracle"}
+DB_MISSING = "install workers/python/requirements-db.txt in the engine environment"
+
+# Errors that mean the database refused a write: a read-only transaction or
+# session, or PL/SQL that tried to commit inside a query.
+_ORA_WRITE_REFUSED = {1456, 28193, 34, 6519, 14551, 14552, 16000}
+# Errors whose message names only things the query itself wrote.
+_ORA_NAME_ERRORS = {904, 918, 923, 933, 936, 907, 979, 937, 942}
+_ORA_TIMEOUT = {"DPY-4024", "ORA-01013", "ORA-03156", "DPY-4011"}
+
+
+def _ora():
+    try:
+        import oracledb
+    except ImportError as e:
+        raise WorkerError(UNSUPPORTED, f"Oracle needs the oracledb package (python-oracledb); {DB_MISSING}") from e
+    # Thin mode only (init_oracle_client is never called, so no Oracle
+    # Client libraries load). LOBs come back as bytes and text.
+    oracledb.defaults.fetch_lobs = False
+    return oracledb
+
+
+def _ora_error(e) -> tuple[int, str, str]:
+    err = e.args[0] if getattr(e, "args", None) else None
+    message = getattr(err, "message", None) or str(e)
+    code = getattr(err, "code", 0) or 0
+    full = getattr(err, "full_code", "") or ""
+    return int(code), full, message
+
+
+def _ora_error_text(e) -> str:
+    """A database error, safe to show the agent: the first line of the
+    primary message only (Oracle 23 adds help links and, in ORA-01722 and
+    others, the value that failed), with quoted values removed unless the
+    error is about a name in the query."""
+    code, full, message = _ora_error(e)
+    primary = (message.strip().splitlines() or ["error"])[0]
+    primary = re.sub(r"^(ORA|DPY|DPI|PLS)-\d+:\s*", "", primary)
+    if code not in _ORA_NAME_ERRORS:
+        primary = _scrub_quoted(primary)
+    return f"query failed: {primary} ({full or 'Oracle error'})"
+
+
+def _ora_raise(e, timeout_s: float, scrub):
+    code, full, _ = _ora_error(e)
+    if full in _ORA_TIMEOUT:
+        raise WorkerError(TIMEOUT, f"query exceeded {timeout_s:g} s") from None
+    if code in _ORA_WRITE_REFUSED:
+        raise WorkerError(ENGINE_ERROR, f"the database refused a write: this connection is read-only ({full})") from None
+    raise WorkerError(ENGINE_ERROR, scrub(_ora_error_text(e))) from None
+
+
+def _ora_connect(conn: dict[str, Any], timeout_s: float):
+    """A thin-mode session that cannot write. The session is set
+    read-only where the database supports it (READ_ONLY, Oracle 23ai and
+    later), PL/SQL cannot commit in it (so an autonomous transaction in a
+    function a query calls cannot write either), and its one transaction is
+    SET TRANSACTION READ ONLY. Every call has a timeout."""
+    oracledb = _ora()
+    scrub = _Scrub(conn)
+    user, password = conn.get("user"), conn.get("password")
+    if not user or not password:
+        raise WorkerError(INVALID_PARAMS, "an Oracle connection needs a user and a stored password (columbus-mcp secret set <id>): thin mode has no integrated sign-in")
+    params: dict[str, Any] = {"user": user, "password": password, "tcp_connect_timeout": 15.0}
+    sslmode = str(conn.get("sslmode") or "").lower()
+    if conn.get("host"):
+        if not conn.get("database"):
+            raise WorkerError(INVALID_PARAMS, "an Oracle connection needs database: its service name (for example FREEPDB1)")
+        params.update(host=conn["host"], port=int(conn.get("port") or 1521), service_name=conn["database"])
+        if sslmode in ("require", "verify-ca", "verify-full"):
+            params.update(protocol="tcps", ssl_server_dn_match=sslmode == "verify-full")
+    elif conn.get("dsn"):
+        params["dsn"] = conn["dsn"]
+    else:
+        raise WorkerError(INVALID_PARAMS, "an Oracle connection needs host (with database, the service name) or dsn")
+    try:
+        db = oracledb.connect(**params)
+    except oracledb.Error as e:
+        raise WorkerError(ENGINE_ERROR, scrub(f"cannot connect: {_ora_error(e)[2].splitlines()[0]}")) from None
+    try:
+        db.call_timeout = max(1, int(timeout_s * 1000))
+        with db.cursor() as cur:
+            try:
+                cur.execute("ALTER SESSION SET READ_ONLY = TRUE")
+            except oracledb.DatabaseError:
+                pass  # before 23ai; the transaction below still applies
+            cur.execute("ALTER SESSION DISABLE COMMIT IN PROCEDURE")
+            cur.execute("SET TRANSACTION READ ONLY")
+    except oracledb.Error as e:
+        db.close()
+        raise WorkerError(ENGINE_ERROR, scrub(f"cannot open a read-only session: {_ora_error_text(e)}")) from None
+    return db, scrub
+
+
+def _ora_object_type(oracledb, info):
+    """(schema, name) of an object-typed result column, else None."""
+    t = getattr(info, "type", None)
+    if not isinstance(t, oracledb.DbObjectType):
+        return None
+    return (t.schema or "").upper(), (t.name or "").upper()
+
+
+def _ora_describe(cur, sql: str):
+    try:
+        cur.parse(sql)
+        if cur.description:
+            return cur.description
+    except Exception:  # noqa: BLE001 - the real execution reports it
+        return None
+    return None
+
+
+def _ora_fetch(conn: dict[str, Any], sql: str, max_rows: int, timeout_s: float, keep_factory=None):
+    oracledb = _ora()
+    db, scrub = _ora_connect(conn, timeout_s)
+    try:
+        try:
+            cur = db.cursor()
+            cur.arraysize = 2000
+            cur.prefetchrows = 2001
+            # SDO_GEOMETRY comes back as WKB (with its SRID) converted by the
+            # database; other object types (Esri ST_Geometry and the like)
+            # as a placeholder, never as objects. The query is the gateway's,
+            # checked; this outer SELECT is the worker's own.
+            desc = _ora_describe(cur, sql)
+            plan = []  # (kind, name) per output column
+            if desc:
+                for d in desc:
+                    ot = _ora_object_type(oracledb, d)
+                    if ot == ("MDSYS", "SDO_GEOMETRY"):
+                        plan.append(("sdo", d.name))
+                    elif ot is not None:
+                        plan.append(("object", d.name, f"{ot[0]}.{ot[1]}"))
+                    else:
+                        plan.append(("plain", d.name))
+            run = sql
+            if any(p[0] != "plain" for p in plan):
+                items = []
+                for i, p in enumerate(plan):
+                    col = "columbus_g." + _quote_dq(p[1])
+                    if p[0] == "sdo":
+                        items.append(f"CASE WHEN {col} IS NULL THEN NULL ELSE MDSYS.SDO_UTIL.TO_WKBGEOMETRY({col}) END AS {_quote_dq(p[1])}")
+                        items.append(f"{col}.SDO_SRID AS \"COLUMBUS_SRID_{i}\"")
+                    elif p[0] == "object":
+                        label = f"unsupported: {p[2]}".replace("'", "")
+                        items.append(f"CASE WHEN {col} IS NULL THEN NULL ELSE '{label}' END AS {_quote_dq(p[1])}")
+                    else:
+                        items.append(f"{col} AS {_quote_dq(p[1])}")
+                run = f"SELECT {', '.join(items)} FROM ({sql}) columbus_g"
+            cur.execute(run)
+            if cur.description is None:
+                raise WorkerError(ENGINE_ERROR, "the statement returned no rows; only a SELECT can run")
+            raw_cols = [d.name for d in cur.description]
+            if any(p[0] == "sdo" for p in plan):
+                # Output column -> (WKB index, SRID index)
+                out_idx, geoms, j = [], {}, 0
+                for i, p in enumerate(plan):
+                    if p[0] == "sdo":
+                        geoms[len(out_idx)] = (j, j + 1)
+                        out_idx.append(j)
+                        j += 2
+                    else:
+                        out_idx.append(j)
+                        j += 1
+                columns = [p[1] for p in plan]
+
+                def convert(r):
+                    out = []
+                    for k, idx in enumerate(out_idx):
+                        if k in geoms:
+                            w, s = geoms[k]
+                            out.append(_ewkb(r[w], r[s]))
+                        else:
+                            out.append(r[idx])
+                    return out
+
+                geom_cols = {k: "ewkb" for k in geoms}
+            else:
+                columns = raw_cols
+                geom_cols = {}
+
+                def convert(r):
+                    return list(r)
+
+            rows, hit = _fetch_rows(cur, max_rows, convert, keep_factory, columns, "ewkb")
+            cells = [_pg_geom if i in geom_cols else _pg_cell for i in range(len(columns))]
+            return columns, rows, hit, cells, geom_cols
+        except oracledb.Error as e:
+            _ora_raise(e, timeout_s, scrub)
+    finally:
+        _end(db)
+
+
+def _ora_srid_to_epsg(cur, srids) -> dict[int, int]:
+    """Oracle SRIDs mapped to EPSG codes (8307 -> 4326 and so on); most
+    Oracle SRIDs are EPSG codes already."""
+    out = {}
+    for s in srids:
+        try:
+            cur.execute("SELECT MDSYS.SDO_CS.MAP_ORACLE_SRID_TO_EPSG(:s) FROM DUAL", s=s)
+            r = cur.fetchone()
+            if r and r[0]:
+                out[s] = int(r[0])
+        except Exception:  # noqa: BLE001 - unknown SRID: no EPSG code
+            pass
+    return out
+
+
+_SDO_GTYPES = {
+    "POINT": "POINT", "LINE": "LINESTRING", "CURVE": "LINESTRING", "POLYGON": "POLYGON",
+    "SURFACE": "POLYGON", "MULTIPOINT": "MULTIPOINT", "MULTILINE": "MULTILINESTRING",
+    "MULTICURVE": "MULTILINESTRING", "MULTIPOLYGON": "MULTIPOLYGON", "MULTISURFACE": "MULTIPOLYGON",
+    "COLLECTION": "GEOMETRYCOLLECTION",
+}
+
+
+def _ora_list(conn: dict[str, Any], timeout_s: float, schemas=None, only: str | None = None) -> list[dict[str, Any]]:
+    """Tables and views the login can see (ALL_TABLES, ALL_VIEWS) in the
+    schemas the connection's allow list names, never Oracle's own schemas.
+    The worker reads the catalog here; the agent's queries never may."""
+    oracledb = _ora()
+    db, scrub = _ora_connect(conn, timeout_s)
+    try:
+        cur = db.cursor()
+        cur.arraysize = 2000
+        binds: dict[str, Any] = {}
+        where = "owner NOT IN (SELECT username FROM all_users WHERE oracle_maintained = 'Y')"
+        if only:
+            owner, _, table = only.replace('"', "").rpartition(".")
+            if not owner:
+                return []
+            where += " AND UPPER(owner) = UPPER(:o) AND UPPER(%s) = UPPER(:t)"
+            binds.update(o=owner, t=table)
+        else:
+            pats = _like_patterns(schemas)
+            if pats:
+                ors = []
+                for i, p in enumerate(pats):
+                    binds[f"s{i}"] = p
+                    ors.append(f"UPPER(owner) LIKE :s{i} ESCAPE '\\'")
+                where += " AND (" + " OR ".join(ors) + ")"
+        tw = where.replace("%s", "table_name")
+        vw = where.replace("%s", "view_name")
+        cur.execute(
+            f"SELECT owner, table_name, 'table', num_rows FROM all_tables WHERE {tw} "
+            "AND nested = 'NO' AND secondary = 'N' AND dropped = 'NO' AND (iot_type IS NULL OR iot_type = 'IOT') "
+            f"UNION ALL SELECT owner, view_name, 'view', NULL FROM all_views WHERE {vw} ORDER BY 1, 2",
+            binds,
+        )
+        tables: dict[str, dict[str, Any]] = {}
+        for owner, name, kind, nrows in cur.fetchall():
+            if name.startswith("MDRT_") or name.startswith("BIN$"):
+                continue  # spatial index tables, the recycle bin
+            e = {"name": f"{owner}.{name}", "type": kind}
+            if nrows is not None:
+                e["estimated_rows"] = int(nrows)
+            tables[e["name"]] = e
+        cw = where.replace("%s", "table_name")
+        cur.execute(
+            "SELECT owner, table_name, column_name, data_type, data_type_owner, nullable "
+            f"FROM all_tab_columns WHERE {cw} ORDER BY owner, table_name, column_id",
+            binds,
+        )
+        for owner, table, col, dtype, downer, nullable in cur.fetchall():
+            entry = tables.get(f"{owner}.{table}")
+            if entry is None:
+                continue
+            typ = f"{downer}.{dtype}" if downer and downer not in ("PUBLIC",) else dtype
+            entry.setdefault("fields", []).append({"name": col, "type": typ, "not_null": nullable == "N"})
+            if downer == "MDSYS" and dtype == "SDO_GEOMETRY":
+                entry.setdefault("geometry_column", col)
+                entry.setdefault("geometry_type", "GEOMETRY")
+            elif dtype == "ST_GEOMETRY" or (downer and dtype.startswith("ST_")):
+                entry.setdefault("unsupported_geometry", []).append({"column": col, "type": typ})
+        # Spatial metadata (absent without Oracle Spatial).
+        srids = {}
+        try:
+            cur.execute(f"SELECT owner, table_name, column_name, srid FROM all_sdo_geom_metadata WHERE {cw}", binds)
+            for owner, table, col, srid in cur.fetchall():
+                entry = tables.get(f"{owner}.{table}")
+                if entry is not None and entry.get("geometry_column") == col and srid is not None:
+                    srids[entry["name"]] = int(srid)
+        except oracledb.DatabaseError:
+            pass
+        try:
+            iw = where.replace("owner", "i.table_owner").replace("%s", "i.table_name")
+            cur.execute(
+                "SELECT i.table_owner, i.table_name, i.column_name, m.sdo_layer_gtype "
+                "FROM all_sdo_index_info i JOIN all_sdo_index_metadata m "
+                f"ON m.sdo_index_owner = i.index_owner AND m.sdo_index_name = i.index_name WHERE {iw}",
+                binds,
+            )
+            for owner, table, col, gtype in cur.fetchall():
+                entry = tables.get(f"{owner}.{table}")
+                if entry is not None and entry.get("geometry_column") == col and gtype:
+                    entry["geometry_type"] = _SDO_GTYPES.get(str(gtype).upper(), "GEOMETRY")
+        except oracledb.DatabaseError:
+            pass
+        epsg = _ora_srid_to_epsg(cur, sorted(set(srids.values())))
+        for name, srid in srids.items():
+            e = tables[name]
+            e["srs_id"] = srid
+            code = epsg.get(srid)
+            e["crs_spec"] = {"org": "EPSG", "org_id": code} if code else {"org_id": srid}
+        return list(tables.values())
+    except oracledb.Error as e:
+        raise WorkerError(ENGINE_ERROR, scrub(_ora_error_text(e).replace("query failed", "listing failed"))) from None
+    finally:
+        _end(db)
+
+
+# ---------- SQL Server (pyodbc, ODBC Driver 18) ----------
+
+MSSQL_KINDS = {"sqlserver", "mssql", "sde-sqlserver", "azure-sql"}
+MSSQL_DRIVER = "ODBC Driver 18 for SQL Server"
+# Errors whose message names only things the query itself wrote.
+_MS_NAME_ERRORS = {102, 156, 207, 208, 209, 4104, 8120, 1038, 4145, 116}
+
+
+def _odbc_value(v: Any) -> str:
+    """One connection-string value, braced so `;` or `=` in it cannot add
+    another keyword."""
+    return "{" + str(v).replace("}", "}}") + "}"
+
+
+def _ms_encrypt(sslmode: str | None) -> dict[str, str]:
+    """`sslmode` in ODBC Driver 18's terms. The default, as the driver's,
+    is encrypted with the certificate verified."""
+    mode = str(sslmode or "verify-full").lower()
+    if mode == "disable":
+        return {"Encrypt": "no"}
+    if mode in ("allow", "prefer", "require"):
+        return {"Encrypt": "yes", "TrustServerCertificate": "yes"}
+    if mode == "strict":
+        return {"Encrypt": "strict"}
+    return {"Encrypt": "yes", "TrustServerCertificate": "no"}  # verify-ca, verify-full
+
+
+def _ms_datetimeoffset(raw):
+    import datetime
+
+    t = struct.unpack("<6hI2h", raw)
+    tz = datetime.timezone(datetime.timedelta(hours=t[7], minutes=t[8]))
+    return datetime.datetime(t[0], t[1], t[2], t[3], t[4], t[5], t[6] // 1000, tz).isoformat()
+
+
+def _ms_connect(conn: dict[str, Any], timeout_s: float):
+    """A session whose every statement runs in a transaction that is always
+    rolled back. SQL Server has no read-only session, so this is a second
+    line of defence: the guarantee is a login with SELECT only."""
+    try:
+        import pyodbc
+    except ImportError as e:
+        raise WorkerError(UNSUPPORTED, f"SQL Server needs the pyodbc package and {MSSQL_DRIVER}; {DB_MISSING}") from e
+    scrub = _Scrub(conn)
+    host = conn.get("host")
+    if not host:
+        raise WorkerError(INVALID_PARAMS, "a SQL Server connection needs host (and database)")
+    server = f"tcp:{host},{int(conn['port'])}" if conn.get("port") else f"tcp:{host}"
+    parts: dict[str, Any] = {"DRIVER": MSSQL_DRIVER, "SERVER": server, "ApplicationIntent": "ReadOnly", "APP": "columbus-worker"}
+    if conn.get("database"):
+        parts["DATABASE"] = conn["database"]
+    parts.update(_ms_encrypt(conn.get("sslmode")))
+    if conn.get("password"):
+        parts.update(UID=conn.get("user") or "", PWD=conn["password"])
+    else:
+        parts["Trusted_Connection"] = "yes"  # integrated sign-in
+    text = ";".join(f"{k}={_odbc_value(v)}" for k, v in parts.items())
+    try:
+        db = pyodbc.connect(text, autocommit=False, timeout=15)
+    except pyodbc.Error as e:
+        raise WorkerError(ENGINE_ERROR, scrub(f"cannot connect: {_ms_error_text(e, prefix='')}")) from None
+    db.timeout = max(1, int(math.ceil(timeout_s)))  # per statement, seconds
+    for sql_type in (-150, -151):  # sql_variant, CLR types (hierarchyid)
+        db.add_output_converter(sql_type, lambda v: v)
+    db.add_output_converter(-155, lambda v: None if v is None else _ms_datetimeoffset(v))
+    return db, scrub
+
+
+def _ms_error_parts(e) -> tuple[str, int | None, str]:
+    args = getattr(e, "args", ()) or ()
+    state = str(args[0]) if args else "unknown"
+    msg = str(args[1]) if len(args) > 1 else str(e)
+    first = msg.split("; [")[0]
+    first = re.sub(r"^(\s*\[[^\]]*\])+", "", first).strip()
+    first = re.sub(r"\s*\((SQL\w+)\)\s*$", "", first)
+    m = re.search(r"\((\d+)\)\s*$", first)
+    number = int(m.group(1)) if m else None
+    if m:
+        first = first[: m.start()].rstrip()
+    return state, number, first
+
+
+def _ms_error_text(e, prefix: str = "query failed: ") -> str:
+    """A database error, safe to show the agent: the first message only,
+    and quoted values removed unless the error is about a name in the
+    query ("Conversion failed when converting the varchar value '<value>'")."""
+    state, number, primary = _ms_error_parts(e)
+    if number not in _MS_NAME_ERRORS:
+        primary = _scrub_quoted(primary)
+    tag = f"SQL Server error {number}" if number is not None else f"SQLSTATE {state}"
+    return f"{prefix}{primary or 'error'} ({tag})"
+
+
+def _ms_geometry_columns(cur, sql: str):
+    """[(name, kind)] of the result's columns, kind 'geometry'/'geography'
+    or None, from the server's description of the query (not run)."""
+    try:
+        cur.execute(
+            "SELECT name, system_type_name FROM sys.dm_exec_describe_first_result_set(?, NULL, 0) "
+            "WHERE is_hidden = 0 ORDER BY column_ordinal",
+            sql,
+        )
+        rows = cur.fetchall()
+    except Exception:  # noqa: BLE001 - the real execution reports it
+        return None
+    out = []
+    for name, typ in rows:
+        t = str(typ or "").lower()
+        out.append((name, t if t in ("geometry", "geography") else None))
+    return out
+
+
+def _ms_fetch(conn: dict[str, Any], sql: str, max_rows: int, timeout_s: float, keep_factory=None):
+    import pyodbc
+
+    db, scrub = _ms_connect(conn, timeout_s)
+    try:
+        try:
+            cur = db.cursor()
+            cols = _ms_geometry_columns(cur, sql)
+            names = [c[0] for c in cols or []]
+            wrap = (
+                cols
+                and any(k for _, k in cols)
+                and all(isinstance(n, str) and n for n in names)
+                and len({n.lower() for n in names}) == len(names)
+            )
+            run = sql
+            if wrap:
+                items = []
+                for i, (n, k) in enumerate(cols):
+                    c = "columbus_g." + _quote_br(n)
+                    if k:
+                        items += [f"{c}.STAsBinary() AS {_quote_br(n)}", f"{c}.STSrid AS [columbus_srid_{i}]"]
+                    else:
+                        items.append(f"{c} AS {_quote_br(n)}")
+                run = f"SELECT {', '.join(items)} FROM ({sql}) AS columbus_g"
+            cur.execute(run)
+            if cur.description is None:
+                raise WorkerError(ENGINE_ERROR, "the statement returned no rows; only a SELECT can run (nothing it did was kept)")
+            if wrap:
+                out_idx, geoms, j = [], {}, 0
+                for i, (n, k) in enumerate(cols):
+                    if k:
+                        geoms[i] = (j, j + 1)
+                        j += 2
+                    else:
+                        out_idx.append((i, j))
+                        j += 1
+                columns = names
+                plain = dict(out_idx)
+
+                def convert(r):
+                    return [_ewkb(r[geoms[i][0]], r[geoms[i][1]]) if i in geoms else r[plain[i]] for i in range(len(columns))]
+
+                geom_cols = {i: "ewkb" for i in geoms}
+            else:
+                columns = [d[0] for d in cur.description]
+                geom_cols = {}
+
+                def convert(r):
+                    return list(r)
+
+            rows, hit = _fetch_rows(cur, max_rows, convert, keep_factory, columns, "ewkb")
+            if hit:
+                cur.cancel()
+            cells = [_pg_geom if i in geom_cols else _pg_cell for i in range(len(columns))]
+            return columns, rows, hit, cells, geom_cols
+        except pyodbc.Error as e:
+            state, _, _ = _ms_error_parts(e)
+            if state == "HYT00":
+                raise WorkerError(TIMEOUT, f"query exceeded {timeout_s:g} s") from None
+            raise WorkerError(ENGINE_ERROR, scrub(_ms_error_text(e))) from None
+    finally:
+        _end(db)  # always rolled back: nothing a statement did is kept
+
+
+def _ms_list(conn: dict[str, Any], timeout_s: float, schemas=None, only: str | None = None) -> list[dict[str, Any]]:
+    """Tables and views the login may use (INFORMATION_SCHEMA), in the
+    schemas the connection's allow list names."""
+    import pyodbc
+
+    db, scrub = _ms_connect(conn, timeout_s)
+    try:
+        cur = db.cursor()
+        where, binds = "TABLE_SCHEMA NOT IN ('sys', 'INFORMATION_SCHEMA')", []
+        if only:
+            schema, _, table = only.replace("[", "").replace("]", "").rpartition(".")
+            if not schema:
+                return []
+            where += " AND TABLE_SCHEMA = ? AND TABLE_NAME = ?"
+            binds += [schema, table]
+        else:
+            pats = _like_patterns(schemas)
+            if pats:
+                where += " AND (" + " OR ".join("UPPER(TABLE_SCHEMA) LIKE ? ESCAPE '\\'" for _ in pats) + ")"
+                binds += pats
+        cur.execute(f"SELECT TABLE_SCHEMA, TABLE_NAME, TABLE_TYPE FROM INFORMATION_SCHEMA.TABLES WHERE {where} ORDER BY 1, 2", binds)
+        tables = {
+            f"{s}.{t}": {"name": f"{s}.{t}", "type": "view" if kind == "VIEW" else "table"}
+            for s, t, kind in cur.fetchall()
+        }
+        cur.execute(
+            "SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, DATA_TYPE, IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS "
+            f"WHERE {where} ORDER BY TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION",
+            binds,
+        )
+        for s, t, col, typ, nullable in cur.fetchall():
+            entry = tables.get(f"{s}.{t}")
+            if entry is None:
+                continue
+            entry.setdefault("fields", []).append({"name": col, "type": typ, "not_null": nullable == "NO"})
+            if str(typ).lower() in ("geometry", "geography") and "geometry_column" not in entry:
+                entry.update(geometry_column=col, geometry_type=str(typ).upper())
+        try:
+            cur.execute(
+                "SELECT s.name, o.name, SUM(p.rows) FROM sys.objects o JOIN sys.schemas s ON s.schema_id = o.schema_id "
+                "JOIN sys.partitions p ON p.object_id = o.object_id AND p.index_id IN (0, 1) "
+                "WHERE o.type = 'U' GROUP BY s.name, o.name"
+            )
+            for s, t, n in cur.fetchall():
+                entry = tables.get(f"{s}.{t}")
+                if entry is not None and n is not None:
+                    entry["estimated_rows"] = int(n)
+        except pyodbc.Error:
+            pass  # no VIEW DEFINITION: no estimates
+        # SQL Server keeps no SRID per column: take it from one row (only
+        # the SRID is read), for at most 100 tables.
+        for entry in [e for e in tables.values() if e.get("geometry_column")][:100]:
+            s, _, t = entry["name"].partition(".")
+            col = _quote_br(entry["geometry_column"])
+            try:
+                cur.execute(f"SELECT TOP (1) {col}.STSrid FROM {_quote_br(s)}.{_quote_br(t)} WHERE {col} IS NOT NULL")
+                r = cur.fetchone()
+            except pyodbc.Error:
+                continue
+            if r and r[0]:
+                entry["srs_id"] = int(r[0])
+                entry["crs_spec"] = {"org": "EPSG", "org_id": int(r[0])}
+        return list(tables.values())
+    except pyodbc.Error as e:
+        raise WorkerError(ENGINE_ERROR, scrub(_ms_error_text(e, prefix="listing failed: "))) from None
+    finally:
+        _end(db)
+
+
 # ---------- engine-agnostic methods ----------
 
 
@@ -499,6 +1152,11 @@ def list_datasets(params: dict[str, Any]) -> dict[str, Any]:
         if params.get("extension_functions"):
             out["extension_functions"] = _pg_extension_functions(conn, timeout_s)
         return out
+    only = params.get("only") if isinstance(params.get("only"), str) else None
+    if kind in ORACLE_KINDS:
+        return {"datasets": _ora_list(conn, timeout_s, params.get("schemas"), only)}
+    if kind in MSSQL_KINDS:
+        return {"datasets": _ms_list(conn, timeout_s, params.get("schemas"), only)}
     raise WorkerError(UNSUPPORTED, f"list_datasets does not support {conn['kind']!r} yet")
 
 
@@ -533,6 +1191,10 @@ def _fetch(conn: dict[str, Any], sql: str, max_rows: int, timeout_s: float, keep
         return _sqlite_fetch(conn, sql, max_rows, timeout_s, keep_factory)
     if kind in PG_KINDS:
         return _pg_fetch(conn, sql, max_rows, timeout_s, keep_factory)
+    if kind in ORACLE_KINDS:
+        return _ora_fetch(conn, sql, max_rows, timeout_s, keep_factory)
+    if kind in MSSQL_KINDS:
+        return _ms_fetch(conn, sql, max_rows, timeout_s, keep_factory)
     raise WorkerError(UNSUPPORTED, f"reading {conn['kind']!r} connections is not supported yet")
 
 
@@ -725,7 +1387,9 @@ def describe_dataset(params: dict[str, Any]) -> dict[str, Any]:
     g = _gis()
     conn = _connection(params)
     timeout_s = float(params.get("timeout_s", 60))
-    entries = list_datasets({"connection": conn, "timeout_s": timeout_s})["datasets"]
+    # The one dataset only, where the engine can list it alone (Oracle and
+    # SQL Server catalogs can be very large).
+    entries = list_datasets({"connection": conn, "timeout_s": timeout_s, "only": str(params.get("dataset") or "")})["datasets"]
     entry = _find(entries, str(params.get("dataset") or ""))
     if entry is None:
         raise WorkerError(INVALID_PARAMS, f"no dataset {params.get('dataset')!r} on this connection")
@@ -737,6 +1401,15 @@ def describe_dataset(params: dict[str, Any]) -> dict[str, Any]:
         rows = int(r[0][0]) if r else 0
     crs = g.crs_from_spec(entry.get("crs_spec")) if entry.get("geometry_column") else None
     checks = g.crs_checks(crs, entry.get("extent"), has_geometry=bool(entry.get("geometry_column")), what="The dataset")
+    visible = {f["name"] for f in entry["fields"]}
+    for u in entry.pop("unsupported_geometry", None) or []:
+        if u["column"] not in visible:
+            continue
+        checks.append(g.check(
+            "geometry.unsupported", "warn",
+            f"Column {u['column']} is {u['type']}, a geometry type Columbus cannot read here: its values come back as a placeholder, not shapes",
+            detail={"column": u["column"], "type": u["type"]},
+            fix="Read this layer through ArcGIS (the ArcPy worker, when available), or ask the DBA for a view or copy with SDO_GEOMETRY; the Esri ST_ functions are database code and are not called"))
     entry.update({"rows": rows, "crs": g.crs_facts(crs), "checks": checks})
     return entry
 

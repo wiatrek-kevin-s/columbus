@@ -56,8 +56,8 @@ Call `whoami` once, first, with no arguments. Read and keep:
 - `policy.rows_returned_per_call` (at most 500), `policy.rows_read_per_query` (default
   200,000), `policy.query_seconds`.
 - `connections[]`: each `id`, `type`, `mode` (`read` or `read-write`), `status` (`ok` or why
-  not) and `engine_ready`. A connection with `engine_ready: false` (SQL Server, Oracle,
-  `sde` today) passes checks but cannot be read yet.
+  not) and `engine_ready`. A connection with `engine_ready: false` (`sde` through ArcPy
+  today) passes checks but cannot be read yet.
 - `always_on_rules`: the context pack's rules. Follow them for the whole session. Example
   from the sample pack: "Leave retired segments (STATUS = 'R') out of current-state work."
 - `approvals`: how the person will be asked. One of

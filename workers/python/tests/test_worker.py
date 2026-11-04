@@ -93,7 +93,7 @@ class WorkerTests(unittest.TestCase):
 
     def test_unsupported_connection_type(self):
         with self.assertRaises(w.WorkerError) as cm:
-            w.sql_select({"connection": {"kind": "oracle"}, "sql": "SELECT 1 FROM dual", "max_rows": 1})
+            w.sql_select({"connection": {"kind": "duckdb"}, "sql": "SELECT 1", "max_rows": 1})
         self.assertEqual(cm.exception.code, w.UNSUPPORTED)
 
     def test_list_datasets(self):

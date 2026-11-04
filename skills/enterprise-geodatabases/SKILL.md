@@ -183,11 +183,18 @@ something, tell the person what and why, and do not look for a way around it.
   on, whatever the connection file says. There is no editing tool yet: `propose_edits` and
   `apply_edits` (edits in a named version, never DEFAULT) are planned and not available.
   Write proposed edits as a list for a person to make in Pro.
-- Connections of type `oracle`, `sqlserver` and `sde` are configured and their queries are
-  checked, but **their engines are not built yet**. `describe_dataset`, `query_features` and
-  `sql_select` on them answer that reading or running on that connection type is not
-  supported yet. The ArcPy worker for enterprise geodatabases is on the roadmap. Say so
-  rather than guessing at the data.
+- An EGDB's tables on **Oracle** (`oracle`, `sde-oracle`) and **SQL Server** (`sqlserver`,
+  `sde-sqlserver`, `azure-sql`) connections are read like any other table: `list_datasets`,
+  `describe_dataset`, `sample_rows`, `query_features` and `sql_select` all work, read-only.
+  `SDO_GEOMETRY` and SQL Server `geometry`/`geography` come back as shapes. **Esri
+  `ST_Geometry` columns cannot be read**: `describe_dataset` raises `geometry.unsupported` and
+  their values come back as a placeholder (`unsupported: SDE.ST_GEOMETRY`); the `sde.st_*`
+  functions are database code and are refused. Say so, and suggest reading that layer in
+  ArcGIS Pro or asking the DBA for an SDO_GEOMETRY view. The same holds for versions:
+  `sql_select` cannot call `sde.version_util`, so a versioned view shows DEFAULT.
+- Connections of type `sde` (through ArcPy) are configured and checked, but **that engine
+  is not built yet**; the tools answer that reading it is not supported yet. Say so rather
+  than guessing at the data.
 - An EGDB on **PostgreSQL** can be read today through a `postgis` connection if the person
   has added one. Then sections 7 to 9 matter directly: check whether the allowed dataset is
   a base table or an `_evw` view. `sql_select` cannot set a version (the setter calls are

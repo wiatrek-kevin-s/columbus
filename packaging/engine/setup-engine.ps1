@@ -1,6 +1,9 @@
 # Sets up Columbus's GIS engine: a Python 3.12 environment with GDAL, PROJ,
-# GeoPandas, rasterio and the other packages in requirements-gis.txt, in
-# engine\venv beside columbus-mcp.exe, where the server finds it.
+# GeoPandas, rasterio and the other packages in requirements-gis.txt, and the
+# database drivers in requirements-db.txt (PostgreSQL, Oracle in thin mode,
+# SQL Server through pyodbc), in engine\venv beside columbus-mcp.exe, where
+# the server finds it. SQL Server also needs Microsoft ODBC Driver 18 for
+# SQL Server installed on the machine; the script says whether it is.
 #
 #   powershell -ExecutionPolicy Bypass -File engine\setup-engine.ps1
 #
@@ -17,6 +20,7 @@ $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $root = Split-Path -Parent $here
 $venv = Join-Path $here "venv"
 $req = Join-Path $root "workers\python\requirements-gis.txt"
+$db = Join-Path $root "workers\python\requirements-db.txt"
 
 if (-not $Python) {
     $py = Get-Command py -ErrorAction SilentlyContinue
@@ -31,9 +35,14 @@ if ($Python -like "py *") {
 $vpy = Join-Path $venv "Scripts\python.exe"
 & $vpy -m pip install --upgrade pip
 if ($Wheels) {
-    & $vpy -m pip install --no-index --find-links $Wheels -r $req "psycopg[binary]>=3.2"
+    & $vpy -m pip install --no-index --find-links $Wheels -r $req -r $db
 } else {
-    & $vpy -m pip install -r $req "psycopg[binary]>=3.2"
+    & $vpy -m pip install -r $req -r $db
 }
 & $vpy -c "import geopandas, pyogrio, shapely, pyproj, rasterio; print('engine ready: GDAL', pyogrio.__gdal_version_string__)"
+& $vpy -c "import psycopg, oracledb, pyodbc; print('database drivers ready: oracledb', oracledb.__version__, '(thin mode), pyodbc', pyodbc.version)"
+$odbc = & $vpy -c "import pyodbc; print('ODBC Driver 18 for SQL Server' in pyodbc.drivers())"
+if ($odbc -ne "True") {
+    Write-Host "Note: ODBC Driver 18 for SQL Server is not installed; SQL Server connections need it (https://learn.microsoft.com/sql/connect/odbc/download-odbc-driver-for-sql-server)."
+}
 Write-Host "Done. columbus-mcp finds this environment by itself."

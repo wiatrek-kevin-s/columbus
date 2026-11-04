@@ -2,7 +2,8 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # engines-* branches (database engine work) run on push too.
+    branches: [main, "engines-*"]
   pull_request:
 
 permissions:
@@ -85,3 +86,94 @@ jobs:
         run: python -m unittest discover -s workers/python/tests -v
       - name: Gateway end to end against PostGIS
         run: cargo test -p columbus-mcp --test postgis --test gis --locked -- --nocapture
+
+  oracle:
+    name: Oracle engine
+    # Pinned: the SQL Server job below needs Microsoft's packages for the
+    # release, and both should move together.
+    runs-on: ubuntu-24.04
+    services:
+      oracle:
+        # The regular flavor, not -slim: slim uninstalls Oracle Spatial
+        # (MDSYS, SDO_GEOMETRY), which the engine and its tests need.
+        image: gvenzl/oracle-free:23-faststart
+        env:
+          ORACLE_PASSWORD: columbus_sys_test
+          APP_USER: columbus_rw
+          APP_USER_PASSWORD: columbus_rw_test
+        ports: ["1521:1521"]
+        options: >-
+          --health-cmd healthcheck.sh
+          --health-interval 10s --health-timeout 5s --health-retries 40
+    env:
+      COLUMBUS_TEST_ORA_HOST: localhost
+      COLUMBUS_TEST_ORA_PORT: "1521"
+      COLUMBUS_TEST_ORA_SERVICE: FREEPDB1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -r workers/python/requirements-gis.txt -r workers/python/requirements-db.txt
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Load fixture
+        env:
+          ID: ${{ job.services.oracle.id }}
+        run: |
+          # APP_USER is created during first start-up; wait for it to finish.
+          timeout 600 bash -c 'until docker logs "$ID" 2>&1 | grep -q "DATABASE IS READY TO USE"; do sleep 5; done'
+          docker cp crates/gateway/tests/fixtures/oracle.sql "$ID":/tmp/oracle.sql
+          docker exec "$ID" sqlplus -s -L "system/columbus_sys_test@//localhost/FREEPDB1" @/tmp/oracle.sql
+      - name: Worker tests against Oracle
+        run: python -m unittest discover -s workers/python/tests -p "test_db_engines.py" -v
+      - name: Gateway end to end against Oracle
+        run: cargo test -p columbus-mcp --test oracle --locked -- --nocapture
+
+  mssql:
+    name: SQL Server engine
+    runs-on: ubuntu-24.04
+    services:
+      mssql:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: "Y"
+          MSSQL_SA_PASSWORD: Columbus_sa_test1
+        ports: ["1433:1433"]
+        options: >-
+          --health-cmd "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P Columbus_sa_test1 -C -Q 'SELECT 1' -b"
+          --health-interval 10s --health-timeout 5s --health-retries 30
+    env:
+      COLUMBUS_TEST_MSSQL_HOST: localhost
+      COLUMBUS_TEST_MSSQL_PORT: "1433"
+      COLUMBUS_TEST_MSSQL_DB: gis
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: ODBC Driver 18 for SQL Server
+        run: |
+          if odbcinst -q -d -n "ODBC Driver 18 for SQL Server" >/dev/null 2>&1; then
+            echo "preinstalled on the runner"
+          else
+            echo "not preinstalled; installing msodbcsql18"
+            curl -sSL -o /tmp/ms.deb "https://packages.microsoft.com/config/ubuntu/$(lsb_release -rs)/packages-microsoft-prod.deb"
+            sudo dpkg -i /tmp/ms.deb
+            sudo apt-get update
+            sudo ACCEPT_EULA=Y apt-get install -y msodbcsql18 unixodbc
+          fi
+          odbcinst -q -d
+      - run: python -m pip install -r workers/python/requirements-gis.txt -r workers/python/requirements-db.txt
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Load fixture
+        env:
+          ID: ${{ job.services.mssql.id }}
+        run: |
+          docker cp crates/gateway/tests/fixtures/mssql.sql "$ID":/tmp/mssql.sql
+          docker exec "$ID" /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P Columbus_sa_test1 -C -b -i /tmp/mssql.sql
+      - name: Worker tests against SQL Server
+        run: python -m unittest discover -s workers/python/tests -p "test_db_engines.py" -v
+      - name: Gateway end to end against SQL Server
+        run: cargo test -p columbus-mcp --test mssql --locked -- --nocapture

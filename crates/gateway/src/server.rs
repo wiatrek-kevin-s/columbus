@@ -51,6 +51,12 @@ const ENGINE_READY: &[&str] = &[
     "postgis",
     "postgres",
     "postgresql",
+    "oracle",
+    "sde-oracle",
+    "sqlserver",
+    "mssql",
+    "sde-sqlserver",
+    "azure-sql",
     "rasters",
 ];
 
@@ -745,7 +751,8 @@ impl Gateway {
             .worker
             .core(
                 "list_datasets",
-                json!({"connection": handle, "timeout_s": timeout, "extension_functions": true}),
+                json!({"connection": handle, "timeout_s": timeout, "extension_functions": true,
+                    "schemas": Self::listed_schemas(conn)}),
                 Duration::from_secs(timeout + 10),
             )
             .await
@@ -789,6 +796,26 @@ impl Gateway {
             .expect("columns")
             .insert(conn.id.clone(), (std::time::Instant::now(), cat.clone()));
         Ok(cat)
+    }
+
+    /// The schemas a connection's allow list names (`ROADS` in `ROADS.*`,
+    /// `GIS_*` in `GIS_*.PARCELS`), so an engine whose catalog can be very
+    /// large (Oracle, SQL Server) lists only those; None when a pattern could
+    /// match any schema. Only narrows the listing: every name is still
+    /// checked against the allow and deny lists.
+    pub(crate) fn listed_schemas(conn: &Connection) -> Option<Vec<String>> {
+        let mut out: Vec<String> = Vec::new();
+        for p in &conn.datasets.allow {
+            let norm = columbus_shared::policy::normalize_identifier(p);
+            let (schema, _) = norm.split_once('.')?;
+            if schema.is_empty() || schema.contains(['[', '{', '\\']) {
+                return None;
+            }
+            if !out.iter().any(|s| s.eq_ignore_ascii_case(schema)) {
+                out.push(schema.to_string());
+            }
+        }
+        (!out.is_empty()).then_some(out)
     }
 
     /// The short-lived handle a worker gets for one request: where to
@@ -1440,7 +1467,7 @@ impl Gateway {
             .worker
             .core(
                 "list_datasets",
-                json!({"connection": handle, "timeout_s": timeout}),
+                json!({"connection": handle, "timeout_s": timeout, "schemas": Self::listed_schemas(conn)}),
                 Duration::from_secs(timeout + 10),
             )
             .await;
