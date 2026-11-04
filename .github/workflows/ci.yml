@@ -125,9 +125,13 @@ jobs:
           timeout 600 bash -c 'until docker logs "$ID" 2>&1 | grep -q "DATABASE IS READY TO USE"; do sleep 5; done'
           docker cp crates/gateway/tests/fixtures/oracle.sql "$ID":/tmp/oracle.sql
           docker exec "$ID" sqlplus -s -L "system/columbus_sys_test@//localhost/FREEPDB1" @/tmp/oracle.sql
+          # A read-only transaction cannot read a table created in the last few
+          # seconds (ORA-01466: the time-to-SCN mapping is coarse).
+          sleep 15
       - name: Worker tests against Oracle
         run: python -m unittest discover -s workers/python/tests -p "test_db_engines.py" -v
       - name: Gateway end to end against Oracle
+        if: success() || failure()
         run: cargo test -p columbus-mcp --test oracle --locked -- --nocapture
 
   mssql:
@@ -176,4 +180,5 @@ jobs:
       - name: Worker tests against SQL Server
         run: python -m unittest discover -s workers/python/tests -p "test_db_engines.py" -v
       - name: Gateway end to end against SQL Server
+        if: success() || failure()
         run: cargo test -p columbus-mcp --test mssql --locked -- --nocapture

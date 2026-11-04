@@ -68,4 +68,6 @@ IF USER_ID('columbus_rw') IS NULL CREATE USER columbus_rw FOR LOGIN columbus_rw;
 GRANT SELECT ON SCHEMA::roads TO columbus_ro;
 GRANT SELECT, INSERT, UPDATE, DELETE ON SCHEMA::roads TO columbus_rw;
 GRANT EXECUTE ON roads.owner_list TO columbus_rw;
+-- For the tests' plan checks only (SET SHOWPLAN_ALL), never needed by Columbus.
+GRANT SHOWPLAN TO columbus_rw;
 GO
