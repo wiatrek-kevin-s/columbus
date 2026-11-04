@@ -219,8 +219,7 @@ impl Gateway {
                 Ok(c) => c,
                 Err(e) => return Err(self.deny(ctx, rec, e)),
             };
-            let lookup = |n: &str| cols.get(&n.to_uppercase()).cloned();
-            let checked = match check_select(&sql, &access, max_rows, &lookup) {
+            let checked = match check_select(&sql, &access, max_rows, &cols) {
                 Ok(c) => c,
                 Err(e) => return Err(self.deny(ctx, rec, e)),
             };

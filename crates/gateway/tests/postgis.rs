@@ -309,10 +309,19 @@ async fn postgis_governed_session() {
         "a row outside the filter was evaluated: {text}"
     );
 
-    // A SELECT that writes through a function passes the parser (the
-    // function name is ordinary) and is stopped by the read-only session.
-    let e = err(&call(&client, "sql_select", json!({"connection": "roads-pg", "sql": "SELECT roads.log_visit() FROM roads.roadway_inventory"})).await);
-    assert!(e.contains("read-only"), "{e}");
+    // Only ordinary and spatial functions may be called. One of the
+    // database's own (here one that writes) is refused by the server; and
+    // functions that run SQL given as text, or read a table by name, would
+    // read outside every check, so they are refused too.
+    for sql in [
+        "SELECT roads.log_visit() FROM roads.roadway_inventory",
+        "SELECT query_to_xml('SELECT * FROM roads.roadway_inventory', true, false, '') FROM roads.roadway_inventory",
+        "SELECT table_to_xml('roads.roadway_inventory', true, false, '') FROM roads.roadway_inventory",
+        "SELECT ts_stat('SELECT to_tsvector(owner_name) FROM roads.roadway_inventory') FROM roads.roadway_inventory",
+    ] {
+        let e = err(&call(&client, "sql_select", json!({"connection": "roads-pg", "sql": sql})).await);
+        assert!(e.contains("not allowed"), "{sql}: {e}");
+    }
 
     // Allowed by the server's list ("*"), but the login has no grant: the
     // database's own permissions still apply.

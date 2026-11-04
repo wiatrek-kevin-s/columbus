@@ -30,6 +30,9 @@ use serde_json::{json, Value};
 use crate::config::{Paths, PolicySource};
 use crate::worker::{Worker, WorkerError};
 
+/// How long a connection's table and column list is reused.
+const COLUMNS_TTL: Duration = Duration::from_secs(300);
+
 pub const SERVER_NAME: &str = "columbus-mcp";
 
 /// Namespaces reserved for Columbus's own providers; connected servers
@@ -408,7 +411,10 @@ pub struct State {
     /// Every column of every table, per connection, for keeping hidden
     /// fields out of queries (see sqlcheck::ApplyFilters). Loaded once.
     pub columns: std::sync::Mutex<
-        std::collections::HashMap<String, std::collections::HashMap<String, Vec<String>>>,
+        std::collections::HashMap<
+            String,
+            (std::time::Instant, Vec<columbus_shared::sqlcheck::Relation>),
+        >,
     >,
     pub flow: columbus_flow::FlowState,
     pub outputs: crate::providers::Outputs,
@@ -653,20 +659,23 @@ impl Gateway {
         ENGINE_READY.iter().any(|k| k.eq_ignore_ascii_case(kind))
     }
 
-    /// Each table's columns on a connection, keyed by normalized upper-case
-    /// name (and by the bare table name when that is unambiguous). Needed
-    /// only when the policy hides fields; empty otherwise.
+    /// Every relation on a connection with its exact name parts and all
+    /// its columns, for keeping hidden fields out of queries. Needed only
+    /// when the policy hides fields (empty otherwise); refreshed after
+    /// COLUMNS_TTL so a changed table is seen.
     pub(crate) async fn table_columns(
         &self,
         access: &columbus_shared::policy::EffectiveAccess,
         conn: &Connection,
-    ) -> Result<std::collections::HashMap<String, Vec<String>>, String> {
-        use std::collections::HashMap;
+    ) -> Result<Vec<columbus_shared::sqlcheck::Relation>, String> {
+        use columbus_shared::sqlcheck::Relation;
         if access.hide_fields.is_empty() {
-            return Ok(HashMap::new());
+            return Ok(Vec::new());
         }
-        if let Some(m) = self.state.columns.lock().expect("columns").get(&conn.id) {
-            return Ok(m.clone());
+        if let Some((at, rels)) = self.state.columns.lock().expect("columns").get(&conn.id) {
+            if at.elapsed() < COLUMNS_TTL {
+                return Ok(rels.clone());
+            }
         }
         let handle = self.handle(conn)?;
         let timeout = access.limits.seconds.unwrap_or(120);
@@ -680,43 +689,31 @@ impl Gateway {
             )
             .await
             .map_err(Self::worker_error)?;
-        let mut map: HashMap<String, Vec<String>> = HashMap::new();
-        let mut bare: HashMap<String, Option<Vec<String>>> = HashMap::new();
-        for d in reply
+        let rels: Vec<Relation> = reply
             .get("datasets")
             .and_then(Value::as_array)
             .into_iter()
             .flatten()
-        {
-            let Some(name) = d.get("name").and_then(Value::as_str) else {
-                continue;
-            };
-            let cols: Vec<String> = d
-                .get("fields")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .filter_map(|f| f.get("name").and_then(Value::as_str).map(String::from))
-                .collect();
-            let key = columbus_shared::policy::normalize_identifier(name).to_uppercase();
-            if let Some(last) = key.rsplit('.').next().filter(|l| *l != key) {
-                bare.entry(last.to_string())
-                    .and_modify(|v| *v = None)
-                    .or_insert_with(|| Some(cols.clone()));
-            }
-            map.insert(key, cols);
-        }
-        for (k, v) in bare {
-            if let Some(v) = v {
-                map.entry(k).or_insert(v);
-            }
-        }
+            .filter_map(|d| {
+                let name = d.get("name").and_then(Value::as_str)?;
+                Some(Relation {
+                    parts: name.split('.').map(String::from).collect(),
+                    columns: d
+                        .get("fields")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|f| f.get("name").and_then(Value::as_str).map(String::from))
+                        .collect(),
+                })
+            })
+            .collect();
         self.state
             .columns
             .lock()
             .expect("columns")
-            .insert(conn.id.clone(), map.clone());
-        Ok(map)
+            .insert(conn.id.clone(), (std::time::Instant::now(), rels.clone()));
+        Ok(rels)
     }
 
     /// The short-lived handle a worker gets for one request: where to
@@ -1845,8 +1842,7 @@ impl Gateway {
             Ok(c) => c,
             Err(e) => return Err(self.deny(&ctx, rec, e)),
         };
-        let lookup = |n: &str| cols.get(&n.to_uppercase()).cloned();
-        let checked = match check_select(&args.sql, &access, max_rows, &lookup) {
+        let checked = match check_select(&args.sql, &access, max_rows, &cols) {
             Ok(c) => c,
             Err(e) => return Err(self.deny(&ctx, rec, e)),
         };

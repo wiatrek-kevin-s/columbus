@@ -172,7 +172,10 @@ def _sqlite_list(conn: dict[str, Any], timeout_s: float) -> list[dict[str, Any]]
             quoted = '"' + entry["name"].replace('"', '""') + '"'
             entry["fields"] = [
                 {"name": r[1], "type": r[2] or None, "not_null": bool(r[3]), "pk": bool(r[5])}
-                for r in db.execute(f"PRAGMA table_info({quoted})")
+                # table_xinfo, not table_info: it also lists generated
+                # columns, which the server must know about to keep a hidden
+                # one out of queries.
+                for r in db.execute(f"PRAGMA table_xinfo({quoted})")
             ]
         return list(tables.values())
     finally:

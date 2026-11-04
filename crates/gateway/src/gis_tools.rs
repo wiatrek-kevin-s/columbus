@@ -240,12 +240,11 @@ impl Gateway {
             }
         }
         let cols = self.table_columns(access, conn).await?;
-        let lookup = |n: &str| cols.get(&n.to_uppercase()).cloned();
         let count = check_select(
             &format!("SELECT COUNT(*) AS n FROM {dataset}"),
             access,
             2,
-            &lookup,
+            &cols,
         )
         .map_err(|e| e.to_string())?;
         let handle = self.handle(conn)?;
@@ -435,11 +434,10 @@ impl Gateway {
         let read_limit = access.limits.rows.unwrap_or(200_000);
         let max_rows = limit.unwrap_or(read_limit).min(read_limit).max(1);
         let cols = self.table_columns(&access, conn).await?;
-        let lookup = |n: &str| cols.get(&n.to_uppercase()).cloned();
         let checked = if plan.bbox.is_some() {
-            check_select_unlimited(&plan.sql, &access, max_rows, &lookup)
+            check_select_unlimited(&plan.sql, &access, max_rows, &cols)
         } else {
-            check_select(&plan.sql, &access, max_rows, &lookup)
+            check_select(&plan.sql, &access, max_rows, &cols)
         }
         .map_err(|e| e.to_string())?;
         let handle = self.handle(conn)?;
