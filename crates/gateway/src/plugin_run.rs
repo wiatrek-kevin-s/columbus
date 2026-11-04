@@ -77,6 +77,8 @@ impl Gateway {
         let mut params = serde_json::Map::new();
         let mut inputs = serde_json::Map::new();
         let mut input_prov = Vec::new();
+        let mut bound_inputs = Vec::new();
+        let mut recheck: Vec<(PathBuf, Option<String>)> = Vec::new();
         let mut files: Vec<PathBuf> = Vec::new();
 
         // Scalars first: they are cheap to refuse.
@@ -164,6 +166,16 @@ impl Gateway {
                     Err(e) => return Err(self.deny(ctx, rec, e)),
                 };
             inputs.insert(name.clone(), json!({"kind": "file", "path": path}));
+            recheck.push((
+                path.clone(),
+                columbus_shared::canon::sha256_file(&path)
+                    .ok()
+                    .map(|(h, _)| h),
+            ));
+            bound_inputs.push(match columbus_shared::canon::sha256_file(&path) {
+                Ok((h, n)) => json!({"param": name, "file": h, "bytes": n}),
+                Err(_) => json!({"param": name, "absent": true}),
+            });
             input_prov.push(
                 json!({"param": name, "handle": h, "labels": self.state.flow.file_labels(&path)}),
             );
@@ -277,6 +289,16 @@ impl Gateway {
                 name.clone(),
                 json!({"kind": "dataset", "path": out, "rows": rows}),
             );
+            recheck.push((
+                out.clone(),
+                columbus_shared::canon::sha256_file(&out)
+                    .ok()
+                    .map(|(h, _)| h),
+            ));
+            bound_inputs.push(json!({
+                "param": name, "connection": conn.id, "dataset": dataset, "where": where_, "rows": rows,
+                "sha256": columbus_shared::canon::sha256_file(&out).map(|(h, _)| h).ok(),
+            }));
             input_prov.push(json!({
                 "param": name, "connection": conn.id, "dataset": dataset, "where": where_,
                 "executed_sql": checked.sql, "rows": rows, "extract": self.ws_handle(&out),
@@ -316,12 +338,18 @@ impl Gateway {
             );
             let detail = json!({
                 "destination": p.manifest.display_name(),
+                "arguments": args,
                 "labels": labels.iter().map(|l| l.trim_start_matches("connection:").to_string()).collect::<Vec<_>>(),
+            });
+            let bound = json!({
+                "request": request,
+                "inputs": bound_inputs,
+                "labels": labels,
             });
             let ask = crate::approval_flow::Ask {
                 tool: "run_tool",
                 label: &full,
-                request,
+                request: &bound,
                 risk: Risk::Edit,
                 summary,
                 detail: Some(detail),
@@ -357,6 +385,11 @@ impl Gateway {
                 }
                 Err(e) => return Err(self.deny(ctx, rec, e)),
             }
+        }
+
+        // Inputs must be exactly what was checked (and approved).
+        if let Err(e) = crate::providers::recheck(&recheck) {
+            return Err(self.deny(ctx, rec, e));
         }
 
         // Progress goes to the client when it asked for it.

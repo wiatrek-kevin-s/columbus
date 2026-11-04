@@ -432,11 +432,11 @@ impl State {
         let approvals = Arc::new(ApprovalStore::new());
         let user = current_user();
         let opener = crate::approvals_page::Opener::from_env();
-        if let crate::approvals_page::Opener::File(f) = &opener {
-            notes.push(format!(
-                "Development: approvals page links are written to {} (COLUMBUS_APPROVALS_LAUNCH_FILE) instead of opening the browser. Do not use in production.",
-                f.display()
-            ));
+        if opener.is_dev_handoff() {
+            notes.push(
+                "Development build: approvals page links are handed off through COLUMBUS_APPROVALS_LAUNCH_FILE instead of opening the browser. Do not use in production."
+                    .into(),
+            );
         }
         let page = crate::approvals_page::ApprovalsPage::new(
             approvals.clone(),
@@ -692,6 +692,32 @@ impl Gateway {
         std::fs::write(&path, text).map_err(|e| e.to_string())?;
         Ok(path)
     }
+}
+
+/// Arguments as the person sees them on an approval card: file contents
+/// are not inlined (the card lists the files), long text is cut.
+fn shown_args(
+    args: &serde_json::Map<String, Value>,
+    rule: &columbus_broker::manifest::ToolRule,
+) -> Value {
+    let mut out = serde_json::Map::new();
+    for (k, v) in args {
+        let shown = match (rule.args.get(k), v) {
+            (Some(columbus_broker::manifest::ArgRole::FileHandle), Value::String(h)) => {
+                json!(format!("file {h}"))
+            }
+            (_, Value::String(t)) if t.chars().count() > 200 => {
+                json!(format!(
+                    "{}… ({} characters)",
+                    t.chars().take(200).collect::<String>(),
+                    t.chars().count()
+                ))
+            }
+            _ => v.clone(),
+        };
+        out.insert(k.clone(), shown);
+    }
+    Value::Object(out)
 }
 
 /// Connected-provider helpers (design change 1).
@@ -1418,11 +1444,20 @@ impl Gateway {
                 "labels": labels.iter().map(|l| l.trim_start_matches("connection:").to_string()).collect::<Vec<_>>(),
                 "flow_rule": flow_rule,
                 "egress": rule.egress,
+                "arguments": shown_args(&args.args, &rule),
+            });
+            // Bound to what is actually sent: the file contents and the
+            // data labels, not just the handles' names.
+            let bound = json!({
+                "name": args.name,
+                "args": args.args,
+                "files": prepared.bound,
+                "labels": labels,
             });
             let ask = crate::approval_flow::Ask {
                 tool: "run_tool",
                 label: &args.name,
-                request: &request,
+                request: &bound,
                 risk: if rule.egress {
                     Risk::Export
                 } else {
@@ -1460,6 +1495,9 @@ impl Gateway {
             }
         }
 
+        if let Err(e) = crate::providers::recheck(&prepared.recheck) {
+            return Err(self.deny(&ctx, rec, e));
+        }
         let timeout = self.state.policy.limits.seconds.unwrap_or(120).max(1);
         let started = Local::now();
         let result = match self

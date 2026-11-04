@@ -16,6 +16,11 @@ use crate::canon::request_hash;
 use crate::error::Denied;
 
 pub const APPROVAL_TTL_MINUTES: i64 = 10;
+/// Most requests that may wait for a person at once in one session, so an
+/// agent cannot bury one harmful request among many harmless ones.
+pub const MAX_PENDING: usize = 20;
+/// Decided and expired approvals are kept this long for the recent list.
+const KEEP_MINUTES: i64 = 120;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -97,11 +102,13 @@ impl ApprovalStore {
         risk: Risk,
         summary: String,
         now: DateTime<Utc>,
-    ) -> Approval {
+    ) -> Result<Approval, Denied> {
         self.request_with_detail(tool, args, risk, summary, None, now)
     }
 
-    /// Open a pending approval with structured detail for the card.
+    /// Open a pending approval with structured detail for the card. An
+    /// identical request already waiting is returned instead of a second
+    /// one, and no more than [`MAX_PENDING`] may wait at once.
     pub fn request_with_detail(
         &self,
         tool: &str,
@@ -110,8 +117,36 @@ impl ApprovalStore {
         summary: String,
         detail: Option<Value>,
         now: DateTime<Utc>,
-    ) -> Approval {
+    ) -> Result<Approval, Denied> {
         let hash = request_hash(tool, args);
+        {
+            let mut inner = self.inner.lock().expect("approval store poisoned");
+            inner.approvals.retain(|_, a| {
+                a.state == State::Pending || now - a.created < Duration::minutes(KEEP_MINUTES)
+            });
+            for a in inner.approvals.values_mut() {
+                if a.state == State::Pending && now > a.expires {
+                    a.state = State::Expired;
+                }
+            }
+            if let Some(same) = inner
+                .approvals
+                .values()
+                .find(|a| a.state == State::Pending && a.hash == hash && a.tool == tool)
+            {
+                return Ok(same.clone());
+            }
+            let waiting = inner
+                .approvals
+                .values()
+                .filter(|a| a.state == State::Pending)
+                .count();
+            if waiting >= MAX_PENDING {
+                return Err(Denied::Approval(format!(
+                    "{waiting} requests are already waiting for the person; wait for them to decide before asking for more"
+                )));
+            }
+        }
         let approval = Approval {
             id: format!("ap_{}", &uuid::Uuid::new_v4().simple().to_string()[..12]),
             tool: tool.into(),
@@ -130,7 +165,7 @@ impl ApprovalStore {
         inner
             .approvals
             .insert(approval.id.clone(), approval.clone());
-        approval
+        Ok(approval)
     }
 
     /// True when the person already said "always for this session" to this exact request.
@@ -283,13 +318,15 @@ mod tests {
         let s = ApprovalStore::new();
         let args = json!({"connection": "roads-prod", "edits": 37});
         let now = Utc::now();
-        let a = s.request(
-            "apply_edits",
-            &args,
-            Risk::Edit,
-            "Apply 37 edits".into(),
-            now,
-        );
+        let a = s
+            .request(
+                "apply_edits",
+                &args,
+                Risk::Edit,
+                "Apply 37 edits".into(),
+                now,
+            )
+            .unwrap();
         (s, a, args, now)
     }
 
@@ -336,6 +373,31 @@ mod tests {
         s.decide(&a.id, Decision::Decline, now).unwrap();
         assert!(s.consume(&a.id, "apply_edits", &args, now).is_err());
         assert!(s.decide(&a.id, Decision::AllowOnce, now).is_err());
+    }
+
+    #[test]
+    fn identical_requests_merge_and_the_queue_is_capped() {
+        let s = ApprovalStore::new();
+        let now = Utc::now();
+        let a = s
+            .request("t", &json!({"x": 1}), Risk::Export, "x".into(), now)
+            .unwrap();
+        let b = s
+            .request("t", &json!({"x": 1}), Risk::Export, "x".into(), now)
+            .unwrap();
+        assert_eq!(a.id, b.id, "the same request waiting twice is one approval");
+        for i in 2..=MAX_PENDING {
+            s.request("t", &json!({"x": i}), Risk::Export, "x".into(), now)
+                .unwrap();
+        }
+        assert!(s
+            .request("t", &json!({"x": 999}), Risk::Export, "x".into(), now)
+            .is_err());
+        // Once the person decides one, there is room again.
+        s.decide(&a.id, Decision::Decline, now).unwrap();
+        assert!(s
+            .request("t", &json!({"x": 999}), Risk::Export, "x".into(), now)
+            .is_ok());
     }
 
     #[test]

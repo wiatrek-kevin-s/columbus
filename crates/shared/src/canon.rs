@@ -45,6 +45,24 @@ pub fn sha256_hex(data: &[u8]) -> String {
     hex::encode(Sha256::digest(data))
 }
 
+/// SHA-256 and size of a file, read in chunks.
+pub fn sha256_file(path: &std::path::Path) -> std::io::Result<(String, u64)> {
+    use std::io::Read;
+    let mut f = std::fs::File::open(path)?;
+    let mut h = Sha256::new();
+    let mut buf = vec![0u8; 64 * 1024];
+    let mut n = 0u64;
+    loop {
+        let k = f.read(&mut buf)?;
+        if k == 0 {
+            break;
+        }
+        h.update(&buf[..k]);
+        n += k as u64;
+    }
+    Ok((hex::encode(h.finalize()), n))
+}
+
 /// Hash of a tool call: tool name plus canonical arguments.
 pub fn request_hash(tool: &str, args: &Value) -> String {
     sha256_hex(format!("{tool}\n{}", canonical_json(args)).as_bytes())

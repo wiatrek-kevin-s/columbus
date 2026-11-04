@@ -88,6 +88,41 @@ impl Outputs {
 pub struct PreparedArgs {
     pub args: JsonObject,
     pub files: Vec<PathBuf>,
+    /// What each file argument held when the call was checked: the
+    /// approval is bound to these, so a file changed afterwards is not
+    /// covered by it.
+    pub bound: Vec<Value>,
+    /// Files the provider reads itself later (path arguments), with the
+    /// digest the approval was bound to, re-checked right before the call.
+    pub recheck: Vec<(PathBuf, Option<String>)>,
+}
+
+/// Refuse when a file a provider will read itself changed since it was
+/// checked (for example while waiting for the person's approval).
+pub fn recheck(files: &[(PathBuf, Option<String>)]) -> Result<(), String> {
+    for (path, was) in files {
+        let now = columbus_shared::canon::sha256_file(path)
+            .ok()
+            .map(|(h, _)| h);
+        if now != *was {
+            return Err(format!(
+                "{} changed after it was checked; nothing was sent. Ask again to send the current version",
+                path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn digest(name: &str, shown: &str, bytes: &[u8]) -> Value {
+    json!({"arg": name, "file": shown, "sha256": columbus_shared::canon::sha256_hex(bytes), "bytes": bytes.len()})
+}
+
+fn digest_path(name: &str, shown: &str, path: &Path) -> Value {
+    match columbus_shared::canon::sha256_file(path) {
+        Ok((h, n)) => json!({"arg": name, "file": shown, "sha256": h, "bytes": n}),
+        Err(_) => json!({"arg": name, "file": shown, "absent": true}),
+    }
 }
 
 /// Apply the manifest's declared argument roles. File handles are replaced
@@ -103,6 +138,8 @@ pub fn prepare_args(
     extra_hosts: &[String],
 ) -> Result<PreparedArgs, String> {
     let mut files = Vec::new();
+    let mut bound = Vec::new();
+    let mut later = Vec::new();
     for (name, role) in &rule.args {
         let Some(value) = args.get(name).cloned() else {
             continue;
@@ -114,6 +151,7 @@ pub fn prepare_args(
             ArgRole::FileHandle => {
                 let path = resolve_handle(session, sandbox, text)?;
                 let bytes = std::fs::read(&path).map_err(|e| format!("cannot read {text}: {e}"))?;
+                bound.push(digest(name, text, &bytes));
                 files.push(path);
                 match String::from_utf8(bytes) {
                     Ok(s) => Value::String(s),
@@ -123,10 +161,19 @@ pub fn prepare_args(
             ArgRole::Path => {
                 if text.starts_with(HANDLE_SCHEME) {
                     let p = resolve_handle(session, sandbox, text)?;
+                    bound.push(digest_path(name, text, &p));
+                    later.push((p.clone(), columbus_shared::canon::sha256_file(&p).ok().map(|(h, _)| h)));
                     files.push(p.clone());
                     Value::String(p.display().to_string())
                 } else {
                     let p = sandbox.resolve(text).map_err(|e| e.to_string())?;
+                    if p.is_dir() && rule.outbound() {
+                        return Err(format!(
+                            "argument {name:?} is a folder; tools that send data out or write take single files, so each one can be checked and approved"
+                        ));
+                    }
+                    bound.push(digest_path(name, text, &p));
+                    later.push((p.clone(), columbus_shared::canon::sha256_file(&p).ok().map(|(h, _)| h)));
                     if p.is_file() {
                         files.push(p.clone());
                     }
@@ -150,7 +197,12 @@ pub fn prepare_args(
         };
         args.insert(name.clone(), replacement);
     }
-    Ok(PreparedArgs { args, files })
+    Ok(PreparedArgs {
+        args,
+        files,
+        bound,
+        recheck: later,
+    })
 }
 
 /// Rule 4: a connected server's result, wrapped as data.

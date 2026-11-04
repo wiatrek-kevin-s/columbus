@@ -8,22 +8,32 @@
 //! Protections:
 //! * Bound to 127.0.0.1 on a random port; requests whose `Host` is not
 //!   exactly `127.0.0.1:<port>` are refused (DNS rebinding).
-//! * The browser is opened on a single-use launch link that expires in two
-//!   minutes. Using it sets a session cookie (`HttpOnly`, `SameSite=Strict`,
-//!   named per port so two Columbus sessions do not collide) and the link
-//!   stops working.
-//! * Every decision needs that cookie, a per-session CSRF token in a
-//!   header, and a same-origin `Origin` (and `Sec-Fetch-Site`, when sent).
+//! * No cookies. Browsers send cookies for 127.0.0.1 to every port, so a
+//!   program the agent starts on another port could collect them. Instead
+//!   the browser is opened on `/#t=<launch token>`: the token sits in the
+//!   URL fragment, which browsers never send to any server. The page's
+//!   script trades it, once, for a session token that it keeps only in the
+//!   page's memory (never a cookie or browser storage, which can reach
+//!   disk) and sends as `Authorization: Bearer` with every call. Launch tokens expire after
+//!   two minutes; sessions after 15 minutes without use.
+//! * Exchanges and decisions also need a same-origin `Origin` (and
+//!   `Sec-Fetch-Site`, when sent). The custom header forces a CORS
+//!   preflight, which this server never answers, so other websites cannot
+//!   call it.
 //! * Strict Content-Security-Policy with a per-response nonce; request
 //!   contents are rendered with `textContent`, never as HTML.
 //! * Every decision is written to the audit log.
+//! * Opening tabs is rate-limited and capped per session.
 //!
-//! Honest limit: an agent that can run arbitrary programs as the person
-//! can, in principle, read another process's command line in the moment
-//! the browser is launched. Use agents with shell access only where that
-//! is acceptable; the database's own read-only login remains the guarantee.
+//! Honest limits, documented for IT: an agent that can run programs as the
+//! person could read the browser's command line in the moment it starts
+//! (the launch token is single-use, so the person would then see "already
+//! used"), and an agent that controls the person's own browser (a browser
+//! automation extension) can press the buttons. The database's own
+//! read-only login remains the guarantee nothing bypasses.
 
 use std::collections::HashMap;
+#[cfg(debug_assertions)]
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -41,10 +51,13 @@ use serde_json::json;
 use tokio::sync::OnceCell;
 
 const LAUNCH_TTL: Duration = Duration::from_secs(120);
+const SESSION_IDLE: Duration = Duration::from_secs(15 * 60);
 /// A tab that asked for updates this recently is treated as open.
 const SEEN_WINDOW: Duration = Duration::from_secs(6);
 /// Do not open more than one new tab in this period.
-const RELAUNCH_GAP: Duration = Duration::from_secs(10);
+const RELAUNCH_GAP: Duration = Duration::from_secs(30);
+/// Most tabs Columbus opens in one session.
+const MAX_LAUNCHES: u32 = 10;
 
 /// How the page is put in front of the person.
 #[derive(Debug, Clone)]
@@ -53,12 +66,15 @@ pub enum Opener {
     Browser,
     /// Not opened (`COLUMBUS_APPROVALS_BROWSER=none`).
     Disabled,
-    /// Development and tests only: the launch link is written to this file.
+    /// Development and test builds only: the launch link is written to
+    /// this file instead of opening a browser.
+    #[cfg(debug_assertions)]
     File(PathBuf),
 }
 
 impl Opener {
     pub fn from_env() -> Self {
+        #[cfg(debug_assertions)]
         if let Some(p) =
             std::env::var_os("COLUMBUS_APPROVALS_LAUNCH_FILE").filter(|v| !v.is_empty())
         {
@@ -68,6 +84,14 @@ impl Opener {
             Ok("none") | Ok("off") => Opener::Disabled,
             _ => Opener::Browser,
         }
+    }
+
+    pub fn is_dev_handoff(&self) -> bool {
+        #[cfg(debug_assertions)]
+        if matches!(self, Opener::File(_)) {
+            return true;
+        }
+        false
     }
 }
 
@@ -81,21 +105,18 @@ pub enum Shown {
 
 struct Shared {
     port: u16,
-    csrf: String,
     store: Arc<ApprovalStore>,
     audit: Arc<AuditLog>,
     user: String,
     session: String,
     launch: Mutex<HashMap<String, Instant>>,
-    /// Session cookie value → when that tab last asked for updates.
+    /// Session token → when that tab last used it.
     sessions: Mutex<HashMap<String, Instant>>,
+    /// When a tab was last opened, and how many since the person last decided.
+    launches: Mutex<(Option<Instant>, u32)>,
 }
 
 impl Shared {
-    fn cookie_name(&self) -> String {
-        format!("columbus_{}", self.port)
-    }
-
     fn origin(&self) -> String {
         format!("http://127.0.0.1:{}", self.port)
     }
@@ -107,6 +128,28 @@ impl Shared {
             .values()
             .any(|t| t.elapsed() < d)
     }
+
+    /// The session behind a bearer token, refreshed on use. Expired
+    /// sessions are dropped.
+    fn session_for(&self, token: &str, now: Instant) -> Option<String> {
+        let mut sessions = self.sessions.lock().expect("sessions");
+        sessions.retain(|_, last| now.saturating_duration_since(*last) < SESSION_IDLE);
+        let key = sessions.keys().find(|k| same(k, token)).cloned()?;
+        sessions.insert(key.clone(), now);
+        Some(key)
+    }
+
+    /// Spend a launch token; true if it was valid.
+    fn spend_launch(&self, t: &str, now: Instant) -> bool {
+        let mut launch = self.launch.lock().expect("launch");
+        let found = launch.keys().find(|k| same(k, t)).cloned();
+        match found {
+            Some(k) => launch
+                .remove(&k)
+                .is_some_and(|at| now.saturating_duration_since(at) < LAUNCH_TTL),
+            None => false,
+        }
+    }
 }
 
 pub struct ApprovalsPage {
@@ -116,7 +159,6 @@ pub struct ApprovalsPage {
     session: String,
     opener: Opener,
     running: OnceCell<Result<Arc<Shared>, String>>,
-    last_launch: Mutex<Option<Instant>>,
 }
 
 fn token() -> String {
@@ -150,7 +192,6 @@ impl ApprovalsPage {
             session,
             opener,
             running: OnceCell::new(),
-            last_launch: Mutex::new(None),
         }
     }
 
@@ -163,17 +204,17 @@ impl ApprovalsPage {
                 let port = listener.local_addr().map_err(|e| e.to_string())?.port();
                 let shared = Arc::new(Shared {
                     port,
-                    csrf: token(),
                     store: self.store.clone(),
                     audit: self.audit.clone(),
                     user: self.user.clone(),
                     session: self.session.clone(),
                     launch: Mutex::new(HashMap::new()),
                     sessions: Mutex::new(HashMap::new()),
+                    launches: Mutex::new((None, 0)),
                 });
                 let app = Router::new()
                     .route("/", get(page))
-                    .route("/open/{token}", get(open))
+                    .route("/api/session", post(exchange))
                     .route("/api/approvals", get(list))
                     .route("/api/approvals/{id}", post(decide))
                     .fallback(not_found)
@@ -198,11 +239,16 @@ impl ApprovalsPage {
             return Ok(Shown::AlreadyOpen);
         }
         {
-            let mut last = self.last_launch.lock().expect("last launch");
-            if last.is_some_and(|t| t.elapsed() < RELAUNCH_GAP) {
+            let mut l = shared.launches.lock().expect("launches");
+            if l.0.is_some_and(|t| t.elapsed() < RELAUNCH_GAP) {
                 return Ok(Shown::Opened);
             }
-            *last = Some(Instant::now());
+            if l.1 >= MAX_LAUNCHES {
+                return Err(format!(
+                    "Columbus has opened its approvals page {MAX_LAUNCHES} times without a decision and will not open more tabs"
+                ));
+            }
+            *l = (Some(Instant::now()), l.1 + 1);
         }
         let t = token();
         {
@@ -210,7 +256,7 @@ impl ApprovalsPage {
             launch.retain(|_, at| at.elapsed() < LAUNCH_TTL);
             launch.insert(t.clone(), Instant::now());
         }
-        let url = format!("http://127.0.0.1:{}/open/{t}", shared.port);
+        let url = format!("http://127.0.0.1:{}/#t={t}", shared.port);
         match &self.opener {
             Opener::Browser => {
                 open_browser(&url).map_err(|e| format!("could not start the browser ({e})"))?
@@ -221,6 +267,7 @@ impl ApprovalsPage {
                         .into(),
                 )
             }
+            #[cfg(debug_assertions)]
             Opener::File(p) => std::fs::write(p, &url)
                 .map_err(|e| format!("could not hand off the approvals page ({e})"))?,
         }
@@ -236,14 +283,21 @@ impl ApprovalsPage {
     }
 }
 
+/// Start the person's default browser on `url`, by absolute path where the
+/// platform has one, and reap the child so it does not linger.
 fn open_browser(url: &str) -> std::io::Result<()> {
     use std::process::{Command, Stdio};
     let mut cmd = if cfg!(windows) {
-        let mut c = Command::new("rundll32.exe");
+        let root = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
+        let mut c = Command::new(
+            std::path::Path::new(&root)
+                .join("System32")
+                .join("rundll32.exe"),
+        );
         c.arg("url.dll,FileProtocolHandler").arg(url);
         c
     } else if cfg!(target_os = "macos") {
-        let mut c = Command::new("open");
+        let mut c = Command::new("/usr/bin/open");
         c.arg(url);
         c
     } else {
@@ -251,11 +305,15 @@ fn open_browser(url: &str) -> std::io::Result<()> {
         c.arg(url);
         c
     };
-    cmd.stdin(Stdio::null())
+    let mut child = cmd
+        .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .spawn()
-        .map(|_| ())
+        .spawn()?;
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
 }
 
 // ---------- HTTP ----------
@@ -283,12 +341,15 @@ fn harden(mut r: Response<Body>, csp: Option<String>) -> Response<Body> {
         "cross-origin-resource-policy",
         HeaderValue::from_static("same-origin"),
     );
+    h.insert(
+        "cross-origin-opener-policy",
+        HeaderValue::from_static("same-origin"),
+    );
     r
 }
 
-fn status(code: StatusCode, msg: &str) -> Response<Body> {
-    let body = json!({"error": msg}).to_string();
-    let mut r = Response::new(Body::from(body));
+fn json_response(code: StatusCode, body: serde_json::Value) -> Response<Body> {
+    let mut r = Response::new(Body::from(body.to_string()));
     *r.status_mut() = code;
     r.headers_mut().insert(
         header::CONTENT_TYPE,
@@ -297,112 +358,55 @@ fn status(code: StatusCode, msg: &str) -> Response<Body> {
     harden(r, None)
 }
 
+fn status(code: StatusCode, msg: &str) -> Response<Body> {
+    json_response(code, json!({"error": msg}))
+}
+
 fn host_ok(h: &HeaderMap, s: &Shared) -> bool {
     h.get(header::HOST).and_then(|v| v.to_str().ok())
         == Some(format!("127.0.0.1:{}", s.port).as_str())
 }
 
-fn session_of(h: &HeaderMap, s: &Shared) -> Option<String> {
-    let name = s.cookie_name();
-    let cookies = h.get_all(header::COOKIE);
-    for v in cookies.iter().filter_map(|v| v.to_str().ok()) {
-        for part in v.split(';') {
-            if let Some((k, val)) = part.trim().split_once('=') {
-                if k == name && s.sessions.lock().expect("sessions").contains_key(val) {
-                    return Some(val.to_string());
-                }
-            }
-        }
-    }
-    None
+/// Same-origin requests from the page only (exchanges and decisions).
+fn same_origin(h: &HeaderMap, s: &Shared) -> bool {
+    let origin_ok =
+        h.get(header::ORIGIN).and_then(|v| v.to_str().ok()) == Some(s.origin().as_str());
+    let site_ok = h
+        .get("sec-fetch-site")
+        .and_then(|v| v.to_str().ok())
+        .is_none_or(|site| site == "same-origin");
+    origin_ok && site_ok
 }
 
-/// Host and session checks for every page request.
+fn bearer(h: &HeaderMap) -> Option<&str> {
+    h.get(header::AUTHORIZATION)?
+        .to_str()
+        .ok()?
+        .strip_prefix("Bearer ")
+}
+
+/// Host and session checks for API requests.
 fn guard(h: &HeaderMap, s: &Shared) -> Result<String, Box<Response<Body>>> {
     if !host_ok(h, s) {
         return Err(Box::new(status(StatusCode::FORBIDDEN, "wrong host")));
     }
-    session_of(h, s).ok_or_else(|| {
-        Box::new(status(
-            StatusCode::FORBIDDEN,
-            "not signed in to this approvals page",
-        ))
-    })
+    bearer(h)
+        .and_then(|t| s.session_for(t, Instant::now()))
+        .ok_or_else(|| Box::new(status(StatusCode::UNAUTHORIZED, "not signed in")))
 }
 
 async fn not_found() -> Response<Body> {
     status(StatusCode::NOT_FOUND, "not found")
 }
 
-async fn open(State(s): State<Arc<Shared>>, Path(t): Path<String>, h: HeaderMap) -> Response<Body> {
+/// The page shell. It holds no secrets and shows nothing until its script
+/// has exchanged the launch token from the URL fragment for a session.
+async fn page(State(s): State<Arc<Shared>>, h: HeaderMap) -> Response<Body> {
     if !host_ok(&h, &s) {
         return status(StatusCode::FORBIDDEN, "wrong host");
     }
-    let valid = {
-        let mut launch = s.launch.lock().expect("launch");
-        let found = launch.keys().find(|k| same(k, &t)).cloned();
-        match found {
-            Some(k) => launch
-                .remove(&k)
-                .is_some_and(|at| at.elapsed() < LAUNCH_TTL),
-            None => false,
-        }
-    };
-    if !valid {
-        let mut r = Response::new(Body::from(GONE_PAGE));
-        *r.status_mut() = StatusCode::FORBIDDEN;
-        r.headers_mut().insert(
-            header::CONTENT_TYPE,
-            HeaderValue::from_static("text/html; charset=utf-8"),
-        );
-        return harden(
-            r,
-            Some("default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'".into()),
-        );
-    }
-    let sid = token();
-    s.sessions
-        .lock()
-        .expect("sessions")
-        .insert(sid.clone(), Instant::now());
-    let mut r = Response::new(Body::empty());
-    *r.status_mut() = StatusCode::SEE_OTHER;
-    let h = r.headers_mut();
-    h.insert(header::LOCATION, HeaderValue::from_static("/"));
-    h.insert(
-        header::SET_COOKIE,
-        HeaderValue::from_str(&format!(
-            "{}={sid}; HttpOnly; SameSite=Strict; Path=/",
-            s.cookie_name()
-        ))
-        .expect("ascii"),
-    );
-    harden(r, None)
-}
-
-async fn page(State(s): State<Arc<Shared>>, h: HeaderMap) -> Response<Body> {
-    if let Err(r) = guard(&h, &s) {
-        if host_ok(&h, &s) {
-            let mut r = Response::new(Body::from(GONE_PAGE));
-            *r.status_mut() = StatusCode::FORBIDDEN;
-            r.headers_mut().insert(
-                header::CONTENT_TYPE,
-                HeaderValue::from_static("text/html; charset=utf-8"),
-            );
-            return harden(
-                r,
-                Some(
-                    "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'".into(),
-                ),
-            );
-        }
-        return *r;
-    }
     let nonce = uuid::Uuid::new_v4().simple().to_string();
-    let html = PAGE
-        .replace("{{NONCE}}", &nonce)
-        .replace("{{CSRF}}", &s.csrf)
-        .replace("{{SESSION}}", &html_escape(&s.session));
+    let html = PAGE.replace("{{NONCE}}", &nonce);
     let mut r = Response::new(Body::from(html));
     r.headers_mut().insert(
         header::CONTENT_TYPE,
@@ -415,34 +419,56 @@ async fn page(State(s): State<Arc<Shared>>, h: HeaderMap) -> Response<Body> {
     harden(r, Some(csp))
 }
 
-fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
+#[derive(Deserialize)]
+struct ExchangeBody {
+    launch: String,
 }
 
-async fn list(State(s): State<Arc<Shared>>, h: HeaderMap) -> Response<Body> {
-    let sid = match guard(&h, &s) {
-        Ok(sid) => sid,
-        Err(r) => return *r,
+async fn exchange(
+    State(s): State<Arc<Shared>>,
+    h: HeaderMap,
+    body: Result<Json<ExchangeBody>, axum::extract::rejection::JsonRejection>,
+) -> Response<Body> {
+    if !host_ok(&h, &s) {
+        return status(StatusCode::FORBIDDEN, "wrong host");
+    }
+    if !same_origin(&h, &s) {
+        return status(StatusCode::FORBIDDEN, "cross-origin request refused");
+    }
+    let Ok(Json(body)) = body else {
+        return status(StatusCode::BAD_REQUEST, "expected {\"launch\": \"…\"}");
     };
+    let now = Instant::now();
+    if !s.spend_launch(&body.launch, now) {
+        return status(
+            StatusCode::FORBIDDEN,
+            "this link has already been used or has expired",
+        );
+    }
+    let sid = token();
     s.sessions
         .lock()
         .expect("sessions")
-        .insert(sid, Instant::now());
+        .insert(sid.clone(), now);
+    json_response(
+        StatusCode::OK,
+        json!({"token": sid, "idle_minutes": SESSION_IDLE.as_secs() / 60}),
+    )
+}
+
+async fn list(State(s): State<Arc<Shared>>, h: HeaderMap) -> Response<Body> {
+    if let Err(r) = guard(&h, &s) {
+        return *r;
+    }
     let now = Utc::now();
-    let body = json!({
-        "session": s.session,
-        "pending": s.store.pending(now),
-        "recent": s.store.recent(10, now),
-    });
-    let mut r = Response::new(Body::from(body.to_string()));
-    r.headers_mut().insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_static("application/json"),
-    );
-    harden(r, None)
+    json_response(
+        StatusCode::OK,
+        json!({
+            "session": s.session,
+            "pending": s.store.pending(now),
+            "recent": s.store.recent(10, now),
+        }),
+    )
 }
 
 #[derive(Deserialize)]
@@ -459,21 +485,8 @@ async fn decide(
     if let Err(r) = guard(&h, &s) {
         return *r;
     }
-    // Same-origin requests from the page only.
-    if h.get(header::ORIGIN).and_then(|v| v.to_str().ok()) != Some(s.origin().as_str()) {
+    if !same_origin(&h, &s) {
         return status(StatusCode::FORBIDDEN, "cross-origin request refused");
-    }
-    if let Some(site) = h.get("sec-fetch-site").and_then(|v| v.to_str().ok()) {
-        if site != "same-origin" {
-            return status(StatusCode::FORBIDDEN, "cross-site request refused");
-        }
-    }
-    let csrf_ok = h
-        .get("x-columbus-csrf")
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|v| same(v, &s.csrf));
-    if !csrf_ok {
-        return status(StatusCode::FORBIDDEN, "missing or wrong page token");
     }
     let Ok(Json(body)) = body else {
         return status(
@@ -483,6 +496,8 @@ async fn decide(
     };
     match s.store.decide_via(&id, body.decision, Utc::now(), "page") {
         Ok(a) => {
+            // The person is here: opening tabs is fine again.
+            shared_reset_launches(&s);
             let rec = AuditRecord {
                 user: s.user.clone(),
                 client: "approvals-page".into(),
@@ -504,28 +519,36 @@ async fn decide(
                     &format!("decision recorded but the audit log could not be written: {e}"),
                 );
             }
-            let mut r = Response::new(Body::from(
-                json!({"id": a.id, "state": a.state}).to_string(),
-            ));
-            r.headers_mut().insert(
-                header::CONTENT_TYPE,
-                HeaderValue::from_static("application/json"),
-            );
-            harden(r, None)
+            json_response(StatusCode::OK, json!({"id": a.id, "state": a.state}))
         }
         Err(e) => status(StatusCode::CONFLICT, &e.to_string()),
     }
 }
 
-const GONE_PAGE: &str = r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Columbus approvals</title>
-<style>body{font:16px/1.5 system-ui,sans-serif;max-width:36rem;margin:4rem auto;padding:0 16px;color:#1f2328;background:#fff}@media (prefers-color-scheme:dark){body{color:#e6edf3;background:#0d1117}}</style></head>
-<body><h1>This approvals link has already been used</h1><p>For safety, each link Columbus opens works once. If a request is still waiting, ask your assistant to check on it; Columbus will open a fresh page.</p></body></html>"#;
+fn shared_reset_launches(s: &Shared) {
+    s.launches.lock().expect("launches").1 = 0;
+}
 
 const PAGE: &str = include_str!("approvals_page.html");
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn shared() -> (tempfile::TempDir, Shared) {
+        let d = tempfile::tempdir().unwrap();
+        let s = Shared {
+            port: 1,
+            store: Arc::new(ApprovalStore::new()),
+            audit: Arc::new(AuditLog::new(d.path()).unwrap()),
+            user: "u".into(),
+            session: "s".into(),
+            launch: Mutex::new(HashMap::new()),
+            sessions: Mutex::new(HashMap::new()),
+            launches: Mutex::new((None, 0)),
+        };
+        (d, s)
+    }
 
     #[test]
     fn constant_time_compare() {
@@ -535,13 +558,58 @@ mod tests {
     }
 
     #[test]
-    fn page_template_has_its_placeholders_and_no_inner_html() {
-        for p in ["{{NONCE}}", "{{CSRF}}", "{{SESSION}}"] {
-            assert!(PAGE.contains(p), "{p}");
+    fn sessions_expire_when_idle() {
+        let (_d, s) = shared();
+        let now = Instant::now();
+        s.sessions.lock().unwrap().insert("fresh".into(), now);
+        let old = now
+            .checked_sub(SESSION_IDLE + Duration::from_secs(1))
+            .unwrap_or(now);
+        s.sessions.lock().unwrap().insert("stale".into(), old);
+        assert!(s.session_for("fresh", now).is_some());
+        if old < now {
+            assert!(s.session_for("stale", now).is_none());
+            assert!(
+                !s.sessions.lock().unwrap().contains_key("stale"),
+                "expired sessions are dropped"
+            );
         }
+        assert!(s.session_for("guess", now).is_none());
+    }
+
+    #[test]
+    fn launch_tokens_are_single_use_and_expire() {
+        let (_d, s) = shared();
+        let now = Instant::now();
+        s.launch.lock().unwrap().insert("a".into(), now);
+        assert!(s.spend_launch("a", now));
+        assert!(!s.spend_launch("a", now), "single use");
+        if let Some(old) = now.checked_sub(LAUNCH_TTL + Duration::from_secs(1)) {
+            s.launch.lock().unwrap().insert("b".into(), old);
+            assert!(!s.spend_launch("b", now), "expired");
+        }
+    }
+
+    #[test]
+    fn page_template_has_no_secrets_and_no_inner_html() {
+        assert!(PAGE.contains("{{NONCE}}"));
+        assert!(!PAGE.contains("{{CSRF}}") && !PAGE.contains("{{SESSION}}"));
         assert!(
             !PAGE.contains("innerHTML"),
             "request text must be rendered with textContent"
+        );
+        assert!(!PAGE.contains("document.cookie"));
+        assert!(
+            !PAGE.contains("sessionStorage") && !PAGE.contains("localStorage"),
+            "the session token is kept in memory only"
+        );
+        assert!(
+            PAGE.contains("hashchange"),
+            "a link pasted into an open tab works"
+        );
+        assert!(
+            PAGE.contains("history.replaceState"),
+            "the launch token is removed from the address bar"
         );
     }
 }

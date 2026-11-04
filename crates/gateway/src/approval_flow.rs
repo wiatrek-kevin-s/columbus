@@ -80,7 +80,7 @@ impl Gateway {
             ask.summary.clone(),
             ask.detail.clone(),
             self.now(),
-        );
+        )?;
         let declined = || format!("the person declined: {}", ask.summary);
 
         match ask_person(

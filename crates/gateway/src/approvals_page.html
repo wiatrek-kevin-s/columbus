@@ -3,7 +3,6 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="columbus-csrf" content="{{CSRF}}">
 <title>Columbus approvals</title>
 <style nonce="{{NONCE}}">
 :root {
@@ -53,7 +52,7 @@ button:disabled { opacity: .5; cursor: default; }
 <body>
 <header><div class="wrap">
   <h1>Columbus approvals</h1>
-  <div class="sub">Requests from your AI assistant that need your decision. Session {{SESSION}}.</div>
+  <div class="sub" id="sub">Requests from your AI assistant that need your decision.</div>
 </div></header>
 <main class="wrap">
   <div id="notice" role="status"></div>
@@ -65,7 +64,10 @@ button:disabled { opacity: .5; cursor: default; }
 <script nonce="{{NONCE}}">
 (function () {
   "use strict";
-  var csrf = document.querySelector('meta[name="columbus-csrf"]').getAttribute("content");
+  // The session token lives only in this page's memory: never in a cookie
+  // or browser storage, which can be written to disk.
+  var token = null;
+  var timer = null;
   var busy = {};
 
   function el(tag, cls, text) {
@@ -84,6 +86,7 @@ button:disabled { opacity: .5; cursor: default; }
   }
   function row(dl, label, value) {
     if (value === undefined || value === null || value === "") return;
+    if (Array.isArray(value) && value.length === 0) return;
     dl.appendChild(el("dt", null, label));
     dl.appendChild(el("dd", null, Array.isArray(value) ? value.join(", ") : value));
   }
@@ -104,6 +107,14 @@ button:disabled { opacity: .5; cursor: default; }
     }
     row(dl, "Data from", d.labels);
     row(dl, "Flow rule", d.flow_rule);
+    if (d.arguments && typeof d.arguments === "object") {
+      Object.keys(d.arguments).forEach(function (k) {
+        var v = d.arguments[k];
+        var text = typeof v === "string" ? v : JSON.stringify(v);
+        if (text.length > 200) text = text.slice(0, 200) + "…";
+        row(dl, k, text);
+      });
+    }
     if (dl.childNodes.length) c.appendChild(dl);
     var det = el("details");
     det.appendChild(el("summary", null, "Show the exact request"));
@@ -124,6 +135,7 @@ button:disabled { opacity: .5; cursor: default; }
   }
 
   function render(data) {
+    document.getElementById("sub").textContent = "Requests from your AI assistant that need your decision. Session " + data.session + ".";
     var p = document.getElementById("pending");
     p.replaceChildren();
     if (!data.pending.length) p.appendChild(el("div", "empty", "Nothing is waiting."));
@@ -141,10 +153,18 @@ button:disabled { opacity: .5; cursor: default; }
     });
   }
 
+  function signedOut(text) {
+    token = null;
+    if (timer) { clearInterval(timer); timer = null; }
+    document.getElementById("pending").replaceChildren(el("div", "empty", "Not connected."));
+    notice(text);
+  }
+
   function refresh() {
-    fetch("/api/approvals", { credentials: "same-origin", cache: "no-store" })
+    if (!token) return;
+    fetch("/api/approvals", { cache: "no-store", headers: { "Authorization": "Bearer " + token } })
       .then(function (res) {
-        if (res.status === 403) { notice("This page is no longer connected. If a request is waiting, ask your assistant to check on it and Columbus will open a fresh page."); return null; }
+        if (res.status === 401 || res.status === 403) { signedOut("This page is no longer connected. If a request is waiting, ask your assistant to check on it and Columbus will open a fresh page."); return null; }
         return res.json();
       })
       .then(function (data) { if (data) { notice(""); render(data); } })
@@ -156,8 +176,7 @@ button:disabled { opacity: .5; cursor: default; }
     refresh();
     fetch("/api/approvals/" + encodeURIComponent(id), {
       method: "POST",
-      credentials: "same-origin",
-      headers: { "Content-Type": "application/json", "X-Columbus-CSRF": csrf },
+      headers: { "Content-Type": "application/json", "Authorization": "Bearer " + token },
       body: JSON.stringify({ decision: decision })
     })
       .then(function (res) { return res.json().then(function (j) { return { ok: res.ok, body: j }; }); })
@@ -166,8 +185,33 @@ button:disabled { opacity: .5; cursor: default; }
       .then(function () { delete busy[id]; refresh(); });
   }
 
-  refresh();
-  setInterval(refresh, 2000);
+  function begin() {
+    refresh();
+    timer = setInterval(refresh, 2000);
+  }
+
+  // The launch token arrives in the URL fragment, which is never sent to
+  // any server. Take it out of the address bar, then trade it once for a
+  // session token kept only in this page's memory.
+  function arrive() {
+    var m = /^#t=([0-9a-f]{64})$/.exec(location.hash);
+    if (!m) return false;
+    history.replaceState(null, "", "/");
+    if (timer) { clearInterval(timer); timer = null; }
+    fetch("/api/session", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ launch: m[1] }) })
+      .then(function (res) { return res.json().then(function (j) { return { ok: res.ok, body: j }; }); })
+      .then(function (r) {
+        if (r.ok && r.body.token) { token = r.body.token; notice(""); begin(); }
+        else signedOut("For safety, each link Columbus opens works once, and this one has already been used or has expired. If a request is still waiting, ask your assistant to check on it and Columbus will open a fresh page.");
+      })
+      .catch(function () { signedOut("Columbus is not answering."); });
+    return true;
+  }
+  // A link pasted into this tab only changes the fragment; handle it too.
+  window.addEventListener("hashchange", arrive);
+  if (!arrive()) {
+    signedOut("Open this page from the link Columbus opens for you. If a request is waiting, ask your assistant to check on it and Columbus will open a fresh page.");
+  }
 })();
 </script>
 </body>

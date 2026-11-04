@@ -68,7 +68,7 @@ async fn setup(wait_seconds: u64) -> Env {
     std::fs::write(
         &manifest,
         format!(
-            "id: vault\nname: Test vault\ntransport: {{ type: stdio, command: {}, args: [plain] }}\ntrust: standard\ntools:\n  export_report: {{ risk: read, output: to_workspace }}\n  upload: {{ risk: write, egress: true, args: {{ content: file_handle }}, approval: always }}\n  default: {{ allow: false }}\n",
+            "id: vault\nname: Test vault\ntransport: {{ type: stdio, command: {}, args: [plain] }}\ntrust: standard\ntools:\n  export_report: {{ risk: read, output: to_workspace }}\n  upload: {{ risk: write, egress: true, args: {{ content: file_handle }}, approval: always }}\n  attach: {{ risk: write, egress: true, args: {{ path: path }}, approval: always }}\n  default: {{ allow: false }}\n",
             serde_json::to_string(&fake_server().display().to_string()).unwrap()
         ),
     )
@@ -175,44 +175,34 @@ fn http() -> reqwest::Client {
         .unwrap()
 }
 
-/// The person's browser: follows the launch link and keeps the cookie.
+fn no_cookie(r: &reqwest::Response) {
+    assert!(
+        r.headers().get("set-cookie").is_none(),
+        "the approvals page never sets cookies"
+    );
+}
+
+/// The person's browser tab: loads the page shell, then (as its script
+/// does) trades the launch token from the URL fragment for a session token.
 struct Browser {
     base: String,
-    cookie: String,
-    csrf: String,
+    token: String,
     http: reqwest::Client,
 }
 
 impl Browser {
     async fn open(launch: &str) -> Browser {
         let http = http();
-        let base = launch.split("/open/").next().unwrap().to_string();
-        let r = http.get(launch).send().await.unwrap();
-        assert_eq!(r.status(), StatusCode::SEE_OTHER);
-        let set = r
-            .headers()
-            .get("set-cookie")
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .to_string();
-        assert!(
-            set.contains("HttpOnly") && set.contains("SameSite=Strict"),
-            "{set}"
-        );
-        let cookie = set.split(';').next().unwrap().to_string();
-        assert!(
-            cookie.starts_with(&format!("columbus_{}=", base.rsplit(':').next().unwrap())),
-            "cookie is per port"
-        );
+        let (base, launch_token) = launch
+            .split_once("/#t=")
+            .expect("launch link is /#t=<token>");
+        assert!(base.starts_with("http://127.0.0.1:"), "{launch}");
+        let base = base.to_string();
 
-        let r = http
-            .get(format!("{base}/"))
-            .header("cookie", &cookie)
-            .send()
-            .await
-            .unwrap();
+        // The shell holds no secrets and needs none.
+        let r = http.get(format!("{base}/")).send().await.unwrap();
         assert_eq!(r.status(), StatusCode::OK);
+        no_cookie(&r);
         let csp = r
             .headers()
             .get("content-security-policy")
@@ -226,31 +216,29 @@ impl Browser {
         );
         assert_eq!(r.headers().get("x-frame-options").unwrap(), "DENY");
         let html = r.text().await.unwrap();
-        let csrf = html
-            .split("name=\"columbus-csrf\" content=\"")
-            .nth(1)
-            .unwrap()
-            .split('"')
-            .next()
+        assert!(!html.contains(launch_token));
+
+        let r = exchange(&http, &base, launch_token, &base).await;
+        assert_eq!(r.status(), StatusCode::OK);
+        no_cookie(&r);
+        let token = r.json::<Value>().await.unwrap()["token"]
+            .as_str()
             .unwrap()
             .to_string();
-        Browser {
-            base,
-            cookie,
-            csrf,
-            http,
-        }
+        assert_ne!(token, launch_token);
+        Browser { base, token, http }
     }
 
     async fn pending(&self) -> Vec<Value> {
         let r = self
             .http
             .get(format!("{}/api/approvals", self.base))
-            .header("cookie", &self.cookie)
+            .bearer_auth(&self.token)
             .send()
             .await
             .unwrap();
         assert_eq!(r.status(), StatusCode::OK);
+        no_cookie(&r);
         r.json::<Value>().await.unwrap()["pending"]
             .as_array()
             .unwrap()
@@ -270,25 +258,26 @@ impl Browser {
 
     fn headers(&self) -> HeaderMap {
         let mut h = HeaderMap::new();
-        h.insert("cookie", HeaderValue::from_str(&self.cookie).unwrap());
+        h.insert(
+            "authorization",
+            HeaderValue::from_str(&format!("Bearer {}", self.token)).unwrap(),
+        );
         h.insert("origin", HeaderValue::from_str(&self.base).unwrap());
         h.insert("sec-fetch-site", HeaderValue::from_static("same-origin"));
-        h.insert(
-            "x-columbus-csrf",
-            HeaderValue::from_str(&self.csrf).unwrap(),
-        );
         h
     }
 
     async fn decide_with(&self, id: &str, decision: &str, headers: HeaderMap) -> StatusCode {
-        self.http
+        let r = self
+            .http
             .post(format!("{}/api/approvals/{id}", self.base))
             .headers(headers)
             .json(&json!({"decision": decision}))
             .send()
             .await
-            .unwrap()
-            .status()
+            .unwrap();
+        no_cookie(&r);
+        r.status()
     }
 
     async fn decide(&self, id: &str, decision: &str) {
@@ -297,6 +286,31 @@ impl Browser {
             StatusCode::OK
         );
     }
+}
+
+async fn exchange(
+    http: &reqwest::Client,
+    base: &str,
+    launch: &str,
+    origin: &str,
+) -> reqwest::Response {
+    http.post(format!("{base}/api/session"))
+        .header("origin", origin)
+        .header("sec-fetch-site", "same-origin")
+        .json(&json!({"launch": launch}))
+        .send()
+        .await
+        .unwrap()
+}
+
+/// Path of a workspace handle on disk.
+fn handle_path(workspace: &Path, handle: &str) -> PathBuf {
+    let (_session, rel) = handle
+        .strip_prefix("ws://")
+        .unwrap()
+        .split_once('/')
+        .unwrap();
+    workspace.join(rel)
 }
 
 #[tokio::test]
@@ -324,29 +338,40 @@ async fn the_person_approves_and_declines_on_the_page() {
     let launch = wait_for_launch(&env).await;
     let browser = Browser::open(&launch).await;
 
-    // The launch link works once.
+    // The launch token works once, only through the exchange, and only from the page's own origin.
+    let launch_token = launch.split_once("/#t=").unwrap().1;
     assert_eq!(
-        http().get(&launch).send().await.unwrap().status(),
+        exchange(&http(), &browser.base, launch_token, &browser.base)
+            .await
+            .status(),
         StatusCode::FORBIDDEN
     );
-    // Without the cookie there is nothing to see.
+    // Without a session token there is nothing to see.
+    let api = format!("{}/api/approvals", browser.base);
+    assert_eq!(
+        http().get(&api).send().await.unwrap().status(),
+        StatusCode::UNAUTHORIZED
+    );
     assert_eq!(
         http()
-            .get(format!("{}/api/approvals", browser.base))
+            .get(&api)
+            .bearer_auth(launch_token)
             .send()
             .await
             .unwrap()
             .status(),
-        StatusCode::FORBIDDEN
+        StatusCode::UNAUTHORIZED,
+        "a launch token is not a session"
     );
     assert_eq!(
         http()
-            .get(format!("{}/", browser.base))
+            .get(&api)
+            .bearer_auth("0".repeat(64))
             .send()
             .await
             .unwrap()
             .status(),
-        StatusCode::FORBIDDEN
+        StatusCode::UNAUTHORIZED
     );
 
     let a = browser.wait_pending().await;
@@ -357,18 +382,26 @@ async fn the_person_approves_and_declines_on_the_page() {
 
     // Requests a hostile page or another program could make are refused.
     let mut h = browser.headers();
-    h.remove("x-columbus-csrf");
+    h.remove("authorization");
     assert_eq!(
         browser.decide_with(&id, "allow_once", h).await,
-        StatusCode::FORBIDDEN,
-        "no CSRF token"
+        StatusCode::UNAUTHORIZED,
+        "no session token"
     );
     let mut h = browser.headers();
-    h.insert("x-columbus-csrf", HeaderValue::from_static("guess"));
+    h.insert("authorization", HeaderValue::from_static("Bearer guess"));
     assert_eq!(
         browser.decide_with(&id, "allow_once", h).await,
-        StatusCode::FORBIDDEN,
-        "wrong CSRF token"
+        StatusCode::UNAUTHORIZED,
+        "guessed token"
+    );
+    let mut h = browser.headers();
+    h.insert("cookie", HeaderValue::from_static("columbus_1=anything"));
+    h.remove("authorization");
+    assert_eq!(
+        browser.decide_with(&id, "allow_once", h).await,
+        StatusCode::UNAUTHORIZED,
+        "cookies are not accepted at all"
     );
     let mut h = browser.headers();
     h.insert("origin", HeaderValue::from_static("https://evil.example"));
@@ -400,13 +433,6 @@ async fn the_person_approves_and_declines_on_the_page() {
         browser.decide_with(&id, "allow_once", h).await,
         StatusCode::FORBIDDEN,
         "DNS rebinding"
-    );
-    let mut h = browser.headers();
-    h.insert("cookie", HeaderValue::from_static("columbus_1=forged"));
-    assert_eq!(
-        browser.decide_with(&id, "allow_once", h).await,
-        StatusCode::FORBIDDEN,
-        "forged cookie"
     );
     assert!(!running.is_finished(), "nothing above approved it");
 
@@ -497,6 +523,19 @@ async fn an_approval_given_after_the_call_returned_can_be_used() {
     browser.decide(&id, "allow_once").await;
     let st = ok(&call(&c, "approval_status", json!({"id": id})).await);
     assert_eq!(st["result"]["state"], "approved");
+
+    // The approval covers the file as it was, not whatever the handle points at later.
+    let who = ok(&call(&c, "whoami", json!({})).await);
+    let file = handle_path(
+        Path::new(who["result"]["workspace"].as_str().unwrap()),
+        &handle,
+    );
+    let original = std::fs::read(&file).unwrap();
+    std::fs::write(&file, b"{\"swapped\": true}").unwrap();
+    assert!(
+        err(&call(&c, "run_tool", early.clone()).await).contains("granted for a different request")
+    );
+    std::fs::write(&file, &original).unwrap();
     let r = ok(&call(&c, "run_tool", early.clone()).await);
     assert_eq!(r["result"]["status"], "done");
     // Single use.
@@ -532,4 +571,148 @@ async fn policy_can_turn_the_page_off() {
         .contains("turns the Columbus approvals page off"));
     assert!(!env.launch_file().exists());
     c.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn allow_for_this_session_covers_only_the_same_contents() {
+    let Some(py) = python() else { return };
+    let env = setup(20).await;
+    let c = Arc::new(start(&env, &py).await);
+    let report = ok(&call(&c, "run_tool", json!({"name": "vault.export_report"})).await);
+    let handle = report["result"]["saved"][0]["handle"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let upload = json!({"name": "vault.upload", "args": {"name": "r.json", "content": handle}});
+
+    let c2 = c.clone();
+    let args = upload.clone();
+    let running = tokio::spawn(async move { call(&c2, "run_tool", args).await });
+    let browser = Browser::open(&wait_for_launch(&env).await).await;
+    let a = browser.wait_pending().await;
+    browser
+        .decide(a["id"].as_str().unwrap(), "always_this_session")
+        .await;
+    assert_eq!(ok(&running.await.unwrap())["result"]["status"], "done");
+
+    // The same request again: no question.
+    let r = ok(&call(&c, "run_tool", upload.clone()).await);
+    assert_eq!(r["result"]["status"], "done");
+    assert!(browser.pending().await.is_empty());
+
+    // Same handle, different contents: asked again.
+    let who = ok(&call(&c, "whoami", json!({})).await);
+    let file = handle_path(
+        Path::new(who["result"]["workspace"].as_str().unwrap()),
+        &handle,
+    );
+    std::fs::write(&file, b"{\"rows\": \"different data\"}").unwrap();
+    let c2 = c.clone();
+    let args = upload.clone();
+    let running = tokio::spawn(async move { call(&c2, "run_tool", args).await });
+    let a = browser.wait_pending().await;
+    let file_row = &a["detail"]["files"][0];
+    assert!(
+        file_row["name"].as_str().unwrap().contains("external"),
+        "{a}"
+    );
+    assert!(
+        a["request"]["files"][0]["sha256"].is_string(),
+        "the card's exact request names the contents: {a}"
+    );
+    browser.decide(a["id"].as_str().unwrap(), "decline").await;
+    assert!(err(&running.await.unwrap()).contains("declined"));
+    Arc::try_unwrap(c).ok().unwrap().cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn identical_requests_merge_and_a_flood_is_refused() {
+    let Some(py) = python() else { return };
+    let env = setup(0).await;
+    let c = start(&env, &py).await;
+    let report = ok(&call(&c, "run_tool", json!({"name": "vault.export_report"})).await);
+    let handle = report["result"]["saved"][0]["handle"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let upload = |n: usize| json!({"name": "vault.upload", "args": {"name": format!("r{n}.json"), "content": handle}});
+
+    let first = ok(&call(&c, "run_tool", upload(0)).await);
+    let again = ok(&call(&c, "run_tool", upload(0)).await);
+    assert_eq!(
+        first["result"]["approval"]["id"], again["result"]["approval"]["id"],
+        "one request, one approval"
+    );
+    for n in 1..20 {
+        assert_eq!(
+            ok(&call(&c, "run_tool", upload(n)).await)["result"]["status"],
+            "approval_required"
+        );
+    }
+    let e = err(&call(&c, "run_tool", upload(20)).await);
+    assert!(e.contains("already waiting for the person"), "{e}");
+    c.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_file_changed_while_waiting_for_approval_is_not_sent() {
+    let Some(py) = python() else { return };
+    let env = setup(20).await;
+    let c = Arc::new(start(&env, &py).await);
+    let report = ok(&call(&c, "run_tool", json!({"name": "vault.export_report"})).await);
+    let handle = report["result"]["saved"][0]["handle"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let who = ok(&call(&c, "whoami", json!({})).await);
+    let file = handle_path(
+        Path::new(who["result"]["workspace"].as_str().unwrap()),
+        &handle,
+    );
+    let attach = json!({"name": "vault.attach", "args": {"path": handle}});
+
+    // A tool that reads the path itself: the file is swapped while the person decides.
+    let c2 = c.clone();
+    let args = attach.clone();
+    let running = tokio::spawn(async move { call(&c2, "run_tool", args).await });
+    let browser = Browser::open(&wait_for_launch(&env).await).await;
+    let a = browser.wait_pending().await;
+    std::fs::write(&file, b"{\"swapped\": \"while waiting\"}").unwrap();
+    browser
+        .decide(a["id"].as_str().unwrap(), "allow_once")
+        .await;
+    let e = err(&running.await.unwrap());
+    assert!(e.contains("changed after it was checked"), "{e}");
+
+    // Folders cannot be sent out by a tool that writes or sends data.
+    let e = err(&call(
+        &c,
+        "run_tool",
+        json!({"name": "vault.attach", "args": {"path": "external"}}),
+    )
+    .await);
+    assert!(e.contains("is a folder"), "{e}");
+
+    // Unchanged: approved and sent exactly.
+    let c2 = c.clone();
+    let args = attach.clone();
+    let running = tokio::spawn(async move { call(&c2, "run_tool", args).await });
+    let a = browser.wait_pending().await;
+    browser
+        .decide(a["id"].as_str().unwrap(), "allow_once")
+        .await;
+    let r = ok(&running.await.unwrap());
+    let sent = std::fs::read(&file).unwrap();
+    assert_eq!(r["result"]["external"]["structured"]["bytes"], sent.len());
+
+    // A second browser tab given a used link gets nothing.
+    let launch_again = format!("{}/#t={}", browser.base, "0".repeat(64));
+    let (_, t) = launch_again.split_once("/#t=").unwrap();
+    assert_eq!(
+        exchange(&http(), &browser.base, t, &browser.base)
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    Arc::try_unwrap(c).ok().unwrap().cancel().await.unwrap();
 }

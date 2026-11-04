@@ -49,6 +49,11 @@ impl Fake {
                 "annotations": {"readOnlyHint": true, "destructiveHint": false}
             })),
             tool(json!({
+                "name": "attach",
+                "description": "Attach a file to the vault by its path.",
+                "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}
+            })),
+            tool(json!({
                 "name": "export_report",
                 "description": "Export a report as JSON.",
                 "inputSchema": {"type": "object", "properties": {}}
@@ -109,6 +114,17 @@ impl ServerHandler for Fake {
                     "bytes": content.len(),
                     "checksum": checksum(content).to_string(),
                 }))
+            }
+            "attach" => {
+                // Reads the file itself, as a real server given a path would.
+                let path = args.get("path").and_then(Value::as_str).unwrap_or("");
+                match std::fs::read_to_string(path) {
+                    Ok(content) => CallToolResult::structured(json!({
+                        "bytes": content.len(),
+                        "checksum": checksum(&content).to_string(),
+                    })),
+                    Err(e) => CallToolResult::error(vec![ContentBlock::text(format!("cannot read {path}: {e}"))]),
+                }
             }
             "export_report" => text(json!({"report": "inspections", "rows": 3}).to_string()),
             "delete_all" => text("deleted".into()),
