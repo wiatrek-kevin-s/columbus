@@ -341,24 +341,26 @@ impl Gateway {
             files.push(out);
         }
 
-        // Output paths in the workspace.
+        // The plugin reads and writes only its own run folder: copies of its
+        // inputs (made once the run is allowed) and its outputs, which
+        // Columbus then copies into results/.
+        let run_dir = crate::plugins::plugin_dir(self.state.sandbox.root(), p.id())
+            .join("runs")
+            .join(&run_id);
         let mut outputs = serde_json::Map::new();
         let mut out_paths = Vec::new();
         for (name, o) in &spec.outputs {
-            let path = match self
-                .state
-                .sandbox
-                .resolve(&format!("results/{run_id}-{name}.{}", o.extension()))
-            {
+            let file = format!("{run_id}-{name}.{}", o.extension());
+            let path = run_dir.join("out").join(&file);
+            let published = match self.state.sandbox.resolve(&format!("results/{file}")) {
                 Ok(p) => p,
                 Err(e) => return Err(self.deny(ctx, rec, e)),
             };
             outputs.insert(name.clone(), json!({"type": o.kind(), "path": path}));
-            out_paths.push((name.clone(), path));
+            out_paths.push((name.clone(), path, published));
         }
-        if let Some(dir) = self.state.sandbox.root().join("results").parent() {
-            let _ = std::fs::create_dir_all(dir.join("results"));
-        }
+        let _ = std::fs::create_dir_all(self.state.sandbox.root().join("results"));
+        let _ = std::fs::create_dir_all(run_dir.join("out"));
 
         let labels = self.state.flow.labels_for(&files);
         rec.labels = labels.iter().cloned().collect();
@@ -421,8 +423,34 @@ impl Gateway {
             }
         }
 
-        // Inputs must be exactly what was checked (and approved).
+        // Inputs must be exactly what was checked (and approved); the plugin
+        // gets copies in its run folder, never the workspace files.
         if let Err(e) = crate::providers::recheck(&recheck) {
+            return Err(self.deny(ctx, rec, e));
+        }
+        let mut copies = Vec::new();
+        for (name, spec_in) in inputs.iter_mut() {
+            let Some(src) = spec_in
+                .get("path")
+                .and_then(Value::as_str)
+                .map(PathBuf::from)
+            else {
+                continue;
+            };
+            let want = recheck
+                .iter()
+                .find(|(p, _)| p == &src)
+                .and_then(|(_, h)| h.clone());
+            let ext = src
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("dat")
+                .to_string();
+            let dst = run_dir.join("in").join(format!("{name}.{ext}"));
+            copies.push((src, dst.clone(), want));
+            spec_in["path"] = json!(dst);
+        }
+        if let Err(e) = crate::providers::do_copies(&copies) {
             return Err(self.deny(ctx, rec, e));
         }
 
@@ -519,16 +547,24 @@ impl Gateway {
         });
         let counts = result.get("outputs").cloned().unwrap_or(Value::Null);
         let mut saved = Vec::new();
-        for (name, path) in &out_paths {
-            if !path.is_file() {
+        for (name, written, path) in &out_paths {
+            // A regular file directly where the plugin was told to write it,
+            // copied into results/ with the hash of exactly what was copied.
+            if !std::fs::symlink_metadata(written).is_ok_and(|m| m.file_type().is_file()) {
                 continue;
             }
+            let sha = match crate::providers::copy_hashed(written, path) {
+                Ok(h) => h,
+                Err(e) => {
+                    return Err(self.deny(ctx, rec, format!("could not save output {name}: {e}")))
+                }
+            };
             let c = counts.get(name);
             let rows = c
                 .and_then(|c| c.get("rows").or_else(|| c.get("features")))
                 .and_then(Value::as_u64);
             self.state.flow.record_file(path, &labels);
-            self.state.outputs.record(
+            self.state.outputs.record_with_hash(
                 path,
                 OutputMeta {
                     made_by: full.clone(),
@@ -543,6 +579,7 @@ impl Gateway {
                     inherited: inherit.fails.clone(),
                     sha256: None,
                 },
+                sha,
             );
             saved.push(SavedFile {
                 handle: self.ws_handle(path).unwrap_or_default(),

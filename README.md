@@ -84,7 +84,7 @@ Columbus is an MCP client to other servers too (design change 1, "governed MCP h
 | 2. Data moves as files | File arguments take workspace handles only; the gateway sends the file's bytes. Results marked `to_workspace` are saved as files and a handle comes back |
 | 3. Data-flow approvals | Reading a governed connection labels the session (`connection:roads-prod`) and its files. While a label is active, any write or upload to a connected server needs the person's approval, whatever its manifest says; organization `flows` rules can forbid it outright |
 | 4. External output is untrusted | Connected servers' results are wrapped as data, never instructions |
-| 5. Local servers run confined | Local (stdio) servers and engine plugins start through the `columbus-confine` launcher at the level their manifest declares (A when none), capped by policy (below). They also get a scrubbed environment and the workspace as their folder. Remote servers must be on the policy's host list |
+| 5. Local servers run confined | Local (stdio) servers and engine plugins start through the `columbus-confine` launcher at the level their manifest declares (A when none), capped by policy (below). They also get a scrubbed environment and a folder of their own in the workspace (`servers/<id>`, `plugins/<id>`), the only place they can write; they never see the workspace's results or governed extracts. A file handed to a server or plugin is copied into its folder once the call is allowed, and a plugin's outputs are copied out into `results/` by Columbus, with the hash of exactly what was copied. Remote servers must be on the policy's host list |
 
 Review is done by the person at the keyboard:
 
@@ -117,9 +117,9 @@ Known limits: an agent that can run programs as the person could read the browse
 
 | Level | On Windows | Files | Network | For |
 | --- | --- | --- | --- | --- |
-| A | AppContainer, no capabilities | the session workspace and declared folders only | none | engine plugins (the default) and compute-only servers |
+| A | AppContainer, no capabilities | its own folder in the workspace and declared folders only | none | engine plugins (the default) and compute-only servers |
 | B | AppContainer with internetClient | same as A | internet, not loopback | local servers that call public APIs themselves |
-| C | not available yet (see below) | reads what the person can; writes only the workspace and declared folders | loopback and anything else | servers that drive a desktop app (Obsidian, QGIS, ArcGIS Pro add-ins); needs `trust: trusted` or an allow-list entry |
+| C | not available yet (see below) | reads what the person can; writes only its own folder and declared folders | loopback and anything else | servers that drive a desktop app (Obsidian, QGIS, ArcGIS Pro add-ins); needs `trust: trusted` or an allow-list entry |
 
 Every level also runs in a job object: the process and anything it starts end when the gateway stops it, with memory and process limits (`servers.memory_mb`, `plugins.memory_mb`). The program's own folder and, for Python plugins, the interpreter's folders are readable; nothing else in the person's profile is. Policy lists the levels allowed: `servers.levels` (default A, B, C) and `plugins.levels` (default A; plugins never get C). `list_providers` shows each provider's level.
 

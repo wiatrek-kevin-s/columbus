@@ -684,14 +684,16 @@ async fn a_file_changed_while_waiting_for_approval_is_not_sent() {
     let e = err(&running.await.unwrap());
     assert!(e.contains("changed after it was checked"), "{e}");
 
-    // Folders cannot be sent out by a tool that writes or sends data.
+    // Workspace files go to a server only as handles (copied into its own
+    // folder once allowed), never as raw paths into the workspace.
+    let ws = who["result"]["workspace"].as_str().unwrap().to_string();
     let e = err(&call(
         &c,
         "run_tool",
-        json!({"name": "vault.attach", "args": {"path": "external"}}),
+        json!({"name": "vault.attach", "args": {"path": Path::new(&ws).join("external").display().to_string()}}),
     )
     .await);
-    assert!(e.contains("is a folder"), "{e}");
+    assert!(e.contains("ws:// handle"), "{e}");
 
     // Unchanged: approved and sent exactly.
     let c2 = c.clone();

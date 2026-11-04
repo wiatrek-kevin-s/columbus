@@ -146,6 +146,17 @@ impl Outputs {
             .expect("outputs poisoned")
             .insert(path.to_path_buf(), meta);
     }
+    /// Record a file the gateway just wrote, with the hash of exactly the
+    /// bytes it wrote (from [`copy_hashed`]), instead of reading it back:
+    /// reading back would trust whatever is there by then.
+    pub fn record_with_hash(&self, path: &Path, mut meta: OutputMeta, sha256: String) {
+        meta.sha256 = Some(sha256);
+        self.inner
+            .lock()
+            .expect("outputs poisoned")
+            .insert(path.to_path_buf(), meta);
+    }
+
     /// True when the file still has the content it had when recorded.
     pub fn unchanged(&self, path: &Path) -> bool {
         let want = self
@@ -221,6 +232,54 @@ pub struct PreparedArgs {
     /// Files the provider reads itself later (path arguments), with the
     /// digest the approval was bound to, re-checked right before the call.
     pub recheck: Vec<(PathBuf, Option<String>)>,
+    /// Workspace files to copy into the server's own folder once the call is
+    /// allowed (source, destination, the hash the approval saw): a confined
+    /// server can read and write only its own folder.
+    pub copies: Vec<(PathBuf, PathBuf, Option<String>)>,
+}
+
+/// Create `to` (failing if anything is there, including a link), copy
+/// `from` into it, and return the SHA-256 of exactly the bytes copied.
+pub fn copy_hashed(from: &Path, to: &Path) -> std::io::Result<String> {
+    use sha2::{Digest, Sha256};
+    use std::io::{Read, Write};
+    let mut src = std::fs::File::open(from)?;
+    let mut dst = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(to)?;
+    let mut h = Sha256::new();
+    let mut buf = vec![0u8; 1 << 16];
+    loop {
+        let n = src.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        h.update(&buf[..n]);
+        dst.write_all(&buf[..n])?;
+    }
+    dst.sync_all()?;
+    Ok(format!("{:x}", h.finalize()))
+}
+
+/// Copy each file the approval covered into the server's folder, refusing
+/// any whose content is not what was approved.
+pub fn do_copies(copies: &[(PathBuf, PathBuf, Option<String>)]) -> Result<(), String> {
+    for (from, to, want) in copies {
+        if let Some(dir) = to.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        }
+        let got = copy_hashed(from, to)
+            .map_err(|e| format!("could not hand {} to the server: {e}", from.display()))?;
+        if want.as_ref() != Some(&got) {
+            let _ = std::fs::remove_file(to);
+            return Err(format!(
+                "{} changed after it was checked; ask again",
+                from.display()
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Refuse when a file a provider will read itself changed since it was
@@ -262,7 +321,9 @@ pub fn prepare_args(
     sandbox: &Sandbox,
     policy: &OrgPolicy,
     extra_hosts: &[String],
+    server_dir: &Path,
 ) -> Result<PreparedArgs, String> {
+    let mut copies = Vec::new();
     let mut files = Vec::new();
     let mut bound = Vec::new();
     let mut later = Vec::new();
@@ -286,13 +347,41 @@ pub fn prepare_args(
             }
             ArgRole::Path => {
                 if text.starts_with(HANDLE_SCHEME) {
+                    // The server gets its own copy, made once the call is
+                    // allowed; it never sees the workspace itself.
                     let p = resolve_handle(session, sandbox, text)?;
                     bound.push(digest_path(name, text, &p));
-                    later.push((p.clone(), columbus_shared::canon::sha256_file(&p).ok().map(|(h, _)| h)));
+                    let sha = columbus_shared::canon::sha256_file(&p).ok().map(|(h, _)| h);
+                    later.push((p.clone(), sha.clone()));
                     files.push(p.clone());
+                    let base = p.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_else(|| "file".into());
+                    let dst = server_dir
+                        .join("in")
+                        .join(format!("{}-{base}", &uuid::Uuid::new_v4().simple().to_string()[..8]));
+                    copies.push((p.clone(), dst.clone(), sha));
+                    Value::String(dst.display().to_string())
+                } else if !Path::new(text).is_absolute() {
+                    // A relative path names a file in the server's own folder.
+                    if Path::new(text)
+                        .components()
+                        .any(|c| !matches!(c, std::path::Component::Normal(_)))
+                    {
+                        return Err(format!("argument {name:?} must be a plain relative path"));
+                    }
+                    let p = server_dir.join(text);
+                    if p.is_dir() && rule.outbound() {
+                        return Err(format!(
+                            "argument {name:?} is a folder; tools that send data out or write take single files, so each one can be checked and approved"
+                        ));
+                    }
                     Value::String(p.display().to_string())
                 } else {
                     let p = sandbox.resolve(text).map_err(|e| e.to_string())?;
+                    if p.starts_with(sandbox.root()) {
+                        return Err(format!(
+                            "argument {name:?} names a file in the workspace; pass it as a ws:// handle"
+                        ));
+                    }
                     if p.is_dir() && rule.outbound() {
                         return Err(format!(
                             "argument {name:?} is a folder; tools that send data out or write take single files, so each one can be checked and approved"
@@ -328,6 +417,7 @@ pub fn prepare_args(
         files,
         bound,
         recheck: later,
+        copies,
     })
 }
 

@@ -96,6 +96,18 @@ class RasterTests(unittest.TestCase):
         d = r.describe_raster(write(self.p("nocrs.tif"), plane(), crs=None))
         self.assertEqual(find(d, "crs.present")["severity"], "fail")
 
+    def test_sidecar_files_are_ignored(self):
+        dem = write(self.p("side.tif"), plane())
+        before = r.describe_raster(dem)["extent"]
+        with open(dem + ".aux.xml", "w") as f:
+            f.write("<PAMDataset><GeoTransform>0, 10, 0, 0, 0, -10</GeoTransform>"
+                    "<PAMRasterBand band=\"1\"><NoDataValue>0</NoDataValue></PAMRasterBand></PAMDataset>")
+        with open(self.p("side.tfw"), "w") as f:
+            f.write("10\n0\n0\n-10\n0\n0\n")
+        d = r.describe_raster(dem)
+        self.assertEqual(d["extent"], before)
+        self.assertEqual(d["bands"][0]["nodata"], -9999)
+
     def test_only_real_tiffs_are_opened(self):
         # A ".tif" holding VRT XML that would read another file.
         fake = self.p("dem.tif")

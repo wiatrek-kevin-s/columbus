@@ -108,6 +108,15 @@ fn setup(py: &str) -> Env {
         ),
     )
     .unwrap();
+    // A row filter cannot apply to a raster: such a connection is refused.
+    std::fs::write(
+        root.join("connections").join("dem-filtered.yaml"),
+        format!(
+            "id: dem-filtered\ntype: rasters\npath: {}\ndatasets:\n  allow: [\"*\"]\nrow_filter: \"district = 14\"\n",
+            q(root.join("rasters"))
+        ),
+    )
+    .unwrap();
     std::fs::write(
         root.join("connections").join("austin-ref.yaml"),
         format!(
@@ -208,6 +217,21 @@ async fn raster_session_on_a_folder_of_geotiffs() {
         .collect();
     assert_eq!(names, vec!["dem/travis_dem.tif", "fake.tif"], "{l}");
     assert_eq!(l["result"]["not_allowed"], 1);
+
+    let e = err(&call(
+        &client,
+        "describe_dataset",
+        json!({"connection": "dem-filtered", "dataset": "dem/travis_dem.tif"}),
+    )
+    .await);
+    assert!(e.contains("row filter"), "{e}");
+    let e = err(&call(
+        &client,
+        "raster_op",
+        json!({"op": "info", "inputs": {"raster": "dem-filtered:dem/travis_dem.tif"}}),
+    )
+    .await);
+    assert!(e.contains("row filter"), "{e}");
 
     // describe_dataset: bands, CRS facts, cell size, size and layout.
     let d = ok(&call(

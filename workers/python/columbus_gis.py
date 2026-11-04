@@ -21,10 +21,17 @@ from typing import Any
 # files, programs or URLs (VRT, the GDALG pipeline format), and keep PROJ
 # from fetching grids over the network. Workspace inputs are also checked by
 # content in read_layer; this is the second line.
-_SKIP = {"VRT", "OGR_VRT", "GDALG"}
+_SKIP = {"VRT", "OGR_VRT", "GDALG", "GTI", "MRF", "WMS", "WMTS", "WCS", "PDS", "PDS4", "ISIS2", "ISIS3",
+         "STACIT", "STACTA", "HTTP", "DAAS", "PLMOSAIC", "EEDAI", "OGCAPI", "ESRIC", "SENTINEL2",
+         "SAFE", "Zarr", "netCDF", "HDF5", "HDF4", "SRP", "NITF", "RPFTOC", "ECRGTOC", "CEOS2", "XYZ"}
 _skip_now = {d for d in os.environ.get("GDAL_SKIP", "").replace(",", " ").split() if d}
 os.environ["GDAL_SKIP"] = " ".join(sorted(_SKIP | _skip_now))
 os.environ["PROJ_NETWORK"] = "OFF"
+# Read only the file named: no sidecars (.aux.xml, .ovr, world files, .msk)
+# beside it may change its georeferencing or redirect a read elsewhere.
+os.environ["GDAL_DISABLE_READDIR_ON_OPEN"] = "EMPTY_DIR"
+os.environ["GDAL_PAM_ENABLED"] = "NO"
+os.environ["GDAL_GEOREF_SOURCES"] = "INTERNAL"
 # A machine-wide setting must not re-enable SQL functions in GeoPackages
 # that open other datasets (gdal_get_pixel_value and the like).
 os.environ["OGR_SQLITE_ALLOW_EXTERNAL_ACCESS"] = "NO"

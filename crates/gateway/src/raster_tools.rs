@@ -354,6 +354,7 @@ impl Gateway {
                 "dataset {dataset:?} is not in this connection's allowed datasets"
             ));
         }
+        refuse_filters(&access, &dataset)?;
         let path = raster_path(&folder(conn)?, &dataset)?;
         self.note_read(&conn.id, None, None, Some(prov), "raster_op");
         let meta = std::fs::metadata(&path).ok();
@@ -367,6 +368,20 @@ impl Gateway {
             read: Some((conn.id.clone(), dataset, 0)),
         })
     }
+}
+
+/// A row filter (the connection's or a data group's) cannot be applied to
+/// a raster; serving the whole file would ignore it, so refuse instead.
+pub(crate) fn refuse_filters(
+    access: &columbus_shared::policy::EffectiveAccess,
+    dataset: &str,
+) -> Result<(), String> {
+    if !access.filters_for(dataset).is_empty() {
+        return Err(format!(
+            "{dataset} has a row filter, which cannot be applied to a raster; a rasters connection takes no row_filter or data-group filter (ask IT to remove it or narrow the allowed files instead)"
+        ));
+    }
+    Ok(())
 }
 
 /// Most pixels an output may have: 400 million, or the read limit in rows

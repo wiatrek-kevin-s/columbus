@@ -511,7 +511,7 @@ async fn a_level_a_plugin_cannot_read_outside_the_workspace() {
     std::fs::write(&secret, "the secret").unwrap();
     let dir = env.root.join("plugins").join("snoop");
     std::fs::create_dir_all(&dir).unwrap();
-    let yaml = "id: test.snoop\nversion: 1.0.0\nruntime: python\nentry: worker.py\ntools:\n  snoop:\n    summary: Try to read and connect where it should not.\n    params:\n      path: { type: string }\n      gpkg: { type: string }\n      port: { type: number, min: 1, max: 65535 }\n    risk: read\n";
+    let yaml = "id: test.snoop\nversion: 1.0.0\nruntime: python\nentry: worker.py\ntools:\n  snoop:\n    summary: Try to read and connect where it should not.\n    params:\n      path: { type: string }\n      gpkg: { type: string }\n      results: { type: string }\n      port: { type: number, min: 1, max: 65535 }\n    risk: read\n";
     let worker = r#"
 import os, socket
 from columbus_plugin import Plugin
@@ -524,7 +524,7 @@ def attempt(fn):
     except Exception as e:
         return "refused: " + type(e).__name__
 
-@plugin.tool("snoop", params=["path", "gpkg", "port"])
+@plugin.tool("snoop", params=["path", "gpkg", "results", "port"])
 def snoop(ctx):
     def connect():
         s = socket.create_connection(("127.0.0.1", int(ctx.param("port"))), timeout=3)
@@ -537,6 +537,7 @@ def snoop(ctx):
     return {
         "read_outside": attempt(lambda: open(ctx.param("path")).read()),
         "read_gpkg": attempt(lambda: open(ctx.param("gpkg"), "rb").read(16)),
+        "read_results": attempt(lambda: open(ctx.param("results")).read()),
         "network": attempt(connect),
         "write_workspace": attempt(write_here),
     }
@@ -565,10 +566,17 @@ if __name__ == "__main__":
     let p = provider(&lp, "test.snoop");
     assert_eq!(p["confinement"], "A", "{p}");
     assert_eq!(p["status"]["state"], "ready", "{p}");
+    // A file in the session's results, where other tools' outputs live.
+    let who = ok(&call(&c, "whoami", json!({})).await);
+    let results =
+        std::path::Path::new(who["result"]["workspace"].as_str().unwrap()).join("results");
+    std::fs::create_dir_all(&results).unwrap();
+    std::fs::write(results.join("governed.txt"), "governed rows").unwrap();
     let r = ok(&call(
         &c,
         "run_tool",
         json!({"name": "test.snoop.snoop", "args": {
+            "results": results.join("governed.txt").display().to_string(),
             "path": secret.display().to_string(),
             "gpkg": env.root.join("lrs.gpkg").display().to_string(),
             "port": port,
@@ -581,7 +589,11 @@ if __name__ == "__main__":
         !text.contains("the secret"),
         "read outside the workspace: {text}"
     );
-    for k in ["read_outside", "read_gpkg", "network"] {
+    assert!(
+        !text.contains("governed rows"),
+        "read the workspace results: {text}"
+    );
+    for k in ["read_outside", "read_gpkg", "read_results", "network"] {
         assert!(
             res[k].as_str().unwrap_or("").starts_with("refused"),
             "{k} should be refused at level A: {text}"
@@ -592,7 +604,7 @@ if __name__ == "__main__":
             .as_str()
             .unwrap_or("")
             .starts_with("ok"),
-        "writing inside the workspace is allowed: {text}"
+        "writing in its own folder is allowed: {text}"
     );
     c.cancel().await.unwrap();
 }

@@ -773,7 +773,10 @@ impl Gateway {
             ));
         }
         let described = if crate::raster_tools::is_rasters(&conn.kind) {
-            self.raster_describe(conn, &args.dataset).await
+            match crate::raster_tools::refuse_filters(&access, &args.dataset) {
+                Ok(()) => self.raster_describe(conn, &args.dataset).await,
+                Err(e) => Err(e),
+            }
         } else {
             self.dataset_info(&access, conn, &args.dataset, true).await
         };

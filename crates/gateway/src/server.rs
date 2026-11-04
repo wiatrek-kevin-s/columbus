@@ -421,6 +421,8 @@ pub struct State {
     pub context: Option<crate::context::Pack>,
     /// Every column of every table, per connection, for keeping hidden
     /// fields out of queries (see sqlcheck::ApplyFilters). Loaded once.
+    /// Provenance records as written this session, by id.
+    pub provs: std::sync::Mutex<std::collections::HashMap<String, Value>>,
     pub columns: std::sync::Mutex<
         std::collections::HashMap<String, (std::time::Instant, columbus_shared::sqlcheck::Catalog)>,
     >,
@@ -576,6 +578,7 @@ impl State {
             context,
             datasets: Default::default(),
             columns: Default::default(),
+            provs: Default::default(),
             flow: columbus_flow::FlowState::new(),
             outputs: crate::providers::Outputs::default(),
             paths,
@@ -847,6 +850,11 @@ impl Gateway {
     }
 
     pub(crate) fn write_provenance(&self, id: &str, record: &Value) -> Result<PathBuf, String> {
+        self.state
+            .provs
+            .lock()
+            .expect("provs")
+            .insert(id.to_string(), record.clone());
         let path = self
             .state
             .sandbox
@@ -1580,6 +1588,10 @@ impl Gateway {
             &self.state.sandbox,
             &self.state.policy,
             &extra_hosts,
+            &columbus_broker::registry::server_dir(
+                self.state.sandbox.root(),
+                &p.loaded.manifest.id,
+            ),
         ) {
             Ok(v) => v,
             Err(e) => return Err(self.deny(&ctx, rec, e)),
@@ -1694,6 +1706,10 @@ impl Gateway {
         }
 
         if let Err(e) = crate::providers::recheck(&prepared.recheck) {
+            return Err(self.deny(&ctx, rec, e));
+        }
+        // Only now, allowed and checked, does the server get its copies.
+        if let Err(e) = crate::providers::do_copies(&prepared.copies) {
             return Err(self.deny(&ctx, rec, e));
         }
         let timeout = self.state.policy.limits.seconds.unwrap_or(120).max(1);

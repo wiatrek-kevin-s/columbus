@@ -112,6 +112,22 @@ impl Provider {
     }
 }
 
+/// A local server's own folder in the session workspace: the only place
+/// it may write, and where the gateway puts the files it is given.
+pub fn server_dir(workspace: &std::path::Path, id: &str) -> PathBuf {
+    let safe: String = id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    workspace.join("servers").join(safe)
+}
+
 pub struct Broker {
     providers: Vec<Arc<Provider>>,
     workspace: PathBuf,
@@ -334,7 +350,9 @@ impl Broker {
             Transport::Stdio { command, args, cwd } => {
                 let mut cmd = match &p.confine {
                     Some(c) => {
-                        let mut rw = vec![self.workspace.clone()];
+                        // Its own folder only: never the workspace, where
+                        // governed extracts and Columbus's results live.
+                        let mut rw = vec![server_dir(&self.workspace, &m.id)];
                         for f in m.confinement.iter().flat_map(|c| &c.folders) {
                             let f = PathBuf::from(f);
                             if !f.is_absolute() {
@@ -369,7 +387,8 @@ impl Broker {
                         cmd.env(k, v);
                     }
                 }
-                let tmp = self.workspace.join("tmp").join(&m.id);
+                let own = server_dir(&self.workspace, &m.id);
+                let tmp = own.join("tmp");
                 let _ = std::fs::create_dir_all(&tmp);
                 cmd.env("TEMP", &tmp).env("TMP", &tmp).env("TMPDIR", &tmp);
                 if let (Some(s), Auth::Secret { env: Some(var), .. }) = (&secret, &m.auth) {
@@ -378,7 +397,7 @@ impl Broker {
                 cmd.current_dir(
                     cwd.as_ref()
                         .map(PathBuf::from)
-                        .unwrap_or_else(|| self.workspace.clone()),
+                        .unwrap_or_else(|| own.clone()),
                 );
                 // The server's (and the launcher's) error output goes to a log
                 // in its temp folder, so a failed start can say why.

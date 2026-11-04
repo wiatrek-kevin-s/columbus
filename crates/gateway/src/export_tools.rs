@@ -23,7 +23,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::approval_flow::{Ask, Sought};
-use crate::providers::OutputSource;
+use crate::providers::{copy_hashed, OutputSource};
 use crate::server::{
     checks_from, client_name, new_prov_id, Check, Gateway, Output, Severity, SERVER_NAME,
 };
@@ -124,19 +124,10 @@ impl Gateway {
         Ok((path, meta))
     }
 
+    /// A provenance record as Columbus wrote it, from memory: the copy in
+    /// the workspace is for people, and is not trusted back.
     fn read_prov(&self, id: &str) -> Option<Value> {
-        if !id
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-        {
-            return None;
-        }
-        let path = self
-            .state
-            .sandbox
-            .resolve(&format!("provenance/{id}.prov.json"))
-            .ok()?;
-        serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
+        self.state.provs.lock().expect("provs").get(id).cloned()
     }
 
     /// The provenance records behind an output: its own and, through each
@@ -717,39 +708,60 @@ impl Gateway {
             }
             return Err(self.deny(&ctx, rec, format!("{why}; nothing was exported")));
         }
-        // Replacing: old files of this name that the new ones will not
-        // overwrite (stale indexes, other parts) go, so nothing mismatched stays.
+        // Replacing: everything of this name moves aside first (so a file
+        // another program holds open stops the export before anything
+        // changes), the new files move in, and on any failure the old ones
+        // come back. Nothing mixed is left.
         let finals: Vec<PathBuf> = targets
             .iter()
             .cloned()
             .chain(std::iter::once(sidecar.clone()))
             .collect();
-        for (n, _) in &existing {
-            if !finals.iter().any(|f| {
-                f.file_name()
-                    .is_some_and(|x| x.to_string_lossy().eq_ignore_ascii_case(n))
-            }) {
-                let _ = std::fs::remove_file(dest_dir.join(n));
+        let mut aside: Vec<(PathBuf, PathBuf)> = Vec::new();
+        let restore = |aside: &[(PathBuf, PathBuf)], placed: &[PathBuf]| {
+            for f in placed {
+                let _ = std::fs::remove_file(f);
             }
-        }
-        let mut moved: Vec<String> = Vec::new();
-        for (tmp, fin) in temps.iter().zip(&finals) {
-            if let Err(e) = std::fs::rename(tmp, fin) {
+            for (orig, bak) in aside {
+                let _ = std::fs::rename(bak, orig);
+            }
+        };
+        for (i, (n, _)) in existing.iter().enumerate() {
+            let orig = dest_dir.join(n);
+            let bak = dest_dir.join(format!(".columbus-{prov}-old-{i}"));
+            if let Err(e) = std::fs::rename(&orig, &bak) {
+                restore(&aside, &[]);
                 for t in &temps {
                     let _ = std::fs::remove_file(t);
                 }
-                let left = if moved.is_empty() {
-                    "nothing was moved".to_string()
-                } else {
-                    format!("already in place: {}", moved.join(", "))
-                };
                 return Err(self.deny(
                     &ctx,
                     rec,
-                    format!("could not move {} into place: {e}; {left}", fin.display()),
+                    format!("could not replace {n} ({e}; is it open in another program?); nothing was changed"),
                 ));
             }
-            moved.push(fin.display().to_string());
+            aside.push((orig, bak));
+        }
+        let mut placed: Vec<PathBuf> = Vec::new();
+        for (tmp, fin) in temps.iter().zip(&finals) {
+            if let Err(e) = std::fs::rename(tmp, fin) {
+                restore(&aside, &placed);
+                for t in &temps {
+                    let _ = std::fs::remove_file(t);
+                }
+                return Err(self.deny(
+                    &ctx,
+                    rec,
+                    format!(
+                        "could not move {} into place ({e}); the folder is as it was",
+                        fin.display()
+                    ),
+                ));
+            }
+            placed.push(fin.clone());
+        }
+        for (_, bak) in &aside {
+            let _ = std::fs::remove_file(bak);
         }
         let _ = self.write_provenance(&prov, &record);
         rec.prov = Some(prov.clone());
@@ -794,16 +806,47 @@ fn meaningful(v: &Value) -> bool {
 
 /// Everything in `dir` named `<name>` or `<name>.*` (any case), with its
 /// content hash, sorted.
+/// Files an export named `name` writes or that belong with them: the
+/// formats' own files, a shapefile's parts and indexes, a GeoPackage's
+/// journal files, and the provenance file.
+const EXPORT_SUFFIXES: &[&str] = &[
+    ".gpkg",
+    ".gpkg-wal",
+    ".gpkg-shm",
+    ".gpkg-journal",
+    ".geojson",
+    ".fgb",
+    ".csv",
+    ".shp",
+    ".shx",
+    ".dbf",
+    ".prj",
+    ".cpg",
+    ".shp.xml",
+    ".sbn",
+    ".sbx",
+    ".qix",
+    ".fix",
+    ".atx",
+    ".aih",
+    ".ain",
+    ".prov.json",
+];
+
+/// Everything in `dir` that an export named `name` would write or replace
+/// (any case), with its content hash, sorted.
 fn same_name(dir: &Path, name: &str) -> Vec<(String, Option<String>)> {
-    let prefix = format!("{name}.").to_ascii_lowercase();
+    let names: Vec<String> = EXPORT_SUFFIXES
+        .iter()
+        .map(|s| format!("{name}{s}").to_ascii_lowercase())
+        .collect();
     let mut out: Vec<(String, Option<String>)> = std::fs::read_dir(dir)
         .into_iter()
         .flatten()
         .flatten()
         .filter_map(|e| {
             let n = e.file_name().to_string_lossy().into_owned();
-            let l = n.to_ascii_lowercase();
-            (l == name.to_ascii_lowercase() || l.starts_with(&prefix)).then(|| {
+            names.contains(&n.to_ascii_lowercase()).then(|| {
                 let h = columbus_shared::canon::sha256_file(&e.path())
                     .ok()
                     .map(|(h, _)| h);
@@ -813,30 +856,6 @@ fn same_name(dir: &Path, name: &str) -> Vec<(String, Option<String>)> {
         .collect();
     out.sort();
     out
-}
-
-/// Create `to` (failing if anything is there, including a link), copy
-/// `from` into it, and return the SHA-256 of exactly what was copied.
-fn copy_hashed(from: &Path, to: &Path) -> std::io::Result<String> {
-    use sha2::{Digest, Sha256};
-    use std::io::{Read, Write};
-    let mut src = std::fs::File::open(from)?;
-    let mut dst = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(to)?;
-    let mut h = Sha256::new();
-    let mut buf = vec![0u8; 1 << 16];
-    loop {
-        let n = src.read(&mut buf)?;
-        if n == 0 {
-            break;
-        }
-        h.update(&buf[..n]);
-        dst.write_all(&buf[..n])?;
-    }
-    dst.sync_all()?;
-    Ok(format!("{:x}", h.finalize()))
 }
 
 fn write_new(to: &Path, bytes: &[u8]) -> std::io::Result<()> {

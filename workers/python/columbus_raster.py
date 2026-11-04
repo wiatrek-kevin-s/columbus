@@ -107,9 +107,18 @@ def open_raster(path: str):
     """Open a GeoTIFF read-only with the GTiff driver only."""
     _check_path(path)
     try:
-        return rasterio.open(path, "r", driver="GTiff")
+        ds = rasterio.open(path, "r", driver="GTiff")
     except rasterio.errors.RasterioIOError as e:
         raise GISError("input.format", f"{os.path.basename(path)} could not be read as a GeoTIFF ({e})") from None
+    # Nothing but the file itself: no external overviews, masks or sidecars.
+    try:
+        files = [os.path.realpath(f) for f in (ds.files or [])]
+    except Exception:  # noqa: BLE001
+        files = []
+    if files and files != [os.path.realpath(path)]:
+        ds.close()
+        raise GISError("input.format", f"{os.path.basename(path)} brings in other files ({', '.join(os.path.basename(f) for f in files[1:])}), which Columbus does not read")
+    return ds
 
 
 def _crs(ds) -> CRS | None:
@@ -404,9 +413,20 @@ def _target_grid(ds, src: CRS, dst: CRS, resolution, max_pixels: int, what: str)
                 or any(isinstance(v, bool) or not isinstance(v, (int, float)) or not v > 0 or not math.isfinite(v) for v in resolution)):
             raise GISError("params", "resolution must be a positive number (or [x, y]) in the target CRS's units")
         res_x, res_y = float(resolution[0]), float(resolution[1])
-    width = max(1, math.ceil((b[2] - b[0]) / res_x))
-    height = max(1, math.ceil((b[3] - b[1]) / res_y))
+    wf, hf = (b[2] - b[0]) / res_x, (b[3] - b[1]) / res_y
+    if not (math.isfinite(wf) and math.isfinite(hf)) or wf > 1e12 or hf > 1e12:
+        raise GISError("output.too_large", f"{what} at that resolution would be far too large",
+                       fix="Choose a coarser resolution, or clip first")
+    width = max(1, math.ceil(wf))
+    height = max(1, math.ceil(hf))
     _guard(width, height, ds.count, max_pixels, what)
+    # Much coarser than the source along one axis (poles, odd projections):
+    # say so rather than hand back a smeared grid as if it were fine.
+    if resolution is None and (width < ds.width / 4 or height < ds.height / 4):
+        raise GISError("raster.distorted",
+                       f"{what} would squash {ds.width} x {ds.height} cells into {width} x {height} in {g._label(dst)}; "
+                       "the target CRS distorts this area badly",
+                       fix="Pass an explicit resolution, or choose a CRS suited to the area (polar areas need a polar projection)")
     return from_origin(b[0], b[3], res_x, res_y), width, height
 
 

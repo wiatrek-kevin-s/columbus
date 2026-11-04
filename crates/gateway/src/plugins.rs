@@ -403,6 +403,22 @@ fn plugin_confinement(
 /// The folders a Python interpreter loads from (its own and, for a virtual
 /// environment, the base installation), which a confined plugin must be
 /// able to read. Asked once per interpreter.
+/// An engine plugin's own folder in the session workspace: the only place
+/// it may write; each run's inputs and outputs live under `runs/<run>`.
+pub fn plugin_dir(workspace: &Path, id: &str) -> PathBuf {
+    let safe: String = id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    workspace.join("plugins").join(safe)
+}
+
 fn python_dirs(python: &Path) -> Vec<PathBuf> {
     static CACHE: std::sync::Mutex<BTreeMap<PathBuf, Vec<PathBuf>>> =
         std::sync::Mutex::new(BTreeMap::new());
@@ -587,7 +603,8 @@ impl Plugins {
     }
 
     fn launch(&self, p: &Plugin) -> Launch {
-        let tmp = self.workspace.join("tmp").join(&p.manifest.id);
+        let own = plugin_dir(&self.workspace, &p.manifest.id);
+        let tmp = own.join("tmp");
         let _ = std::fs::create_dir_all(&tmp);
         let (program, args, extra_read) = match p.manifest.runtime {
             Runtime::Python => (
@@ -614,12 +631,13 @@ impl Plugins {
                 (exe, vec![], vec![])
             }
         };
-        let mut launch = Launch::plugin(program, args, self.workspace.clone(), tmp);
+        let mut launch = Launch::plugin(program, args, own.clone(), tmp);
         if let Some((launcher, level)) = &p.confine {
             let spec = columbus_confine::Spec {
                 level: *level,
                 name: format!("plugin.{}", p.manifest.id),
-                read_write: vec![self.workspace.clone()],
+                // Its own folder only, never the workspace.
+                read_write: vec![own.clone()],
                 read_only: std::iter::once(p.dir.clone()).chain(extra_read).collect(),
                 memory_mb: Some(self.memory_mb),
                 processes: Some(16),
