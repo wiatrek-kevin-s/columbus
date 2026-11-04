@@ -73,15 +73,23 @@ def check_events(ctx):
     r_end = pick(routes.columns, ROUTE_END, "route end measure")
     r_begin = pick(routes.columns, ROUTE_BEGIN, "route begin measure", required=False)
     extent = {}
+    begins = defaultdict(list)
+    no_end = set()
     for row in routes.rows():
-        if row[r_end] is None:
+        if row[r_id] is None:
             continue
-        lo = float(row[r_begin]) if r_begin and row[r_begin] is not None else 0.0
-        hi = float(row[r_end])
         rid = str(row[r_id])
-        if rid in extent:
-            lo, hi = min(lo, extent[rid][0]), max(hi, extent[rid][1])
-        extent[rid] = (lo, hi)
+        if row[r_end] is None:
+            no_end.add(rid)
+            continue
+        hi = float(row[r_end])
+        if r_begin and row[r_begin] is not None:
+            begins[rid].append(float(row[r_begin]))
+        extent[rid] = max(hi, extent.get(rid, hi))
+    # A route's begin is its lowest recorded begin; 0 only when no section
+    # records one.
+    extent = {rid: (min(begins[rid]) if begins[rid] else 0.0, hi) for rid, hi in extent.items()}
+    no_end -= set(extent)
 
     e_id = pick(events.columns, ROUTE, "route id", named=ctx.param("route_field", None))
     e_from = pick(events.columns, FROM, "from measure", named=ctx.param("from_field", None))
@@ -93,15 +101,22 @@ def check_events(ctx):
     for i, row in enumerate(events.rows()):
         if i % 500 == 0:
             ctx.progress(100.0 * i / total, f"Checked {i} of {total} events")
-        rid, f, t = str(row[e_id]), row[e_from], row[e_to]
+        rid, f, t = row[e_id], row[e_from], row[e_to]
         geom = first_point(row.geometry()) if events.geometry_column else None
+        if rid is None:
+            findings.append(("lrs.missing_route", Severity.FAIL, None, f, t, "event has no route id", geom))
+            continue
+        rid = str(rid)
         if f is None or t is None:
             findings.append(("lrs.missing_measure", Severity.FAIL, rid, f, t, "missing from or to measure", geom))
             continue
         f, t = float(f), float(t)
         if f > t + tol:
             findings.append(("lrs.reversed", Severity.FAIL, rid, f, t, "from measure after to measure", geom))
-        if rid not in extent:
+        if rid in no_end:
+            findings.append(("lrs.route_missing_end", Severity.FAIL, rid, f, t,
+                             "the route has no end measure in the routes dataset, so the event's range was not checked", geom))
+        elif rid not in extent:
             findings.append(("lrs.unknown_route", Severity.FAIL, rid, f, t, "route not in the routes dataset", geom))
         else:
             lo, hi = extent[rid]
@@ -120,7 +135,7 @@ def check_events(ctx):
                 findings.append(("lrs.gap", Severity.WARN, rid, reach, f, f"gap of {f - reach:g} before this event", geom))
             reach = max(reach, t)
 
-    findings.sort(key=lambda x: (x[2], x[3] if x[3] is not None else -1))
+    findings.sort(key=lambda x: (x[2] or "", x[3] if x[3] is not None else -1))
     n = write_geojson(
         ctx.output_path("findings"),
         (

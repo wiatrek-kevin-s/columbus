@@ -147,6 +147,7 @@ The connection and table names come from the Contoso sample pack. Use the names 
 - **`tolerance`** (default 0.001) applies to reversed and out-of-range checks, and to gaps and overlaps unless `gap_tolerance` or `overlap_tolerance` is given. Use the procedure's own numbers, for example `"overlap_tolerance": 0.001, "gap_tolerance": 0.005`. The result's `tolerances_mi` echoes what was used; quote it in the report.
 - **Column names are matched case-insensitively**, from fixed lists, or named with `route_field`, `from_field` and `to_field` (the events dataset's columns). Events need a route id (`route_id`, `rte_id`, `routeid`, `route`), a from measure (`from_meas`, `from_measure`, `begin_meas`, `bmp`, `frm_meas`) and a to measure (`to_meas`, `to_measure`, `end_meas`, `emp`). Routes need a route id and an end measure (`to_meas`, `end_meas`, `max_meas`, `length_mi`, `route_length`, `emp`); the begin measure is optional (`from_meas`, `begin_meas`, `min_meas`, `bmp`) and defaults to 0. A table that does not match fails with, for example, "no route end measure column; expected one of ...". Routes that carry measures only as M values in their geometry do not work.
 - **A route on several rows** (one per section) spans from its lowest begin to its highest end measure. Gaps between its sections are not checked; the events are.
+- **Routes without an end measure** are not treated as missing: their events get `lrs.route_missing_end` (the range could not be checked) instead of `lrs.unknown_route`. Events with no route id get `lrs.missing_route`.
 - **When the plugin does not fit** (other column names, or routes measured only by M), the gap and overlap query in section 4 passes `sql_select {connection, sql}` as written, and the server adds the row filter. Out-of-range checks need the route end measures, which you get with `ST_M(ST_EndPoint(geom))` on PostGIS.
 - **Reading Oracle and SQL Server connections is not supported yet.** The call is refused with "reading oracle connections is not supported yet". Today it works on PostGIS, GeoPackage and SQLite connections.
 
@@ -162,6 +163,8 @@ The connection and table names come from the Contoso sample pack. Use the names 
 | `lrs.missing_measure` | fail | From or to measure is null |
 | `lrs.reversed` | fail | From measure after to measure (beyond tolerance) |
 | `lrs.unknown_route` | fail | The route id is not in the routes dataset |
+| `lrs.route_missing_end` | fail | The route is in the routes dataset but has no end measure, so the event's range was not checked |
+| `lrs.missing_route` | fail | The event has no route id |
 | `lrs.out_of_range` | fail | Outside the route's begin and end measures |
 | `lrs.overlap` | warn | Starts before the furthest end of earlier events on the route |
 | `lrs.gap` | warn | Starts after the furthest end of earlier events on the route |

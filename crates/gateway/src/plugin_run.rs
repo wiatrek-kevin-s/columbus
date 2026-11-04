@@ -83,7 +83,8 @@ impl Gateway {
 
         // Scalars first: they are cheap to refuse.
         for (name, ps) in &spec.params {
-            let v = args.get(name).cloned();
+            // An explicit null counts as leaving the argument out.
+            let v = args.get(name).cloned().filter(|v| !v.is_null());
             if v.is_none() && ps.may_be_absent() {
                 continue;
             }
@@ -150,11 +151,12 @@ impl Gateway {
                     }
                     json!(s)
                 }
-                (ParamSpec::Boolean { default, .. }, v) => match v
-                    .as_ref()
-                    .and_then(Value::as_bool)
-                    .or(*default)
-                {
+                (ParamSpec::Boolean { default, .. }, v) => match match &v {
+                    Some(Value::Bool(b)) => Some(*b),
+                    None => *default,
+                    // "yes", 1: refused, not read as the default.
+                    Some(_) => None,
+                } {
                     Some(b) => json!(b),
                     None => {
                         return Err(self.deny(ctx, rec, format!("{name} must be true or false")))

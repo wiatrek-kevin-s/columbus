@@ -50,6 +50,18 @@ $$ INSERT INTO roads.roadway_audit (who) VALUES ('visit') RETURNING id $$;
 CREATE OR REPLACE FUNCTION public.st_owner_summary() RETURNS text LANGUAGE sql STABLE SECURITY DEFINER AS
 $$ SELECT string_agg(owner_name, ',') FROM roads.roadway_inventory $$;
 GRANT EXECUTE ON FUNCTION public.st_owner_summary() TO PUBLIC;
+-- Named like a function on the allow list that pg_catalog does not have
+-- (IFNULL is SQLite's): an unqualified call would run it.
+CREATE OR REPLACE FUNCTION public.ifnull(text, text) RETURNS text LANGUAGE sql STABLE SECURITY DEFINER AS
+$$ SELECT string_agg(owner_name, ',') FROM roads.roadway_inventory $$;
+GRANT EXECUTE ON FUNCTION public.ifnull(text, text) TO PUBLIC;
+
+-- An operator no extension installed, in a schema a connection can put on
+-- its search path: the worker refuses such sessions.
+CREATE SCHEMA IF NOT EXISTS lookalike;
+GRANT USAGE ON SCHEMA lookalike TO PUBLIC;
+DROP OPERATOR IF EXISTS lookalike.= (text, text);
+CREATE OPERATOR lookalike.= (LEFTARG = text, RIGHTARG = text, FUNCTION = pg_catalog.texteq);
 
 ANALYZE roads.roadway_inventory;
 

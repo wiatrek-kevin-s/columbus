@@ -146,13 +146,14 @@ vector_op {
   - `trim: true`: remove leading and trailing spaces.
   - `ignore_case: true`: compare without letter case.
 
-  Any of them turns the key fields in the output into the normalized text they were joined
-  on, and adds a `join.keys_normalized` info check that says what was done.
+  The keys are compared on normalized copies: the output keeps each side's original values.
+  A `join.keys_normalized` info check says what was done. The options must be real `true` or
+  `false`; `"false"` as text is refused.
 
 Checks:
 
-- `join.key_types` (refused): one key is a number and the other is text, so nothing would
-  match. Join again with `"key_as_text": true`, and add `"pad": N` if the codes are ones
+- `join.key_types` (refused): one key is a number (or true/false) and the other is text, so
+  nothing would match. Join again with `"key_as_text": true`, and add `"pad": N` if the codes are ones
   that lost their leading zeros.
 - `join.unmatched`: message "N of M rows (P%) had no match on <key>", plus
   "; K of those have an empty <key>, which never matches" when there are empty keys.

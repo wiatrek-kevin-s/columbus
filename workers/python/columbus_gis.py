@@ -442,26 +442,48 @@ def _distance(params: dict, key: str, df: gpd.GeoDataFrame, what: str) -> float:
     return value * UNITS[unit] / per_unit
 
 
-# Texas, in lon/lat: EPSG:3081 and EPSG:3083 cover the whole state.
-_TEXAS = (-106.65, 25.84, -93.51, 36.50)
+# Texas's outline, coarsely (lon, lat): enough to tell Texas from Oklahoma,
+# Louisiana or New Mexico for a CRS suggestion, not for analysis.
+_TEXAS = shapely.Polygon([
+    (-106.65, 31.90), (-106.53, 32.00), (-103.06, 32.00), (-103.04, 36.50), (-100.00, 36.50),
+    (-100.00, 34.56), (-99.20, 34.40), (-97.95, 33.88), (-96.60, 33.85), (-95.30, 33.88),
+    (-94.48, 33.64), (-94.04, 33.55), (-94.04, 31.99), (-93.80, 31.50), (-93.50, 30.40),
+    (-93.84, 29.69), (-94.80, 29.25), (-96.20, 28.45), (-97.20, 27.60), (-97.14, 25.96),
+    (-97.60, 25.90), (-99.10, 26.43), (-99.50, 27.50), (-100.40, 28.30), (-101.40, 29.77),
+    (-102.40, 29.80), (-103.00, 29.00), (-104.50, 29.60), (-104.70, 30.20), (-106.00, 31.40),
+])
+_GENERIC = "a State Plane, UTM or equal-area CRS for the data's area"
 
 
 def suggest_crs(df: gpd.GeoDataFrame) -> str:
     """A projected CRS for measuring in the layer's area: the statewide
-    Texas systems inside Texas, otherwise the UTM zone of its centre (NAD83
-    in North America, WGS 84 elsewhere)."""
+    Texas systems inside Texas, the continental US Albers for data spanning
+    several states, otherwise the UTM zone of its centre (NAD83 in the US and
+    Canada, WGS 84 elsewhere). Generic advice when the extent is not a
+    plausible longitude and latitude (feet read as degrees, swapped axes) or
+    spans too much for one zone."""
     try:
         b = df.to_crs(4326).total_bounds if not df.crs.equals(CRS.from_epsg(4326)) else df.total_bounds
     except Exception:  # noqa: BLE001
-        return "a UTM zone or State Plane zone for the area"
-    if not all(math.isfinite(v) for v in b):
-        return "a UTM zone or State Plane zone for the area"
+        return _GENERIC
+    if not all(math.isfinite(v) for v in b) or b[0] < -180 or b[2] > 180 or b[1] < -90 or b[3] > 90:
+        return _GENERIC
     lon, lat = (b[0] + b[2]) / 2, (b[1] + b[3]) / 2
-    if b[0] >= _TEXAS[0] and b[1] >= _TEXAS[1] and b[2] <= _TEXAS[2] and b[3] <= _TEXAS[3]:
+    width = b[2] - b[0]
+    tx = _TEXAS.bounds
+    in_tx_box = b[0] >= tx[0] - 0.1 and b[1] >= tx[1] - 0.1 and b[2] <= tx[2] + 0.1 and b[3] <= tx[3] + 0.1
+    if in_tx_box and _TEXAS.contains(shapely.Point(lon, lat)):
         return ("for Texas, EPSG:3081 NAD83 / Texas State Mapping System for distances statewide, "
                 "EPSG:3083 Texas Centric Albers for areas, or the local State Plane zone")
+    us48 = (-125.0, 24.0, -66.5, 49.5)
+    if width > 6:
+        if b[0] >= us48[0] and b[1] >= us48[1] and b[2] <= us48[2] and b[3] <= us48[3]:
+            return "EPSG:5070 NAD83 / Conus Albers (equal-area) for data across several states"
+        return _GENERIC
     zone = min(60, max(1, int((lon + 180) // 6) + 1))
-    if lat >= 0 and -172 <= lon <= -48 and 1 <= zone <= 23:
+    # NAD83 UTM codes exist for zones 1 to 23 north; use them in the US and Canada.
+    north_america = lat >= 14 and -172 <= lon <= -50 and not (lat < 32 and lon > -80)
+    if lat >= 0 and north_america and 1 <= zone <= 23:
         return f"UTM zone {zone}N on NAD83, EPSG:{26900 + zone}"
     return f"UTM zone {zone}{'N' if lat >= 0 else 'S'}, EPSG:{(32600 if lat >= 0 else 32700) + zone}"
 
@@ -483,8 +505,10 @@ def _align(base: gpd.GeoDataFrame, other: gpd.GeoDataFrame, name: str, checks: l
     return other.to_crs(base.crs)
 
 
-def _join_checks(left: pd.DataFrame, right: pd.DataFrame, lk: str, rk: str, out_rows: int) -> list[dict]:
+def _join_checks(left: pd.DataFrame, right: pd.DataFrame, lk: str, rk: str, out_rows: int, label: str | None = None) -> list[dict]:
+    """`lk` and `rk` are the columns compared; `label` names the left key in messages."""
     out = []
+    name = label or lk
     lkeys = left[lk]
     rkeys = right[rk]
     n = len(left)
@@ -494,10 +518,10 @@ def _join_checks(left: pd.DataFrame, right: pd.DataFrame, lk: str, rk: str, out_
     empty = int((~usable).sum())
     if n:
         pct = 100.0 * unmatched / n
-        msg = f"{unmatched} of {n} rows ({pct:.1f}%) had no match on {lk}"
+        msg = f"{unmatched} of {n} rows ({pct:.1f}%) had no match on {name}"
         sev = "info" if unmatched == 0 else ("fail" if pct >= 40 else "warn")
         if empty:
-            msg += f"; {empty} of those have an empty {lk}, which never matches"
+            msg += f"; {empty} of those have an empty {name}, which never matches"
         c = check("join.unmatched", sev, msg, detail={"left": n, "matched": n - unmatched, "empty_keys": empty})
         if unmatched:
             lstr = lkeys[usable].astype(str)
@@ -527,8 +551,11 @@ def _join_checks(left: pd.DataFrame, right: pd.DataFrame, lk: str, rk: str, out_
 def _key_text(keys: pd.Series) -> pd.Series:
     """Keys as text: whole numbers without a trailing ".0", nulls kept null."""
     def one(v):
-        if v is None or (isinstance(v, float) and math.isnan(v)) or v is pd.NA:
-            return None
+        try:
+            if pd.isna(v):  # None, NaN, NA, NaT
+                return None
+        except (TypeError, ValueError):  # arrays and other non-scalars
+            pass
         if isinstance(v, float) and v.is_integer():
             return str(int(v))
         return str(v)
@@ -549,6 +576,9 @@ def _normalize_keys(keys: pd.Series, params: dict) -> pd.Series:
 
 
 def _key_options(params: dict) -> bool:
+    for k in ("key_as_text", "trim", "ignore_case"):
+        if k in params and not isinstance(params[k], bool):
+            raise GISError("params", f"{k} must be true or false")
     pad = params.get("pad")
     if pad is not None and (isinstance(pad, bool) or not isinstance(pad, int) or not 1 <= pad <= 64):
         raise GISError("params", "pad must be a whole number of characters from 1 to 64")
@@ -682,35 +712,50 @@ def _op_join(inp, params, checks):
             raise GISError("params", f"no field {k!r} in the {side} input")
     rdf = pd.DataFrame(right.drop(columns=right.geometry.name) if isinstance(right, gpd.GeoDataFrame) else right)
     ldf = pd.DataFrame(left)
+    # Compared on copies of the keys, so the output keeps the source's own
+    # values whatever normalization the join used.
+    LK, RK = "__columbus_left_key", "__columbus_right_key"
     if _key_options(params):
-        # The key fields come out as the normalized text they were joined on.
-        ldf[lk] = _normalize_keys(ldf[lk], params)
-        rdf[rk] = _normalize_keys(rdf[rk], params)
+        ldf[LK] = _normalize_keys(ldf[lk], params)
+        rdf[RK] = _normalize_keys(rdf[rk], params)
         checks.append(check("join.keys_normalized", "info",
-                            f"Joined on {lk} and {rk} as text"
+                            f"Compared {lk} and {rk} as text"
                             + (", trimmed" if params.get("trim") else "")
                             + (", ignoring case" if params.get("ignore_case") else "")
-                            + (f", zero-padded to {params['pad']} characters" if params.get("pad") is not None else "")))
+                            + (f", zero-padded to {params['pad']} characters" if params.get("pad") is not None else "")
+                            + "; the output keeps the original values"))
     else:
-        lnum = pd.api.types.is_numeric_dtype(ldf[lk]) and not pd.api.types.is_bool_dtype(ldf[lk])
-        rnum = pd.api.types.is_numeric_dtype(rdf[rk]) and not pd.api.types.is_bool_dtype(rdf[rk])
-        if lnum != rnum:
-            num, text = (lk, rk) if lnum else (rk, lk)
-            raise GISError("join.key_types", f"{num} is a number and {text} is text, so no rows would match",
+        ldf[LK] = ldf[lk]
+        rdf[RK] = rdf[rk]
+
+        def kind(series):
+            vals = series[_usable_keys(series)]
+            if vals.empty:
+                return None  # nothing to compare: no type to disagree with
+            if pd.api.types.is_bool_dtype(series):
+                return "true/false"
+            if pd.api.types.is_numeric_dtype(series):
+                return "number"
+            return "text"
+
+        lkind, rkind = kind(ldf[lk]), kind(rdf[rk])
+        if lkind and rkind and lkind != rkind:
+            raise GISError("join.key_types", f"{lk} is {lkind} and {rk} is {rkind}, so no rows would match",
                            fix="Pass \"key_as_text\": true to join both as text (add \"pad\": N if codes lost their leading zeros)")
-    rdf = rdf[_usable_keys(rdf[rk])]
-    usable = _usable_keys(ldf[lk])
+    rdf = rdf[_usable_keys(rdf[RK])]
+    usable = _usable_keys(ldf[LK])
     # Rows out = for each left key, the number of right rows with it (at least
     # one for a left join). Refuse before building something huge.
-    counts = rdf[rk].value_counts()
-    per_left = ldf.loc[usable, lk].map(counts).fillna(0)
+    counts = rdf[RK].value_counts()
+    per_left = ldf.loc[usable, LK].map(counts).fillna(0)
     estimate = int(per_left.clip(lower=1 if how == "left" else 0).sum()) + (int((~usable).sum()) if how == "left" else 0)
     _refuse_large(estimate, _out_limit(params), "join")
-    merged = ldf[usable].merge(rdf, how=how, left_on=lk, right_on=rk, suffixes=("", "_right"))
+    rjoin = rdf.drop(columns=[rk]) if rk == lk else rdf
+    merged = ldf[usable].merge(rjoin, how=how, left_on=LK, right_on=RK, suffixes=("", "_right"))
     if how == "left" and not usable.all():
         merged = pd.concat([merged, ldf[~usable]], ignore_index=False).sort_index(kind="stable")
-    merged = merged.reset_index(drop=True)
-    checks.extend(_join_checks(ldf, rdf, lk, rk, len(merged)))
+    merged = merged.drop(columns=[c for c in (LK, RK) if c in merged.columns]).reset_index(drop=True)
+    checks.extend(_join_checks(ldf, rdf, LK, RK, len(merged), label=lk))
     if isinstance(left, gpd.GeoDataFrame):
         return gpd.GeoDataFrame(merged, geometry=left.geometry.name, crs=left.crs)
     return merged

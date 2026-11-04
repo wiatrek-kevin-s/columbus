@@ -186,9 +186,11 @@ vector_op {"op": "simplify", "inputs": {"layer": "ws://<session>/results/roads-<
   distances are stretched away from the equator (about 15% at Austin, more further north)".
 
 The refusal's fix suggests a CRS for the data's own area: inside Texas, EPSG:3081 for
-distances statewide, EPSG:3083 for areas, or the local State Plane zone; elsewhere, the UTM
-zone of the data's centre (NAD83, EPSG:269xx, in North America; WGS 84, EPSG:326xx or
-327xx, elsewhere). It is a starting point. For local Texas work a State Plane zone such as
+distances statewide, EPSG:3083 for areas, or the local State Plane zone; data across several
+US states, EPSG:5070 (Conus Albers); elsewhere, the UTM zone of the data's centre (NAD83,
+EPSG:269xx, in the US and Canada; WGS 84, EPSG:326xx or 327xx, elsewhere). When the extent
+is not plausible longitude and latitude (feet read as degrees, swapped axes) or is too wide
+for one zone outside the US, it gives no code; check `crs.area_of_use` first. It is a starting point. For local Texas work a State Plane zone such as
 EPSG:2277 is often better, and the context pack's `default_crs` or a delivery spec wins
 over both.
 

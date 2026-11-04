@@ -176,6 +176,12 @@ class PostgresTests(unittest.TestCase):
         self.assertEqual(r["rows"][0][2]["geometry"], "ewkb")
         self.assertFalse(r["hit_read_limit"])
 
+    def test_operators_no_extension_installed_are_refused(self):
+        with self.assertRaises(w.WorkerError) as cm:
+            w.sql_select({"connection": pg_conn(search_path="lookalike,public"),
+                          "sql": "SELECT 1 FROM roads.roadway_inventory", "max_rows": 1})
+        self.assertIn("lookalike.=", cm.exception.message)
+
     def test_read_limit_on_server_cursor(self):
         r = w.sql_select({"connection": pg_conn(), "sql": "SELECT fid FROM roads.roadway_inventory", "max_rows": 2500})
         self.assertEqual(r["rows_read"], 1200)

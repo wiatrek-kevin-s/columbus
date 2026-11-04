@@ -277,7 +277,45 @@ def _pg_connect(conn: dict[str, Any], timeout_s: float):
     except psycopg.Error as e:
         raise WorkerError(ENGINE_ERROR, scrub(f"cannot connect: {e}".strip())) from None
     db.read_only = True
+    try:
+        _pg_refuse_foreign_operators(db, [x for x in search_path.split(",") if x != "pg_catalog"])
+    except WorkerError:
+        db.close()
+        raise
     return db, scrub
+
+
+def _pg_refuse_foreign_operators(db, schemas: list[str]) -> None:
+    """Refuse a session whose search path holds operators no extension
+    installed. PostgreSQL picks the operator whose argument types fit best,
+    whatever its schema, so `public.=(text, varchar)` written by anyone with
+    CREATE on public would run inside the caller's conditions; queries name
+    operators bare, so the server cannot qualify them as it does functions."""
+    if not schemas:
+        return
+    try:
+        with db.cursor() as cur:
+            cur.execute(
+                "SELECT n.nspname || '.' || o.oprname FROM pg_operator o "
+                "JOIN pg_namespace n ON n.oid = o.oprnamespace "
+                "WHERE n.nspname = ANY(%s) AND NOT EXISTS ("
+                " SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_operator'::regclass"
+                " AND d.objid = o.oid AND d.deptype = 'e') LIMIT 5",
+                (schemas,),
+            )
+            found = [r[0] for r in cur.fetchall()]
+        db.rollback()
+    except Exception as e:  # noqa: BLE001
+        db.rollback()
+        raise WorkerError(ENGINE_ERROR, f"could not check the database's operators: {e}") from None
+    if found:
+        raise WorkerError(
+            ENGINE_ERROR,
+            "the database defines operators of its own on this connection's search path "
+            f"({', '.join(found)}), which a query's conditions could run; ask the database "
+            "administrator to move them out of these schemas, or set the connection's "
+            "search_path to schemas without them",
+        )
 
 
 def _pg_geometry_oids(db) -> set[int]:

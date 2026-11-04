@@ -336,6 +336,18 @@ async fn postgis_governed_session() {
         assert!(e.contains("not allowed"), "{sql}: {e}");
     }
 
+    // An allowed name the database could resolve to its own function: the
+    // server names pg_catalog's in full, which does not exist, so it fails.
+    let r = call(
+        &client,
+        "sql_select",
+        json!({"connection": "roads-pg", "sql": "SELECT ifnull(route_id, 'x') FROM roads.roadway_inventory"}),
+    )
+    .await;
+    assert_eq!(r.is_error, Some(true), "{:?}", r.structured_content);
+    let text = serde_json::to_string(&r.content).unwrap();
+    assert!(!text.contains("Owner"), "{text}");
+
     // Allowed by the server's list ("*"), but the login has no grant: the
     // database's own permissions still apply.
     let e = err(&call(

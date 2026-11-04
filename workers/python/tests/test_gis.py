@@ -173,6 +173,12 @@ class WorkerGisTests(unittest.TestCase):
         c = next(c for c in j["checks"] if c["id"] == "join.unmatched")
         self.assertIn("0 of 10", c["message"])
         self.assertIn("join.keys_normalized", [c["id"] for c in j["checks"]])
+        out = gpd.read_file(j["output_path"])
+        self.assertEqual(sorted(out["route_id"])[:2], ["0000", "0001"])  # the source's own values
+        self.assertNotIn("__columbus_left_key", out.columns)
+        self.assertEqual(list(out["surface"].unique()), ["asphalt"])
+        with self.assertRaises(w.WorkerError):
+            self.op("join", {"left": roads, "right": csv}, {"left_key": "route_id", "trim": "false"}, "bad_flag")
         # Spacing and letter case.
         pd.DataFrame({"route_id": [f" {i:04d} " for i in range(10)], "surface": ["asphalt"] * 10}).to_csv(csv, index=False)
         j = self.op("join", {"left": roads, "right": csv}, {"left_key": "route_id"}, "joined_spaces")

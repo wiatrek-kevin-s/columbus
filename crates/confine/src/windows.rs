@@ -27,9 +27,10 @@ use windows_sys::Win32::Foundation::{
     INVALID_HANDLE_VALUE,
 };
 use windows_sys::Win32::Security::Authorization::{
-    ConvertStringSidToSidW, GetEffectiveRightsFromAclW, GetNamedSecurityInfoW, SetEntriesInAclW,
-    SetNamedSecurityInfoW, EXPLICIT_ACCESS_W, GRANT_ACCESS, NO_MULTIPLE_TRUSTEE, SE_FILE_OBJECT,
-    TRUSTEE_IS_SID, TRUSTEE_IS_WELL_KNOWN_GROUP, TRUSTEE_W,
+    ConvertStringSecurityDescriptorToSecurityDescriptorW, ConvertStringSidToSidW,
+    GetEffectiveRightsFromAclW, GetNamedSecurityInfoW, SetEntriesInAclW, SetNamedSecurityInfoW,
+    EXPLICIT_ACCESS_W, GRANT_ACCESS, NO_MULTIPLE_TRUSTEE, SE_FILE_OBJECT, TRUSTEE_IS_SID,
+    TRUSTEE_IS_WELL_KNOWN_GROUP, TRUSTEE_W,
 };
 use windows_sys::Win32::Security::Isolation::{
     CreateAppContainerProfile, DeriveAppContainerSidFromAppContainerName,
@@ -39,7 +40,7 @@ use windows_sys::Win32::Security::{
     InitializeAcl, SetTokenInformation, TokenIntegrityLevel, WinCapabilityInternetClientSid, ACL,
     ACL_REVISION, CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION, DISABLE_MAX_PRIVILEGE,
     LABEL_SECURITY_INFORMATION, OBJECT_INHERIT_ACE, PSECURITY_DESCRIPTOR, PSID,
-    SECURITY_CAPABILITIES, SECURITY_MAX_SID_SIZE, SID_AND_ATTRIBUTES,
+    SECURITY_ATTRIBUTES, SECURITY_CAPABILITIES, SECURITY_MAX_SID_SIZE, SID_AND_ATTRIBUTES,
     SUB_CONTAINERS_AND_OBJECTS_INHERIT, TOKEN_ADJUST_DEFAULT, TOKEN_ASSIGN_PRIMARY,
     TOKEN_DUPLICATE, TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
 };
@@ -133,36 +134,69 @@ fn string_sid(s: &str) -> Result<Sid, Error> {
 /// the same time do not race: two creating the same AppContainer profile
 /// get E_UNEXPECTED, or one starts its process before the other has
 /// finished registering the profile; and folder grants rewrite ACLs.
-struct SetupLock(HANDLE);
+///
+/// Best effort. The mutex is labelled so that nothing below medium
+/// integrity (a level C process runs as the same user at low integrity) can
+/// wait on it, hold it or signal it. If it cannot be had within 30 seconds
+/// (another launcher granting a very large folder, or a confined process
+/// that created the name first), setup goes ahead without it and retries
+/// the races it guards against, rather than letting a confined process
+/// block every later launch.
+struct SetupLock(Option<HANDLE>);
 
 impl SetupLock {
-    fn take() -> Result<Self, Error> {
+    fn take() -> Self {
         let name = wide("Local\\columbus-confine-setup");
-        let h = unsafe { CreateMutexW(null(), 0, name.as_ptr()) };
+        // Full access for the owner and SYSTEM; no read, write or execute
+        // (SYNCHRONIZE is execute for a mutex) from below medium integrity.
+        let sddl = wide("D:P(A;;GA;;;OW)(A;;GA;;;SY)S:(ML;;NWNRNX;;;ME)");
+        let mut sd: PSECURITY_DESCRIPTOR = null_mut();
+        let have_sd = unsafe {
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                sddl.as_ptr(),
+                1,
+                &mut sd,
+                null_mut(),
+            )
+        } != 0;
+        let sa = SECURITY_ATTRIBUTES {
+            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: sd,
+            bInheritHandle: 0,
+        };
+        let h = unsafe { CreateMutexW(if have_sd { &sa } else { null() }, 0, name.as_ptr()) };
+        if !sd.is_null() {
+            unsafe { LocalFree(sd as HLOCAL) };
+        }
         if h.is_null() {
-            return Err(last_error("CreateMutexW"));
+            return SetupLock(None);
         }
         // WAIT_OBJECT_0 or WAIT_ABANDONED (a launcher that died holding it):
         // either way this launcher now owns it.
-        let r = unsafe { WaitForSingleObject(h, 120_000) };
-        if r != 0 && r != 0x80 {
+        let r = unsafe { WaitForSingleObject(h, 30_000) };
+        if r == 0 || r == 0x80 {
+            SetupLock(Some(h))
+        } else {
             unsafe { CloseHandle(h) };
-            return Err(Error::Setup(
-                "timed out waiting for another launcher to finish setting up".into(),
-            ));
+            SetupLock(None)
         }
-        Ok(SetupLock(h))
     }
 }
 
 impl Drop for SetupLock {
     fn drop(&mut self) {
-        unsafe {
-            ReleaseMutex(self.0);
-            CloseHandle(self.0);
+        if let Some(h) = self.0 {
+            unsafe {
+                ReleaseMutex(h);
+                CloseHandle(h);
+            }
         }
     }
 }
+
+/// `E_UNEXPECTED`: what CreateAppContainerProfile returns when another
+/// process is creating the same profile at that moment.
+const HR_UNEXPECTED: HRESULT = 0x8000FFFFu32 as HRESULT;
 
 /// The AppContainer for this spec, created on first use.
 fn app_container(name: &str) -> Result<Sid, Error> {
@@ -171,16 +205,25 @@ fn app_container(name: &str) -> Result<Sid, Error> {
     let display = wide(format!("Columbus {name}"));
     let desc = wide("A Columbus local server or engine plugin, confined");
     let mut sid: PSID = null_mut();
-    let hr = unsafe {
-        CreateAppContainerProfile(
-            wname.as_ptr(),
-            display.as_ptr(),
-            desc.as_ptr(),
-            null(),
-            0,
-            &mut sid,
-        )
-    };
+    let mut hr = HR_UNEXPECTED;
+    for attempt in 0..20 {
+        if attempt > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+        hr = unsafe {
+            CreateAppContainerProfile(
+                wname.as_ptr(),
+                display.as_ptr(),
+                desc.as_ptr(),
+                null(),
+                0,
+                &mut sid,
+            )
+        };
+        if hr != HR_UNEXPECTED {
+            break;
+        }
+    }
     if hr == HR_ALREADY_EXISTS {
         let hr = unsafe { DeriveAppContainerSidFromAppContainerName(wname.as_ptr(), &mut sid) };
         if hr < 0 {
@@ -555,7 +598,7 @@ pub fn launch(spec: &Spec, program: &str, args: &[String]) -> Result<i32, Error>
     let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
     let flags = EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT;
     let job = job(spec)?;
-    let setup = SetupLock::take()?;
+    let setup = SetupLock::take();
 
     // Kept alive until the process has been created.
     let mut _capability_sid = vec![0u8; SECURITY_MAX_SID_SIZE as usize];
@@ -626,8 +669,10 @@ pub fn launch(spec: &Spec, program: &str, args: &[String]) -> Result<i32, Error>
                     &mut pi,
                 )
             };
+            // Before anything else can overwrite the thread's last error.
+            let e = (ok == 0).then(|| last_error(&format!("starting {}", exe.display())));
             drop(attrs);
-            ok
+            e
         }
         Level::C => {
             let low = string_sid(LOW_INTEGRITY_SID)?;
@@ -657,14 +702,14 @@ pub fn launch(spec: &Spec, program: &str, args: &[String]) -> Result<i32, Error>
                     &mut pi,
                 )
             };
+            let e = (ok == 0).then(|| last_error(&format!("starting {}", exe.display())));
             drop(attrs);
             _low = low;
-            ok
+            e
         }
     };
-    let created_error = (created == 0).then(|| last_error(&format!("starting {}", exe.display())));
     drop(setup);
-    if let Some(e) = created_error {
+    if let Some(e) = created {
         return Err(e);
     }
     let process = Owned(pi.hProcess);

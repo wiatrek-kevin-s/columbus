@@ -589,6 +589,9 @@ fn check_tables_and_functions(
             match tf {
                 TableFactor::Table {
                     sample: Some(_), ..
+                }
+                | TableFactor::Derived {
+                    sample: Some(_), ..
                 } => {
                     self.0 = Some(
                         "TABLESAMPLE is not allowed; use sample_rows, or LIMIT with ORDER BY"
@@ -811,6 +814,10 @@ fn quote_ident(name: &str, dialect: SqlDialect) -> String {
     }
 }
 
+/// PostgreSQL constructs that look like function calls but are grammar, not
+/// pg_catalog functions: they cannot be schema-qualified.
+const PG_SYNTAX_FUNCTIONS: &[&str] = &["COALESCE", "NULLIF", "GREATEST", "LEAST"];
+
 /// Text that stops the database from merging the filtered table into the
 /// outer query. Without it PostgreSQL may evaluate the caller's conditions on
 /// rows the row filter excludes (they are reordered freely), and an error
@@ -855,6 +862,21 @@ impl VisitorMut for ApplyFilters<'_> {
             if let Some(schema) = self.catalog.extension_functions.get(&bare) {
                 f.name = ObjectName::from(vec![
                     Ident::with_quote('"', schema.clone()),
+                    Ident::new(bare.to_ascii_lowercase()),
+                ]);
+            } else if self.dialect == SqlDialect::Postgres
+                && !matches!(f.args, sqlparser::ast::FunctionArguments::None)
+                && !PG_SYNTAX_FUNCTIONS.contains(&bare.as_str())
+                && (upper == bare || upper == format!("PG_CATALOG.{bare}"))
+            {
+                // Every other allowed function is the built-in one. PostgreSQL
+                // weighs a function in `public` that takes the argument's
+                // exact type (public.upper(varchar)) above pg_catalog's
+                // (upper(text)) whatever the search path, so name it in full;
+                // a name pg_catalog lacks then fails instead of running
+                // someone's function.
+                f.name = ObjectName::from(vec![
+                    Ident::new("pg_catalog"),
                     Ident::new(bare.to_ascii_lowercase()),
                 ]);
             }
@@ -1614,6 +1636,14 @@ datasets:
     #[test]
     fn tablesample_is_refused_not_dropped() {
         let e = check_select(
+            "SELECT * FROM (SELECT * FROM roads.roadway_inventory) AS x TABLESAMPLE SYSTEM (1)",
+            &access("duckdb", None),
+            10,
+            &NO_CATALOG,
+        )
+        .unwrap_err();
+        assert!(e.to_string().contains("TABLESAMPLE"), "{e}");
+        let e = check_select(
             "SELECT * FROM roads.roadway_inventory TABLESAMPLE SYSTEM (1)",
             &hiding("postgis"),
             10,
@@ -1633,5 +1663,31 @@ datasets:
         )
         .unwrap_err();
         assert!(e.to_string().contains("query_features"), "{e}");
+    }
+
+    #[test]
+    fn builtin_functions_are_named_in_full_on_postgres() {
+        let q = check_select(
+            "SELECT upper(route_id), count(*), coalesce(route_id, 'x'), row_number() OVER (ORDER BY route_id), ST_Length(geom) FROM roads.roadway_inventory GROUP BY route_id, geom",
+            &access("postgis", None),
+            10,
+            &cat(),
+        )
+        .unwrap();
+        println!("{}", q.sql);
+        assert!(q.sql.contains("pg_catalog.upper("), "{}", q.sql);
+        assert!(q.sql.contains("pg_catalog.count(*)"), "{}", q.sql);
+        assert!(q.sql.contains("pg_catalog.row_number()"), "{}", q.sql);
+        assert!(
+            q.sql.to_lowercase().contains("coalesce(route_id"),
+            "{}",
+            q.sql
+        );
+        assert!(
+            !q.sql.contains("pg_catalog.COALESCE") && !q.sql.contains("pg_catalog.coalesce"),
+            "{}",
+            q.sql
+        );
+        assert!(q.sql.contains("\"public\".st_length("), "{}", q.sql);
     }
 }

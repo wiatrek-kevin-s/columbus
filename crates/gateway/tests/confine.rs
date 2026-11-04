@@ -229,11 +229,25 @@ fn level_c_reads_anywhere_but_writes_only_granted_folders() {
         // Which programs start at level C here: a system one, a Rust one
         // from this build, and Python without isolated mode.
         let me = launcher().display().to_string();
-        let probes: [(&str, &[&str]); 4] = [
+        let exe = String::from_utf8_lossy(
+            &Command::new(&py)
+                .args(["-c", "import sys; print(sys.executable)"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .trim()
+        .to_string();
+        if let Ok(o) = Command::new("where").arg(&py).output() {
+            eprintln!("where {py}: {}", String::from_utf8_lossy(&o.stdout));
+        }
+        eprintln!("sys.executable: {exe}");
+        let probes: [(&str, &[&str]); 5] = [
             ("cmd", &["/c", "echo native-ok"]),
             (me.as_str(), &["--check", "A"]),
             (py.as_str(), &["-c", "print('py-ok')"]),
-            (py.as_str(), &["-S", "-c", "print('py-S-ok')"]),
+            (exe.as_str(), &["-c", "print('exe-ok')"]),
+            (exe.as_str(), &["-S", "-c", "print('exe-S-ok')"]),
         ];
         for (program, args) in probes {
             let ws = d.ws.display().to_string();
