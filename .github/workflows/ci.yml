@@ -31,7 +31,7 @@ jobs:
       # The confinement launcher first: if it fails, everything that starts a
       # local server or plugin does, and its own tests say why.
       - run: cargo test -p columbus-mcp --test confine --locked -- --nocapture
-      - run: cargo test --workspace --locked
+      - run: cargo test --workspace --locked --no-fail-fast
         # Still run everything when the launcher tests fail: the other
         # tests' messages help find why.
         if: success() || failure()
