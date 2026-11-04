@@ -225,20 +225,54 @@ async fn governed_session_end_to_end() {
     assert!(!fields.contains(&"owner_ssn"));
     assert!(ds["result"]["not_allowed"].as_u64().unwrap() >= 1);
 
-    // sql_select: row filter applied by the server, hidden field stripped,
-    // 600 rows read, 500 returned, full result saved in the workspace.
+    // A hidden field cannot be named anywhere in a query: not selected, not
+    // renamed, not filtered on, not sorted by, not read as part of a whole row.
+    for sql in [
+        "SELECT route_id, owner_ssn FROM roads",
+        "SELECT route_id, owner_ssn AS x FROM roads",
+        "SELECT route_id FROM roads WHERE owner_ssn LIKE '1%'",
+        "SELECT route_id FROM roads ORDER BY OWNER_SSN",
+        "SELECT route_id FROM roads r WHERE r.\"owner_ssn\" IS NULL",
+        "SELECT * FROM roads ORDER BY 5",
+        "SELECT x FROM (SELECT owner_ssn AS x FROM roads) AS t",
+    ] {
+        let r = call(
+            &client,
+            "sql_select",
+            json!({"connection": "roads-gpkg", "sql": sql}),
+        )
+        .await;
+        assert_eq!(r.is_error, Some(true), "{sql} should be refused");
+        let text = serde_json::to_string(&r.content).unwrap();
+        assert!(
+            text.contains("hidden") || text.contains("position"),
+            "{sql}: {text}"
+        );
+    }
+
+    // sql_select: row filter applied by the server, hidden field stripped
+    // from SELECT *, 600 rows read, 500 returned, full result saved in the
+    // workspace.
     let q = structured(
-        &call(&client, "sql_select", json!({"connection": "roads-gpkg", "sql": "SELECT route_id, district, owner_ssn FROM roads"})).await,
+        &call(
+            &client,
+            "sql_select",
+            json!({"connection": "roads-gpkg", "sql": "SELECT * FROM roads"}),
+        )
+        .await,
     );
     let res = &q["result"];
     assert_eq!(res["rows_read"], 600);
     assert_eq!(res["rows_returned"], 500);
-    assert_eq!(res["columns"], json!(["route_id", "district"]));
+    assert_eq!(
+        res["columns"],
+        json!(["fid", "route_id", "district", "csj", "geom"])
+    );
     assert!(res["rows"]
         .as_array()
         .unwrap()
         .iter()
-        .all(|row| row[1] == 14));
+        .all(|row| row[2] == 14));
     let file = PathBuf::from(res["workspace_file"].as_str().unwrap());
     assert!(file.starts_with(workspace.canonicalize().unwrap()) && file.exists());
     let saved = std::fs::read_to_string(&file).unwrap();
@@ -333,7 +367,7 @@ async fn governed_session_end_to_end() {
         .unwrap()
         .path();
     let n = columbus_shared::audit::verify(&file).expect("audit chain intact");
-    assert_eq!(n, 12, "one audit line per tool call");
+    assert_eq!(n, 19, "one audit line per tool call");
     let text = std::fs::read_to_string(&file).unwrap();
     assert!(text.contains("\"decision\":\"denied\""));
     assert!(

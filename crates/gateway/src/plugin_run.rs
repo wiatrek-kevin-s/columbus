@@ -283,6 +283,8 @@ impl Gateway {
                     made_by: format!("extract for {full}"),
                     provenance: Some(prov.clone()),
                     rows,
+                    source: crate::providers::OutputSource::Engine,
+                    truncated: false,
                 },
             );
             inputs.insert(
@@ -461,6 +463,8 @@ impl Gateway {
                     made_by: full.clone(),
                     provenance: Some(prov.clone()),
                     rows,
+                    source: crate::providers::OutputSource::Plugin,
+                    truncated: false,
                 },
             );
             saved.push(SavedFile {

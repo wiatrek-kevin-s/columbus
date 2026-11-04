@@ -55,12 +55,30 @@ pub fn resolve_handle(session: &str, sandbox: &Sandbox, handle: &str) -> Result<
     Ok(path)
 }
 
+/// Who wrote a workspace file. Only files Columbus's own engine or an
+/// approved engine plugin wrote are opened by the GIS tools: a file saved
+/// from a connected server's result has content nobody checked, and GDAL
+/// decides how to open a file from its content (a "GeoPackage" that is
+/// really a VRT can read any file or URL).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum OutputSource {
+    Engine,
+    Plugin,
+    #[default]
+    Provider,
+}
+
 /// What the gateway knows about a file in the workspace.
-#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Default, Serialize, JsonSchema)]
 pub struct OutputMeta {
     pub made_by: String,
     pub provenance: Option<String>,
     pub rows: Option<u64>,
+    pub source: OutputSource,
+    /// The rows were cut off at a limit: the layer is not the whole result.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub truncated: bool,
 }
 
 #[derive(Default)]
@@ -74,6 +92,11 @@ impl Outputs {
             .lock()
             .expect("outputs poisoned")
             .insert(path.to_path_buf(), meta);
+    }
+    pub fn mark_truncated(&self, path: &Path) {
+        if let Some(m) = self.inner.lock().expect("outputs poisoned").get_mut(path) {
+            m.truncated = true;
+        }
     }
     pub fn get(&self, path: &Path) -> Option<OutputMeta> {
         self.inner

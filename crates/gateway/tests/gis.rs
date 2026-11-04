@@ -40,7 +40,8 @@ path = os.path.join(folder, "austin.gpkg")
 lines = [LineString([(-97.80 + i * 0.01, 30.20), (-97.80 + i * 0.01, 30.30)]) for i in range(10)]
 gpd.GeoDataFrame(
     {"route_id": [f"{i:04d}" for i in range(10)], "district": [14] * 8 + [12] * 2,
-     "lanes": [2, 4] * 5, "owner_ssn": ["123-45-6789"] * 10},
+     "lanes": [2, 4] * 5, "owner_ssn": [f"10{i}-45-67{i:02d}" for i in range(10)],
+     "owner_name": ["Secret Owner"] * 10},
     geometry=lines, crs="EPSG:4326").to_crs("EPSG:3081").to_file(path, layer="roads", driver="GPKG", engine="pyogrio")
 gpd.GeoDataFrame({"name": ["Travis"]},
     geometry=[Polygon([(-97.85, 30.15), (-97.745, 30.15), (-97.745, 30.35), (-97.85, 30.35)])],
@@ -69,7 +70,7 @@ fn setup(py: &str) -> Env {
     std::fs::create_dir_all(root.join("connections")).unwrap();
     std::fs::write(
         root.join("policy.yaml"),
-        "connection_types: [gpkg]\nhide_fields: [\"*ssn*\"]\nlimits: { rows: 1000, seconds: 60 }\n",
+        "connection_types: [gpkg]\nhide_fields: [\"{*ssn*,owner_name}\"]\nlimits: { rows: 1000, seconds: 60 }\n",
     )
     .unwrap();
     let gpkg = serde_json::to_string(&root.join("austin.gpkg").display().to_string()).unwrap();
@@ -152,6 +153,18 @@ fn err(r: &CallToolResult) -> String {
     serde_json::to_string(&r.content).unwrap()
 }
 
+fn walk(dir: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            out.push(p.clone());
+            out.extend(walk(&p));
+        }
+    }
+    out
+}
+
 fn check_ids(v: &Value) -> Vec<String> {
     v["checks"]
         .as_array()
@@ -195,10 +208,16 @@ async fn gis_session_on_a_geopackage() {
     assert_eq!(r["geometry_column"], "geom");
     let fields = serde_json::to_string(&r["fields"]).unwrap();
     assert!(
-        fields.contains("route_id") && !fields.contains("owner_ssn"),
+        fields.contains("route_id")
+            && !fields.contains("owner_ssn")
+            && !fields.contains("owner_name"),
         "{fields}"
     );
     assert!(check_ids(&d).contains(&"query.row_filter".to_string()));
+    assert!(
+        r["extent"].is_null(),
+        "the stored extent covers filtered-out rows: {r}"
+    );
 
     // sample_rows: a few rows, under the filter.
     let s = ok(&call(
@@ -258,6 +277,22 @@ async fn gis_session_on_a_geopackage() {
     // a bad CRS string.
     for (args, expect) in [
         (json!({"fields": ["owner_ssn"]}), "no field"),
+        (json!({"fields": ["owner_name"]}), "no field"),
+        // Filtering or sorting on a hidden field would reveal its values.
+        (
+            json!({"where": "owner_ssn LIKE '103%'"}),
+            "hidden by organization policy",
+        ),
+        (
+            json!({"where": "SUBSTR(OWNER_NAME, 1, 1) = 'S'"}),
+            "hidden by organization policy",
+        ),
+        (json!({"order_by": "owner_ssn"}), "no field"),
+        // Dataset names are plain identifiers only.
+        (
+            json!({"dataset": "roads WHERE 1=0 UNION SELECT owner_ssn FROM roads"}),
+            "not a dataset name",
+        ),
         (
             json!({"fields": ["route_id\" FROM x --"]}),
             "not a field name",
@@ -354,6 +389,67 @@ async fn gis_session_on_a_geopackage() {
         v["checks"]
     );
 
+    // A result cut off at a limit says so wherever it is used next.
+    let cut = ok(&call(
+        &client,
+        "query_features",
+        json!({"connection": "austin", "dataset": "roads", "limit": 2}),
+    )
+    .await);
+    assert!(check_ids(&cut).contains(&"query.read_limit".to_string()));
+    let cut_h = cut["result"]["layer"]["handle"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let b2 = ok(&call(
+        &client,
+        "vector_op",
+        json!({"op": "buffer", "inputs": {"layer": cut_h}, "params": {"distance": 1, "unit": "m"}}),
+    )
+    .await);
+    assert_eq!(check(&b2, "input.truncated")["severity"], "warn");
+    let b3 = ok(&call(
+        &client,
+        "verify",
+        json!({"layer": b2["result"]["layer"]["handle"]}),
+    )
+    .await);
+    assert!(
+        check_ids(&b3).contains(&"input.truncated".to_string()),
+        "carried on: {}",
+        b3["checks"]
+    );
+
+    // Files Columbus did not write are not opened, whatever their name: here
+    // a VRT disguised as a GeoPackage that would read the hidden field.
+    let session = roads4
+        .trim_start_matches("ws://")
+        .split('/')
+        .next()
+        .unwrap()
+        .to_string();
+    let results = walk(&env.root.join("workspaces"))
+        .into_iter()
+        .find(|p| p.file_name().is_some_and(|n| n == "results"))
+        .expect("results folder");
+    let evil = results.parent().unwrap().join("external").join("evil.gpkg");
+    std::fs::create_dir_all(evil.parent().unwrap()).unwrap();
+    std::fs::write(
+        &evil,
+        format!(
+            "<OGRVRTDataSource><OGRVRTLayer name='x'><SrcDataSource>{}</SrcDataSource><SrcSQL>SELECT owner_ssn, geom FROM roads</SrcSQL></OGRVRTLayer></OGRVRTDataSource>",
+            env.root.join("austin.gpkg").display()
+        ),
+    )
+    .unwrap();
+    let e = err(&call(
+        &client,
+        "verify",
+        json!({"layer": format!("ws://{session}/external/evil.gpkg")}),
+    )
+    .await);
+    assert!(e.contains("not written by a Columbus tool"), "{e}");
+
     // Every result is listed, with its labels.
     let outs = ok(&call(&client, "list_outputs", json!({})).await);
     assert!(outs.to_string().contains("vector_op buffer"), "{outs}");
@@ -368,7 +464,7 @@ async fn gis_session_on_a_geopackage() {
     columbus_shared::audit::verify(&audit).expect("audit chain intact");
     let text = std::fs::read_to_string(&audit).unwrap();
     assert!(
-        !text.contains("123-45-6789"),
+        !text.contains("45-67") && !text.contains("Secret Owner"),
         "hidden values never reach the audit log"
     );
     for tool in ["describe_dataset", "query_features", "vector_op", "verify"] {

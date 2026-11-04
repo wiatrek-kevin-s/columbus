@@ -187,16 +187,26 @@ async fn postgis_governed_session() {
     let q = ok(&call(
         &client,
         "sql_select",
-        json!({"connection": "roads-pg", "sql": "SELECT route_id, district_nbr, owner_name, geom FROM roads.roadway_inventory ORDER BY route_id"}),
+        json!({"connection": "roads-pg", "sql": "SELECT * FROM roads.roadway_inventory ORDER BY route_id"}),
     )
     .await);
     let res = &q["result"];
     assert_eq!(res["rows_read"], 600);
     assert_eq!(res["rows_returned"], 500);
-    assert_eq!(res["columns"], json!(["route_id", "district_nbr", "geom"]));
+    assert_eq!(
+        res["columns"],
+        json!([
+            "fid",
+            "route_id",
+            "district_nbr",
+            "csj",
+            "func_class",
+            "geom"
+        ])
+    );
     let rows = res["rows"].as_array().unwrap();
-    assert!(rows.iter().all(|row| row[1] == 14));
-    assert_eq!(rows[0][2]["geometry"], "ewkb");
+    assert!(rows.iter().all(|row| row[2] == 14));
+    assert_eq!(rows[0][5]["geometry"], "ewkb");
     assert!(res["executed_sql"]
         .as_str()
         .unwrap()
@@ -244,6 +254,28 @@ async fn postgis_governed_session() {
             "are not allowed",
         ),
         ("DELETE FROM roads.roadway_inventory", "only SELECT"),
+        // Hidden fields cannot be reached by renaming, filtering, casting
+        // (whose error would echo the value) or reading a whole row.
+        (
+            "SELECT owner_name AS x FROM roads.roadway_inventory",
+            "hidden by organization policy",
+        ),
+        (
+            "SELECT fid FROM roads.roadway_inventory WHERE CAST(owner_name AS INTEGER) = 1",
+            "hidden by organization policy",
+        ),
+        (
+            "SELECT to_jsonb(r) FROM roads.roadway_inventory r",
+            "whole row",
+        ),
+        (
+            "SELECT row_to_json(r.*) FROM roads.roadway_inventory r",
+            "name the columns",
+        ),
+        (
+            "SELECT to_jsonb(roadway_inventory) FROM roads.roadway_inventory",
+            "whole row",
+        ),
     ] {
         let e = err(&call(
             &client,

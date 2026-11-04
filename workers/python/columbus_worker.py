@@ -339,9 +339,32 @@ def _pg_fetch(conn: dict[str, Any], sql: str, max_rows: int, timeout_s: float, k
         except psycopg.errors.ReadOnlySqlTransaction as e:
             raise WorkerError(ENGINE_ERROR, "the database refused a write: this connection is read-only") from e
         except psycopg.Error as e:
-            raise WorkerError(ENGINE_ERROR, scrub(f"query failed: {e}".strip())) from None
+            raise WorkerError(ENGINE_ERROR, scrub(_pg_error_text(e))) from None
     finally:
         db.close()
+
+
+# Errors whose message names only things the query itself wrote (a column,
+# table or function name), so it is safe to pass on as is.
+_PG_NAME_ERRORS = {"42703", "42P01", "42883", "42601", "42803", "42702", "42P10", "3F000"}
+
+
+def _pg_error_text(e) -> str:
+    """A database error, safe to show the agent and write to the audit log.
+
+    PostgreSQL error messages can quote data values ("invalid input syntax
+    for type integer: \"<value>\"") and their DETAIL lines often do. Only
+    the primary message is kept, and unless the error is about a name in the
+    query, anything quoted in it is removed."""
+    diag = getattr(e, "diag", None)
+    state = getattr(e, "sqlstate", None) or (diag.sqlstate if diag else None) or "unknown"
+    primary = diag.message_primary if diag else None
+    if not primary:
+        lines = str(e).splitlines()
+        primary = lines[0] if lines else "error"
+    if state not in _PG_NAME_ERRORS:
+        primary = re.sub(r'"[^"]*"|\'[^\']*\'', '"…"', primary)
+    return f"query failed: {primary} (SQLSTATE {state})"
 
 
 def _pg_list(conn: dict[str, Any], timeout_s: float) -> list[dict[str, Any]]:
@@ -713,8 +736,14 @@ def vector_op(params: dict[str, Any]) -> dict[str, Any]:
     stem = params.get("output_stem")
     if not isinstance(inputs, dict) or not isinstance(stem, str):
         raise WorkerError(INVALID_PARAMS, "inputs and output_stem are required")
+    op_params = params.get("params") or {}
+    if not isinstance(op_params, dict):
+        raise WorkerError(INVALID_PARAMS, "params must be an object")
+    # Names starting with "_" are set by the server, never by the caller.
+    op_params = {k: v for k, v in op_params.items() if not str(k).startswith("_")}
+    op_params["_max_rows"] = params.get("max_rows")
     try:
-        return g.vector_op(str(params.get("op")), inputs, params.get("params") or {}, stem)
+        return g.vector_op(str(params.get("op")), inputs, op_params, stem)
     except g.GISError as e:
         raise _refused(e) from None
 
@@ -724,7 +753,10 @@ def verify_layer(params: dict[str, Any]) -> dict[str, Any]:
     path = params.get("path")
     if not isinstance(path, str):
         raise WorkerError(INVALID_PARAMS, "path is required")
-    return g.verify_layer(path)
+    try:
+        return g.verify_layer(path)
+    except g.GISError as e:
+        raise _refused(e) from None
 
 
 plugin = Plugin("columbus.core", VERSION)

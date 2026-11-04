@@ -210,6 +210,20 @@ class PostgresTests(unittest.TestCase):
         self.assertNotIn(secret, cm.exception.message)
         self.assertIn("cannot connect", cm.exception.message)
 
+    def test_errors_do_not_echo_data_values(self):
+        for sql in (
+            "SELECT fid FROM roads.roadway_inventory WHERE CAST(owner_name AS INTEGER) = 1",
+            "SELECT fid FROM roads.roadway_inventory WHERE TO_DATE(owner_name, 'YYYY') IS NULL",
+        ):
+            with self.assertRaises(w.WorkerError) as cm:
+                w.sql_select({"connection": pg_conn(), "sql": sql, "max_rows": 10})
+            self.assertNotIn("Owner", cm.exception.message, sql)
+            self.assertIn("SQLSTATE", cm.exception.message)
+        # Errors about names in the query keep the name: they help and leak nothing.
+        with self.assertRaises(w.WorkerError) as cm:
+            w.sql_select({"connection": pg_conn(), "sql": "SELECT no_such_col FROM roads.roadway_inventory", "max_rows": 1})
+        self.assertIn("no_such_col", cm.exception.message)
+
     def test_list_datasets_reflects_database_grants(self):
         r = w.list_datasets({"connection": pg_conn()})
         by_name = {d["name"]: d for d in r["datasets"]}

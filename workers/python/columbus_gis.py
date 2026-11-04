@@ -17,12 +17,22 @@ import os
 import re
 from typing import Any
 
-import geopandas as gpd
-import pandas as pd
-import pyogrio
-import pyproj
-import shapely
-from pyproj import CRS, Transformer
+# Before GDAL loads: leave out the drivers whose files can point at other
+# files, programs or URLs (VRT, the GDALG pipeline format), and keep PROJ
+# from fetching grids over the network. Workspace inputs are also checked by
+# content in read_layer; this is the second line.
+_SKIP = {"VRT", "OGR_VRT", "GDALG"}
+_skip_now = {d for d in os.environ.get("GDAL_SKIP", "").replace(",", " ").split() if d}
+os.environ["GDAL_SKIP"] = " ".join(sorted(_SKIP | _skip_now))
+os.environ["PROJ_NETWORK"] = "OFF"
+os.environ.setdefault("CPL_VSIL_CURL_ALLOWED_EXTENSIONS", ".columbus-none")
+
+import geopandas as gpd  # noqa: E402
+import pandas as pd  # noqa: E402
+import pyogrio  # noqa: E402
+import pyproj  # noqa: E402
+import shapely  # noqa: E402
+from pyproj import CRS, Transformer  # noqa: E402
 
 __all__ = [
     "GISError",
@@ -240,12 +250,24 @@ def bbox_filter(bbox: list[float] | None, bbox_crs: CRS | None, layer_crs: CRS |
     if len(bbox) != 4 or bbox[0] > bbox[2] or bbox[1] > bbox[3]:
         raise GISError("bbox.invalid", "bbox must be [min x, min y, max x, max y]")
     box = list(bbox)
+    if bbox_crs is not None and layer_crs is None:
+        raise GISError("bbox.crs", "the dataset records no CRS, so a bbox in another CRS cannot be placed on it",
+                       fix="Give the bbox in the dataset's own coordinates and leave out bbox_crs")
     if bbox_crs is not None and layer_crs is not None and not bbox_crs.equals(layer_crs):
         box = list(Transformer.from_crs(bbox_crs, layer_crs, always_xy=True).transform_bounds(*box))
     target = shapely.box(*box)
 
+    shapely.prepare(target)
+
     def keep(geom) -> bool:
-        return geom is not None and not geom.is_empty and shapely.intersects(shapely.envelope(geom), target)
+        # The envelope test is a quick pre-filter; the answer is whether the
+        # geometry itself meets the box.
+        return (
+            geom is not None
+            and not geom.is_empty
+            and shapely.intersects(shapely.envelope(geom), target)
+            and shapely.intersects(geom, target)
+        )
 
     return keep
 
@@ -305,11 +327,39 @@ def _fid_safe(df):
     return df
 
 
+GPKG_APPLICATION_ID = 0x47504B47  # "GPKG"
+
+
+def _is_geopackage(path: str) -> bool:
+    try:
+        with open(path, "rb") as f:
+            head = f.read(100)
+    except OSError:
+        return False
+    return (
+        len(head) == 100
+        and head[:16] == b"SQLite format 3\x00"
+        and int.from_bytes(head[68:72], "big") == GPKG_APPLICATION_ID
+    )
+
+
 def read_layer(path: str):
+    """Open a workspace layer: a GeoPackage (checked by its header, not its
+    name) or a CSV (read as text by pandas, never by GDAL). Anything else is
+    refused, so a file whose content is really a VRT, a GDAL "CSV:" or
+    "/vsicurl/" path, or another format that can point at other files or
+    URLs is never handed to GDAL."""
+    if not isinstance(path, str) or path.startswith(("/vsi", "\\vsi")) or ":" in os.path.basename(path):
+        raise GISError("input.format", "input must be a file in the workspace")
+    if path.lower().endswith(".gpkg"):
+        if not _is_geopackage(path):
+            raise GISError("input.format", f"{os.path.basename(path)} is not a GeoPackage")
+        return gpd.read_file(path, engine="pyogrio")
+    if not path.lower().endswith(".csv"):
+        raise GISError("input.format", "inputs must be GeoPackage (.gpkg) or CSV layers")
     if path.lower().endswith(".csv"):
         # Keys stay text: "0042" must not become 42.
         return pd.read_csv(path, dtype=str, keep_default_na=False)
-    return gpd.read_file(path, engine="pyogrio")
 
 
 def layer_summary(df) -> dict[str, Any]:
@@ -380,8 +430,23 @@ def _distance(params: dict, key: str, df: gpd.GeoDataFrame, what: str) -> float:
         raise GISError("crs.measure",
                        f"cannot {what} by {value:g} {unit}: the layer is in {_label(crs)}, whose units are degrees",
                        fix="Reproject first to a projected CRS suited to the area (for Texas statewide, EPSG:3081), then run it again")
+    if _pseudo_mercator(crs):
+        raise GISError("crs.measure",
+                       f"cannot {what} by {value:g} {unit} in {_label(crs)}: Web Mercator distances are stretched "
+                       "away from the equator (about 15% at Austin, more further north)",
+                       fix="Reproject first to a projected CRS suited to the area (for Texas statewide, EPSG:3081), then run it again")
     per_unit = crs.axis_info[0].unit_conversion_factor
     return value * UNITS[unit] / per_unit
+
+
+def _pseudo_mercator(crs) -> bool:
+    if crs.to_epsg() in (3857, 900913, 3785, 102100, 102113):
+        return True
+    try:
+        method = crs.coordinate_operation.method_name.lower() if crs.coordinate_operation else ""
+    except Exception:  # noqa: BLE001
+        method = ""
+    return "pseudo mercator" in method or "popular visualisation" in method
 
 
 def _align(base: gpd.GeoDataFrame, other: gpd.GeoDataFrame, name: str, checks: list) -> gpd.GeoDataFrame:
@@ -396,18 +461,22 @@ def _join_checks(left: pd.DataFrame, right: pd.DataFrame, lk: str, rk: str, out_
     lkeys = left[lk]
     rkeys = right[rk]
     n = len(left)
-    matched = lkeys.isin(set(rkeys.dropna()))
-    unmatched = int((~matched & lkeys.notna()).sum()) + int(lkeys.isna().sum())
+    usable = _usable_keys(lkeys)
+    matched = usable & lkeys.isin(set(rkeys[_usable_keys(rkeys)]))
+    unmatched = int((~matched).sum())
+    empty = int((~usable).sum())
     if n:
         pct = 100.0 * unmatched / n
         msg = f"{unmatched} of {n} rows ({pct:.1f}%) had no match on {lk}"
         sev = "info" if unmatched == 0 else ("fail" if pct >= 40 else "warn")
-        c = check("join.unmatched", sev, msg, detail={"left": n, "matched": n - unmatched})
+        if empty:
+            msg += f"; {empty} of those have an empty {lk}, which never matches"
+        c = check("join.unmatched", sev, msg, detail={"left": n, "matched": n - unmatched, "empty_keys": empty})
         if unmatched:
-            lstr = lkeys.dropna().astype(str)
+            lstr = lkeys[usable].astype(str)
             rstr = set(rkeys.dropna().astype(str))
             stripped = {s.lstrip("0") for s in rstr}
-            fixable = int(lstr[~lstr.isin(rstr)].map(lambda s: s.lstrip("0") in stripped).sum())
+            fixable = int(lstr[~lstr.isin(rstr)].map(lambda s: s.lstrip("0") in stripped).astype(bool).sum())
             if fixable:
                 width = int(rkeys.dropna().astype(str).str.len().max())
                 c["fix"] = f"{fixable} of them match once leading zeros are ignored: pad {lk} to {width} characters (zero-filled) before joining"
@@ -421,6 +490,25 @@ def _join_checks(left: pd.DataFrame, right: pd.DataFrame, lk: str, rk: str, out_
                          detail={"left": n, "out": out_rows},
                          fix="Deduplicate or aggregate the right side first, or confirm one-to-many is intended"))
     return out
+
+
+def _usable_keys(keys: pd.Series) -> pd.Series:
+    """Keys that can match: not null and not empty text. pandas would match
+    null to null (and, after a CSV round trip, "" to "")."""
+    return keys.notna() & (keys.astype(str).str.strip() != "")
+
+
+def _out_limit(params: dict) -> int:
+    try:
+        return max(1, int(params.get("_max_rows") or 200_000))
+    except (TypeError, ValueError):
+        return 200_000
+
+
+def _refuse_large(rows: int, limit: int, what: str) -> None:
+    if rows > limit:
+        raise GISError("output.too_large", f"{what} would produce {rows} rows, more than the read limit of {limit}",
+                       fix="Narrow the inputs, or deduplicate or aggregate the right side first")
 
 
 def _op_reproject(inp, params, checks):
@@ -437,9 +525,17 @@ def _op_buffer(inp, params, checks):
     df = _need_geo(inp["layer"], "layer")
     d = _distance(params, "distance", df, "buffer")
     out = df.copy()
-    out.geometry = df.geometry.buffer(d, quad_segs=int(params.get("segments", 8)))
+    try:
+        segs = int(params.get("segments", 8))
+    except (TypeError, ValueError) as e:
+        raise GISError("params", "segments must be a whole number from 1 to 64") from e
+    if not 1 <= segs <= 64:
+        raise GISError("params", "segments must be a whole number from 1 to 64")
+    out.geometry = df.geometry.buffer(d, quad_segs=segs)
     if params.get("dissolve"):
-        out = out.dissolve().reset_index(drop=True)
+        # One shape for everything: no single feature's attributes apply.
+        geom = shapely.union_all(out.geometry.to_numpy())
+        out = gpd.GeoDataFrame({"feature_count": [len(df)]}, geometry=[geom], crs=df.crs)
     checks.append(check("crs.measure", "info", f"Buffered by {params['distance']} {params['unit']} in {_label(df.crs)}"))
     return out
 
@@ -478,7 +574,14 @@ def _op_dissolve(inp, params, checks):
         if missing:
             raise GISError("params", f"no field(s) {', '.join(missing)} in the layer")
     agg = df.assign(feature_count=1)
-    out = agg.dissolve(by=by, aggfunc={"feature_count": "sum"} if by else "first").reset_index()
+    if by:
+        nulls = int(df[by].isna().any(axis=1).sum())
+        if nulls:
+            checks.append(check("dissolve.null_groups", "warn",
+                                f"{nulls} features have an empty {', '.join(by)}; they are dissolved together into one group with an empty value",
+                                detail={"features": nulls},
+                                fix="Fill or filter the empty values first if they should not be grouped together"))
+    out = agg.dissolve(by=by, aggfunc={"feature_count": "sum"} if by else "first", dropna=False).reset_index()
     if not by:
         out = out[[out.geometry.name]].assign(feature_count=len(df))
     return out
@@ -487,6 +590,8 @@ def _op_dissolve(inp, params, checks):
 def _op_intersect(inp, params, checks):
     a = _need_geo(inp["a"], "a")
     b = _align(a, _need_geo(inp["b"], "b"), "b", checks)
+    pairs = b.sindex.query(a.geometry, predicate="intersects")
+    _refuse_large(pairs.shape[1], _out_limit(params), "intersect")
     return gpd.overlay(a, b, how="intersection", keep_geom_type=True)
 
 
@@ -502,8 +607,20 @@ def _op_join(inp, params, checks):
         if k not in df.columns:
             raise GISError("params", f"no field {k!r} in the {side} input")
     rdf = pd.DataFrame(right.drop(columns=right.geometry.name) if isinstance(right, gpd.GeoDataFrame) else right)
-    merged = pd.DataFrame(left).merge(rdf, how=how, left_on=lk, right_on=rk, suffixes=("", "_right"))
-    checks.extend(_join_checks(pd.DataFrame(left), rdf, lk, rk, len(merged)))
+    rdf = rdf[_usable_keys(rdf[rk])]
+    ldf = pd.DataFrame(left)
+    usable = _usable_keys(ldf[lk])
+    # Rows out = for each left key, the number of right rows with it (at least
+    # one for a left join). Refuse before building something huge.
+    counts = rdf[rk].value_counts()
+    per_left = ldf.loc[usable, lk].map(counts).fillna(0)
+    estimate = int(per_left.clip(lower=1 if how == "left" else 0).sum()) + (int((~usable).sum()) if how == "left" else 0)
+    _refuse_large(estimate, _out_limit(params), "join")
+    merged = ldf[usable].merge(rdf, how=how, left_on=lk, right_on=rk, suffixes=("", "_right"))
+    if how == "left" and not usable.all():
+        merged = pd.concat([merged, ldf[~usable]], ignore_index=False).sort_index(kind="stable")
+    merged = merged.reset_index(drop=True)
+    checks.extend(_join_checks(ldf, rdf, lk, rk, len(merged)))
     if isinstance(left, gpd.GeoDataFrame):
         return gpd.GeoDataFrame(merged, geometry=left.geometry.name, crs=left.crs)
     return merged
@@ -518,7 +635,11 @@ def _op_spatial_join(inp, params, checks):
     how = params.get("how", "left")
     if how not in ("left", "inner"):
         raise GISError("params", "how must be \"left\" or \"inner\"")
-    out = gpd.sjoin(left, right, how=how, predicate=pred, lsuffix="", rsuffix="right")
+    pairs = right.sindex.query(left.geometry, predicate=pred)
+    _refuse_large(pairs.shape[1] + (len(left) if how == "left" else 0), _out_limit(params), "spatial_join")
+    out = gpd.sjoin(left, right, how=how, predicate=pred, lsuffix="left", rsuffix="right")
+    # Keep the left side's own field names; only clashing right fields get "_right".
+    out = out.rename(columns={c: c[: -len("_left")] for c in out.columns if c.endswith("_left") and c[: -len("_left")] not in out.columns})
     unmatched = int(out["index_right"].isna().sum()) if how == "left" else len(left) - out.index.nunique()
     n = len(left)
     pct = 100.0 * unmatched / n if n else 0.0

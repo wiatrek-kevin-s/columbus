@@ -208,6 +208,83 @@ class WorkerGisTests(unittest.TestCase):
         path = g.write_layer(dup, os.path.join(self.tmp.name, "ws", "dup"))
         self.assertEqual(list(gpd.read_file(path)["source_fid"]), [1, 1])
 
+    def test_inputs_are_checked_by_content(self):
+        # A "GeoPackage" whose content is a VRT pointing at the source file,
+        # as a connected server could save into the workspace.
+        vrt = os.path.join(self.tmp.name, "ws", "external", "evil.gpkg")
+        os.makedirs(os.path.dirname(vrt), exist_ok=True)
+        with open(vrt, "w") as f:
+            f.write(f"<OGRVRTDataSource><OGRVRTLayer name='x'><SrcDataSource>{self.path}</SrcDataSource>"
+                    "<SrcSQL>SELECT * FROM roads</SrcSQL></OGRVRTLayer></OGRVRTDataSource>")
+        txt = vrt[:-5] + ".txt"
+        os.rename(vrt, txt)
+        for path in (txt, "CSV:/etc/passwd", "/vsicurl/http://127.0.0.1:1/x.gpkg"):
+            with self.assertRaises(w.WorkerError, msg=path):
+                w.verify_layer({"path": path})
+        with open(vrt, "w") as f:
+            f.write("<OGRVRTDataSource/>")
+        with self.assertRaises(w.WorkerError) as cm:
+            w.verify_layer({"path": vrt})
+        self.assertIn("not a GeoPackage", cm.exception.message)
+        # Plain SQLite is not a GeoPackage either.
+        plain = os.path.join(self.tmp.name, "ws", "plain.gpkg")
+        sqlite3.connect(plain).execute("CREATE TABLE t (a)").connection.close()
+        with self.assertRaises(w.WorkerError):
+            w.verify_layer({"path": plain})
+        # GDAL itself no longer opens VRTs.
+        import pyogrio
+        self.assertNotIn("OGR_VRT", pyogrio.list_drivers())
+
+    def test_empty_keys_never_match(self):
+        left = gpd.GeoDataFrame({"k": ["a", None, None, "zz", ""]}, geometry=[Point(i, i) for i in range(5)], crs="EPSG:3081")
+        lp = g.write_layer(left, os.path.join(self.tmp.name, "ws", "left"))
+        rp = os.path.join(self.tmp.name, "ws", "right.csv")
+        pd.DataFrame({"k": ["a", "", None], "v": ["1", "99", "98"]}).to_csv(rp, index=False)
+        j = self.op("join", {"left": lp, "right": rp}, {"left_key": "k"}, "nk")
+        out = gpd.read_file(j["output_path"])
+        self.assertEqual(len(out), 5)
+        self.assertEqual(list(out["v"].fillna("-")), ["1", "-", "-", "-", "-"])
+        c = next(c for c in j["checks"] if c["id"] == "join.unmatched")
+        self.assertIn("4 of 5", c["message"])
+        self.assertIn("empty", c["message"])
+        # Only empty keys unmatched: used to crash on pandas 3.
+        left2 = gpd.GeoDataFrame({"k": ["a", None]}, geometry=[Point(0, 0), Point(1, 1)], crs="EPSG:3081")
+        self.op("join", {"left": g.write_layer(left2, os.path.join(self.tmp.name, "ws", "l2")), "right": rp}, {"left_key": "k"}, "nk2")
+
+    def test_join_and_overlay_size_limits(self):
+        left = gpd.GeoDataFrame({"k": ["a"] * 50}, geometry=[Point(i, 0) for i in range(50)], crs="EPSG:3081")
+        lp = g.write_layer(left, os.path.join(self.tmp.name, "ws", "big"))
+        rp = os.path.join(self.tmp.name, "ws", "dups.csv")
+        pd.DataFrame({"k": ["a"] * 50, "v": range(50)}).to_csv(rp, index=False)
+        with self.assertRaises(w.WorkerError) as cm:
+            w.vector_op({"op": "join", "inputs": {"left": lp, "right": rp}, "params": {"left_key": "k", "_max_rows": 10**9},
+                         "max_rows": 1000, "output_stem": os.path.join(self.tmp.name, "ws", "results", "x")})
+        self.assertIn("output.too_large", cm.exception.message)
+        with self.assertRaises(w.WorkerError):
+            self.op("buffer", {"layer": lp}, {"distance": 1, "unit": "m", "segments": 10**7})
+
+    def test_dissolve_keeps_empty_groups_and_buffer_refuses_web_mercator(self):
+        polys = gpd.GeoDataFrame({"g": ["x", None, None]}, geometry=[Point(i * 10, 0).buffer(1) for i in range(3)], crs="EPSG:3081")
+        p = g.write_layer(polys, os.path.join(self.tmp.name, "ws", "polys"))
+        d = self.op("dissolve", {"layer": p}, {"by": "g"}, "dn")
+        self.assertEqual(d["summary"]["rows"], 2)
+        self.assertIn("dissolve.null_groups", [c["id"] for c in d["checks"]])
+        merc = self.op("reproject", {"layer": p}, {"crs": "EPSG:3857"}, "merc")["output_path"]
+        with self.assertRaises(w.WorkerError) as cm:
+            self.op("buffer", {"layer": merc}, {"distance": 100, "unit": "m"})
+        self.assertIn("Web Mercator", cm.exception.message)
+
+    def test_bbox_meets_the_geometry_not_its_envelope(self):
+        diag = gpd.GeoDataFrame({"a": [1]}, geometry=[LineString([(0, 0), (10, 10)])], crs="EPSG:3081")
+        path = os.path.join(self.tmp.name, "diag.gpkg")
+        diag.to_file(path, layer="d", engine="pyogrio")
+        conn = {"kind": "gpkg", "path": path}
+        base = {"connection": conn, "sql": "SELECT * FROM d", "max_rows": 10, "geometry_column": "geom", "crs_spec": {"code": "EPSG:3081"}}
+        self.assertEqual(w.query_layer({**base, "bbox": [8, 0, 10, 2]})["rows_read"], 0)
+        self.assertEqual(w.query_layer({**base, "bbox": [4, 4, 6, 6]})["rows_read"], 1)
+        with self.assertRaises(w.WorkerError):
+            w.query_layer({**base, "crs_spec": None, "bbox": [0, 0, 1, 1], "bbox_crs": "EPSG:4326"})
+
     def test_unknown_op_and_wrong_inputs(self):
         roads = self.layer("SELECT * FROM roads", "roads")
         with self.assertRaises(w.WorkerError):

@@ -567,14 +567,43 @@ class Plugin:
         else:
             self._reply(rid, error=(UNKNOWN_METHOD, "unknown method"))
 
+    def _take_std_streams(self):
+        """Keep the protocol pipes to ourselves and point the process's
+        standard input at the null device and its standard output at stderr.
+
+        Two reasons. A library that prints would otherwise write into the
+        protocol stream. And on Windows, while one thread is blocked reading
+        a synchronous pipe, other operations on that same handle wait for the
+        read to finish; native libraries that look at standard input while
+        loading (GDAL, PROJ, NumPy builds) then hang until the next request
+        arrives. Reading from a private duplicate avoids both.
+        """
+        if self._stdout is not sys.stdout:
+            return sys.stdin  # tests replace the streams; leave them alone
+        try:
+            proto_in = os.fdopen(os.dup(sys.stdin.fileno()), "r", encoding="utf-8", newline="\n")
+            proto_out = os.fdopen(os.dup(sys.stdout.fileno()), "w", encoding="utf-8", newline="\n")
+            null = os.open(os.devnull, os.O_RDONLY)
+            os.dup2(null, 0)
+            os.close(null)
+            sys.stdout.flush()
+            os.dup2(2, 1)
+        except (OSError, ValueError, AttributeError):
+            return sys.stdin
+        sys.stdin = open(os.devnull, encoding="utf-8")
+        sys.stdout = sys.stderr
+        self._stdout = proto_out
+        return proto_in
+
     def serve(self) -> None:
         """Read requests from stdin until EOF. Runs execute on a separate
         thread so that ``cancel`` can be read while a tool works."""
         lines: "queue.Queue[str | None]" = queue.Queue()
         self._threads = []
+        proto_in = self._take_std_streams()
 
         def reader():
-            for line in sys.stdin:
+            for line in proto_in:
                 if line.strip():
                     lines.put(line)
             lines.put(None)

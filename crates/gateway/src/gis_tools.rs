@@ -19,7 +19,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::providers::OutputMeta;
+use crate::providers::{OutputMeta, OutputSource};
 use crate::server::{
     checks_from, client_name, new_prov_id, out, Check, Gateway, Output, Severity, SERVER_NAME,
 };
@@ -154,6 +154,19 @@ fn ident_ok(s: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
 }
 
+/// A dataset name the GIS tools put into SQL: one to three plain
+/// identifiers separated by dots (`roads`, `roads.roadway_inventory`). Only
+/// letters, digits, `_` and `$`, so nothing in it can change the statement.
+fn dataset_ok(d: &str) -> Result<(), String> {
+    let parts: Vec<&str> = d.split('.').collect();
+    if parts.len() > 3 || !parts.iter().all(|p| ident_ok(p)) {
+        return Err(format!(
+            "{d:?} is not a dataset name the GIS tools accept (letters, digits and _ separated by dots); use the name list_datasets shows, or sql_select"
+        ));
+    }
+    Ok(())
+}
+
 fn quote(name: &str, d: SqlDialect) -> String {
     match d {
         SqlDialect::MsSql => format!("[{name}]"),
@@ -184,6 +197,17 @@ struct Prov<'a> {
     outputs: Vec<String>,
 }
 
+/// One input to vector_op or verify, ready for the worker.
+struct Input {
+    path: PathBuf,
+    /// For the provenance record.
+    record: Value,
+    /// A check to pass on (an input that was cut off at a limit).
+    warning: Option<Check>,
+    /// (connection, dataset, rows) when the input was read from a dataset.
+    read: Option<(String, String, u64)>,
+}
+
 /// What one governed read produced.
 struct Read {
     reply: Value,
@@ -206,6 +230,7 @@ impl Gateway {
         dataset: &str,
         refresh: bool,
     ) -> Result<Value, String> {
+        dataset_ok(dataset)?;
         let key = (conn.id.clone(), dataset.to_string());
         if !refresh {
             if let Some(v) = self.state.datasets.lock().expect("datasets").get(&key) {
@@ -229,12 +254,54 @@ impl Gateway {
             )
             .await
             .map_err(|e| e.to_string())?;
+        let info = Self::visible_info(info, access, dataset);
         self.state
             .datasets
             .lock()
             .expect("datasets")
             .insert(key, info.clone());
         Ok(info)
+    }
+
+    /// The worker's description with the gateway's own reading of the
+    /// policy applied on top: hidden fields (and a hidden geometry column)
+    /// removed, and the stored extent dropped when a row filter applies,
+    /// because it covers rows the filter excludes.
+    fn visible_info(mut info: Value, access: &EffectiveAccess, dataset: &str) -> Value {
+        let Some(o) = info.as_object_mut() else {
+            return info;
+        };
+        if let Some(Value::Array(fields)) = o.get_mut("fields") {
+            fields.retain(|f| {
+                f.get("name")
+                    .and_then(Value::as_str)
+                    .is_some_and(|n| !access.field_hidden(n))
+            });
+        }
+        let geom_hidden = o
+            .get("geometry_column")
+            .and_then(Value::as_str)
+            .is_some_and(|g| access.field_hidden(g));
+        if geom_hidden {
+            for k in [
+                "geometry_column",
+                "geometry_type",
+                "crs",
+                "crs_spec",
+                "extent",
+            ] {
+                o.remove(k);
+            }
+        }
+        if !access.filters_for(dataset).is_empty() && o.get("extent").is_some_and(|e| !e.is_null())
+        {
+            o.insert("extent".into(), Value::Null);
+            o.insert(
+                "extent_note".into(),
+                json!("The stored extent covers rows outside this connection's row filter, so it is not shown; query_features reports the extent of the rows you can read."),
+            );
+        }
+        info
     }
 
     fn field_names(info: &Value) -> Vec<String> {
@@ -289,8 +356,19 @@ impl Gateway {
                     .collect::<Vec<_>>()
                     .join(", ")
             }
-            _ => "*".to_string(),
+            // Every visible field by name, never `*`: the gateway, not the
+            // worker, decides what is hidden.
+            _ => known
+                .iter()
+                .map(String::as_str)
+                .chain(geom.filter(|g| !known.iter().any(|k| k == g)))
+                .map(|c| quote(c, dialect))
+                .collect::<Vec<_>>()
+                .join(", "),
         };
+        if cols.is_empty() {
+            return Err(format!("{dataset} has no fields you are allowed to read"));
+        }
         let mut sql = format!("SELECT {cols} FROM {dataset}");
         if let Some(w) = q.where_.as_deref().filter(|w| !w.trim().is_empty()) {
             let w = check_where(w, dialect).map_err(|e| e.to_string())?;
@@ -335,6 +413,7 @@ impl Gateway {
                 conn.kind
             ));
         }
+        dataset_ok(&q.dataset)?;
         if !access.dataset_allowed(&q.dataset) {
             return Err(format!(
                 "dataset {:?} is not in this connection's allowed datasets",
@@ -394,6 +473,33 @@ impl Gateway {
             if !ok {
                 return Err("the engine wrote outside the workspace; result discarded".into());
             }
+        }
+        // Second check, in the gateway: no column the policy hides may be in
+        // the reply or the layer, whatever the worker made of the patterns.
+        let hidden_out: Vec<&str> = reply
+            .get("columns")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .chain(
+                reply
+                    .get("summary")
+                    .and_then(|s| s.get("fields"))
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten(),
+            )
+            .filter_map(Value::as_str)
+            .filter(|c| access.field_hidden(c))
+            .collect();
+        if !hidden_out.is_empty() {
+            if let Some(p) = &path {
+                let _ = std::fs::remove_file(p);
+            }
+            return Err(
+                "the engine returned a field hidden by organization policy; result discarded"
+                    .into(),
+            );
         }
         let rows_read = reply.get("rows_read").and_then(Value::as_u64).unwrap_or(0);
         let hit_limit = reply
@@ -503,12 +609,7 @@ impl Gateway {
 
     /// A workspace file for an input: a handle as is, or a dataset read
     /// through its connection's permissions into the workspace.
-    async fn input_file(
-        &self,
-        name: &str,
-        v: &Value,
-        prov: &str,
-    ) -> Result<(PathBuf, Value), String> {
+    async fn input_file(&self, name: &str, v: &Value, prov: &str) -> Result<Input, String> {
         if let Some(h) = v
             .as_str()
             .filter(|s| s.starts_with(crate::providers::HANDLE_SCHEME))
@@ -516,11 +617,37 @@ impl Gateway {
             let path =
                 crate::providers::resolve_handle(&self.state.session, &self.state.sandbox, h)?;
             let meta = self.state.outputs.get(&path);
-            return Ok((
-                path.clone(),
-                json!({"input": name, "handle": h, "labels": self.state.flow.file_labels(&path),
-                       "made_by": meta.as_ref().map(|m| m.made_by.clone()), "provenance": meta.and_then(|m| m.provenance)}),
-            ));
+            match meta.as_ref().map(|m| m.source) {
+                Some(OutputSource::Engine | OutputSource::Plugin) => {}
+                Some(OutputSource::Provider) => {
+                    return Err(format!(
+                        "{h} came from a connected server, and the GIS tools only open layers Columbus or an approved engine plugin wrote. Load the data through a connection instead"
+                    ))
+                }
+                None => {
+                    return Err(format!(
+                        "{h} was not written by a Columbus tool in this session, so the GIS tools will not open it"
+                    ))
+                }
+            }
+            let truncated = meta.as_ref().is_some_and(|m| m.truncated);
+            let warning = truncated.then(|| Check {
+                id: "input.truncated".into(),
+                severity: Severity::Warn,
+                message: format!(
+                    "Input {name} ({h}) was cut off at a row limit when it was made, so this result covers only part of the data"
+                ),
+                detail: None,
+                fix: Some("Narrow the original query with where or bbox so it is complete".into()),
+            });
+            return Ok(Input {
+                path: path.clone(),
+                record: json!({"input": name, "handle": h, "labels": self.state.flow.file_labels(&path),
+                       "made_by": meta.as_ref().map(|m| m.made_by.clone()), "truncated": truncated,
+                       "provenance": meta.and_then(|m| m.provenance)}),
+                warning,
+                read: None,
+            });
         }
         let (conn, dataset, where_) = dataset_ref(v).ok_or_else(|| {
             format!("input {name:?} must be a workspace handle or \"<connection>:<dataset>\"")
@@ -550,11 +677,13 @@ impl Gateway {
             Some(prov),
             "dataset read",
         );
-        Ok((
-            path.clone(),
-            json!({"input": name, "connection": conn, "dataset": dataset, "where": where_,
+        Ok(Input {
+            path: path.clone(),
+            record: json!({"input": name, "connection": conn, "dataset": dataset, "where": where_,
                    "executed_sql": r.executed_sql, "rows": r.rows_read, "handle": self.ws_handle(&path)}),
-        ))
+            warning: None,
+            read: Some((conn, dataset, r.rows_read)),
+        })
     }
 
     fn provenance(&self, ctx: &RequestContext<RoleServer>, p: Prov<'_>) {
@@ -768,6 +897,11 @@ impl Gateway {
             Some(&prov),
             "query_features",
         );
+        if r.hit_limit {
+            if let Some(p) = &r.path {
+                self.state.outputs.mark_truncated(p);
+            }
+        }
         let layer = r.path.as_ref().and_then(|p| {
             Some(LayerOut {
                 handle: self.ws_handle(p)?,
@@ -835,19 +969,27 @@ impl Gateway {
         let mut paths = serde_json::Map::new();
         let mut inputs = Vec::new();
         let mut files = Vec::new();
+        let mut warnings = Vec::new();
+        let mut reads = Vec::new();
         for (name, v) in &args.inputs {
             if !name.chars().all(|c| c.is_ascii_lowercase() || c == '_') {
                 return Err(self.deny(&ctx, rec, format!("{name:?} is not an input name")));
             }
             match self.input_file(name, v, &prov).await {
-                Ok((path, p)) => {
-                    paths.insert(name.clone(), json!(path));
-                    inputs.push(p);
-                    files.push(path);
+                Ok(i) => {
+                    paths.insert(name.clone(), json!(i.path));
+                    inputs.push(i.record);
+                    files.push(i.path);
+                    warnings.extend(i.warning);
+                    reads.extend(i.read);
                 }
-                Err(e) => return Err(self.deny(&ctx, rec, e)),
+                Err(e) => {
+                    note_reads(&mut rec, &reads);
+                    return Err(self.deny(&ctx, rec, e));
+                }
             }
         }
+        note_reads(&mut rec, &reads);
         let labels = self.state.flow.labels_for(&files);
         let stem = match self
             .state
@@ -906,9 +1048,12 @@ impl Gateway {
                 made_by: format!("vector_op {}", args.op),
                 provenance: Some(prov.clone()),
                 rows,
+                source: OutputSource::Engine,
+                truncated: !warnings.is_empty(),
             },
         );
-        let mut checks = checks_from(reply.get("checks"));
+        let mut checks = warnings;
+        checks.extend(checks_from(reply.get("checks")));
         if !labels.is_empty() {
             checks.push(Check {
                 id: "flow.labels".into(),
@@ -961,12 +1106,15 @@ impl Gateway {
         Parameters(args): Parameters<VerifyArgs>,
         ctx: RequestContext<RoleServer>,
     ) -> Result<Json<Output<Value>>, String> {
-        let rec = self.gate(&ctx, "verify", &json!({"layer": args.layer}))?;
+        let mut rec = self.gate(&ctx, "verify", &json!({"layer": args.layer}))?;
         let prov = new_prov_id();
-        let (path, _) = match self.input_file("layer", &args.layer, &prov).await {
+        let started = Local::now();
+        let input = match self.input_file("layer", &args.layer, &prov).await {
             Ok(v) => v,
             Err(e) => return Err(self.deny(&ctx, rec, e)),
         };
+        note_reads(&mut rec, input.read.as_slice());
+        let path = input.path.clone();
         let reply = self
             .state
             .worker
@@ -991,10 +1139,42 @@ impl Gateway {
                 return Err(msg);
             }
         };
-        let checks = checks_from(reply.get("checks"));
+        let mut checks: Vec<Check> = input.warning.into_iter().collect();
+        checks.extend(checks_from(reply.get("checks")));
+        self.provenance(
+            &ctx,
+            Prov {
+                id: &prov,
+                started,
+                inputs: json!([input.record]),
+                steps: json!([{"tool": "verify", "engine": "python-worker"}]),
+                labels: self.state.flow.file_labels(&path).into_iter().collect(),
+                checks: &checks,
+                outputs: vec![],
+            },
+        );
+        rec.prov = Some(prov.clone());
+        rec.labels = self.labels();
         self.audit(&ctx, rec)?;
-        Ok(out(reply.get("summary").cloned().unwrap_or(Value::Null)).map_checks(checks))
+        let mut o = out(reply.get("summary").cloned().unwrap_or(Value::Null)).map_checks(checks);
+        o.0.provenance = Some(prov);
+        Ok(o)
     }
+}
+
+/// Record in the audit line which datasets a call read.
+fn note_reads(rec: &mut AuditRecord, reads: &[(String, String, u64)]) {
+    if reads.is_empty() {
+        return;
+    }
+    let join = |f: fn(&(String, String, u64)) -> &str| {
+        let mut v: Vec<&str> = reads.iter().map(f).collect();
+        v.dedup();
+        v.join(", ")
+    };
+    rec.connection = Some(join(|r| &r.0));
+    rec.dataset = Some(join(|r| &r.1));
+    rec.rows = Some(reads.iter().map(|r| r.2).sum());
 }
 
 trait MapChecks {

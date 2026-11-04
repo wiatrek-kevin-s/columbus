@@ -17,8 +17,9 @@ use std::ops::ControlFlow;
 
 use serde::Serialize;
 use sqlparser::ast::{
-    visit_expressions, visit_relations, Expr, Ident, ObjectName, Query, SetExpr, Statement,
-    TableAlias, TableFactor, VisitMut, VisitorMut,
+    visit_expressions, visit_relations, Expr, FunctionArg, FunctionArgExpr, FunctionArguments,
+    GroupByExpr, Ident, ObjectName, OrderByKind, Query, SetExpr, Statement, TableAlias,
+    TableFactor, Value, VisitMut, VisitorMut,
 };
 use sqlparser::dialect::{
     Dialect, DuckDbDialect, GenericDialect, MsSqlDialect, OracleDialect, PostgreSqlDialect,
@@ -378,6 +379,176 @@ fn check_tables_and_functions(
     Ok(tables)
 }
 
+/// Refuses any way a query could read a field hidden by organization policy
+/// other than by its name in the output (which the worker strips):
+///
+/// * a hidden field named anywhere: in a where clause, a join condition, an
+///   expression, an alias (`owner_name AS x`), ordering or grouping;
+/// * `t.*` passed to a function (`row_to_json(t.*)`), and on PostgreSQL and
+///   DuckDB a bare table name or alias used as a value (`to_jsonb(t)`),
+///   both of which turn a whole row, hidden fields included, into one value;
+/// * ordering or grouping by position (`ORDER BY 3`), which can sort by a
+///   hidden column selected through `*`.
+fn check_hidden_references(
+    query: &Query,
+    access: &EffectiveAccess,
+    dialect: SqlDialect,
+) -> Result<(), Denied> {
+    if access.hide_fields.is_empty()
+        && !matches!(dialect, SqlDialect::Postgres | SqlDialect::DuckDb)
+    {
+        return check_positions(query);
+    }
+    // Table names and aliases, for whole-row references.
+    struct Names(Vec<String>);
+    impl sqlparser::ast::Visitor for Names {
+        type Break = ();
+        fn pre_visit_table_factor(&mut self, tf: &TableFactor) -> ControlFlow<()> {
+            if let TableFactor::Table { name, alias, .. } = tf {
+                if let Some(last) = name.0.last() {
+                    self.0
+                        .push(normalize_identifier(&last.to_string()).to_ascii_lowercase());
+                }
+                if let Some(a) = alias {
+                    self.0.push(a.name.value.to_ascii_lowercase());
+                }
+            }
+            if let TableFactor::Derived { alias: Some(a), .. } = tf {
+                self.0.push(a.name.value.to_ascii_lowercase());
+            }
+            ControlFlow::Continue(())
+        }
+    }
+    let mut names = Names(Vec::new());
+    let _ = sqlparser::ast::Visit::visit(query, &mut names);
+    let whole_rows = matches!(dialect, SqlDialect::Postgres | SqlDialect::DuckDb);
+
+    let mut problem: Option<String> = None;
+    let _ = visit_expressions(query, |e| {
+        let hidden = |id: &Ident| access.field_hidden(&id.value);
+        match e {
+            Expr::Identifier(id) if hidden(id) => {
+                problem = Some(format!(
+                    "field {} is hidden by organization policy and cannot be used in a query",
+                    id.value
+                ));
+            }
+            Expr::CompoundIdentifier(parts) if parts.last().is_some_and(hidden) => {
+                problem = Some(format!(
+                    "field {} is hidden by organization policy and cannot be used in a query",
+                    parts.last().map(|p| p.value.as_str()).unwrap_or("")
+                ));
+            }
+            Expr::Identifier(id)
+                if whole_rows && names.0.contains(&id.value.to_ascii_lowercase()) =>
+            {
+                problem = Some(format!(
+                    "`{}` names a table, which here would read the whole row; name the column (for example {}.column)",
+                    id.value, id.value
+                ));
+            }
+            Expr::QualifiedWildcard(..) => {
+                problem =
+                    Some("`t.*` inside an expression is not allowed; name the columns".into());
+            }
+            Expr::Function(f) => {
+                if let FunctionArguments::List(list) = &f.args {
+                    for a in &list.args {
+                        let arg = match a {
+                            FunctionArg::Named { arg, .. }
+                            | FunctionArg::ExprNamed { arg, .. }
+                            | FunctionArg::Unnamed(arg) => arg,
+                        };
+                        let count = function_name(&f.name) == "COUNT";
+                        match arg {
+                            FunctionArgExpr::QualifiedWildcard(_) => {
+                                problem = Some(format!(
+                                    "{}(t.*) would read whole rows; name the columns",
+                                    function_name(&f.name)
+                                ));
+                            }
+                            FunctionArgExpr::Wildcard if !count => {
+                                problem = Some(format!(
+                                    "{}(*) would read whole rows; name the columns",
+                                    function_name(&f.name)
+                                ));
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        if problem.is_some() {
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(())
+        }
+    });
+    if let Some(p) = problem {
+        return Err(Denied::Query(p));
+    }
+    check_positions(query)
+}
+
+/// Refuses `ORDER BY 2`, `GROUP BY 3` and `ORDER BY ALL`.
+fn check_positions(query: &Query) -> Result<(), Denied> {
+    fn positional(e: &Expr) -> bool {
+        matches!(e, Expr::Value(v) if matches!(v.value, Value::Number(..)))
+    }
+    fn body_ok(body: &SetExpr) -> Result<(), Denied> {
+        match body {
+            SetExpr::Select(s) => match &s.group_by {
+                GroupByExpr::All(_) => Err(Denied::Query(
+                    "GROUP BY ALL is not allowed; name the columns".into(),
+                )),
+                GroupByExpr::Expressions(exprs, _) if exprs.iter().any(positional) => {
+                    Err(Denied::Query(
+                        "GROUP BY by column position is not allowed; name the columns".into(),
+                    ))
+                }
+                _ => Ok(()),
+            },
+            SetExpr::Query(q) => body_ok(&q.body),
+            SetExpr::SetOperation { left, right, .. } => {
+                body_ok(left)?;
+                body_ok(right)
+            }
+            _ => Ok(()),
+        }
+    }
+    struct Positions(Option<Denied>);
+    impl sqlparser::ast::Visitor for Positions {
+        type Break = ();
+        fn pre_visit_query(&mut self, q: &Query) -> ControlFlow<()> {
+            if let Some(o) = &q.order_by {
+                let bad = match &o.kind {
+                    OrderByKind::All(_) => true,
+                    OrderByKind::Expressions(list) => list.iter().any(|x| positional(&x.expr)),
+                };
+                if bad {
+                    self.0 = Some(Denied::Query(
+                        "ORDER BY by column position is not allowed; name the columns".into(),
+                    ));
+                    return ControlFlow::Break(());
+                }
+            }
+            if let Err(e) = body_ok(&q.body) {
+                self.0 = Some(e);
+                return ControlFlow::Break(());
+            }
+            ControlFlow::Continue(())
+        }
+    }
+    let mut v = Positions(None);
+    let _ = sqlparser::ast::Visit::visit(query, &mut v);
+    match v.0 {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
+}
+
 /// Replaces each `FROM table [alias]` with
 /// `FROM (SELECT * FROM table WHERE <filters>) alias`.
 struct ApplyFilters<'a> {
@@ -475,6 +646,7 @@ fn check_select_limited(
     let dialect = SqlDialect::for_connection_type(&access.kind);
     let mut query = single_select(sql, dialect)?;
     let tables = check_tables_and_functions(&query, access)?;
+    check_hidden_references(&query, access, dialect)?;
 
     let mut apply = ApplyFilters {
         access,
@@ -539,6 +711,44 @@ datasets:
             ..OrgPolicy::default()
         };
         EffectiveAccess::resolve(&org, &conn, &ProjectScope::default(), Utc::now()).unwrap()
+    }
+
+    fn hiding(kind: &str) -> EffectiveAccess {
+        let mut a = access(kind, Some("DISTRICT_NBR = 14"));
+        a.hide_fields = vec!["*SSN*".into(), "OWNER_NAME".into()];
+        a
+    }
+
+    #[test]
+    fn hidden_fields_cannot_be_used_anywhere() {
+        let a = hiding("postgis");
+        for sql in [
+            "SELECT owner_name FROM roads.roadway_inventory",
+            "SELECT route_id, owner_name AS x FROM roads.roadway_inventory",
+            "SELECT route_id FROM roads.roadway_inventory WHERE emp_ssn LIKE '1%'",
+            "SELECT route_id FROM roads.roadway_inventory r WHERE CAST(r.\"OWNER_NAME\" AS INTEGER) = 1",
+            "SELECT route_id FROM roads.roadway_inventory ORDER BY owner_name",
+            "SELECT x FROM (SELECT owner_name AS x FROM roads.roadway_inventory) AS t",
+            "SELECT a.route_id FROM roads.roadway_inventory a JOIN roads.roadway_inventory b ON a.owner_name = b.owner_name",
+            "SELECT to_jsonb(r) FROM roads.roadway_inventory r",
+            "SELECT row_to_json(r.*) FROM roads.roadway_inventory r",
+            "SELECT to_jsonb(roadway_inventory) FROM roads.roadway_inventory",
+            "SELECT * FROM roads.roadway_inventory ORDER BY 3",
+            "SELECT district_nbr, count(*) FROM roads.roadway_inventory GROUP BY 1",
+        ] {
+            assert!(check_select(sql, &a, 10).is_err(), "should refuse: {sql}");
+        }
+        for sql in [
+            "SELECT * FROM roads.roadway_inventory",
+            "SELECT r.route_id, count(*) AS n FROM roads.roadway_inventory r GROUP BY r.route_id ORDER BY n",
+            "SELECT COUNT(*) AS n FROM roads.roadway_inventory",
+        ] {
+            assert!(check_select(sql, &a, 10).is_ok(), "should allow: {sql}");
+        }
+        // The configured row filter may name any field: it is the server's.
+        let mut b = hiding("postgis");
+        b.row_filter = Some("OWNER_NAME IS NOT NULL".into());
+        assert!(check_select("SELECT route_id FROM roads.roadway_inventory", &b, 10).is_ok());
     }
 
     #[test]

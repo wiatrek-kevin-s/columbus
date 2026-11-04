@@ -842,6 +842,8 @@ impl Gateway {
                     made_by: tool.into(),
                     provenance: prov.map(String::from),
                     rows,
+                    source: crate::providers::OutputSource::Engine,
+                    truncated: false,
                 },
             );
         }
@@ -1596,6 +1598,8 @@ impl Gateway {
                         made_by: args.name.clone(),
                         provenance: Some(prov.clone()),
                         rows: None,
+                        source: crate::providers::OutputSource::Provider,
+                        truncated: false,
                     },
                 );
             }
