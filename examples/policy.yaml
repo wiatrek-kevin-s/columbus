@@ -41,3 +41,8 @@ flows:
   - from: [connection:roads-prod]
     to:   [server:sharepoint]
     action: approve             # allowed, with an approval
+
+# Engine plugins. Each runs only after `columbus-mcp plugins approve <id>`.
+plugins:
+  allow_personal: false          # only plugins installed under %ProgramData%
+  allow: []                      # plugin ids allowed at all; empty = any installed plugin

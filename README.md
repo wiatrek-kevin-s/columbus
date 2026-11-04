@@ -29,6 +29,16 @@ Columbus makes a GIS analyst, paired with whatever AI their organization already
 
 **Results.** At most 500 rows go back to the AI provider per call (organization policy can lower this). Larger results are written to the session workspace and the path returned. Fields matching the policy's `hide_fields` are stripped before anything leaves the server.
 
+## Engine plugins
+
+GIS tools that touch an organization's data are written as **engine plugins**: a folder with a `plugin.yaml` and a worker built on the Columbus plugin SDK, for Python ([`workers/python/columbus_plugin`](workers/python/columbus_plugin)) or Rust ([`workers/sdk-rust`](workers/sdk-rust)). They speak [worker protocol v2](docs/worker-protocol.md), the same protocol Columbus's own engine now uses. Typed parameters tell the gateway what each argument is, so it governs them argument by argument:
+
+- A **dataset** argument (`"lrs:events"`, or `{connection, dataset, where}`) is read by the gateway through that connection's permissions, row filter and hidden fields, and handed to the plugin as a read-only extract. Plugins never receive credentials, and never a dataset cut off at the read limit.
+- Outputs go only to workspace paths the gateway assigns, and carry the inputs' data labels, so Rule 3 follows them.
+- A plugin runs only after a person approves its exact contents (`columbus-mcp plugins approve <id>`); any change to `plugin.yaml` or the worker switches it off, and a worker whose own description differs from its `plugin.yaml` is refused.
+
+[`examples/plugins/lrs-check`](examples/plugins/lrs-check) is the LRS event checker from design change 1, implemented: gaps, overlaps, reversed and out-of-range measures, and events on unknown routes, with a findings layer and a report table. Agents call plugin tools through `run_tool` as `<plugin id>.<tool>`, for example `contoso.lrs-check.check_events`.
+
 ## Connected MCP servers
 
 Columbus is an MCP client to other servers too (design change 1, "governed MCP host"). Each one needs a **Columbus manifest**, written or approved by a person or IT, under `%ProgramData%\Columbus\servers\` (personal manifests under `%APPDATA%` only if policy allows). The manifest decides everything: which tools are on, their risk, whether they send data out, which arguments are files, paths or URLs, and when to ask. The server's own hints are shown at review and never trusted. See [`examples/servers`](examples/servers).
@@ -80,9 +90,11 @@ For development and CI only, `COLUMBUS_DEV_SECRETS=1` reads passwords from `COLU
 crates/shared     policy layers, query checking, approvals, sandbox, audit (no I/O to agents)
 crates/broker     connected MCP servers: manifests, client sessions, tool pinning, review flags
 crates/flow       data labels and organization flow rules
-crates/gateway    columbus-mcp: MCP server (rmcp), tools, worker supervision, run_tool
-workers/python    engine worker: line-delimited JSON-RPC over stdio
-examples          a sample organization policy and connections
+crates/gateway    columbus-mcp: MCP server (rmcp), tools, worker supervision, plugins, run_tool
+workers/python    the core engine and the Python plugin SDK (columbus_plugin)
+workers/sdk-rust  the Rust plugin SDK (columbus-plugin)
+docs              worker protocol v2 and plugin.yaml
+examples          a sample policy, connections, server manifests and the LRS checker plugin
 ```
 
 ## Build and run
@@ -157,7 +169,8 @@ Phase 1 (this repository, in progress):
 - [x] Broker for connected MCP servers (stdio and HTTP): manifests, pinning with auto-disable, review flags, file handles, untrusted output, data labels and flow rules (change 1, Rules 1–4)
 - [x] Approvals in the person's own client through MCP elicitation
 - [ ] Local approvals page for clients without elicitation
-- [ ] Worker protocol v2 and engine plugin SDK; RustGIS native worker
+- [x] Worker protocol v2 with progress and cancel; Python and Rust plugin SDKs; Columbus's engine rebuilt on it; engine plugins through `run_tool`
+- [ ] RustGIS native worker
 - [ ] Confinement levels A–C on Windows; OAuth for remote servers
 - [ ] `vector_op`, `raster_op`, `pointcloud_pipeline` through GDAL/PDAL in a pixi environment
 - [ ] Verification checks (design section 4) attached to every result

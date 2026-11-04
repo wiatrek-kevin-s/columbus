@@ -102,20 +102,44 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(names, ["roads"])
         self.assertEqual([f["name"] for f in r["datasets"][0]["fields"]], ["fid", "route_id", "geom"])
 
-    def test_json_rpc_loop(self):
+    def test_protocol_v2_loop(self):
         script = os.path.join(os.path.dirname(HERE), "columbus_worker.py")
         lines = [
-            json.dumps({"jsonrpc": "2.0", "id": 1, "method": "ping"}),
+            json.dumps({"jsonrpc": "2.0", "id": 1, "method": "describe"}),
             "not json",
             json.dumps({"jsonrpc": "2.0", "id": 2, "method": "nope"}),
-            json.dumps({"jsonrpc": "2.0", "id": 3, "method": "sql_select", "params": {"connection": self.conn, "sql": "SELECT 1", "max_rows": 1}}),
+            json.dumps({"jsonrpc": "2.0", "id": 3, "method": "run", "params": {
+                "run": "r1", "tool": "sql_select",
+                "params": {"connection": self.conn, "sql": "SELECT 1", "max_rows": 1}}}),
         ]
-        p = subprocess.run([sys.executable, "-I", "-u", script], input="\n".join(lines) + "\n", capture_output=True, text=True, timeout=30)
-        replies = [json.loads(l) for l in p.stdout.splitlines()]
-        self.assertEqual(replies[0]["id"], 1)
-        self.assertEqual(replies[1]["error"]["code"], -32700)
+        p = subprocess.run([sys.executable, "-I", "-u", script], input="\n".join(lines) + "\n",
+                           capture_output=True, text=True, timeout=30)
+        replies = {r.get("id"): r for r in map(json.loads, p.stdout.splitlines())}
+        self.assertEqual(replies[1]["result"]["protocol"], 2)
+        self.assertEqual(replies[1]["result"]["plugin"]["id"], "columbus.core")
+        self.assertIn("extract", [t["name"] for t in replies[1]["result"]["tools"]])
+        self.assertEqual(replies[None]["error"]["code"], -32700)
         self.assertEqual(replies[2]["error"]["code"], -32601)
-        self.assertEqual(replies[3]["result"]["rows"], [[1]])
+        self.assertEqual(replies[3]["result"]["summary"]["rows"], [[1]])
+
+    def test_extract_keeps_geometry_and_drops_hidden_fields(self):
+        sys.path.insert(0, os.path.dirname(HERE))
+        from columbus_plugin import Extract
+
+        out = os.path.join(self.tmp.name, "ws", "inputs", "r1-roads.sqlite")
+        r = w.extract({"connection": self.conn, "sql": "SELECT fid, route_id, geom FROM roads", "max_rows": 100,
+                       "output_path": out, "hide_fields": ["route_*"], "connection_id": "roads", "dataset": "roads",
+                       "labels": ["connection:roads"]})
+        self.assertEqual((r["rows"], r["hit_read_limit"], r["hidden_columns"]), (10, False, ["route_id"]))
+        ex = Extract(out)
+        self.assertEqual(ex.columns, ["fid", "geom"])
+        self.assertEqual((ex.row_count, ex.geometry_column, ex.geometry_format), (10, "geom", "gpkg"))
+        self.assertEqual(ex.labels, ["connection:roads"])
+        first = next(ex.rows())
+        self.assertEqual(bytes(first["geom"])[:2], b"GP", "raw geometry kept")
+        ex.close()
+        r = w.extract({"connection": self.conn, "sql": "SELECT fid FROM roads", "max_rows": 4, "output_path": out})
+        self.assertTrue(r["hit_read_limit"])
 
 
 PG_HOST = os.environ.get("COLUMBUS_TEST_PG_HOST")
@@ -197,6 +221,21 @@ class PostgresTests(unittest.TestCase):
         self.assertEqual(inv["estimated_rows"], 1200)
         self.assertEqual(len(inv["extent"]), 4)
         self.assertIn("owner_name", [f["name"] for f in inv["fields"]])
+
+    def test_extract_from_postgis(self):
+        sys.path.insert(0, os.path.dirname(HERE))
+        from columbus_plugin import Extract
+
+        with tempfile.TemporaryDirectory() as d:
+            out = os.path.join(d, "x.sqlite")
+            r = w.extract({"connection": pg_conn(), "sql": "SELECT fid, route_id, owner_name, geom FROM roads.roadway_inventory WHERE district_nbr = 14",
+                           "max_rows": 1000, "output_path": out, "hide_fields": ["owner_*"]})
+            self.assertEqual((r["rows"], r["geometry_column"], r["srid"]), (600, "geom", "3081"))
+            ex = Extract(out)
+            g = next(ex.rows()).geometry()
+            self.assertEqual((g.type, g.srid), ("LineString", 3081))
+            self.assertEqual(len(g.parts), 2)
+            ex.close()
 
     def test_bad_search_path_refused(self):
         with self.assertRaises(w.WorkerError):

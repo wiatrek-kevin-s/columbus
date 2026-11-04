@@ -9,10 +9,14 @@
 //! columbus-mcp servers list         connected MCP servers and their state
 //! columbus-mcp servers review ID    a server's tools, the manifest's settings and any flags
 //! columbus-mcp servers approve ID [--accept-flags]   pin the reviewed tool definitions
+//! columbus-mcp plugins list         engine plugins, their versions, hashes and state
+//! columbus-mcp plugins approve ID   approve a plugin's exact contents
 //! columbus-mcp --version
 //! ```
 
 mod config;
+mod plugin_run;
+mod plugins;
 mod providers;
 mod review_cli;
 mod secrets;
@@ -52,6 +56,8 @@ async fn main() -> Result<()> {
             }
         }
         ["secret", "set", id] => secret_set(id),
+        ["plugins", "list"] => review_cli::plugins_list().await,
+        ["plugins", "approve", id] => review_cli::plugins_approve(id).await,
         ["servers", "list"] => review_cli::list().await,
         ["servers", "review", id] => review_cli::review(id).await.map(|_| ()),
         ["servers", "approve", id] => review_cli::approve(id, false).await,
@@ -70,7 +76,7 @@ async fn main() -> Result<()> {
             Ok(())
         }
         _ => bail!(
-            "usage: columbus-mcp [serve] | audit verify FILE | secret set|delete ID | servers list|review|approve ID | --version"
+            "usage: columbus-mcp [serve] | audit verify FILE | secret set|delete ID | servers list|review|approve ID | plugins list|approve ID | --version"
         ),
     }
 }

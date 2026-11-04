@@ -1,0 +1,21 @@
+# The engine plugin from design change 1, section 7, implemented.
+# Install by copying this folder into %ProgramData%\Columbus\plugins\ and
+# approving it with `columbus-mcp plugins approve contoso.lrs-check`.
+id: contoso.lrs-check
+name: LRS event checker
+version: 1.2.0
+runtime: python
+entry: worker.py
+engine_env: columbus-py
+tools:
+  check_events:
+    summary: Check route events for gaps, overlaps, reversed and out-of-range measures, and events on unknown routes.
+    params:
+      events:    { type: dataset, access: read }
+      routes:    { type: dataset, access: read }
+      tolerance: { type: number, unit: mile, default: 0.001, min: 0, max: 1 }
+    outputs:
+      findings: { type: layer, geometry: point }
+      report:   { type: table }
+    risk: read
+    checks: [geometry.valid, lrs.measures]

@@ -7,7 +7,10 @@ paths arrive already resolved inside the sandbox. The worker still opens
 everything read-only and stops at the row limit it is given, so a gateway
 bug cannot become a write or an unbounded read.
 
-Run with ``python -I -u columbus_worker.py``. Logs go to stderr.
+Run with ``python -I -u columbus_worker.py``. Logs go to stderr. Built on
+the plugin SDK and speaking worker protocol v2 (docs/worker-protocol.md);
+unlike third-party plugins, this core engine receives connection handles,
+because it is the component that opens governed connections.
 
 Engines: the standard library's sqlite3 handles GeoPackage and SQLite;
 psycopg handles PostgreSQL/PostGIS when installed. GDAL/OGR, DuckDB, PDAL
@@ -33,18 +36,22 @@ import sqlite3
 import sys
 import time
 import traceback
-from typing import Any, Callable
+from typing import Any
 
-PROTOCOL_VERSION = 1
+# The SDK lives beside this file (an administrator-installed folder); -I
+# keeps the script's folder off the import path, so add it explicitly.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from columbus_plugin import PROTOCOL_VERSION, Plugin, ToolError, decode_geometry  # noqa: E402
+
+VERSION = "0.3.0"
 
 
-class WorkerError(Exception):
+class WorkerError(ToolError):
     """An error the gateway should pass on to the agent as a refusal."""
 
     def __init__(self, code: int, message: str):
-        super().__init__(message)
-        self.code = code
-        self.message = message
+        super().__init__(message, code)
 
 
 # JSON-RPC error codes used by the worker.
@@ -179,7 +186,12 @@ def _sqlite_fetch(conn: dict[str, Any], sql: str, max_rows: int, timeout_s: floa
                     hit = True
                     break
                 rows.append(row)
-            return columns, rows, hit, [_cell] * len(columns)
+            geoms = {}
+            for i in range(len(columns)):
+                first = next((r[i] for r in rows if r[i] is not None), None)
+                if isinstance(first, (bytes, memoryview)) and bytes(first)[:2] == b"GP":
+                    geoms[i] = "gpkg"
+            return columns, rows, hit, [_cell] * len(columns), geoms
         except sqlite3.OperationalError as e:
             if "interrupted" in str(e):
                 raise WorkerError(TIMEOUT, f"query exceeded {timeout_s:g} s") from e
@@ -295,8 +307,9 @@ def _pg_fetch(conn: dict[str, Any], sql: str, max_rows: int, timeout_s: float):
                 desc = cur.description or []
                 columns = [d.name for d in desc]
                 cells = [_pg_geom if d.type_code in geom_oids else _pg_cell for d in desc]
+                geoms = {i: "ewkb" for i, d in enumerate(desc) if d.type_code in geom_oids}
             db.rollback()
-            return columns, rows, hit, cells
+            return columns, rows, hit, cells, geoms
         except psycopg.errors.QueryCanceled as e:
             raise WorkerError(TIMEOUT, f"query exceeded {timeout_s:g} s") from e
         except psycopg.errors.ReadOnlySqlTransaction as e:
@@ -390,6 +403,95 @@ def list_datasets(params: dict[str, Any]) -> dict[str, Any]:
     raise WorkerError(UNSUPPORTED, f"list_datasets does not support {conn['kind']!r} yet")
 
 
+def _fetch(conn: dict[str, Any], sql: str, max_rows: int, timeout_s: float):
+    kind = conn["kind"].lower()
+    if kind in SQLITE_KINDS:
+        return _sqlite_fetch(conn, sql, max_rows, timeout_s)
+    if kind in PG_KINDS:
+        return _pg_fetch(conn, sql, max_rows, timeout_s)
+    raise WorkerError(UNSUPPORTED, f"reading {conn['kind']!r} connections is not supported yet")
+
+
+def _hidden_mask(columns: list[str], patterns) -> list[bool]:
+    hide = [p.lower() for p in patterns or [] if isinstance(p, str)]
+    return [not any(fnmatch.fnmatchcase(c.lower(), p) for p in hide) for c in columns]
+
+
+def extract(params: dict[str, Any]) -> dict[str, Any]:
+    """Write a governed read to an extract for an engine plugin.
+
+    The SQL arrives checked and rewritten by the gateway. Every row read is
+    written, raw geometry included, to a SQLite file with the table ``data``
+    and the metadata table ``columbus_extract`` (docs/worker-protocol.md).
+    Hidden fields are dropped. Stops at ``max_rows`` and says so, so the
+    gateway can refuse to hand a plugin a silently truncated dataset.
+    """
+    conn = _connection(params)
+    sql = params.get("sql")
+    max_rows = params.get("max_rows")
+    out = params.get("output_path")
+    if not isinstance(sql, str) or not isinstance(max_rows, int) or max_rows < 1 or not isinstance(out, str):
+        raise WorkerError(INVALID_PARAMS, "sql, a positive max_rows and output_path are required")
+    timeout_s = float(params.get("timeout_s", 120))
+    columns, rows, hit, _cells, geoms = _fetch(conn, sql, max_rows, timeout_s)
+    keep = _hidden_mask(columns, params.get("hide_fields"))
+    hidden = [c for c, k in zip(columns, keep) if not k]
+    kept = [i for i, k in enumerate(keep) if k]
+    geom_idx = next((i for i in kept if i in geoms), None)
+
+    def raw(i, v):
+        if v is None:
+            return None
+        if i in geoms:
+            return bytes.fromhex(v) if isinstance(v, str) else bytes(v)
+        if isinstance(v, (int, float, str, bytes)):
+            return v
+        if isinstance(v, memoryview):
+            return bytes(v)
+        return str(v)
+
+    os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+    if os.path.exists(out):
+        os.remove(out)
+    db = sqlite3.connect(out)
+    try:
+        cols_sql = ", ".join('"' + columns[i].replace('"', '""') + '"' for i in kept)
+        db.execute(f'CREATE TABLE "data" ({cols_sql})')
+        marks = ", ".join("?" for _ in kept)
+        db.executemany(f'INSERT INTO "data" VALUES ({marks})', ([raw(i, r[i]) for i in kept] for r in rows))
+        srid = ""
+        if geom_idx is not None:
+            sample = next((r[geom_idx] for r in rows if r[geom_idx] is not None), None)
+            if sample is not None:
+                try:
+                    g = decode_geometry(raw(geom_idx, sample), geoms[geom_idx])
+                    srid = "" if g is None or g.srid is None else str(g.srid)
+                except ValueError:
+                    pass
+        meta = {
+            "connection": str(params.get("connection_id") or ""),
+            "dataset": str(params.get("dataset") or ""),
+            "rows": str(len(rows)),
+            "geometry_column": columns[geom_idx] if geom_idx is not None else "",
+            "geometry_format": geoms.get(geom_idx, "") if geom_idx is not None else "",
+            "srid": srid,
+            "labels": json.dumps(params.get("labels") or []),
+        }
+        db.execute("CREATE TABLE columbus_extract (key TEXT PRIMARY KEY, value TEXT)")
+        db.executemany("INSERT INTO columbus_extract VALUES (?, ?)", meta.items())
+        db.commit()
+    finally:
+        db.close()
+    return {
+        "rows": len(rows),
+        "hit_read_limit": hit,
+        "columns": [columns[i] for i in kept],
+        "hidden_columns": hidden,
+        "geometry_column": meta["geometry_column"] or None,
+        "srid": meta["srid"] or None,
+    }
+
+
 def sql_select(params: dict[str, Any]) -> dict[str, Any]:
     """Run a checked SELECT read-only.
 
@@ -410,18 +512,12 @@ def sql_select(params: dict[str, Any]) -> dict[str, Any]:
     timeout_s = float(params.get("timeout_s", 120))
     kind = conn["kind"].lower()
     started = time.monotonic()
-    if kind in SQLITE_KINDS:
-        columns, all_rows, hit_limit, cells = _sqlite_fetch(conn, sql, max_rows, timeout_s)
-    elif kind in PG_KINDS:
-        columns, all_rows, hit_limit, cells = _pg_fetch(conn, sql, max_rows, timeout_s)
-    else:
-        raise WorkerError(UNSUPPORTED, f"sql_select does not support {conn['kind']!r} yet")
+    columns, all_rows, hit_limit, cells, _ = _fetch(conn, sql, max_rows, timeout_s)
 
     # Fields organization policy hides never leave the worker: not in the
     # rows returned, and not in the workspace file, which can later be sent
     # to another provider as a file handle.
-    hide = [p.lower() for p in params.get("hide_fields") or [] if isinstance(p, str)]
-    keep = [not any(fnmatch.fnmatchcase(c.lower(), p) for p in hide) for c in columns]
+    keep = _hidden_mask(columns, params.get("hide_fields"))
     hidden = [c for c, k in zip(columns, keep) if not k]
     columns = [c for c, k in zip(columns, keep) if k]
 
@@ -449,45 +545,11 @@ def sql_select(params: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-METHODS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
-    "ping": ping,
-    "list_datasets": list_datasets,
-    "sql_select": sql_select,
-}
+plugin = Plugin("columbus.core", VERSION)
 
-
-def handle(line: str) -> dict[str, Any] | None:
-    try:
-        req = json.loads(line)
-    except json.JSONDecodeError:
-        return {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "parse error"}}
-    rid = req.get("id")
-    method = METHODS.get(req.get("method", ""))
-    if method is None:
-        return {"jsonrpc": "2.0", "id": rid, "error": {"code": -32601, "message": "unknown method"}}
-    params = req.get("params") or {}
-    try:
-        return {"jsonrpc": "2.0", "id": rid, "result": method(params)}
-    except WorkerError as e:
-        return {"jsonrpc": "2.0", "id": rid, "error": {"code": e.code, "message": e.message}}
-    except Exception as e:  # noqa: BLE001 - report, never crash the loop
-        traceback.print_exc(file=sys.stderr)
-        return {
-            "jsonrpc": "2.0",
-            "id": rid,
-            "error": {"code": ENGINE_ERROR, "message": f"{type(e).__name__}: {e}"},
-        }
-
-
-def main() -> None:
-    for line in sys.stdin:
-        if not line.strip():
-            continue
-        resp = handle(line)
-        if resp is not None:
-            sys.stdout.write(json.dumps(resp, separators=(",", ":"), default=str) + "\n")
-            sys.stdout.flush()
+for _name, _fn in (("ping", ping), ("list_datasets", list_datasets), ("sql_select", sql_select), ("extract", extract)):
+    plugin.tool(_name)(lambda ctx, fn=_fn: fn(ctx.params))
 
 
 if __name__ == "__main__":
-    main()
+    plugin.serve()

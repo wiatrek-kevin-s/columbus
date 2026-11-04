@@ -207,6 +207,105 @@ fn write_pinned(path: &Path, pinned: &columbus_broker::manifest::Pinned) -> Resu
     Ok(())
 }
 
+// ---------- engine plugins ----------
+
+fn plugins(paths: &Paths) -> Result<crate::plugins::Plugins> {
+    let (policy, _) = config::load_policy(paths)?;
+    let scratch = paths.workspaces.join("review");
+    std::fs::create_dir_all(&scratch)?;
+    let host = paths
+        .worker_script
+        .parent()
+        .map(|d| d.join("columbus_plugin_host.py"))
+        .unwrap_or_default();
+    Ok(crate::plugins::Plugins::load(
+        &policy,
+        &paths.plugins,
+        &paths.personal_plugins,
+        paths.python.clone(),
+        host,
+        scratch,
+        &Default::default(),
+    ))
+}
+
+pub async fn plugins_list() -> Result<()> {
+    let paths = Paths::from_env();
+    let ps = plugins(&paths)?;
+    for n in &ps.notes {
+        println!("note: {n}");
+    }
+    if ps.all().is_empty() {
+        println!("No plugins in {}.", paths.plugins.display());
+    }
+    for p in ps.all() {
+        let status = ps.status(p);
+        println!(
+            "{:<28} {:<8} {} {}  {}",
+            p.id(),
+            p.manifest.version,
+            if p.personal { "personal" } else { "org" },
+            p.hash.get(..19).unwrap_or(&p.hash),
+            crate::plugins::describe_status(p.id(), &status)
+        );
+    }
+    Ok(())
+}
+
+pub async fn plugins_approve(id: &str) -> Result<()> {
+    let paths = Paths::from_env();
+    let ps = plugins(&paths)?;
+    let p = ps
+        .get(id)
+        .ok_or_else(|| anyhow!("no plugin with id {id:?}"))?;
+    println!(
+        "{} ({id}) {} from {}",
+        p.manifest.display_name(),
+        p.manifest.version,
+        p.dir.display()
+    );
+    println!(
+        "runtime {:?}, entry {}, contents {}",
+        p.manifest.runtime, p.manifest.entry, p.hash
+    );
+    for (name, t) in &p.manifest.tools {
+        println!("\n  {name}  [risk {:?}]  {}", t.risk, t.summary);
+        for (pn, ps) in &t.params {
+            println!(
+                "    param  {pn}: {}",
+                serde_json::to_string(ps).unwrap_or_default()
+            );
+        }
+        for (on, o) in &t.outputs {
+            println!("    output {on}: {}", o.kind());
+        }
+    }
+    // Start it once so a worker that does not match plugin.yaml is caught now.
+    if let Err(e) = ps.worker_unchecked(p).await {
+        bail!("the plugin did not start or does not match its plugin.yaml: {e}");
+    }
+    let confirm = rpassword::prompt_password(format!(
+        "\nApprove {id} at {}? Type the plugin id to confirm: ",
+        p.hash
+    ))
+    .context("approval needs an interactive terminal")?;
+    if confirm.trim() != id {
+        bail!("not confirmed; nothing changed");
+    }
+    let root = p
+        .dir
+        .parent()
+        .ok_or_else(|| anyhow!("plugin folder has no parent"))?;
+    let mut approvals = crate::plugins::read_approvals(root);
+    approvals.insert(id.to_string(), p.hash.clone());
+    std::fs::write(
+        root.join(crate::plugins::APPROVALS_FILE),
+        serde_yaml::to_string(&approvals)?,
+    )?;
+    println!("Approved {id}.");
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -236,6 +236,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "columbus-plugin"
+version = "0.1.0"
+
+[[package]]
 name = "columbus-shared"
 version = "0.1.0"
 dependencies = [

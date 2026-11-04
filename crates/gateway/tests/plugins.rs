@@ -1,0 +1,360 @@
+//! Engine plugins end to end (design change 1, section 7): the LRS checker
+//! from the change document, run by the real gateway on governed data.
+
+use std::path::{Path, PathBuf};
+use std::process::Command as StdCommand;
+
+use rmcp::model::{CallToolRequestParams, CallToolResult};
+use rmcp::service::RunningService;
+use rmcp::transport::{ConfigureCommandExt, TokioChildProcess};
+use rmcp::{RoleClient, ServiceExt};
+use serde_json::{json, Value};
+
+fn python() -> Option<String> {
+    ["python3", "python"]
+        .into_iter()
+        .map(String::from)
+        .find(|p| {
+            StdCommand::new(p)
+                .arg("--version")
+                .output()
+                .is_ok_and(|o| o.status.success())
+        })
+}
+
+fn repo() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .unwrap()
+}
+
+/// Routes and events built so each LRS check fires exactly once.
+fn make_gpkg(py: &str, path: &Path) {
+    let script = r#"
+import sqlite3, sys
+db = sqlite3.connect(sys.argv[1])
+db.executescript('''
+CREATE TABLE routes (route_id TEXT, end_meas REAL, district INTEGER);
+INSERT INTO routes VALUES ('IH0035', 10, 14), ('US0183', 5, 14);
+CREATE TABLE events (fid INTEGER PRIMARY KEY, route_id TEXT, from_meas REAL, to_meas REAL, district INTEGER, inspector_ssn TEXT);
+INSERT INTO events (route_id, from_meas, to_meas, district, inspector_ssn) VALUES
+  ('IH0035', 0, 2, 14, '111-22-3333'),
+  ('IH0035', 2, 4, 14, '111-22-3333'),
+  ('IH0035', 3.5, 6, 14, '111-22-3333'),
+  ('IH0035', 7, 9, 14, '111-22-3333'),
+  ('IH0035', 9, 11, 14, '111-22-3333'),
+  ('US0183', 3, 1, 14, '111-22-3333'),
+  ('SH0071', 0, 1, 14, '111-22-3333'),
+  ('IH0035', 5, 6, 12, '111-22-3333');
+CREATE TABLE payroll (id INTEGER, amount REAL, district INTEGER);
+''')
+db.commit()
+"#;
+    assert!(StdCommand::new(py)
+        .arg("-c")
+        .arg(script)
+        .arg(path)
+        .status()
+        .unwrap()
+        .success());
+}
+
+struct Env {
+    _dir: tempfile::TempDir,
+    root: PathBuf,
+}
+
+impl Env {
+    fn plugin_dir(&self) -> PathBuf {
+        self.root.join("plugins").join("lrs-check")
+    }
+
+    fn approve(&self) {
+        let d = self.plugin_dir();
+        let yaml = std::fs::read_to_string(d.join("plugin.yaml")).unwrap();
+        let entry = std::fs::read(d.join("worker.py")).unwrap();
+        let mut all = yaml.into_bytes();
+        all.push(0);
+        all.extend_from_slice(&entry);
+        let hash = format!("sha256:{}", columbus_shared::canon::sha256_hex(&all));
+        std::fs::write(
+            self.root.join("plugins").join("approved.yaml"),
+            format!("contoso.lrs-check: {hash:?}\n"),
+        )
+        .unwrap();
+    }
+}
+
+fn setup(py: &str) -> Env {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_path_buf();
+    for d in ["connections", "servers", "plugins/lrs-check"] {
+        std::fs::create_dir_all(root.join(d)).unwrap();
+    }
+    for f in ["plugin.yaml", "worker.py"] {
+        std::fs::copy(
+            repo().join("examples/plugins/lrs-check").join(f),
+            root.join("plugins/lrs-check").join(f),
+        )
+        .unwrap();
+    }
+    let gpkg = root.join("lrs.gpkg");
+    make_gpkg(py, &gpkg);
+    std::fs::write(
+        root.join("policy.yaml"),
+        "connection_types: [gpkg]\nhide_fields: [\"*_ssn\"]\nlimits: { rows: 1000, seconds: 30 }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("connections").join("lrs.yaml"),
+        format!(
+            "id: lrs\ntype: gpkg\npath: {}\ndatasets:\n  allow: [\"routes\", \"events\"]\nrow_filter: \"district = 14\"\n",
+            serde_json::to_string(&gpkg.display().to_string()).unwrap()
+        ),
+    )
+    .unwrap();
+    Env { _dir: dir, root }
+}
+
+async fn start(env: &Env, py: &str) -> RunningService<RoleClient, ()> {
+    let worker = repo().join("workers/python/columbus_worker.py");
+    let root = env.root.clone();
+    let py = py.to_string();
+    let cmd =
+        tokio::process::Command::new(env!("CARGO_BIN_EXE_columbus-mcp")).configure(move |cmd| {
+            cmd.env("COLUMBUS_POLICY", root.join("policy.yaml"))
+                .env("COLUMBUS_CONNECTIONS", root.join("connections"))
+                .env("COLUMBUS_SERVERS", root.join("servers"))
+                .env("COLUMBUS_PLUGINS", root.join("plugins"))
+                .env("COLUMBUS_PERSONAL_PLUGINS", root.join("personal-plugins"))
+                .env("COLUMBUS_WORKSPACES", root.join("workspaces"))
+                .env("COLUMBUS_AUDIT_DIR", root.join("audit"))
+                .env("COLUMBUS_WORKER", &worker)
+                .env("COLUMBUS_PYTHON", &py)
+                .env("COLUMBUS_LOG", "warn");
+        });
+    ().serve(TokioChildProcess::new(cmd).unwrap())
+        .await
+        .unwrap()
+}
+
+async fn call(
+    c: &RunningService<RoleClient, ()>,
+    tool: &'static str,
+    args: Value,
+) -> CallToolResult {
+    let mut p = CallToolRequestParams::new(tool);
+    if let Value::Object(m) = args {
+        p = p.with_arguments(m);
+    }
+    c.call_tool(p).await.unwrap()
+}
+
+fn ok(r: &CallToolResult) -> Value {
+    assert_ne!(r.is_error, Some(true), "unexpected error: {:?}", r.content);
+    r.structured_content.clone().expect("structured output")
+}
+
+fn err(r: &CallToolResult) -> String {
+    assert_eq!(
+        r.is_error,
+        Some(true),
+        "expected an error, got {:?}",
+        r.structured_content
+    );
+    serde_json::to_string(&r.content).unwrap()
+}
+
+fn provider<'a>(lp: &'a Value, id: &str) -> &'a Value {
+    lp["result"]["providers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == id)
+        .unwrap()
+}
+
+const RUN: &str = "contoso.lrs-check.check_events";
+
+fn run_args() -> Value {
+    json!({"name": RUN, "args": {"events": "lrs:events", "routes": {"connection": "lrs", "dataset": "routes"}}})
+}
+
+#[tokio::test]
+async fn unapproved_and_changed_plugins_stay_off() {
+    let Some(py) = python() else { return };
+    let env = setup(&py);
+    let c = start(&env, &py).await;
+    let lp = ok(&call(&c, "list_providers", json!({})).await);
+    assert_eq!(
+        provider(&lp, "contoso.lrs-check")["status"]["state"],
+        "unapproved"
+    );
+    let e = err(&call(&c, "run_tool", run_args()).await);
+    assert!(e.contains("has not been approved"), "{e}");
+    c.cancel().await.unwrap();
+
+    env.approve();
+    std::fs::write(env.plugin_dir().join("worker.py"), "# tampered\n").unwrap();
+    let c = start(&env, &py).await;
+    let lp = ok(&call(&c, "list_providers", json!({})).await);
+    assert_eq!(
+        provider(&lp, "contoso.lrs-check")["status"]["state"],
+        "changed"
+    );
+    let e = err(&call(&c, "run_tool", run_args()).await);
+    assert!(e.contains("changed since it was approved"), "{e}");
+    c.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_worker_that_does_not_match_its_manifest_is_refused() {
+    let Some(py) = python() else { return };
+    let env = setup(&py);
+    // The manifest declares a parameter the worker does not.
+    let yaml = std::fs::read_to_string(env.plugin_dir().join("plugin.yaml")).unwrap();
+    let yaml = yaml.replace(
+        "      tolerance:",
+        "      upload_to: { type: string, default: x }\n      tolerance:",
+    );
+    std::fs::write(env.plugin_dir().join("plugin.yaml"), yaml).unwrap();
+    env.approve();
+    let c = start(&env, &py).await;
+    let e = err(&call(&c, "run_tool", run_args()).await);
+    assert!(e.contains("do not match plugin.yaml"), "{e}");
+    c.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn the_lrs_checker_runs_on_governed_data() {
+    let Some(py) = python() else { return };
+    let env = setup(&py);
+    env.approve();
+    let c = start(&env, &py).await;
+
+    let lp = ok(&call(&c, "list_providers", json!({})).await);
+    let p = provider(&lp, "contoso.lrs-check");
+    assert_eq!(
+        (p["kind"].as_str(), p["status"]["state"].as_str()),
+        (Some("native"), Some("ready"))
+    );
+    let found = ok(&call(
+        &c,
+        "search_tools",
+        json!({"query": "route events gaps overlaps"}),
+    )
+    .await);
+    assert_eq!(found["result"][0]["name"], RUN);
+    let d = ok(&call(&c, "describe_tool", json!({"name": RUN})).await);
+    assert_eq!(
+        d["result"]["input_schema"]["required"],
+        json!(["events", "routes"])
+    );
+    assert!(d["result"]["reviewed_hash"]
+        .as_str()
+        .unwrap()
+        .starts_with("sha256:"));
+
+    // Arguments are checked against plugin.yaml before anything runs.
+    let mut bad = run_args();
+    bad["args"]["upload_to"] = json!("https://x.example");
+    assert!(err(&call(&c, "run_tool", bad).await).contains("no parameter \\\"upload_to\\\""));
+    let mut bad = run_args();
+    bad["args"]["tolerance"] = json!(-1);
+    assert!(err(&call(&c, "run_tool", bad).await).contains("out of range"));
+    let mut bad = run_args();
+    bad["args"]["events"] = json!("lrs:payroll");
+    assert!(
+        err(&call(&c, "run_tool", bad).await).contains("not in this connection's allowed datasets")
+    );
+    let mut bad = run_args();
+    bad["args"]["events"] = json!({"connection": "lrs", "dataset": "events", "where": "1=1 OR route_id IN (SELECT id FROM payroll)"});
+    assert!(err(&call(&c, "run_tool", bad).await).contains("not allowed in a where clause"));
+
+    let r = ok(&call(&c, "run_tool", run_args()).await);
+    assert_eq!(r["result"]["status"], "done");
+    // Seven events in district 14; the district 12 one is filtered out by the server.
+    assert_eq!(r["result"]["summary"]["events_checked"], 7);
+    let checks = r["checks"].as_array().unwrap();
+    for id in [
+        "lrs.overlap",
+        "lrs.gap",
+        "lrs.out_of_range",
+        "lrs.reversed",
+        "lrs.unknown_route",
+    ] {
+        let c = checks
+            .iter()
+            .find(|c| c["id"] == id)
+            .unwrap_or_else(|| panic!("missing {id}: {checks:?}"));
+        assert_eq!(c["detail"]["count"], 1, "{id}");
+    }
+    assert!(checks.iter().any(|c| c["id"] == "flow.labels"));
+    assert!(checks.iter().any(|c| c["id"] == "verify.pending"));
+    let saved = r["result"]["saved"].as_array().unwrap();
+    assert_eq!(saved.len(), 2);
+    let report = saved.iter().find(|f| f["kind"] == "table").unwrap()["handle"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Outputs are workspace files that carry the input's data label.
+    let lo = ok(&call(&c, "list_outputs", json!({})).await);
+    let card = lo["result"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["handle"] == report.as_str())
+        .unwrap();
+    assert_eq!(card["labels"], json!(["connection:lrs"]));
+    assert_eq!(card["rows"], 5);
+    assert_eq!(card["made_by"], RUN);
+
+    let who = ok(&call(&c, "whoami", json!({})).await);
+    let ws = PathBuf::from(who["result"]["workspace"].as_str().unwrap());
+    let csv = std::fs::read_to_string(
+        ws.join(
+            report
+                .split_once("/results/")
+                .map(|(_, f)| format!("results/{f}"))
+                .unwrap(),
+        ),
+    )
+    .unwrap();
+    assert!(csv.contains("lrs.gap") && csv.contains("SH0071"));
+
+    // The plugin's extracts never held the hidden field.
+    for e in std::fs::read_dir(ws.join("inputs")).unwrap() {
+        let bytes = std::fs::read(e.unwrap().path()).unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(!text.contains("inspector_ssn") && !text.contains("111-22-3333"));
+    }
+    // Provenance names the governed inputs and the plugin's exact version.
+    let prov = r["provenance"].as_str().unwrap();
+    let p: Value = serde_json::from_str(
+        &std::fs::read_to_string(ws.join("provenance").join(format!("{prov}.prov.json"))).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(p["inputs"][0]["connection"], "lrs");
+    assert!(p["inputs"][0]["executed_sql"]
+        .as_str()
+        .unwrap()
+        .contains("district = 14"));
+    assert!(p["steps"][0]["plugin_hash"]
+        .as_str()
+        .unwrap()
+        .starts_with("sha256:"));
+    c.cancel().await.unwrap();
+
+    let audit = std::fs::read_dir(env.root.join("audit"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    columbus_shared::audit::verify(&audit).unwrap();
+    assert!(std::fs::read_to_string(&audit)
+        .unwrap()
+        .contains("\"provider\":\"contoso.lrs-check\""));
+}

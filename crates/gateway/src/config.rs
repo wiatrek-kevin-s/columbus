@@ -18,6 +18,10 @@ pub struct Paths {
     pub servers: PathBuf,
     /// Personal MCP server manifests (used only if policy allows).
     pub personal_servers: PathBuf,
+    /// Organization-installed engine plugins.
+    pub plugins: PathBuf,
+    /// Personal engine plugins (used only if policy allows).
+    pub personal_plugins: PathBuf,
     pub worker_script: PathBuf,
     pub python: PathBuf,
 }
@@ -40,6 +44,9 @@ impl Paths {
             servers: env_path("COLUMBUS_SERVERS").unwrap_or_else(|| program_data.join("servers")),
             personal_servers: env_path("COLUMBUS_PERSONAL_SERVERS")
                 .unwrap_or_else(|| roaming.join("servers")),
+            plugins: env_path("COLUMBUS_PLUGINS").unwrap_or_else(|| program_data.join("plugins")),
+            personal_plugins: env_path("COLUMBUS_PERSONAL_PLUGINS")
+                .unwrap_or_else(|| roaming.join("plugins")),
             worker_script: env_path("COLUMBUS_WORKER").unwrap_or_else(default_worker_script),
             python: env_path("COLUMBUS_PYTHON").unwrap_or_else(|| {
                 PathBuf::from(if cfg!(windows) {

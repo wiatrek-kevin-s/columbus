@@ -153,7 +153,8 @@ pub struct ProviderCard {
     /// `native` (Columbus's own engines) or `connected` (an MCP server).
     pub kind: String,
     pub trust: Option<columbus_broker::manifest::Trust>,
-    pub status: columbus_broker::registry::Status,
+    /// `{"state": "ready" | "trial" | "needs_review" | "unapproved" | "changed" | "blocked" | …}`
+    pub status: Value,
     pub enabled_tools: usize,
     /// Tools whose calls need a person's approval.
     pub approval_tools: Vec<String>,
@@ -187,7 +188,11 @@ pub struct RunToolResult {
     /// The connected server's answer, wrapped as untrusted data.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub external: Option<Value>,
-    /// Files saved to the workspace instead of returned (`output: to_workspace`).
+    /// An engine plugin's own summary of the run.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<Value>,
+    /// Files written to the workspace: plugin outputs, or connected-server
+    /// results saved instead of returned (`output: to_workspace`).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub saved: Vec<crate::providers::SavedFile>,
 }
@@ -367,6 +372,7 @@ pub struct State {
     pub worker: Worker,
     pub secrets: Arc<crate::secrets::SecretStore>,
     pub broker: columbus_broker::registry::Broker,
+    pub plugins: crate::plugins::Plugins,
     pub flow: columbus_flow::FlowState,
     pub outputs: crate::providers::Outputs,
     pub session: String,
@@ -376,7 +382,7 @@ pub struct State {
 
 #[derive(Clone)]
 pub struct Gateway {
-    state: Arc<State>,
+    pub(crate) state: Arc<State>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -419,7 +425,10 @@ impl State {
                 AuditLog::new(fallback)?
             }
         };
-        let worker = Worker::new(paths.python.clone(), paths.worker_script.clone());
+        let worker = Worker::new(crate::worker::Launch::core(
+            paths.python.clone(),
+            paths.worker_script.clone(),
+        ));
         let secrets = Arc::new(crate::secrets::SecretStore::from_env());
         if secrets.is_dev() {
             notes.push(
@@ -438,8 +447,29 @@ impl State {
             NATIVE_NAMESPACES,
         )?;
         notes.extend(broker.notes.iter().cloned());
+        let host_script = paths
+            .worker_script
+            .parent()
+            .map(|d| d.join("columbus_plugin_host.py"))
+            .unwrap_or_else(|| PathBuf::from("columbus_plugin_host.py"));
+        let server_ids: std::collections::BTreeSet<String> = broker
+            .providers()
+            .iter()
+            .map(|p| p.id().to_string())
+            .collect();
+        let plugins = crate::plugins::Plugins::load(
+            &policy,
+            &paths.plugins,
+            &paths.personal_plugins,
+            paths.python.clone(),
+            host_script,
+            sandbox.root().to_path_buf(),
+            &server_ids,
+        );
+        notes.extend(plugins.notes.iter().cloned());
         Ok(State {
             broker,
+            plugins,
             flow: columbus_flow::FlowState::new(),
             outputs: crate::providers::Outputs::default(),
             paths,
@@ -459,14 +489,14 @@ impl State {
     }
 }
 
-fn client_name(ctx: &RequestContext<RoleServer>) -> String {
+pub(crate) fn client_name(ctx: &RequestContext<RoleServer>) -> String {
     ctx.peer
         .peer_info()
         .map(|i| i.client_info.name.clone())
         .unwrap_or_else(|| "unknown".into())
 }
 
-fn new_prov_id() -> String {
+pub(crate) fn new_prov_id() -> String {
     format!("p_{}", &uuid::Uuid::new_v4().simple().to_string()[..8])
 }
 
@@ -478,13 +508,17 @@ impl Gateway {
         }
     }
 
-    fn now(&self) -> DateTime<Utc> {
+    pub(crate) fn now(&self) -> DateTime<Utc> {
         Utc::now()
     }
 
     /// Append an audit line. A failure to audit is itself a refusal: a call
     /// that cannot be recorded does not run.
-    fn audit(&self, ctx: &RequestContext<RoleServer>, mut rec: AuditRecord) -> Result<(), String> {
+    pub(crate) fn audit(
+        &self,
+        ctx: &RequestContext<RoleServer>,
+        mut rec: AuditRecord,
+    ) -> Result<(), String> {
         rec.user = self.state.user.clone();
         rec.client = client_name(ctx);
         self.state
@@ -522,7 +556,7 @@ impl Gateway {
         Ok(rec)
     }
 
-    fn deny(
+    pub(crate) fn deny(
         &self,
         ctx: &RequestContext<RoleServer>,
         rec: AuditRecord,
@@ -543,7 +577,7 @@ impl Gateway {
         }
     }
 
-    fn connection(&self, id: &str) -> Result<&Connection, Denied> {
+    pub(crate) fn connection(&self, id: &str) -> Result<&Connection, Denied> {
         self.state
             .connections
             .iter()
@@ -551,21 +585,21 @@ impl Gateway {
             .ok_or_else(|| Denied::UnknownConnection(id.into()))
     }
 
-    fn access(&self, id: &str) -> Result<(EffectiveAccess, &Connection), Denied> {
+    pub(crate) fn access(&self, id: &str) -> Result<(EffectiveAccess, &Connection), Denied> {
         let conn = self.connection(id)?;
         let access =
             EffectiveAccess::resolve(&self.state.policy, conn, &self.state.scope, self.now())?;
         Ok((access, conn))
     }
 
-    fn engine_ready(kind: &str) -> bool {
+    pub(crate) fn engine_ready(kind: &str) -> bool {
         ENGINE_READY.iter().any(|k| k.eq_ignore_ascii_case(kind))
     }
 
     /// The short-lived handle a worker gets for one request: where to
     /// connect and, for databases, the login secret from the credential
     /// store. It goes to the worker over its private pipe and nowhere else.
-    fn handle(&self, conn: &Connection) -> Result<Value, String> {
+    pub(crate) fn handle(&self, conn: &Connection) -> Result<Value, String> {
         let mut h = json!({"kind": conn.kind});
         let m = h.as_object_mut().expect("object");
         for (k, v) in [
@@ -624,7 +658,7 @@ impl Gateway {
             .collect()
     }
 
-    fn write_provenance(&self, id: &str, record: &Value) -> Result<PathBuf, String> {
+    pub(crate) fn write_provenance(&self, id: &str, record: &Value) -> Result<PathBuf, String> {
         let path = self
             .state
             .sandbox
@@ -643,6 +677,30 @@ impl Gateway {
 impl Gateway {
     async fn provider_cards(&self) -> Vec<ProviderCard> {
         let mut out = Vec::new();
+        for p in self.state.plugins.all() {
+            // Start approved plugins so a describe mismatch shows up here.
+            let _ = self.state.plugins.worker(p).await;
+            let status = self.state.plugins.status(p);
+            let ready = matches!(status, crate::plugins::PluginStatus::Ready);
+            out.push(ProviderCard {
+                id: p.id().to_string(),
+                name: p.manifest.display_name(),
+                kind: "native".into(),
+                trust: None,
+                status: serde_json::to_value(&status).unwrap_or(Value::Null),
+                enabled_tools: if ready { p.manifest.tools.len() } else { 0 },
+                approval_tools: if ready {
+                    p.manifest
+                        .tools
+                        .iter()
+                        .filter(|(_, t)| t.risk >= columbus_broker::manifest::Risk::Write)
+                        .map(|(n, _)| format!("{}.{n}", p.id()))
+                        .collect()
+                } else {
+                    vec![]
+                },
+            });
+        }
         for p in self.state.broker.providers() {
             let conn = self.state.broker.connected(p).await;
             let status = columbus_broker::registry::Broker::status_of(&conn);
@@ -673,7 +731,7 @@ impl Gateway {
                 name: p.loaded.manifest.display_name(),
                 kind: "connected".into(),
                 trust: Some(p.loaded.manifest.trust),
-                status,
+                status: serde_json::to_value(status).unwrap_or(Value::Null),
                 enabled_tools: enabled,
                 approval_tools,
             });
@@ -681,7 +739,7 @@ impl Gateway {
         out
     }
 
-    fn labels(&self) -> Vec<String> {
+    pub(crate) fn labels(&self) -> Vec<String> {
         self.state.flow.session_labels().into_iter().collect()
     }
 
@@ -712,7 +770,7 @@ impl Gateway {
         }
     }
 
-    fn ws_handle(&self, path: &std::path::Path) -> Option<String> {
+    pub(crate) fn ws_handle(&self, path: &std::path::Path) -> Option<String> {
         crate::providers::handle_for(&self.state.session, self.state.sandbox.root(), path)
     }
 }
@@ -731,7 +789,7 @@ impl Gateway {
         let engines = match self
             .state
             .worker
-            .call("ping", json!({}), Duration::from_secs(20))
+            .core("ping", json!({}), Duration::from_secs(20))
             .await
         {
             Ok(v) => v,
@@ -822,6 +880,44 @@ impl Gateway {
                 ));
             }
         }
+        for p in self.state.plugins.all() {
+            if args.provider.as_deref().is_some_and(|want| want != p.id())
+                || !matches!(
+                    self.state.plugins.status(p),
+                    crate::plugins::PluginStatus::Ready
+                )
+                || self.state.plugins.worker(p).await.is_err()
+            {
+                continue;
+            }
+            for (name, t) in &p.manifest.tools {
+                let full = format!("{}.{name}", p.id());
+                if !self.state.policy.tool_allowed(&full) {
+                    continue;
+                }
+                candidates.push((
+                    format!(
+                        "{} {} {} {}",
+                        p.id(),
+                        p.manifest.display_name(),
+                        name.replace('_', " "),
+                        t.summary
+                    ),
+                    ToolCard {
+                        name: full,
+                        summary: summary_of(&t.summary),
+                        provider: p.id().to_string(),
+                        risk: Some(t.risk),
+                        approval: if t.risk >= columbus_broker::manifest::Risk::Write {
+                            "yes"
+                        } else {
+                            "no"
+                        }
+                        .into(),
+                    },
+                ));
+            }
+        }
         for (full, (p, t, rule)) in self.state.broker.enabled_tools().await {
             if args.provider.as_deref().is_some_and(|want| want != p.id())
                 || !self.state.policy.tool_allowed(&full)
@@ -879,7 +975,54 @@ impl Gateway {
         ctx: RequestContext<RoleServer>,
     ) -> Result<Json<Output<ToolDetail>>, String> {
         let rec = self.gate(&ctx, "describe_tool", &json!({"name": args.name}))?;
-        if let Some((ns, tool_name)) = args.name.split_once('.') {
+        if let Some((ns, tool_name)) = args.name.rsplit_once('.') {
+            if let Some(pl) = self.state.plugins.get(ns).cloned() {
+                if !self.state.policy.tool_allowed(&args.name) {
+                    return Err(self.deny(&ctx, rec, Denied::Tool(args.name.clone())));
+                }
+                if let Err(e) = self.state.plugins.worker(&pl).await {
+                    return Err(self.deny(&ctx, rec, e));
+                }
+                let Some(t) = pl.manifest.tools.get(tool_name) else {
+                    return Err(self.deny(
+                        &ctx,
+                        rec,
+                        format!("{ns} has no tool named {tool_name:?}"),
+                    ));
+                };
+                let mut description = t.summary.clone();
+                if !t.outputs.is_empty() {
+                    let outs: Vec<String> = t
+                        .outputs
+                        .iter()
+                        .map(|(n, o)| format!("{n} ({})", o.kind()))
+                        .collect();
+                    description.push_str(&format!(
+                        " Outputs, saved to the workspace: {}.",
+                        outs.join(", ")
+                    ));
+                }
+                let detail = ToolDetail {
+                    name: args.name.clone(),
+                    description,
+                    input_schema: crate::plugins::input_schema(t),
+                    read_only: t.risk == columbus_broker::manifest::Risk::Read,
+                    provider: ns.to_string(),
+                    reviewed_hash: Some(pl.hash.clone()),
+                    risk: Some(t.risk),
+                    egress: false,
+                    argument_roles: BTreeMap::new(),
+                    saves_to_workspace: !t.outputs.is_empty(),
+                };
+                self.audit(
+                    &ctx,
+                    AuditRecord {
+                        provider: Some(ns.to_string()),
+                        ..rec
+                    },
+                )?;
+                return Ok(out(detail));
+            }
             let Some(p) = self.state.broker.get(ns).cloned() else {
                 return Err(self.deny(
                     &ctx,
@@ -1038,7 +1181,7 @@ impl Gateway {
         let reply = self
             .state
             .worker
-            .call(
+            .core(
                 "list_datasets",
                 json!({"connection": handle, "timeout_s": timeout}),
                 Duration::from_secs(timeout + 10),
@@ -1106,7 +1249,7 @@ impl Gateway {
             name: "Columbus core GIS tools".into(),
             kind: "native".into(),
             trust: None,
-            status: columbus_broker::registry::Status::Ready,
+            status: json!({"state": "ready"}),
             enabled_tools: self
                 .tool_router
                 .list_all()
@@ -1136,7 +1279,7 @@ impl Gateway {
         // The approval id is not part of the request an approval is bound to.
         let request = json!({"name": args.name, "args": args.args});
         let mut rec = self.gate(&ctx, "run_tool", &request)?;
-        let Some((ns, tool)) = args.name.split_once('.') else {
+        let Some((ns, tool)) = args.name.rsplit_once('.') else {
             return Err(self.deny(
                 &ctx,
                 rec,
@@ -1144,6 +1287,22 @@ impl Gateway {
             ));
         };
         rec.provider = Some(ns.to_string());
+        if !self.state.policy.tool_allowed(&args.name) {
+            return Err(self.deny(&ctx, rec, Denied::Tool(args.name.clone())));
+        }
+        if let Some(pl) = self.state.plugins.get(ns).cloned() {
+            return self
+                .run_plugin_tool(
+                    &ctx,
+                    rec,
+                    pl,
+                    tool,
+                    args.args.clone(),
+                    args.approval_id.clone(),
+                    &request,
+                )
+                .await;
+        }
         let Some(p) = self.state.broker.get(ns).cloned() else {
             return Err(self.deny(
                 &ctx,
@@ -1151,9 +1310,6 @@ impl Gateway {
                 format!("no provider named {ns:?}; see list_providers"),
             ));
         };
-        if !self.state.policy.tool_allowed(&args.name) {
-            return Err(self.deny(&ctx, rec, Denied::Tool(args.name.clone())));
-        }
         let (reviewed, rule) = match self.state.broker.enabled_tool(&p, tool).await {
             Ok(v) => v,
             Err(e) => return Err(self.deny(&ctx, rec, e)),
@@ -1309,6 +1465,7 @@ impl Gateway {
                                 next: "This client cannot show approval prompts. Tell the person what is waiting; once they approve it, call run_tool again with the same name and args plus approval_id. (The Columbus approvals page that lets them do this is in the next build.)".into(),
                             }),
                             external: None,
+                            summary: None,
                             saved: vec![],
                         }));
                     }
@@ -1448,6 +1605,7 @@ impl Gateway {
                 status: "done".into(),
                 approval: None,
                 external,
+                summary: None,
                 saved,
             },
             checks,
@@ -1568,7 +1726,7 @@ impl Gateway {
         let reply = self
             .state
             .worker
-            .call(
+            .core(
                 "sql_select",
                 json!({
                     "connection": handle,

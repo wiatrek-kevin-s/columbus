@@ -137,6 +137,20 @@ pub struct OrgPolicy {
     /// approve at equal specificity.
     #[serde(default)]
     pub flows: Vec<FlowRule>,
+    /// Engine plugins (design change 1, section 7).
+    #[serde(default)]
+    pub plugins: PluginPolicy,
+}
+
+/// What engine plugins may be used.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PluginPolicy {
+    /// Plugins the person installs under their own profile. Off by default.
+    #[serde(default)]
+    pub allow_personal: bool,
+    /// Plugin ids allowed at all; empty means any organization-installed plugin.
+    #[serde(default)]
+    pub allow: Vec<String>,
 }
 
 /// What connected MCP servers may be used.
@@ -187,6 +201,7 @@ impl Default for OrgPolicy {
             hide_fields: vec![],
             servers: ServerPolicy::default(),
             flows: vec![],
+            plugins: PluginPolicy::default(),
         }
     }
 }
