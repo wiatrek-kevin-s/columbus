@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Publish as this release tag (e.g. v0.1.0); empty builds only"
+        description: "Publish as this release tag (v plus the version in Cargo.toml, e.g. v0.1.2); empty builds only"
         required: false
         default: ""
 
@@ -54,6 +54,12 @@ jobs:
           TAG: ${{ inputs.tag != '' && inputs.tag || github.ref_name }}
         shell: pwsh
         run: |
+          # The tag must name the version that was built, so the files, the
+          # title and `columbus-mcp --version` all agree with it.
+          if ($env:TAG -ne "v$env:VERSION") {
+            Write-Error "Tag $env:TAG does not match the built version $env:VERSION: change the version in Cargo.toml first."
+            exit 1
+          }
           gh release view $env:TAG 2>$null
           if ($LASTEXITCODE -ne 0) {
             gh release create $env:TAG --target $env:GITHUB_SHA --title "Columbus $env:VERSION (test release)" --notes-file docs\install.md --prerelease
