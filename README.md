@@ -37,7 +37,7 @@ GIS tools that touch an organization's data are written as **engine plugins**: a
 - Outputs go only to workspace paths the gateway assigns, and carry the inputs' data labels, so Rule 3 follows them.
 - A plugin runs only after a person approves its exact contents (`columbus-mcp plugins approve <id>`); any change to `plugin.yaml` or the worker switches it off, and a worker whose own description differs from its `plugin.yaml` is refused.
 
-[`examples/plugins/lrs-check`](examples/plugins/lrs-check) is the LRS event checker from design change 1, implemented: gaps, overlaps, reversed and out-of-range measures, and events on unknown routes, with a findings layer and a report table. Agents call plugin tools through `run_tool` as `<plugin id>.<tool>`, for example `contoso.lrs-check.check_events`.
+The Rust SDK's [`geometry_stats`](workers/sdk-rust/examples/geometry_stats.rs) example reads governed geometry (GeoPackage or PostGIS) and reports extents and validity. [`examples/plugins/lrs-check`](examples/plugins/lrs-check) is the LRS event checker from design change 1, implemented: gaps, overlaps, reversed and out-of-range measures, and events on unknown routes, with a findings layer and a report table. Agents call plugin tools through `run_tool` as `<plugin id>.<tool>`, for example `contoso.lrs-check.check_events`.
 
 ## Connected MCP servers
 

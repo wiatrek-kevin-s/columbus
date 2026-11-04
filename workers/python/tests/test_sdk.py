@@ -212,6 +212,16 @@ class ProtocolTests(unittest.TestCase):
         self.send({"jsonrpc": "2.0", "id": 4, "method": "run", "params": {"run": "r11", "tool": "nope"}})
         self.assertEqual(self.until(4)["error"]["code"], -32602)
 
+    def test_next_run_right_after_a_reply_is_never_busy(self):
+        path = self.make_extract(3)
+        out = os.path.join(self.tmp.name, "results", "r.csv")
+        for i in range(30):
+            self.send({"jsonrpc": "2.0", "id": 100 + i, "method": "run", "params": {
+                "run": f"q{i}", "tool": "count", "inputs": {"layer": {"kind": "dataset", "path": path}},
+                "outputs": {"report": {"type": "table", "path": out}}}})
+            reply = self.until(100 + i)
+            self.assertIn("result", reply, reply)
+
     def test_entry_outside_plugin_folder_refused(self):
         host = os.path.join(SDK_DIR, "columbus_plugin_host.py")
         p = subprocess.run([sys.executable, "-I", host, self.dir, "../../etc/passwd"], capture_output=True, text=True, timeout=30)

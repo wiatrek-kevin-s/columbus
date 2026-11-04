@@ -17,3 +17,5 @@ rusqlite = { version = "0.37", features = ["bundled"] }
 
 [dev-dependencies]
 tempfile.workspace = true
+# The protocol test checks the example's plugin.yaml against `describe`.
+serde_yaml.workspace = true

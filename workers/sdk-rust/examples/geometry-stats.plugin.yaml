@@ -1,0 +1,22 @@
+# Manifest for the Rust SDK example (examples/geometry_stats.rs).
+# Copy it into a plugin folder as plugin.yaml next to the built executable.
+id: columbus.example-rust
+name: Geometry statistics (Rust example)
+version: 0.1.0                 # the columbus-plugin crate version
+runtime: rust
+entry: geometry_stats         # ".exe" is added on Windows
+tools:
+  bbox:
+    summary: Overall bounding box, geometry counts per type, and empty and invalid geometries of a layer.
+    params:
+      layer: { type: dataset, access: read }
+    outputs:
+      stats: { type: table }
+    risk: read
+    checks: [geometry.valid]
+  wait:
+    summary: Wait for a number of seconds while reporting progress (for testing cancellation).
+    params:
+      seconds: { type: number, default: 1, min: 0, max: 60 }
+    outputs: {}
+    risk: read

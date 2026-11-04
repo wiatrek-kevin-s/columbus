@@ -508,23 +508,30 @@ class Plugin:
         }
 
     def _execute(self, rid: Any, ctx: Context) -> None:
+        result: Any = None
+        error: tuple[int, str] | None = None
         try:
             t = self._tools.get(ctx.tool)
             if t is None:
                 raise ToolError(f"no tool named {ctx.tool!r}", INVALID_PARAMS)
             summary = t.fn(ctx)
-            ctx.check_cancelled()
-            self._reply(rid, {"outputs": ctx.outputs, "warnings": ctx.warnings, "summary": summary if summary is not None else {}})
+            result = {"outputs": ctx.outputs, "warnings": ctx.warnings, "summary": summary if summary is not None else {}}
         except ToolError as e:
-            self._reply(rid, error=(e.code, e.message))
+            error = (e.code, e.message)
         except Exception as e:  # noqa: BLE001 - report, never crash the loop
             traceback.print_exc(file=sys.stderr)
-            self._reply(rid, error=(ENGINE_ERROR, f"{type(e).__name__}: {e}"))
+            error = (ENGINE_ERROR, f"{type(e).__name__}: {e}")
         finally:
             ctx._close()
-            with self._active_lock:
-                if self._active is ctx:
-                    self._active = None
+        # Free the slot and decide cancel-or-finish together, before
+        # replying: the gateway may send its next run the moment the reply
+        # arrives, and must not find this one still marked active.
+        with self._active_lock:
+            if self._active is ctx:
+                self._active = None
+            if ctx._cancel.is_set():
+                error = (CANCELLED, "cancelled")
+        self._reply(rid, result, error)
 
     def handle(self, line: str, spawn: bool = True) -> None:
         try:

@@ -48,7 +48,18 @@ INSERT INTO events (route_id, from_meas, to_meas, district, inspector_ssn) VALUE
   ('SH0071', 0, 1, 14, '111-22-3333'),
   ('IH0035', 5, 6, 12, '111-22-3333');
 CREATE TABLE payroll (id INTEGER, amount REAL, district INTEGER);
+CREATE TABLE segments (fid INTEGER PRIMARY KEY, district INTEGER, geom BLOB);
 ''')
+import struct
+def line(*pts):
+    wkb = struct.pack("<BII", 1, 2, len(pts)) + b"".join(struct.pack("<dd", x, y) for x, y in pts)
+    return b"GP" + bytes([0, 0x01]) + struct.pack("<i", 3081) + wkb
+db.executemany("INSERT INTO segments (district, geom) VALUES (?, ?)", [
+    (14, line((-98.0, 30.0), (-97.5, 30.5))),
+    (14, line((-97.5, 30.5), (-97.0, 31.0))),
+    (14, None),
+    (12, line((-120.0, 40.0), (-119.0, 41.0))),
+])
 db.commit()
 "#;
     assert!(StdCommand::new(py)
@@ -71,22 +82,74 @@ impl Env {
     }
 
     fn approve(&self) {
-        let d = self.plugin_dir();
-        let yaml = std::fs::read_to_string(d.join("plugin.yaml")).unwrap();
-        let entry = std::fs::read(d.join("worker.py")).unwrap();
-        let mut all = yaml.into_bytes();
-        all.push(0);
-        all.extend_from_slice(&entry);
-        let hash = format!("sha256:{}", columbus_shared::canon::sha256_hex(&all));
-        std::fs::write(
-            self.root.join("plugins").join("approved.yaml"),
-            format!("contoso.lrs-check: {hash:?}\n"),
+        let mut approved = String::new();
+        for (id, dir, entry) in [
+            (
+                "contoso.lrs-check",
+                self.plugin_dir(),
+                "worker.py".to_string(),
+            ),
+            (
+                "columbus.example-rust",
+                self.root.join("plugins").join("geom"),
+                rust_entry(),
+            ),
+        ] {
+            let Ok(yaml) = std::fs::read_to_string(dir.join("plugin.yaml")) else {
+                continue;
+            };
+            let mut all = yaml.into_bytes();
+            all.push(0);
+            all.extend_from_slice(&std::fs::read(dir.join(&entry)).unwrap());
+            approved.push_str(&format!(
+                "{id}: {:?}\n",
+                format!("sha256:{}", columbus_shared::canon::sha256_hex(&all))
+            ));
+        }
+        std::fs::write(self.root.join("plugins").join("approved.yaml"), approved).unwrap();
+    }
+
+    /// Install the Rust SDK's example plugin, building it if needed.
+    fn install_rust_example(&self) {
+        let target = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let built = target.join("examples").join(rust_entry());
+        if !built.exists() {
+            let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+            let ok = StdCommand::new(cargo)
+                .args([
+                    "build",
+                    "-p",
+                    "columbus-plugin",
+                    "--example",
+                    "geometry_stats",
+                ])
+                .current_dir(repo())
+                .status()
+                .unwrap();
+            assert!(ok.success(), "building the Rust example plugin failed");
+        }
+        let dir = self.root.join("plugins").join("geom");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::copy(
+            repo().join("workers/sdk-rust/examples/geometry-stats.plugin.yaml"),
+            dir.join("plugin.yaml"),
         )
         .unwrap();
+        std::fs::copy(&built, dir.join(rust_entry())).unwrap();
     }
 }
 
 fn setup(py: &str) -> Env {
+    setup_with(py, 30)
+}
+
+fn setup_with(py: &str, seconds: u64) -> Env {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().to_path_buf();
     for d in ["connections", "servers", "plugins/lrs-check"] {
@@ -103,13 +166,13 @@ fn setup(py: &str) -> Env {
     make_gpkg(py, &gpkg);
     std::fs::write(
         root.join("policy.yaml"),
-        "connection_types: [gpkg]\nhide_fields: [\"*_ssn\"]\nlimits: { rows: 1000, seconds: 30 }\n",
+        format!("connection_types: [gpkg]\nhide_fields: [\"*_ssn\"]\nlimits: {{ rows: 1000, seconds: {seconds} }}\n"),
     )
     .unwrap();
     std::fs::write(
         root.join("connections").join("lrs.yaml"),
         format!(
-            "id: lrs\ntype: gpkg\npath: {}\ndatasets:\n  allow: [\"routes\", \"events\"]\nrow_filter: \"district = 14\"\n",
+            "id: lrs\ntype: gpkg\npath: {}\ndatasets:\n  allow: [\"routes\", \"events\", \"segments\"]\nrow_filter: \"district = 14\"\n",
             serde_json::to_string(&gpkg.display().to_string()).unwrap()
         ),
     )
@@ -176,6 +239,10 @@ fn provider<'a>(lp: &'a Value, id: &str) -> &'a Value {
 }
 
 const RUN: &str = "contoso.lrs-check.check_events";
+
+fn rust_entry() -> String {
+    format!("geometry_stats{}", std::env::consts::EXE_SUFFIX)
+}
 
 fn run_args() -> Value {
     json!({"name": RUN, "args": {"events": "lrs:events", "routes": {"connection": "lrs", "dataset": "routes"}}})
@@ -357,4 +424,67 @@ async fn the_lrs_checker_runs_on_governed_data() {
     assert!(std::fs::read_to_string(&audit)
         .unwrap()
         .contains("\"provider\":\"contoso.lrs-check\""));
+}
+
+#[tokio::test]
+async fn a_rust_plugin_reads_governed_geometry_and_stops_on_time() {
+    let Some(py) = python() else { return };
+    let env = setup_with(&py, 3);
+    env.install_rust_example();
+    env.approve();
+    let c = start(&env, &py).await;
+
+    let lp = ok(&call(&c, "list_providers", json!({})).await);
+    assert_eq!(
+        provider(&lp, "columbus.example-rust")["status"]["state"],
+        "ready"
+    );
+
+    let r = ok(&call(
+        &c,
+        "run_tool",
+        json!({"name": "columbus.example-rust.bbox", "args": {"layer": "lrs:segments"}}),
+    )
+    .await);
+    assert_eq!(r["result"]["status"], "done");
+    // Three segments in district 14 (one without geometry); the district 12 one never reaches the plugin.
+    assert_eq!(
+        r["result"]["summary"]["rows"], 3,
+        "{}",
+        r["result"]["summary"]
+    );
+    let got: Vec<f64> = r["result"]["summary"]["bbox"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_f64().unwrap())
+        .collect();
+    assert_eq!(got, vec![-98.0, 30.0, -97.0, 31.0]);
+    assert_eq!(r["result"]["saved"].as_array().unwrap().len(), 1);
+
+    // A job that runs past the policy's time limit is stopped, not left running.
+    let started = std::time::Instant::now();
+    let e = err(&call(
+        &c,
+        "run_tool",
+        json!({"name": "columbus.example-rust.wait", "args": {"seconds": 20}}),
+    )
+    .await);
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(12),
+        "stopped in {:?}",
+        started.elapsed()
+    );
+    assert!(
+        e.contains("longer than 3 s") || e.to_lowercase().contains("timed out"),
+        "{e}"
+    );
+    // The plugin still works afterwards.
+    ok(&call(
+        &c,
+        "run_tool",
+        json!({"name": "columbus.example-rust.bbox", "args": {"layer": "lrs:segments"}}),
+    )
+    .await);
+    c.cancel().await.unwrap();
 }
