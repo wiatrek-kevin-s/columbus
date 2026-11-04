@@ -240,6 +240,11 @@ async fn governed_session_end_to_end() {
         .all(|row| row[1] == 14));
     let file = PathBuf::from(res["workspace_file"].as_str().unwrap());
     assert!(file.starts_with(workspace.canonicalize().unwrap()) && file.exists());
+    let saved = std::fs::read_to_string(&file).unwrap();
+    assert!(
+        !saved.contains("123-45-6789") && !saved.contains("owner_ssn"),
+        "hidden fields never reach the workspace file, which can be sent on as a handle"
+    );
     let ids: Vec<&str> = q["checks"]
         .as_array()
         .unwrap()

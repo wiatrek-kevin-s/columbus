@@ -6,10 +6,15 @@
 //! columbus-mcp audit verify FILE    check a month's audit log hash chain
 //! columbus-mcp secret set ID        store a connection's password (prompted, not echoed)
 //! columbus-mcp secret delete ID     remove it
+//! columbus-mcp servers list         connected MCP servers and their state
+//! columbus-mcp servers review ID    a server's tools, the manifest's settings and any flags
+//! columbus-mcp servers approve ID [--accept-flags]   pin the reviewed tool definitions
 //! columbus-mcp --version
 //! ```
 
 mod config;
+mod providers;
+mod review_cli;
 mod secrets;
 mod server;
 mod worker;
@@ -47,6 +52,10 @@ async fn main() -> Result<()> {
             }
         }
         ["secret", "set", id] => secret_set(id),
+        ["servers", "list"] => review_cli::list().await,
+        ["servers", "review", id] => review_cli::review(id).await.map(|_| ()),
+        ["servers", "approve", id] => review_cli::approve(id, false).await,
+        ["servers", "approve", id, "--accept-flags"] => review_cli::approve(id, true).await,
         ["secret", "delete", id] => {
             let store = secrets::SecretStore::from_env();
             if store.delete(id)? {
@@ -61,7 +70,7 @@ async fn main() -> Result<()> {
             Ok(())
         }
         _ => bail!(
-            "usage: columbus-mcp [serve] | audit verify FILE | secret set|delete CONNECTION_ID | --version"
+            "usage: columbus-mcp [serve] | audit verify FILE | secret set|delete ID | servers list|review|approve ID | --version"
         ),
     }
 }

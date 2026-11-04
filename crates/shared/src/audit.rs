@@ -40,6 +40,20 @@ pub struct AuditRecord {
     /// Hash of the exact request, so a line can be matched to an approval.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub request: Option<String>,
+    /// Connected server or engine plugin that served the call (change 1).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_version: Option<String>,
+    /// Hash of the provider's approved tool set at the time of the call.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tools_hash: Option<String>,
+    /// Data labels in play (e.g. `connection:roads-prod`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub labels: Vec<String>,
+    /// `allow`, `approve` or `deny`, from the flow rules.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub flow_decision: Option<String>,
 }
 
 pub struct AuditLog {

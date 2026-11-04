@@ -1,6 +1,6 @@
 # Columbus
 
-Columbus makes a GIS analyst, paired with whatever AI their organization already licenses, faster and more trustworthy at real work on real data. This repository holds the core of it: **`columbus-mcp`, a governed GIS MCP server** that any MCP agent (Copilot, Claude, Codex, Gemini CLI, Cursor) can use, and that enforces in its own code what each agent may read, write, run and download.
+Columbus makes a GIS analyst, paired with whatever AI their organization already licenses, faster and more trustworthy at real work on real data. This repository holds the core of it: **`columbus-mcp`, a governed GIS MCP host** that any MCP agent (Copilot, Claude, Codex, Gemini CLI, Cursor) can use. It runs its own GIS engines and connects to other MCP servers (Drive, notes, vendor APIs), and every capability, native or connected, passes the same permissions, approvals, data-flow rules, audit and provenance, enforced in its own code.
 
 > **Status: early, phase 1.** The governance core and the first read-only tools work end to end on PostGIS, GeoPackage and SQLite. Oracle, SQL Server, enterprise geodatabases through ArcPy, geoprocessing, verification checks, the approvals UI and the desktop app come next. See [Roadmap](#roadmap).
 
@@ -20,11 +20,40 @@ Columbus makes a GIS analyst, paired with whatever AI their organization already
 | `list_connections`, `describe_connection` | Connections, effective mode, allowed datasets, row filter, limits. Never secrets. |
 | `list_datasets` | Allowed tables with geometry type, SRS, extent and fields (hidden fields removed) |
 | `sql_select` | One checked, read-only `SELECT` (details below) |
+| `list_providers` | Columbus's engines and connected MCP servers, their trust and state, and the data labels in force |
+| `run_tool` | Run a connected server's tool as `<provider>.<tool>`, under the rules below |
+| `list_outputs` | Workspace files as handles (`ws://<session>/<path>`), with row counts, labels and provenance |
 | `approval_status` | Check an approval the agent is waiting on; it cannot approve anything |
 
 **How `sql_select` is checked.** The SQL must parse, in the connection's dialect (Oracle, PostgreSQL, SQL Server, SQLite, DuckDB), as exactly one `SELECT`. Every table, including those in subqueries, must be on the connection's allow list and off its deny list; quoting does not get around this. System catalogs (`pg_catalog`, `information_schema`, `sys`, Oracle's `DBA_`/`ALL_`/`V$` views, `sqlite_master`) are refused even under an allow-everything pattern. `WITH`, `SELECT INTO`, `FOR UPDATE`, table functions and functions that reach files, the network or server internals (`pg_*`, `dbms_*`, `xp_*`, `load_extension`, `read_csv`…) are refused. The server then rewrites every table reference into a filtered derived table, so the connection's row filter and data-group filters always apply, and adds a row limit with one sentinel row so truncation is detected and reported rather than returned as a complete result. The worker opens the source read-only as well: SQLite files in read-only mode, PostgreSQL sessions with `default_transaction_read_only` and a statement timeout, so even a `SELECT` that calls a writing function is stopped by the database. Anything that does not parse is refused, never passed through.
 
 **Results.** At most 500 rows go back to the AI provider per call (organization policy can lower this). Larger results are written to the session workspace and the path returned. Fields matching the policy's `hide_fields` are stripped before anything leaves the server.
+
+## Connected MCP servers
+
+Columbus is an MCP client to other servers too (design change 1, "governed MCP host"). Each one needs a **Columbus manifest**, written or approved by a person or IT, under `%ProgramData%\Columbus\servers\` (personal manifests under `%APPDATA%` only if policy allows). The manifest decides everything: which tools are on, their risk, whether they send data out, which arguments are files, paths or URLs, and when to ask. The server's own hints are shown at review and never trusted. See [`examples/servers`](examples/servers).
+
+| Rule | What Columbus does |
+| --- | --- |
+| 1. New and changed tools start off | Every tool definition is hashed at approval. On each connect the gateway re-hashes; a changed description or schema, or a new tool, is switched off until a person reviews it |
+| 2. Data moves as files | File arguments take workspace handles only; the gateway sends the file's bytes. Results marked `to_workspace` are saved as files and a handle comes back |
+| 3. Data-flow approvals | Reading a governed connection labels the session (`connection:roads-prod`) and its files. While a label is active, any write or upload to a connected server needs the person's approval, whatever its manifest says; organization `flows` rules can forbid it outright |
+| 4. External output is untrusted | Connected servers' results are wrapped as data, never instructions |
+| 5. Local servers run confined | **Not in this build yet.** Until it is, local (stdio) servers stay blocked unless policy sets `servers.allow_unconfined_local` for a pilot; they get a scrubbed environment and the workspace as their folder. Remote servers must be on the policy's host list |
+
+Review is done by the person at the keyboard:
+
+```powershell
+columbus-mcp servers list                 # each server and its state (trial, ready, needs review, blocked)
+columbus-mcp servers review drive         # tools, the manifest's settings, the server's claims, and flags
+columbus-mcp servers approve drive        # pins the definitions; asks you to type the id on the terminal
+```
+
+Review flags descriptions with hidden characters, wording aimed at the model ("ignore previous", "do not tell the user"), references to other providers' or Columbus's tools, credentials and destinations. Flagged tools need `--accept-flags`.
+
+When a call needs approval, Columbus asks the person in their own MCP client (elicitation): the agent never sees or answers that prompt. Clients that cannot ask get `approval_required` with an id; the approvals page that lets the person answer those is the next build.
+
+Not yet: OAuth sign-in for remote servers, Windows confinement levels A–C, the engine plugin SDK and RustGIS worker (milestones 1–2 of change 1).
 
 ## Connections and secrets
 
@@ -49,7 +78,9 @@ For development and CI only, `COLUMBUS_DEV_SECRETS=1` reads passwords from `COLU
 
 ```text
 crates/shared     policy layers, query checking, approvals, sandbox, audit (no I/O to agents)
-crates/gateway    columbus-mcp: MCP server (rmcp), tools, worker supervision
+crates/broker     connected MCP servers: manifests, client sessions, tool pinning, review flags
+crates/flow       data labels and organization flow rules
+crates/gateway    columbus-mcp: MCP server (rmcp), tools, worker supervision, run_tool
 workers/python    engine worker: line-delimited JSON-RPC over stdio
 examples          a sample organization policy and connections
 ```
@@ -110,7 +141,7 @@ python -m unittest discover -s workers/python/tests      # worker
 
 PostGIS tests run when `COLUMBUS_TEST_PG_HOST` (and optionally `_PORT`, `_DB`) is set and [`tests/fixtures/postgis.sql`](crates/gateway/tests/fixtures/postgis.sql) is loaded; CI runs them against a PostGIS container. They connect with a login that *can* write, to show writes are refused anyway.
 
-The end-to-end test starts the real binary as an MCP client would, with a policy, a GeoPackage connection and the Python worker, and checks over the wire that row filters apply, hidden fields never leave, denied tables and writes are refused, truncation is reported and the audit chain verifies.
+The broker tests run the gateway against a scriptable MCP server ([`examples/fake_mcp_server.rs`](crates/gateway/examples/fake_mcp_server.rs)) and cover the change-1 gates: a changed description is switched off, a poisoned one is flagged, governed data cannot reach a connected server without the person's approval or past a deny rule. The end-to-end test starts the real binary as an MCP client would, with a policy, a GeoPackage connection and the Python worker, and checks over the wire that row filters apply, hidden fields never leave, denied tables and writes are refused, truncation is reported and the audit chain verifies.
 
 ## Roadmap
 
@@ -123,7 +154,11 @@ Phase 1 (this repository, in progress):
 - [x] Secrets in Windows Credential Manager (`columbus-mcp secret set`)
 - [ ] SQL Server (ODBC 18, `ApplicationIntent=ReadOnly`) and Oracle (`python-oracledb` thin) engines
 - [ ] Streamable HTTP on 127.0.0.1 with a per-session token
-- [ ] Approval flow: in-client elicitation plus the local approvals page
+- [x] Broker for connected MCP servers (stdio and HTTP): manifests, pinning with auto-disable, review flags, file handles, untrusted output, data labels and flow rules (change 1, Rules 1–4)
+- [x] Approvals in the person's own client through MCP elicitation
+- [ ] Local approvals page for clients without elicitation
+- [ ] Worker protocol v2 and engine plugin SDK; RustGIS native worker
+- [ ] Confinement levels A–C on Windows; OAuth for remote servers
 - [ ] `vector_op`, `raster_op`, `pointcloud_pipeline` through GDAL/PDAL in a pixi environment
 - [ ] Verification checks (design section 4) attached to every result
 - [ ] ArcPy worker for enterprise geodatabases; signed `.mcpb` bundle and MSI

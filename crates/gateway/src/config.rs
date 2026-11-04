@@ -14,6 +14,10 @@ pub struct Paths {
     pub connections: PathBuf,
     pub workspaces: PathBuf,
     pub audit: PathBuf,
+    /// Organization-managed MCP server manifests.
+    pub servers: PathBuf,
+    /// Personal MCP server manifests (used only if policy allows).
+    pub personal_servers: PathBuf,
     pub worker_script: PathBuf,
     pub python: PathBuf,
 }
@@ -33,6 +37,9 @@ impl Paths {
                 .unwrap_or_else(|| roaming.join("connections")),
             workspaces: env_path("COLUMBUS_WORKSPACES").unwrap_or_else(|| local.join("workspaces")),
             audit: env_path("COLUMBUS_AUDIT_DIR").unwrap_or_else(|| program_data.join("audit")),
+            servers: env_path("COLUMBUS_SERVERS").unwrap_or_else(|| program_data.join("servers")),
+            personal_servers: env_path("COLUMBUS_PERSONAL_SERVERS")
+                .unwrap_or_else(|| roaming.join("servers")),
             worker_script: env_path("COLUMBUS_WORKER").unwrap_or_else(default_worker_script),
             python: env_path("COLUMBUS_PYTHON").unwrap_or_else(|| {
                 PathBuf::from(if cfg!(windows) {

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import base64
 import csv
+import fnmatch
 import importlib
 import json
 import os
@@ -416,8 +417,16 @@ def sql_select(params: dict[str, Any]) -> dict[str, Any]:
     else:
         raise WorkerError(UNSUPPORTED, f"sql_select does not support {conn['kind']!r} yet")
 
+    # Fields organization policy hides never leave the worker: not in the
+    # rows returned, and not in the workspace file, which can later be sent
+    # to another provider as a file handle.
+    hide = [p.lower() for p in params.get("hide_fields") or [] if isinstance(p, str)]
+    keep = [not any(fnmatch.fnmatchcase(c.lower(), p) for p in hide) for c in columns]
+    hidden = [c for c, k in zip(columns, keep) if not k]
+    columns = [c for c, k in zip(columns, keep) if k]
+
     def convert(row):
-        return [f(v) for f, v in zip(cells, row)]
+        return [f(v) for f, v, k in zip(cells, row, keep) if k]
 
     written = None
     if len(all_rows) > return_rows and isinstance(output_path, str) and output_path:
@@ -430,6 +439,7 @@ def sql_select(params: dict[str, Any]) -> dict[str, Any]:
         written = output_path
     return {
         "columns": columns,
+        "hidden_columns": hidden,
         "rows": [convert(row) for row in all_rows[:return_rows]],
         "rows_read": len(all_rows),
         "rows_returned": min(len(all_rows), return_rows),

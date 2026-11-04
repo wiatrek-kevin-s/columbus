@@ -1,0 +1,32 @@
+[package]
+name = "columbus-broker"
+description = "Connects Columbus to other MCP servers under Columbus manifests: sessions, tool pinning, review checks and result wrapping"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+columbus-shared = { path = "../shared" }
+rmcp = { workspace = true, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+schemars.workspace = true
+sha2.workspace = true
+hex.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+# TLS for remote servers: the Windows certificate store (SChannel) on
+# Windows, so TLS inspection and corporate roots work; rustls elsewhere.
+[target.'cfg(windows)'.dependencies]
+rmcp = { workspace = true, features = ["reqwest-native-tls"] }
+
+[target.'cfg(not(windows))'.dependencies]
+rmcp = { workspace = true, features = ["reqwest"] }

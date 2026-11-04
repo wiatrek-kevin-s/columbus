@@ -1,0 +1,19 @@
+# Local, community, needs loopback to a running desktop app (confinement
+# level C). Level C needs trust: trusted or an organization allow-list
+# entry, and local servers start only once confinement is in the build (or
+# policy servers.allow_unconfined_local is on for a pilot).
+id: obsidian
+name: Obsidian vault
+transport: { type: stdio, command: uvx, args: [mcp-obsidian] }
+# The REST plugin key, stored with `columbus-mcp secret set obsidian-rest-key`
+# and handed to the server as an environment variable.
+auth: { type: secret, credential: obsidian-rest-key, env: OBSIDIAN_API_KEY }
+trust: untrusted
+confinement: { level: C, loopback: [27124], hosts: [] }
+tools:
+  list_files_in_vault:   { risk: read }
+  get_file_contents:     { risk: read, output: untrusted }
+  search:                { risk: read }
+  append_content:        { risk: write, approval: on_write }
+  delete_file:           { approval: deny }
+  default:               { allow: false }

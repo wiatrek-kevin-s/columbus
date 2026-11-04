@@ -1,0 +1,13 @@
+[package]
+name = "columbus-flow"
+description = "Session data labels and cross-provider flow rules for Columbus (design change 1, Rule 3)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+columbus-shared = { path = "../shared" }
+serde.workspace = true
+serde_json.workspace = true

@@ -1,0 +1,19 @@
+# Organization-managed manifest: %ProgramData%\Columbus\servers\drive.yaml
+# Remote, official, OAuth. (OAuth sign-in lands in milestone 2; until then
+# this server reports "needs sign-in".)
+# The manifest, not the server, decides what is allowed. Tools not listed
+# are off; risk and approval are the reviewer's, never the server's hints.
+id: drive
+name: Google Drive
+publisher: Google
+transport: { type: http, url: https://drivemcp.googleapis.com/mcp/v1 }
+auth: { type: oauth, scopes: [drive.readonly, drive.file] }
+trust: standard
+tools:
+  search_files:          { risk: read }
+  get_file_metadata:     { risk: read }
+  read_file_content:     { risk: read, output: untrusted }
+  download_file_content: { risk: read, output: to_workspace }
+  create_file:           { risk: write, egress: true, args: { content: file_handle }, approval: always }
+  default:               { allow: false }
+# `pinned:` is written by `columbus-mcp servers approve drive` after review.

@@ -24,3 +24,20 @@ return_rows: 500       # rows sent to the AI provider per call (500 is the maxim
 
 # Fields never returned to the agent (wildcards, case-insensitive).
 hide_fields: ["*SSN*", "OWNER_NAME", "*_PHONE"]
+
+# Connected MCP servers (design change 1).
+servers:
+  allow_personal: false          # only organization-managed manifests
+  allow: []                      # server ids allowed at all; empty = any organization manifest
+  allow_unconfined_local: false  # local servers wait for confinement; true only for pilots
+
+# Data-flow rules. While data from a connection is in the session, writes and
+# uploads to connected servers need approval; these rules can forbid them.
+# The most specific rule wins; deny beats approve at equal specificity.
+flows:
+  - from: [connection:roads-prod, connection:assets-prod]
+    to:   [server:*]            # any connected MCP server
+    action: deny
+  - from: [connection:roads-prod]
+    to:   [server:sharepoint]
+    action: approve             # allowed, with an approval

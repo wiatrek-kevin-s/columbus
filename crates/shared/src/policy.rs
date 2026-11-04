@@ -129,6 +129,46 @@ pub struct OrgPolicy {
     /// Field names (wildcards allowed) never returned to the agent.
     #[serde(default)]
     pub hide_fields: Vec<String>,
+    /// Connected MCP servers (design change 1, section 4).
+    #[serde(default)]
+    pub servers: ServerPolicy,
+    /// Organization data-flow rules between connections and providers
+    /// (design change 1, Rule 3). Most specific rule wins; deny beats
+    /// approve at equal specificity.
+    #[serde(default)]
+    pub flows: Vec<FlowRule>,
+}
+
+/// What connected MCP servers may be used.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ServerPolicy {
+    /// Manifests the person adds under their own profile. Off by default:
+    /// only organization-managed manifests are loaded.
+    #[serde(default)]
+    pub allow_personal: bool,
+    /// Server ids allowed at all; empty means any organization-managed manifest.
+    #[serde(default)]
+    pub allow: Vec<String>,
+    /// Start local (stdio) servers even though this build cannot confine
+    /// them yet. For development and pilots only; off by default.
+    #[serde(default)]
+    pub allow_unconfined_local: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum FlowAction {
+    Deny,
+    Approve,
+}
+
+/// `from` holds labels (`connection:roads-prod`, `connection:*`); `to`
+/// holds destinations (`server:drive`, `server:*`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FlowRule {
+    pub from: Vec<String>,
+    pub to: Vec<String>,
+    pub action: FlowAction,
 }
 
 impl Default for OrgPolicy {
@@ -145,6 +185,8 @@ impl Default for OrgPolicy {
             limits: DEFAULT_LIMITS,
             return_rows: Some(DEFAULT_RETURN_ROWS),
             hide_fields: vec![],
+            servers: ServerPolicy::default(),
+            flows: vec![],
         }
     }
 }

@@ -64,6 +64,19 @@ class WorkerTests(unittest.TestCase):
         with open(out, encoding="utf-8") as f:
             self.assertEqual(len(f.read().strip().splitlines()), 11)
 
+    def test_hidden_fields_never_reach_the_workspace_file(self):
+        out = os.path.join(self.tmp.name, "ws", "results", "p_h.csv")
+        r = w.sql_select(
+            {"connection": self.conn, "sql": "SELECT fid, route_id FROM roads", "max_rows": 100,
+             "return_rows": 2, "output_path": out, "hide_fields": ["ROUTE_*"]}
+        )
+        self.assertEqual(r["columns"], ["fid"])
+        self.assertEqual(r["hidden_columns"], ["route_id"])
+        with open(out, encoding="utf-8") as f:
+            text = f.read()
+        self.assertNotIn("route_id", text)
+        self.assertNotIn("R1", text)
+
     def test_connection_is_read_only(self):
         for sql in ["DELETE FROM roads", "INSERT INTO roads (route_id) VALUES ('x')", "CREATE TABLE t (a)"]:
             with self.assertRaises(w.WorkerError, msg=sql):
