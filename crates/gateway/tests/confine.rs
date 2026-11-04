@@ -244,23 +244,44 @@ fn level_c_reads_anywhere_but_writes_only_granted_folders() {
         eprintln!("sys.executable: {exe}");
         let dir = Path::new(&exe).parent().unwrap().display().to_string();
         let dll = format!("{dir}\\python312.dll");
-        let read_dll = format!("type \"{dll}\" > NUL && echo dll-readable");
-        let list_dir = format!("dir /b \"{dir}\"");
-        let run_py = format!("\"{exe}\" -c \"print(1)\" & echo py-exit-%ERRORLEVEL%");
         for target in [dll.as_str(), exe.as_str(), dir.as_str()] {
             if let Ok(o) = Command::new("icacls").arg(target).output() {
                 eprintln!("icacls {target}:\n{}", String::from_utf8_lossy(&o.stdout));
             }
         }
-        let probes: [(&str, &[&str]); 8] = [
-            ("cmd", &["/c", read_dll.as_str()]),
-            ("cmd", &["/c", list_dir.as_str()]),
-            ("cmd", &["/c", run_py.as_str()]),
-            ("cmd", &["/c", "echo native-ok"]),
-            (me.as_str(), &["--check", "A"]),
-            (py.as_str(), &["-c", "print('py-ok')"]),
-            (exe.as_str(), &["-c", "print('exe-ok')"]),
-            (exe.as_str(), &["-S", "-c", "print('exe-S-ok')"]),
+        // Words without spaces, so cmd sees them as typed.
+        let probes: [(&str, Vec<&str>); 8] = [
+            (
+                "cmd",
+                vec![
+                    "/c",
+                    "type",
+                    dll.as_str(),
+                    ">",
+                    "NUL",
+                    "&&",
+                    "echo",
+                    "dll-readable",
+                ],
+            ),
+            ("cmd", vec!["/c", "dir", "/b", dir.as_str()]),
+            (
+                "cmd",
+                vec![
+                    "/c",
+                    exe.as_str(),
+                    "-c",
+                    "print(1)",
+                    "&",
+                    "echo",
+                    "py-exit-%ERRORLEVEL%",
+                ],
+            ),
+            ("cmd", vec!["/c", "echo", "native-ok"]),
+            (me.as_str(), vec!["--check", "A"]),
+            (py.as_str(), vec!["-c", "print('py-ok')"]),
+            (exe.as_str(), vec!["-c", "print('exe-ok')"]),
+            (exe.as_str(), vec!["-S", "-c", "print('exe-S-ok')"]),
         ];
         for (program, args) in probes {
             let ws = d.ws.display().to_string();
@@ -274,7 +295,7 @@ fn level_c_reads_anywhere_but_writes_only_granted_folders() {
                 "--",
                 program,
             ];
-            a.extend(args);
+            a.extend(args.iter().copied());
             let o = Command::new(launcher()).args(&a).output().unwrap();
             eprintln!(
                 "probe {program} {args:?}: exit {:?} out {:?} err {:?}",
