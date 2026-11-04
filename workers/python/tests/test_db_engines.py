@@ -374,15 +374,27 @@ class SqlServerTests(unittest.TestCase):
                 up = by_id[up]["Parent"]
             return out
 
-        top, = [r for r in plan if r["PhysicalOp"] == "Top"]
-        conv = [r for r in plan if "route_code" in (r["Argument"] or "") and "CONVERT" in (r["Argument"] or "").upper()]
-        dist = [r for r in plan if "[district]" in (r["Argument"] or "") and "WHERE" in (r["Argument"] or "").upper()]
-        self.assertTrue(conv and dist, plan)
-        self.assertFalse([r for r in conv if r in dist], "with the barrier no step tests both conditions")
-        for r in conv:
-            self.assertIn(r["NodeId"], ancestors(top), "the conversion runs above the Top")
+        args = {r["NodeId"]: r["Argument"] or "" for r in plan}
+        # The barrier's TOP (the outer one is the server's row limit).
+        top, = [r for r in plan if r["PhysicalOp"] == "Top" and "9223372036854775807" in args[r["NodeId"]]]
+        # The row filter is tested where the rows are read, below the TOP.
+        dist = [r for r in plan if "[district]" in args[r["NodeId"]] and "WHERE" in args[r["NodeId"]]]
+        self.assertTrue(dist, plan)
         for r in dist:
-            self.assertIn(top["NodeId"], ancestors(r), "the row filter runs below the Top")
+            self.assertIn(top["NodeId"], ancestors(r), "the row filter runs below the TOP")
+        # No step tests both (the merged plan does, in one scan predicate).
+        self.assertFalse([r for r in plan if "[district]" in args[r["NodeId"]] and "route_code" in args[r["NodeId"]]])
+        # The caller's comparison is a Filter above the TOP; the conversion it
+        # compares is computed above the row filter's scan (SQL Server may
+        # define it below the TOP, but only rows the scan let through reach it).
+        compare = [r for r in plan if r["PhysicalOp"] == "Filter"]
+        self.assertTrue(compare, plan)
+        for r in compare:
+            self.assertIn(r["NodeId"], ancestors(top), "the caller's condition runs above the TOP")
+        conv = [r for r in plan if "CONVERT" in args[r["NodeId"]].upper() and "route_code" in args[r["NodeId"]]]
+        for r in conv:
+            for d in dist:
+                self.assertIn(r["NodeId"], ancestors(d), "the conversion only sees rows the row filter kept")
 
     def test_list_datasets(self):
         r = w.list_datasets({"connection": ms_conn("columbus_ro", "Columbus_ro_test1"), "schemas": ["roads"]})
