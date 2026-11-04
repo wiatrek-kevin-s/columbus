@@ -405,6 +405,11 @@ pub struct State {
     pub plugins: crate::plugins::Plugins,
     /// `describe_dataset` answers, per (connection, dataset), for this session.
     pub datasets: std::sync::Mutex<std::collections::HashMap<(String, String), Value>>,
+    /// Every column of every table, per connection, for keeping hidden
+    /// fields out of queries (see sqlcheck::ApplyFilters). Loaded once.
+    pub columns: std::sync::Mutex<
+        std::collections::HashMap<String, std::collections::HashMap<String, Vec<String>>>,
+    >,
     pub flow: columbus_flow::FlowState,
     pub outputs: crate::providers::Outputs,
     pub session: String,
@@ -520,6 +525,7 @@ impl State {
             broker,
             plugins,
             datasets: Default::default(),
+            columns: Default::default(),
             flow: columbus_flow::FlowState::new(),
             outputs: crate::providers::Outputs::default(),
             paths,
@@ -645,6 +651,72 @@ impl Gateway {
 
     pub(crate) fn engine_ready(kind: &str) -> bool {
         ENGINE_READY.iter().any(|k| k.eq_ignore_ascii_case(kind))
+    }
+
+    /// Each table's columns on a connection, keyed by normalized upper-case
+    /// name (and by the bare table name when that is unambiguous). Needed
+    /// only when the policy hides fields; empty otherwise.
+    pub(crate) async fn table_columns(
+        &self,
+        access: &columbus_shared::policy::EffectiveAccess,
+        conn: &Connection,
+    ) -> Result<std::collections::HashMap<String, Vec<String>>, String> {
+        use std::collections::HashMap;
+        if access.hide_fields.is_empty() {
+            return Ok(HashMap::new());
+        }
+        if let Some(m) = self.state.columns.lock().expect("columns").get(&conn.id) {
+            return Ok(m.clone());
+        }
+        let handle = self.handle(conn)?;
+        let timeout = access.limits.seconds.unwrap_or(120);
+        let reply = self
+            .state
+            .worker
+            .core(
+                "list_datasets",
+                json!({"connection": handle, "timeout_s": timeout}),
+                Duration::from_secs(timeout + 10),
+            )
+            .await
+            .map_err(Self::worker_error)?;
+        let mut map: HashMap<String, Vec<String>> = HashMap::new();
+        let mut bare: HashMap<String, Option<Vec<String>>> = HashMap::new();
+        for d in reply
+            .get("datasets")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let Some(name) = d.get("name").and_then(Value::as_str) else {
+                continue;
+            };
+            let cols: Vec<String> = d
+                .get("fields")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|f| f.get("name").and_then(Value::as_str).map(String::from))
+                .collect();
+            let key = columbus_shared::policy::normalize_identifier(name).to_uppercase();
+            if let Some(last) = key.rsplit('.').next().filter(|l| *l != key) {
+                bare.entry(last.to_string())
+                    .and_modify(|v| *v = None)
+                    .or_insert_with(|| Some(cols.clone()));
+            }
+            map.insert(key, cols);
+        }
+        for (k, v) in bare {
+            if let Some(v) = v {
+                map.entry(k).or_insert(v);
+            }
+        }
+        self.state
+            .columns
+            .lock()
+            .expect("columns")
+            .insert(conn.id.clone(), map.clone());
+        Ok(map)
     }
 
     /// The short-lived handle a worker gets for one request: where to
@@ -844,6 +916,7 @@ impl Gateway {
                     rows,
                     source: crate::providers::OutputSource::Engine,
                     truncated: false,
+                    sha256: None,
                 },
             );
         }
@@ -1600,6 +1673,7 @@ impl Gateway {
                         rows: None,
                         source: crate::providers::OutputSource::Provider,
                         truncated: false,
+                        sha256: None,
                     },
                 );
             }
@@ -1767,7 +1841,12 @@ impl Gateway {
             Err(e) => return Err(self.deny(&ctx, rec, e)),
         };
         let max_rows = access.limits.rows.unwrap_or(200_000);
-        let checked = match check_select(&args.sql, &access, max_rows) {
+        let cols = match self.table_columns(&access, conn).await {
+            Ok(c) => c,
+            Err(e) => return Err(self.deny(&ctx, rec, e)),
+        };
+        let lookup = |n: &str| cols.get(&n.to_uppercase()).cloned();
+        let checked = match check_select(&args.sql, &access, max_rows, &lookup) {
             Ok(c) => c,
             Err(e) => return Err(self.deny(&ctx, rec, e)),
         };
@@ -1844,6 +1923,7 @@ impl Gateway {
                     .collect()
             })
             .unwrap_or_default();
+        hidden.extend(checked.hidden.iter().cloned());
         // Belt and braces: anything the worker returned that policy hides.
         hidden.extend(
             columns

@@ -233,7 +233,6 @@ async fn governed_session_end_to_end() {
         "SELECT route_id FROM roads WHERE owner_ssn LIKE '1%'",
         "SELECT route_id FROM roads ORDER BY OWNER_SSN",
         "SELECT route_id FROM roads r WHERE r.\"owner_ssn\" IS NULL",
-        "SELECT * FROM roads ORDER BY 5",
         "SELECT x FROM (SELECT owner_ssn AS x FROM roads) AS t",
     ] {
         let r = call(
@@ -367,7 +366,7 @@ async fn governed_session_end_to_end() {
         .unwrap()
         .path();
     let n = columbus_shared::audit::verify(&file).expect("audit chain intact");
-    assert_eq!(n, 19, "one audit line per tool call");
+    assert_eq!(n, 18, "one audit line per tool call");
     let text = std::fs::read_to_string(&file).unwrap();
     assert!(text.contains("\"decision\":\"denied\""));
     assert!(

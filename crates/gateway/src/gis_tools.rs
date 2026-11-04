@@ -219,6 +219,8 @@ struct Read {
     filters: Vec<String>,
     /// The read limit this read ran under.
     max_rows: u64,
+    /// Hidden fields left out by the server.
+    hidden: Vec<String>,
 }
 
 impl Gateway {
@@ -237,8 +239,15 @@ impl Gateway {
                 return Ok(v.clone());
             }
         }
-        let count = check_select(&format!("SELECT COUNT(*) AS n FROM {dataset}"), access, 2)
-            .map_err(|e| e.to_string())?;
+        let cols = self.table_columns(access, conn).await?;
+        let lookup = |n: &str| cols.get(&n.to_uppercase()).cloned();
+        let count = check_select(
+            &format!("SELECT COUNT(*) AS n FROM {dataset}"),
+            access,
+            2,
+            &lookup,
+        )
+        .map_err(|e| e.to_string())?;
         let handle = self.handle(conn)?;
         let timeout = access.limits.seconds.unwrap_or(120);
         let info = self
@@ -425,10 +434,12 @@ impl Gateway {
         let plan = self.plan(&info, &q.dataset, dialect, q)?;
         let read_limit = access.limits.rows.unwrap_or(200_000);
         let max_rows = limit.unwrap_or(read_limit).min(read_limit).max(1);
+        let cols = self.table_columns(&access, conn).await?;
+        let lookup = |n: &str| cols.get(&n.to_uppercase()).cloned();
         let checked = if plan.bbox.is_some() {
-            check_select_unlimited(&plan.sql, &access, max_rows)
+            check_select_unlimited(&plan.sql, &access, max_rows, &lookup)
         } else {
-            check_select(&plan.sql, &access, max_rows)
+            check_select(&plan.sql, &access, max_rows, &lookup)
         }
         .map_err(|e| e.to_string())?;
         let handle = self.handle(conn)?;
@@ -521,6 +532,7 @@ impl Gateway {
             info,
             filters,
             max_rows,
+            hidden: checked.hidden.clone(),
         })
     }
 
@@ -581,7 +593,7 @@ impl Gateway {
                 fix: Some("Narrow the query with where or bbox".into()),
             });
         }
-        let hidden: Vec<String> = r
+        let mut hidden: Vec<String> = r
             .reply
             .get("hidden_columns")
             .and_then(Value::as_array)
@@ -591,6 +603,11 @@ impl Gateway {
                     .collect()
             })
             .unwrap_or_default();
+        for h in &r.hidden {
+            if !hidden.contains(h) {
+                hidden.push(h.clone());
+            }
+        }
         if !hidden.is_empty() {
             checks.push(Check {
                 id: "policy.hidden_fields".into(),
@@ -629,6 +646,11 @@ impl Gateway {
                         "{h} was not written by a Columbus tool in this session, so the GIS tools will not open it"
                     ))
                 }
+            }
+            if !self.state.outputs.unchanged(&path) {
+                return Err(format!(
+                    "{h} changed after Columbus wrote it, so the GIS tools will not open it"
+                ));
             }
             let truncated = meta.as_ref().is_some_and(|m| m.truncated);
             let warning = truncated.then(|| Check {
@@ -1005,7 +1027,12 @@ impl Gateway {
             .worker
             .core(
                 "vector_op",
-                json!({"op": args.op, "inputs": paths, "params": args.params, "output_stem": stem}),
+                json!({
+                    "op": args.op, "inputs": paths, "params": args.params, "output_stem": stem,
+                    // Results larger than the organization's read limit are
+                    // refused before they are built.
+                    "max_rows": self.state.policy.limits.rows.unwrap_or(200_000),
+                }),
                 Duration::from_secs(timeout + 10),
             )
             .await;
@@ -1050,6 +1077,7 @@ impl Gateway {
                 rows,
                 source: OutputSource::Engine,
                 truncated: !warnings.is_empty(),
+                sha256: None,
             },
         );
         let mut checks = warnings;

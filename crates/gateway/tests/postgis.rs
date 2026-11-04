@@ -264,18 +264,6 @@ async fn postgis_governed_session() {
             "SELECT fid FROM roads.roadway_inventory WHERE CAST(owner_name AS INTEGER) = 1",
             "hidden by organization policy",
         ),
-        (
-            "SELECT to_jsonb(r) FROM roads.roadway_inventory r",
-            "whole row",
-        ),
-        (
-            "SELECT row_to_json(r.*) FROM roads.roadway_inventory r",
-            "name the columns",
-        ),
-        (
-            "SELECT to_jsonb(roadway_inventory) FROM roads.roadway_inventory",
-            "whole row",
-        ),
     ] {
         let e = err(&call(
             &client,
@@ -285,6 +273,41 @@ async fn postgis_governed_session() {
         .await);
         assert!(e.contains(expect), "{sql}: {e}");
     }
+
+    // Forms an independent review used to get hidden values past name
+    // checks. The table each one reads holds only visible columns, so they
+    // run (or fail) without ever returning an owner name.
+    for sql in [
+        "SELECT fid, route_id, '' AS a FROM roads.roadway_inventory WHERE false UNION ALL SELECT fid, route_id, csj FROM roads.roadway_inventory",
+        "SELECT x.f FROM roads.roadway_inventory AS x(a, b, c, d, e, f)",
+        "SELECT t.f FROM (SELECT * FROM roads.roadway_inventory) AS t(a, b, c, d, e, f)",
+        "SELECT x.* FROM roads.roadway_inventory p, LATERAL (SELECT p.*) AS x",
+        "SELECT p.fid FROM roads.roadway_inventory p JOIN (SELECT 'Owner 2' AS owner_name) v USING (owner_name)",
+        "SELECT p.fid FROM roads.roadway_inventory p NATURAL JOIN (SELECT 'Owner 2' AS owner_name) v",
+        "SELECT to_jsonb(r) FROM roads.roadway_inventory r",
+        "SELECT row_to_json(r.*) FROM roads.roadway_inventory r",
+        "SELECT * FROM roads.roadway_inventory ORDER BY 6",
+    ] {
+        let r = call(&client, "sql_select", json!({"connection": "roads-pg", "sql": sql})).await;
+        // What came back from the table: the rows, or the error text (the
+        // SQL echoed in executed_sql contains the query's own literals).
+        let returned = match r.is_error {
+            Some(true) => serde_json::to_string(&r.content).unwrap(),
+            _ => r.structured_content.unwrap()["result"]["rows"].to_string(),
+        };
+        assert!(!returned.contains("Owner "), "{sql} leaked: {}", &returned[..returned.len().min(400)]);
+    }
+
+    // The row filter is applied before the caller's conditions run, so an
+    // error from them cannot describe a row outside it. Row fid 2 is in
+    // district 12: casting its route_id to a table name would fail with the
+    // value in the message if the condition ever saw it.
+    let r = call(&client, "sql_select", json!({"connection": "roads-pg", "sql": "SELECT fid FROM roads.roadway_inventory WHERE fid = 2 AND CAST(route_id AS regclass) IS NOT NULL"})).await;
+    let text = serde_json::to_string(&r).unwrap();
+    assert!(
+        !text.contains("IH0001"),
+        "a row outside the filter was evaluated: {text}"
+    );
 
     // A SELECT that writes through a function passes the parser (the
     // function name is ordinary) and is stopped by the read-only session.
@@ -299,7 +322,12 @@ async fn postgis_governed_session() {
         json!({"connection": "roads-pg", "sql": "SELECT * FROM hr.employees"}),
     )
     .await);
-    assert!(e.contains("permission denied"), "{e}");
+    // With fields hidden, the server also needs to see a table's columns to
+    // read it; a table the login cannot see is refused before it is queried.
+    assert!(
+        e.contains("permission denied") || e.contains("cannot check the fields"),
+        "{e}"
+    );
     assert!(!e.contains(PASSWORD));
 
     client.cancel().await.unwrap();

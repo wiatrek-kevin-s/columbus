@@ -25,6 +25,9 @@ _SKIP = {"VRT", "OGR_VRT", "GDALG"}
 _skip_now = {d for d in os.environ.get("GDAL_SKIP", "").replace(",", " ").split() if d}
 os.environ["GDAL_SKIP"] = " ".join(sorted(_SKIP | _skip_now))
 os.environ["PROJ_NETWORK"] = "OFF"
+# A machine-wide setting must not re-enable SQL functions in GeoPackages
+# that open other datasets (gdal_get_pixel_value and the like).
+os.environ["OGR_SQLITE_ALLOW_EXTERNAL_ACCESS"] = "NO"
 os.environ.setdefault("CPL_VSIL_CURL_ALLOWED_EXTENSIONS", ".columbus-none")
 
 import geopandas as gpd  # noqa: E402
@@ -505,6 +508,17 @@ def _out_limit(params: dict) -> int:
         return 200_000
 
 
+def _count_pairs(left, right, predicate: str, limit: int, what: str, extra: int = 0) -> None:
+    """Count matching pairs a chunk at a time, refusing as soon as the total
+    passes the limit, so the count itself never holds a huge result."""
+    total = extra
+    tree = right.sindex
+    geoms = left.geometry.to_numpy()
+    for i in range(0, len(geoms), 5000):
+        total += tree.query(geoms[i : i + 5000], predicate=predicate).shape[1]
+        _refuse_large(total, limit, what)
+
+
 def _refuse_large(rows: int, limit: int, what: str) -> None:
     if rows > limit:
         raise GISError("output.too_large", f"{what} would produce {rows} rows, more than the read limit of {limit}",
@@ -590,8 +604,7 @@ def _op_dissolve(inp, params, checks):
 def _op_intersect(inp, params, checks):
     a = _need_geo(inp["a"], "a")
     b = _align(a, _need_geo(inp["b"], "b"), "b", checks)
-    pairs = b.sindex.query(a.geometry, predicate="intersects")
-    _refuse_large(pairs.shape[1], _out_limit(params), "intersect")
+    _count_pairs(a, b, "intersects", _out_limit(params), "intersect")
     return gpd.overlay(a, b, how="intersection", keep_geom_type=True)
 
 
@@ -635,8 +648,7 @@ def _op_spatial_join(inp, params, checks):
     how = params.get("how", "left")
     if how not in ("left", "inner"):
         raise GISError("params", "how must be \"left\" or \"inner\"")
-    pairs = right.sindex.query(left.geometry, predicate=pred)
-    _refuse_large(pairs.shape[1] + (len(left) if how == "left" else 0), _out_limit(params), "spatial_join")
+    _count_pairs(left, right, pred, _out_limit(params), "spatial_join")
     out = gpd.sjoin(left, right, how=how, predicate=pred, lsuffix="left", rsuffix="right")
     # Keep the left side's own field names; only clashing right fields get "_right".
     out = out.rename(columns={c: c[: -len("_left")] for c in out.columns if c.endswith("_left") and c[: -len("_left")] not in out.columns})

@@ -346,7 +346,9 @@ def _pg_fetch(conn: dict[str, Any], sql: str, max_rows: int, timeout_s: float, k
 
 # Errors whose message names only things the query itself wrote (a column,
 # table or function name), so it is safe to pass on as is.
-_PG_NAME_ERRORS = {"42703", "42P01", "42883", "42601", "42803", "42702", "42P10", "3F000"}
+# Not 42P01 (undefined table) or 42883 (undefined function): a cast to
+# regclass or a function lookup puts a data value into that message.
+_PG_NAME_ERRORS = {"42703", "42601", "42803", "42702", "42P10"}
 
 
 def _pg_error_text(e) -> str:

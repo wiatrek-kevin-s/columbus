@@ -79,6 +79,11 @@ pub struct OutputMeta {
     /// The rows were cut off at a limit: the layer is not the whole result.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub truncated: bool,
+    /// SHA-256 of the file when it was recorded. Trust in a file (its
+    /// source) holds only while its content is unchanged: a connected
+    /// server handed the path could overwrite it.
+    #[serde(skip)]
+    pub sha256: Option<String>,
 }
 
 #[derive(Default)]
@@ -87,11 +92,27 @@ pub struct Outputs {
 }
 
 impl Outputs {
-    pub fn record(&self, path: &Path, meta: OutputMeta) {
+    pub fn record(&self, path: &Path, mut meta: OutputMeta) {
+        meta.sha256 = columbus_shared::canon::sha256_file(path)
+            .ok()
+            .map(|(h, _)| h);
         self.inner
             .lock()
             .expect("outputs poisoned")
             .insert(path.to_path_buf(), meta);
+    }
+    /// True when the file still has the content it had when recorded.
+    pub fn unchanged(&self, path: &Path) -> bool {
+        let want = self
+            .inner
+            .lock()
+            .expect("outputs poisoned")
+            .get(path)
+            .and_then(|m| m.sha256.clone());
+        match want {
+            Some(w) => columbus_shared::canon::sha256_file(path).is_ok_and(|(h, _)| h == w),
+            None => false,
+        }
     }
     pub fn mark_truncated(&self, path: &Path) {
         if let Some(m) = self.inner.lock().expect("outputs poisoned").get_mut(path) {

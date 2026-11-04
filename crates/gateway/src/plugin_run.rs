@@ -215,7 +215,12 @@ impl Gateway {
                 }
             }
             let max_rows = access.limits.rows.unwrap_or(200_000);
-            let checked = match check_select(&sql, &access, max_rows) {
+            let cols = match self.table_columns(&access, conn).await {
+                Ok(c) => c,
+                Err(e) => return Err(self.deny(ctx, rec, e)),
+            };
+            let lookup = |n: &str| cols.get(&n.to_uppercase()).cloned();
+            let checked = match check_select(&sql, &access, max_rows, &lookup) {
                 Ok(c) => c,
                 Err(e) => return Err(self.deny(ctx, rec, e)),
             };
@@ -285,6 +290,7 @@ impl Gateway {
                     rows,
                     source: crate::providers::OutputSource::Engine,
                     truncated: false,
+                    sha256: None,
                 },
             );
             inputs.insert(
@@ -465,6 +471,7 @@ impl Gateway {
                     rows,
                     source: crate::providers::OutputSource::Plugin,
                     truncated: false,
+                    sha256: None,
                 },
             );
             saved.push(SavedFile {

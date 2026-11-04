@@ -17,9 +17,8 @@ use std::ops::ControlFlow;
 
 use serde::Serialize;
 use sqlparser::ast::{
-    visit_expressions, visit_relations, Expr, FunctionArg, FunctionArgExpr, FunctionArguments,
-    GroupByExpr, Ident, ObjectName, OrderByKind, Query, SetExpr, Statement, TableAlias,
-    TableFactor, Value, VisitMut, VisitorMut,
+    visit_expressions, visit_relations, Expr, Ident, ObjectName, Query, SetExpr, Statement,
+    TableAlias, TableFactor, VisitMut, VisitorMut,
 };
 use sqlparser::dialect::{
     Dialect, DuckDbDialect, GenericDialect, MsSqlDialect, OracleDialect, PostgreSqlDialect,
@@ -146,6 +145,8 @@ pub struct CheckedQuery {
     /// SQL itself fetches one more, so the worker can detect truncation.
     pub max_rows: u64,
     pub dialect: SqlDialect,
+    /// Fields the policy hides that were left out of the tables read.
+    pub hidden: Vec<String>,
 }
 
 fn parse_expr(text: &str, dialect: SqlDialect) -> Result<Expr, Denied> {
@@ -379,181 +380,79 @@ fn check_tables_and_functions(
     Ok(tables)
 }
 
-/// Refuses any way a query could read a field hidden by organization policy
-/// other than by its name in the output (which the worker strips):
-///
-/// * a hidden field named anywhere: in a where clause, a join condition, an
-///   expression, an alias (`owner_name AS x`), ordering or grouping;
-/// * `t.*` passed to a function (`row_to_json(t.*)`), and on PostgreSQL and
-///   DuckDB a bare table name or alias used as a value (`to_jsonb(t)`),
-///   both of which turn a whole row, hidden fields included, into one value;
-/// * ordering or grouping by position (`ORDER BY 3`), which can sort by a
-///   hidden column selected through `*`.
-fn check_hidden_references(
-    query: &Query,
-    access: &EffectiveAccess,
-    dialect: SqlDialect,
-) -> Result<(), Denied> {
-    if access.hide_fields.is_empty()
-        && !matches!(dialect, SqlDialect::Postgres | SqlDialect::DuckDb)
-    {
-        return check_positions(query);
+/// A friendly early refusal for a query that names a hidden field (in a
+/// where clause, an expression, ordering...). It is not what keeps hidden
+/// fields in: [`ApplyFilters`] does that by never letting a hidden column
+/// into the query at all. Without this check such a query would still fail,
+/// just with the database's "no such column" error.
+fn check_hidden_references(query: &Query, access: &EffectiveAccess) -> Result<(), Denied> {
+    if access.hide_fields.is_empty() {
+        return Ok(());
     }
-    // Table names and aliases, for whole-row references.
-    struct Names(Vec<String>);
-    impl sqlparser::ast::Visitor for Names {
-        type Break = ();
-        fn pre_visit_table_factor(&mut self, tf: &TableFactor) -> ControlFlow<()> {
-            if let TableFactor::Table { name, alias, .. } = tf {
-                if let Some(last) = name.0.last() {
-                    self.0
-                        .push(normalize_identifier(&last.to_string()).to_ascii_lowercase());
-                }
-                if let Some(a) = alias {
-                    self.0.push(a.name.value.to_ascii_lowercase());
-                }
-            }
-            if let TableFactor::Derived { alias: Some(a), .. } = tf {
-                self.0.push(a.name.value.to_ascii_lowercase());
-            }
-            ControlFlow::Continue(())
-        }
-    }
-    let mut names = Names(Vec::new());
-    let _ = sqlparser::ast::Visit::visit(query, &mut names);
-    let whole_rows = matches!(dialect, SqlDialect::Postgres | SqlDialect::DuckDb);
-
     let mut problem: Option<String> = None;
     let _ = visit_expressions(query, |e| {
-        let hidden = |id: &Ident| access.field_hidden(&id.value);
-        match e {
-            Expr::Identifier(id) if hidden(id) => {
-                problem = Some(format!(
-                    "field {} is hidden by organization policy and cannot be used in a query",
-                    id.value
-                ));
-            }
-            Expr::CompoundIdentifier(parts) if parts.last().is_some_and(hidden) => {
-                problem = Some(format!(
-                    "field {} is hidden by organization policy and cannot be used in a query",
-                    parts.last().map(|p| p.value.as_str()).unwrap_or("")
-                ));
-            }
-            Expr::Identifier(id)
-                if whole_rows && names.0.contains(&id.value.to_ascii_lowercase()) =>
-            {
-                problem = Some(format!(
-                    "`{}` names a table, which here would read the whole row; name the column (for example {}.column)",
-                    id.value, id.value
-                ));
-            }
-            Expr::QualifiedWildcard(..) => {
-                problem =
-                    Some("`t.*` inside an expression is not allowed; name the columns".into());
-            }
-            Expr::Function(f) => {
-                if let FunctionArguments::List(list) = &f.args {
-                    for a in &list.args {
-                        let arg = match a {
-                            FunctionArg::Named { arg, .. }
-                            | FunctionArg::ExprNamed { arg, .. }
-                            | FunctionArg::Unnamed(arg) => arg,
-                        };
-                        let count = function_name(&f.name) == "COUNT";
-                        match arg {
-                            FunctionArgExpr::QualifiedWildcard(_) => {
-                                problem = Some(format!(
-                                    "{}(t.*) would read whole rows; name the columns",
-                                    function_name(&f.name)
-                                ));
-                            }
-                            FunctionArgExpr::Wildcard if !count => {
-                                problem = Some(format!(
-                                    "{}(*) would read whole rows; name the columns",
-                                    function_name(&f.name)
-                                ));
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-            }
-            _ => {}
+        let name = match e {
+            Expr::Identifier(id) => Some(&id.value),
+            Expr::CompoundIdentifier(parts) => parts.last().map(|p| &p.value),
+            _ => None,
+        };
+        if let Some(n) = name.filter(|n| access.field_hidden(n)) {
+            problem = Some(format!(
+                "field {n} is hidden by organization policy and cannot be used in a query"
+            ));
+            return ControlFlow::Break(());
         }
-        if problem.is_some() {
-            ControlFlow::Break(())
-        } else {
-            ControlFlow::Continue(())
-        }
+        ControlFlow::Continue(())
     });
-    if let Some(p) = problem {
-        return Err(Denied::Query(p));
-    }
-    check_positions(query)
-}
-
-/// Refuses `ORDER BY 2`, `GROUP BY 3` and `ORDER BY ALL`.
-fn check_positions(query: &Query) -> Result<(), Denied> {
-    fn positional(e: &Expr) -> bool {
-        matches!(e, Expr::Value(v) if matches!(v.value, Value::Number(..)))
-    }
-    fn body_ok(body: &SetExpr) -> Result<(), Denied> {
-        match body {
-            SetExpr::Select(s) => match &s.group_by {
-                GroupByExpr::All(_) => Err(Denied::Query(
-                    "GROUP BY ALL is not allowed; name the columns".into(),
-                )),
-                GroupByExpr::Expressions(exprs, _) if exprs.iter().any(positional) => {
-                    Err(Denied::Query(
-                        "GROUP BY by column position is not allowed; name the columns".into(),
-                    ))
-                }
-                _ => Ok(()),
-            },
-            SetExpr::Query(q) => body_ok(&q.body),
-            SetExpr::SetOperation { left, right, .. } => {
-                body_ok(left)?;
-                body_ok(right)
-            }
-            _ => Ok(()),
-        }
-    }
-    struct Positions(Option<Denied>);
-    impl sqlparser::ast::Visitor for Positions {
-        type Break = ();
-        fn pre_visit_query(&mut self, q: &Query) -> ControlFlow<()> {
-            if let Some(o) = &q.order_by {
-                let bad = match &o.kind {
-                    OrderByKind::All(_) => true,
-                    OrderByKind::Expressions(list) => list.iter().any(|x| positional(&x.expr)),
-                };
-                if bad {
-                    self.0 = Some(Denied::Query(
-                        "ORDER BY by column position is not allowed; name the columns".into(),
-                    ));
-                    return ControlFlow::Break(());
-                }
-            }
-            if let Err(e) = body_ok(&q.body) {
-                self.0 = Some(e);
-                return ControlFlow::Break(());
-            }
-            ControlFlow::Continue(())
-        }
-    }
-    let mut v = Positions(None);
-    let _ = sqlparser::ast::Visit::visit(query, &mut v);
-    match v.0 {
-        Some(e) => Err(e),
+    match problem {
+        Some(p) => Err(Denied::Query(p)),
         None => Ok(()),
     }
 }
 
+/// The columns of a table, for keeping hidden fields out: given a table
+/// name as the query writes it (normalized), every column it has. `None`
+/// when the table is unknown.
+pub type ColumnsOf<'a> = &'a dyn Fn(&str) -> Option<Vec<String>>;
+
+/// No column information: fine when the policy hides no fields.
+pub fn no_columns(_: &str) -> Option<Vec<String>> {
+    None
+}
+
+fn quote_ident(name: &str, dialect: SqlDialect) -> String {
+    match dialect {
+        SqlDialect::MsSql => format!("[{}]", name.replace(']', "]]")),
+        _ => format!("\"{}\"", name.replace('"', "\"\"")),
+    }
+}
+
+/// Text that stops the database from merging the filtered table into the
+/// outer query. Without it PostgreSQL may evaluate the caller's conditions on
+/// rows the row filter excludes (they are reordered freely), and an error
+/// raised there ("invalid input syntax: <value>") reports those rows.
+fn barrier(dialect: SqlDialect) -> &'static str {
+    match dialect {
+        SqlDialect::Postgres | SqlDialect::DuckDb | SqlDialect::Generic => " OFFSET 0",
+        SqlDialect::Sqlite => " LIMIT -1 OFFSET 0",
+        // Not run yet (no engine): revisit with the Oracle and SQL Server
+        // engines (NO_MERGE / TOP with ORDER BY).
+        SqlDialect::Oracle | SqlDialect::MsSql => "",
+    }
+}
+
 /// Replaces each `FROM table [alias]` with
-/// `FROM (SELECT * FROM table WHERE <filters>) alias`.
+/// `FROM (SELECT <visible columns> FROM table WHERE <filters> <barrier>) alias`.
+///
+/// The derived table holds only the columns the policy does not hide, so
+/// nothing the caller writes (`SELECT *`, a UNION, column alias lists,
+/// `USING`/`NATURAL` joins, whole-row values like `to_jsonb(t)`) can reach a
+/// hidden one: it is not there.
 struct ApplyFilters<'a> {
     access: &'a EffectiveAccess,
     dialect: SqlDialect,
+    columns: ColumnsOf<'a>,
+    hidden: Vec<String>,
     error: Option<Denied>,
 }
 
@@ -565,10 +464,40 @@ impl VisitorMut for ApplyFilters<'_> {
         let TableFactor::Table { name, alias, .. } = tf else {
             return ControlFlow::Continue(());
         };
-        let filters = self
-            .access
-            .filters_for(&normalize_identifier(&name.to_string()));
-        if filters.is_empty() {
+        let key = normalize_identifier(&name.to_string());
+        let filters = self.access.filters_for(&key);
+        let mut select = "*".to_string();
+        if !self.access.hide_fields.is_empty() {
+            let Some(all) = (self.columns)(&key) else {
+                self.error = Some(Denied::Query(format!(
+                    "cannot check the fields of {key}; name it as list_datasets shows it"
+                )));
+                return ControlFlow::Break(());
+            };
+            let visible: Vec<&String> = all
+                .iter()
+                .filter(|c| !self.access.field_hidden(c))
+                .collect();
+            for c in all.iter().filter(|c| self.access.field_hidden(c)) {
+                if !self.hidden.contains(c) {
+                    self.hidden.push(c.clone());
+                }
+            }
+            if visible.len() < all.len() {
+                if visible.is_empty() {
+                    self.error = Some(Denied::Query(format!(
+                        "every field of {key} is hidden by organization policy"
+                    )));
+                    return ControlFlow::Break(());
+                }
+                select = visible
+                    .iter()
+                    .map(|c| quote_ident(c, self.dialect))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+            }
+        }
+        if filters.is_empty() && select == "*" {
             return ControlFlow::Continue(());
         }
         let mut checked = Vec::new();
@@ -583,7 +512,11 @@ impl VisitorMut for ApplyFilters<'_> {
                 }
             }
         }
-        let inner_sql = format!("SELECT * FROM {name} WHERE {}", checked.join(" AND "));
+        let mut inner_sql = format!("SELECT {select} FROM {name}");
+        if !checked.is_empty() {
+            inner_sql.push_str(&format!(" WHERE {}", checked.join(" AND ")));
+        }
+        inner_sql.push_str(barrier(self.dialect));
         let d = self.dialect.parser_dialect();
         let inner = match Parser::parse_sql(d.as_ref(), &inner_sql) {
             Ok(mut s) if s.len() == 1 => match s.remove(0) {
@@ -617,12 +550,16 @@ impl VisitorMut for ApplyFilters<'_> {
 }
 
 /// Check free SQL against the effective access and rewrite it.
+///
+/// `columns` gives each table's columns; it is needed whenever the policy
+/// hides fields (pass [`no_columns`] otherwise).
 pub fn check_select(
     sql: &str,
     access: &EffectiveAccess,
     max_rows: u64,
+    columns: ColumnsOf<'_>,
 ) -> Result<CheckedQuery, Denied> {
-    check_select_limited(sql, access, max_rows, true)
+    check_select_limited(sql, access, max_rows, true, columns)
 }
 
 /// As [`check_select`], but without the SQL row limit, for queries whose
@@ -633,8 +570,9 @@ pub fn check_select_unlimited(
     sql: &str,
     access: &EffectiveAccess,
     max_rows: u64,
+    columns: ColumnsOf<'_>,
 ) -> Result<CheckedQuery, Denied> {
-    check_select_limited(sql, access, max_rows, false)
+    check_select_limited(sql, access, max_rows, false, columns)
 }
 
 fn check_select_limited(
@@ -642,15 +580,18 @@ fn check_select_limited(
     access: &EffectiveAccess,
     max_rows: u64,
     limit: bool,
+    columns: ColumnsOf<'_>,
 ) -> Result<CheckedQuery, Denied> {
     let dialect = SqlDialect::for_connection_type(&access.kind);
     let mut query = single_select(sql, dialect)?;
     let tables = check_tables_and_functions(&query, access)?;
-    check_hidden_references(&query, access, dialect)?;
+    check_hidden_references(&query, access)?;
 
     let mut apply = ApplyFilters {
         access,
         dialect,
+        columns,
+        hidden: Vec::new(),
         error: None,
     };
     let _ = query.visit(&mut apply);
@@ -665,6 +606,7 @@ fn check_select_limited(
             tables,
             max_rows,
             dialect,
+            hidden: apply.hidden,
         });
     }
     // Ask the database for one row more than the worker may read, so the
@@ -684,6 +626,7 @@ fn check_select_limited(
         tables,
         max_rows,
         dialect,
+        hidden: apply.hidden,
     })
 }
 
@@ -719,8 +662,25 @@ datasets:
         a
     }
 
+    fn cols(name: &str) -> Option<Vec<String>> {
+        (name.eq_ignore_ascii_case("roads.roadway_inventory")
+            || name.eq_ignore_ascii_case("roadway_inventory"))
+        .then(|| {
+            [
+                "fid",
+                "route_id",
+                "district_nbr",
+                "owner_name",
+                "emp_ssn",
+                "geom",
+            ]
+            .map(String::from)
+            .to_vec()
+        })
+    }
+
     #[test]
-    fn hidden_fields_cannot_be_used_anywhere() {
+    fn naming_a_hidden_field_is_refused_early() {
         let a = hiding("postgis");
         for sql in [
             "SELECT owner_name FROM roads.roadway_inventory",
@@ -729,26 +689,82 @@ datasets:
             "SELECT route_id FROM roads.roadway_inventory r WHERE CAST(r.\"OWNER_NAME\" AS INTEGER) = 1",
             "SELECT route_id FROM roads.roadway_inventory ORDER BY owner_name",
             "SELECT x FROM (SELECT owner_name AS x FROM roads.roadway_inventory) AS t",
-            "SELECT a.route_id FROM roads.roadway_inventory a JOIN roads.roadway_inventory b ON a.owner_name = b.owner_name",
-            "SELECT to_jsonb(r) FROM roads.roadway_inventory r",
-            "SELECT row_to_json(r.*) FROM roads.roadway_inventory r",
-            "SELECT to_jsonb(roadway_inventory) FROM roads.roadway_inventory",
-            "SELECT * FROM roads.roadway_inventory ORDER BY 3",
-            "SELECT district_nbr, count(*) FROM roads.roadway_inventory GROUP BY 1",
         ] {
-            assert!(check_select(sql, &a, 10).is_err(), "should refuse: {sql}");
+            let e = check_select(sql, &a, 10, &cols).unwrap_err().to_string();
+            assert!(e.contains("hidden"), "{sql}: {e}");
         }
+    }
+
+    #[test]
+    fn hidden_columns_never_enter_the_query() {
+        // Every form that got past a name check in review: whatever the
+        // query does, the table it reads has only the visible columns.
+        let a = hiding("postgis");
         for sql in [
             "SELECT * FROM roads.roadway_inventory",
-            "SELECT r.route_id, count(*) AS n FROM roads.roadway_inventory r GROUP BY r.route_id ORDER BY n",
-            "SELECT COUNT(*) AS n FROM roads.roadway_inventory",
+            "SELECT fid, route_id, '' AS a FROM roads.roadway_inventory WHERE false UNION ALL SELECT * FROM roads.roadway_inventory",
+            "SELECT x.c FROM roads.roadway_inventory AS x(a, b, c)",
+            "SELECT t.d FROM (SELECT * FROM roads.roadway_inventory) AS t(a, b, d)",
+            "SELECT x.* FROM roads.roadway_inventory p, LATERAL (SELECT p.*) AS x(a, b, c)",
+            "SELECT p.fid FROM roads.roadway_inventory p JOIN (SELECT 'x' AS owner_name) v USING (owner_name)",
+            "SELECT p.fid FROM roads.roadway_inventory p NATURAL JOIN (SELECT 'x' AS emp_ssn) v",
+            "SELECT to_jsonb(r) FROM roads.roadway_inventory r",
+            "SELECT row_to_json(r.*) FROM roads.roadway_inventory r",
+            "SELECT * FROM roads.roadway_inventory ORDER BY 3",
         ] {
-            assert!(check_select(sql, &a, 10).is_ok(), "should allow: {sql}");
+            let q = check_select(sql, &a, 10, &cols).unwrap_or_else(|e| panic!("{sql}: {e}"));
+            let inner = "(SELECT \"fid\", \"route_id\", \"district_nbr\", \"geom\" FROM roads.roadway_inventory WHERE (DISTRICT_NBR = 14) OFFSET 0)";
+            assert!(q.sql.contains(inner), "{sql}\n=> {}", q.sql);
+            assert!(!q.sql.contains("FROM roads.roadway_inventory AS") && !q.sql.contains("FROM roads.roadway_inventory p"), "every reference wrapped: {}", q.sql);
         }
+        // A table whose columns are unknown cannot be checked, so it is refused.
+        assert!(
+            check_select("SELECT * FROM roads.roadway_inventory", &a, 10, &no_columns).is_err()
+        );
+        // Without hidden fields no column list is needed.
+        let plain = access("postgis", None);
+        let q = check_select(
+            "SELECT * FROM roads.roadway_inventory",
+            &plain,
+            10,
+            &no_columns,
+        )
+        .unwrap();
+        assert!(!q.sql.contains("OFFSET 0"), "{}", q.sql);
         // The configured row filter may name any field: it is the server's.
         let mut b = hiding("postgis");
         b.row_filter = Some("OWNER_NAME IS NOT NULL".into());
-        assert!(check_select("SELECT route_id FROM roads.roadway_inventory", &b, 10).is_ok());
+        assert!(check_select(
+            "SELECT route_id FROM roads.roadway_inventory",
+            &b,
+            10,
+            &cols
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn filtered_tables_are_not_merged_into_the_outer_query() {
+        let pg = check_select(
+            "SELECT * FROM ROADS.ROADWAY_INVENTORY WHERE ROUTE_ID = 'x'",
+            &access("postgis", Some("DISTRICT_NBR = 14")),
+            10,
+            &no_columns,
+        )
+        .unwrap();
+        assert!(
+            pg.sql.contains("(DISTRICT_NBR = 14) OFFSET 0)"),
+            "{}",
+            pg.sql
+        );
+        let lite = check_select(
+            "SELECT * FROM main.roads",
+            &access("gpkg", Some("DISTRICT_NBR = 14")),
+            10,
+            &no_columns,
+        )
+        .unwrap();
+        assert!(lite.sql.contains("LIMIT -1 OFFSET 0)"), "{}", lite.sql);
     }
 
     #[test]
@@ -783,6 +799,7 @@ datasets:
             "SELECT r.ROUTE_ID, c.CSJ FROM ROADS.ROADWAY_INVENTORY r JOIN ROADS.CONTROL_SECTION c ON r.CSJ = c.CSJ",
             &a,
             500,
+            &no_columns,
         )
         .unwrap();
         assert_eq!(
@@ -790,14 +807,16 @@ datasets:
             vec!["ROADS.ROADWAY_INVENTORY", "ROADS.CONTROL_SECTION"]
         );
         assert!(
-            q.sql
-                .contains("(SELECT * FROM ROADS.ROADWAY_INVENTORY WHERE (DISTRICT_NBR = 14)) r "),
+            q.sql.contains(
+                "(SELECT * FROM ROADS.ROADWAY_INVENTORY WHERE (DISTRICT_NBR = 14) OFFSET 0) r "
+            ),
             "{}",
             q.sql
         );
         assert!(
-            q.sql
-                .contains("(SELECT * FROM ROADS.CONTROL_SECTION WHERE (DISTRICT_NBR = 14)) c "),
+            q.sql.contains(
+                "(SELECT * FROM ROADS.CONTROL_SECTION WHERE (DISTRICT_NBR = 14) OFFSET 0) c "
+            ),
             "{}",
             q.sql
         );
@@ -814,6 +833,7 @@ datasets:
             "SELECT ROADWAY_INVENTORY.ROUTE_ID FROM ROADS.ROADWAY_INVENTORY",
             &a,
             10,
+            &no_columns,
         )
         .unwrap();
         assert!(q.sql.contains(") AS ROADWAY_INVENTORY"), "{}", q.sql);
@@ -826,6 +846,7 @@ datasets:
             "SELECT * FROM ROADS.ROADWAY_INVENTORY WHERE CSJ IN (SELECT CSJ FROM ROADS.CONTROL_SECTION)",
             &a,
             10,
+            &no_columns,
         )
         .unwrap();
         assert_eq!(q.sql.matches("DISTRICT_NBR = 14").count(), 2, "{}", q.sql);
@@ -833,6 +854,7 @@ datasets:
             "SELECT * FROM ROADS.ROADWAY_INVENTORY WHERE CSJ IN (SELECT CSJ FROM ROADS.ROADWAY_AUDIT)",
             &a,
             10,
+            &no_columns,
         );
         assert!(matches!(err, Err(Denied::Dataset(_))));
     }
@@ -853,16 +875,28 @@ datasets:
             "SELECT 1",
             "this is not sql",
         ] {
-            assert!(check_select(bad, &a, 10).is_err(), "{bad}");
+            assert!(check_select(bad, &a, 10, &no_columns).is_err(), "{bad}");
         }
     }
 
     #[test]
     fn quoting_does_not_bypass_the_allow_list() {
         let a = access("postgis", None);
-        assert!(check_select("SELECT * FROM \"ROADS\".\"ROADWAY_AUDIT\"", &a, 10).is_err());
-        assert!(check_select("SELECT * FROM \"HR\".\"EMPLOYEES\"", &a, 10).is_err());
-        assert!(check_select("SELECT * FROM \"ROADS\".\"ROADWAY_INVENTORY\"", &a, 10).is_ok());
+        assert!(check_select(
+            "SELECT * FROM \"ROADS\".\"ROADWAY_AUDIT\"",
+            &a,
+            10,
+            &no_columns
+        )
+        .is_err());
+        assert!(check_select("SELECT * FROM \"HR\".\"EMPLOYEES\"", &a, 10, &no_columns).is_err());
+        assert!(check_select(
+            "SELECT * FROM \"ROADS\".\"ROADWAY_INVENTORY\"",
+            &a,
+            10,
+            &no_columns
+        )
+        .is_ok());
     }
 
     #[test]
@@ -871,6 +905,7 @@ datasets:
             "SELECT * FROM ROADS.ROADWAY_INVENTORY",
             &access("oracle", None),
             7,
+            &no_columns,
         )
         .unwrap();
         assert!(q.sql.ends_with("FETCH FIRST 8 ROWS ONLY"), "{}", q.sql);
@@ -878,6 +913,7 @@ datasets:
             "SELECT * FROM ROADS.ROADWAY_INVENTORY",
             &access("sqlserver", None),
             7,
+            &no_columns,
         )
         .unwrap();
         assert!(q.sql.starts_with("SELECT TOP (8)"), "{}", q.sql);
@@ -886,20 +922,34 @@ datasets:
     #[test]
     fn unlimited_keeps_every_check_and_filter() {
         let a = access("postgis", Some("DISTRICT_NBR = 14"));
-        let q = check_select_unlimited("SELECT * FROM ROADS.ROADWAY_INVENTORY", &a, 10).unwrap();
+        let q =
+            check_select_unlimited("SELECT * FROM ROADS.ROADWAY_INVENTORY", &a, 10, &no_columns)
+                .unwrap();
         assert!(
             q.sql.contains("DISTRICT_NBR = 14") && !q.sql.contains("LIMIT"),
             "{}",
             q.sql
         );
-        assert!(check_select_unlimited("SELECT * FROM ROADS.ROADWAY_AUDIT", &a, 10).is_err());
-        assert!(check_select_unlimited("DELETE FROM ROADS.ROADWAY_INVENTORY", &a, 10).is_err());
+        assert!(
+            check_select_unlimited("SELECT * FROM ROADS.ROADWAY_AUDIT", &a, 10, &no_columns)
+                .is_err()
+        );
+        assert!(
+            check_select_unlimited("DELETE FROM ROADS.ROADWAY_INVENTORY", &a, 10, &no_columns)
+                .is_err()
+        );
     }
 
     #[test]
     fn sqlite_table_functions_refused() {
         let a = access("gpkg", None);
-        assert!(check_select("SELECT * FROM main.roads", &a, 10).is_ok());
-        assert!(check_select("SELECT load_extension('evil') FROM main.roads", &a, 10).is_err());
+        assert!(check_select("SELECT * FROM main.roads", &a, 10, &no_columns).is_ok());
+        assert!(check_select(
+            "SELECT load_extension('evil') FROM main.roads",
+            &a,
+            10,
+            &no_columns
+        )
+        .is_err());
     }
 }
