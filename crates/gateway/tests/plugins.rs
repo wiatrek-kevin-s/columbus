@@ -493,3 +493,117 @@ async fn a_rust_plugin_reads_governed_geometry_and_stops_on_time() {
     .await);
     c.cancel().await.unwrap();
 }
+
+/// Design change 1, milestone 1 gate: a level A plugin cannot read outside
+/// the workspace (nor the network). The plugin here tries to: it reads a
+/// file outside the workspace and the connection's own GeoPackage (which
+/// plugins must only see through extracts), connects to a local listener,
+/// and writes inside the workspace, which is allowed.
+#[tokio::test]
+async fn a_level_a_plugin_cannot_read_outside_the_workspace() {
+    let Some(py) = python() else { return };
+    if columbus_confine_ready().is_none() {
+        eprintln!("skipping: this machine cannot confine");
+        return;
+    }
+    let env = setup(&py);
+    let secret = env.root.join("secret.txt");
+    std::fs::write(&secret, "the secret").unwrap();
+    let dir = env.root.join("plugins").join("snoop");
+    std::fs::create_dir_all(&dir).unwrap();
+    let yaml = "id: test.snoop\nversion: 1.0.0\nruntime: python\nentry: worker.py\ntools:\n  snoop:\n    summary: Try to read and connect where it should not.\n    params:\n      path: { type: string }\n      gpkg: { type: string }\n      port: { type: number, min: 1, max: 65535 }\n    risk: read\n";
+    let worker = r#"
+import os, socket
+from columbus_plugin import Plugin
+
+plugin = Plugin("test.snoop", "1.0.0")
+
+def attempt(fn):
+    try:
+        return "ok: " + str(fn())[:40]
+    except Exception as e:
+        return "refused: " + type(e).__name__
+
+@plugin.tool("snoop", params=["path", "gpkg", "port"])
+def snoop(ctx):
+    def connect():
+        s = socket.create_connection(("127.0.0.1", int(ctx.param("port"))), timeout=3)
+        s.close()
+        return "connected"
+    def write_here():
+        with open("written-by-plugin.txt", "w") as f:
+            f.write("x")
+        return os.path.abspath("written-by-plugin.txt")
+    return {
+        "read_outside": attempt(lambda: open(ctx.param("path")).read()),
+        "read_gpkg": attempt(lambda: open(ctx.param("gpkg"), "rb").read(16)),
+        "network": attempt(connect),
+        "write_workspace": attempt(write_here),
+    }
+
+if __name__ == "__main__":
+    plugin.serve()
+"#;
+    std::fs::write(dir.join("plugin.yaml"), yaml).unwrap();
+    std::fs::write(dir.join("worker.py"), worker).unwrap();
+    let mut all = yaml.as_bytes().to_vec();
+    all.push(0);
+    all.extend_from_slice(worker.as_bytes());
+    std::fs::write(
+        env.root.join("plugins").join("approved.yaml"),
+        format!(
+            "test.snoop: {:?}\n",
+            format!("sha256:{}", columbus_shared::canon::sha256_hex(&all))
+        ),
+    )
+    .unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+
+    let c = start(&env, &py).await;
+    let lp = ok(&call(&c, "list_providers", json!({})).await);
+    let p = provider(&lp, "test.snoop");
+    assert_eq!(p["confinement"], "A", "{p}");
+    assert_eq!(p["status"]["state"], "ready", "{p}");
+    let r = ok(&call(
+        &c,
+        "run_tool",
+        json!({"name": "test.snoop.snoop", "args": {
+            "path": secret.display().to_string(),
+            "gpkg": env.root.join("lrs.gpkg").display().to_string(),
+            "port": port,
+        }}),
+    )
+    .await);
+    let res = &r["result"]["summary"];
+    let text = res.to_string();
+    assert!(
+        !text.contains("the secret"),
+        "read outside the workspace: {text}"
+    );
+    for k in ["read_outside", "read_gpkg", "network"] {
+        assert!(
+            res[k].as_str().unwrap_or("").starts_with("refused"),
+            "{k} should be refused at level A: {text}"
+        );
+    }
+    assert!(
+        res["write_workspace"]
+            .as_str()
+            .unwrap_or("")
+            .starts_with("ok"),
+        "writing inside the workspace is allowed: {text}"
+    );
+    c.cancel().await.unwrap();
+}
+
+/// The launcher, if this machine can confine at level A.
+fn columbus_confine_ready() -> Option<()> {
+    let launcher = PathBuf::from(env!("CARGO_BIN_EXE_columbus-confine"));
+    StdCommand::new(launcher)
+        .args(["--check", "A"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|_| ())
+}

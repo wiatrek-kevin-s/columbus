@@ -175,7 +175,7 @@ impl Default for ApprovalPolicy {
 }
 
 /// What engine plugins may be used.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PluginPolicy {
     /// Plugins the person installs under their own profile. Off by default.
     #[serde(default)]
@@ -183,10 +183,42 @@ pub struct PluginPolicy {
     /// Plugin ids allowed at all; empty means any organization-installed plugin.
     #[serde(default)]
     pub allow: Vec<String>,
+    /// Confinement levels plugins may run at (Rule 5). Default: A only (no
+    /// network); add B for plugins that call public services themselves.
+    /// Level C is never offered to plugins.
+    #[serde(default = "plugin_levels")]
+    pub levels: Vec<String>,
+    /// Most memory a plugin run may use, in MiB.
+    #[serde(default = "plugin_memory")]
+    pub memory_mb: u64,
+}
+
+impl Default for PluginPolicy {
+    fn default() -> Self {
+        PluginPolicy {
+            allow_personal: false,
+            allow: vec![],
+            levels: plugin_levels(),
+            memory_mb: plugin_memory(),
+        }
+    }
+}
+
+fn plugin_levels() -> Vec<String> {
+    vec!["A".into()]
+}
+fn plugin_memory() -> u64 {
+    4096
+}
+fn server_levels() -> Vec<String> {
+    vec!["A".into(), "B".into(), "C".into()]
+}
+fn server_memory() -> u64 {
+    2048
 }
 
 /// What connected MCP servers may be used.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerPolicy {
     /// Manifests the person adds under their own profile. Off by default:
     /// only organization-managed manifests are loaded.
@@ -195,10 +227,33 @@ pub struct ServerPolicy {
     /// Server ids allowed at all; empty means any organization-managed manifest.
     #[serde(default)]
     pub allow: Vec<String>,
-    /// Start local (stdio) servers even though this build cannot confine
-    /// them yet. For development and pilots only; off by default.
+    /// Start local servers and plugins unconfined where this machine cannot
+    /// confine them (an operating system without a confinement
+    /// implementation, or the launcher missing). Where confinement is
+    /// available it is always used. For development and pilots only; off by
+    /// default.
     #[serde(default)]
     pub allow_unconfined_local: bool,
+    /// Confinement levels local servers may run at (Rule 5); a manifest
+    /// asking for another is blocked. Level C also needs `trust: trusted` or
+    /// an allow-list entry.
+    #[serde(default = "server_levels")]
+    pub levels: Vec<String>,
+    /// Most memory a local server may use, in MiB.
+    #[serde(default = "server_memory")]
+    pub memory_mb: u64,
+}
+
+impl Default for ServerPolicy {
+    fn default() -> Self {
+        ServerPolicy {
+            allow_personal: false,
+            allow: vec![],
+            allow_unconfined_local: false,
+            levels: server_levels(),
+            memory_mb: server_memory(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

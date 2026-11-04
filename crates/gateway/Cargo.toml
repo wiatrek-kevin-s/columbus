@@ -11,10 +11,15 @@ rust-version.workspace = true
 name = "columbus-mcp"
 path = "src/main.rs"
 
+[[bin]]
+name = "columbus-confine"
+path = "src/bin/confine.rs"
+
 [dependencies]
 columbus-shared = { path = "../shared" }
 columbus-broker = { path = "../broker" }
 columbus-flow = { path = "../flow" }
+columbus-confine = { path = "../confine" }
 rmcp = { workspace = true, features = ["elicitation"] }
 base64 = "0.22"
 serde.workspace = true

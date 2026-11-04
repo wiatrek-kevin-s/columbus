@@ -183,6 +183,11 @@ pub struct ProviderCard {
     /// `native` (Columbus's own engines) or `connected` (an MCP server).
     pub kind: String,
     pub trust: Option<columbus_broker::manifest::Trust>,
+    /// How it runs (Rule 5): confinement level `A`, `B` or `C`, `unconfined`
+    /// for a pilot where this machine cannot confine, or absent for
+    /// Columbus's own engine and remote servers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confinement: Option<String>,
     /// `{"state": "ready" | "trial" | "needs_review" | "unapproved" | "changed" | "blocked" | …}`
     pub status: Value,
     pub enabled_tools: usize,
@@ -845,6 +850,7 @@ impl Gateway {
                 name: p.manifest.display_name(),
                 kind: "native".into(),
                 trust: None,
+                confinement: Some(p.confinement()),
                 status: serde_json::to_value(&status).unwrap_or(Value::Null),
                 enabled_tools: if ready { p.manifest.tools.len() } else { 0 },
                 approval_tools: if ready {
@@ -889,6 +895,7 @@ impl Gateway {
                 name: p.loaded.manifest.display_name(),
                 kind: "connected".into(),
                 trust: Some(p.loaded.manifest.trust),
+                confinement: p.confinement(),
                 status: serde_json::to_value(status).unwrap_or(Value::Null),
                 enabled_tools: enabled,
                 approval_tools,
@@ -1411,6 +1418,7 @@ impl Gateway {
             name: "Columbus core GIS tools".into(),
             kind: "native".into(),
             trust: None,
+            confinement: None,
             status: json!({"state": "ready"}),
             enabled_tools: self
                 .tool_router

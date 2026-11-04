@@ -71,7 +71,18 @@ pub enum Status {
 pub struct Provider {
     pub loaded: Loaded,
     blocked: Option<Status>,
+    /// How a local server is started: through the launcher at this level,
+    /// or (only where policy allows unconfined pilots and this machine
+    /// cannot confine) directly.
+    confine: Option<Confine>,
     conn: OnceCell<Result<Connected, String>>,
+}
+
+#[derive(Debug, Clone)]
+struct Confine {
+    launcher: PathBuf,
+    level: columbus_confine::Level,
+    memory_mb: u64,
 }
 
 pub struct Connected {
@@ -83,6 +94,20 @@ pub struct Connected {
 impl Provider {
     pub fn id(&self) -> &str {
         &self.loaded.manifest.id
+    }
+
+    /// For a local server: its confinement level, or "unconfined" for a
+    /// pilot. None for a remote server.
+    pub fn confinement(&self) -> Option<String> {
+        match self.loaded.manifest.transport {
+            Transport::Http { .. } => None,
+            Transport::Stdio { .. } => Some(
+                self.confine
+                    .as_ref()
+                    .map(|c| c.level.as_str().to_string())
+                    .unwrap_or_else(|| "unconfined".into()),
+            ),
+        }
     }
 }
 
@@ -142,10 +167,24 @@ impl Broker {
         let providers = loaded
             .into_iter()
             .map(|l| {
-                let blocked = Self::gate(policy, &l);
+                let mut blocked = Self::gate(policy, &l);
+                let mut confine = None;
+                if blocked.is_none() && matches!(l.manifest.transport, Transport::Stdio { .. }) {
+                    match Self::confinement(policy, &l) {
+                        Ok(c) => confine = c,
+                        Err(reason) => blocked = Some(Status::Blocked { reason }),
+                    }
+                    if confine.is_none() && blocked.is_none() {
+                        notes.push(format!(
+                            "{} runs unconfined: this machine cannot confine it and organization policy allows unconfined pilots.",
+                            l.manifest.id
+                        ));
+                    }
+                }
                 Arc::new(Provider {
                     loaded: l,
                     blocked,
+                    confine,
                     conn: OnceCell::new(),
                 })
             })
@@ -157,6 +196,46 @@ impl Broker {
             namespaces,
             notes,
         })
+    }
+
+    /// The confinement a local server starts under (Rule 5): the manifest's
+    /// level (A when it names none), if policy allows it and this machine
+    /// can provide it. `Ok(None)` only for an unconfined pilot.
+    fn confinement(policy: &OrgPolicy, l: &Loaded) -> Result<Option<Confine>, String> {
+        let level = l
+            .manifest
+            .confinement
+            .as_ref()
+            .and_then(|c| c.level)
+            .unwrap_or(Level::A);
+        let level = match level {
+            Level::A => columbus_confine::Level::A,
+            Level::B => columbus_confine::Level::B,
+            Level::C => columbus_confine::Level::C,
+        };
+        if !policy
+            .servers
+            .levels
+            .iter()
+            .any(|x| x.eq_ignore_ascii_case(level.as_str()))
+        {
+            return Err(format!(
+                "confinement level {} is not allowed for local servers by organization policy",
+                level.as_str()
+            ));
+        }
+        match columbus_confine::ready(level) {
+            Ok(launcher) => Ok(Some(Confine {
+                launcher,
+                level,
+                memory_mb: policy.servers.memory_mb,
+            })),
+            Err(_) if policy.servers.allow_unconfined_local => Ok(None),
+            Err(e) => Err(format!(
+                "local servers run confined (level {}), and {e}",
+                level.as_str()
+            )),
+        }
     }
 
     /// Policy checks made before any connection is attempted.
@@ -182,13 +261,6 @@ impl Broker {
                             "confinement level C needs trust: trusted or an organization allow-list entry".into(),
                         );
                     }
-                }
-                if !policy.servers.allow_unconfined_local {
-                    return blocked(
-                        "local servers run confined, and confinement is not in this build yet; \
-                         organization policy servers.allow_unconfined_local enables them for pilots"
-                            .into(),
-                    );
                 }
             }
         }
@@ -247,8 +319,37 @@ impl Broker {
         };
         let client = match &m.transport {
             Transport::Stdio { command, args, cwd } => {
-                let mut cmd = tokio::process::Command::new(command);
-                cmd.args(args);
+                let mut cmd = match &p.confine {
+                    Some(c) => {
+                        let mut rw = vec![self.workspace.clone()];
+                        for f in m.confinement.iter().flat_map(|c| &c.folders) {
+                            let f = PathBuf::from(f);
+                            if !f.is_absolute() {
+                                return Err(format!(
+                                    "declared folder {} is not an absolute path",
+                                    f.display()
+                                ));
+                            }
+                            rw.push(f);
+                        }
+                        let spec = columbus_confine::Spec {
+                            level: c.level,
+                            name: format!("server.{}", m.id),
+                            read_write: rw,
+                            read_only: cwd.iter().map(PathBuf::from).collect(),
+                            memory_mb: Some(c.memory_mb),
+                            processes: Some(32),
+                        };
+                        let mut cmd = tokio::process::Command::new(&c.launcher);
+                        cmd.args(spec.launcher_args(command, args));
+                        cmd
+                    }
+                    None => {
+                        let mut cmd = tokio::process::Command::new(command);
+                        cmd.args(args);
+                        cmd
+                    }
+                };
                 cmd.env_clear();
                 for k in ENV_ALLOW {
                     if let Some(v) = std::env::var_os(k) {

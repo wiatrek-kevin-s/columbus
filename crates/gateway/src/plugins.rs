@@ -136,7 +136,17 @@ pub struct PluginManifest {
     pub entry: String,
     #[serde(default)]
     pub engine_env: Option<String>,
+    /// Rule 5: the level the plugin runs at. A (no network) when absent; B
+    /// (internet) only where organization policy lists it for plugins.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confinement: Option<PluginConfinement>,
     pub tools: BTreeMap<String, PluginTool>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PluginConfinement {
+    #[serde(default)]
+    pub level: Option<String>,
 }
 
 impl PluginManifest {
@@ -292,6 +302,8 @@ pub struct Plugin {
     pub hash: String,
     pub personal: bool,
     gate: Option<PluginStatus>,
+    /// The launcher and level, or None for an unconfined pilot.
+    confine: Option<(PathBuf, columbus_confine::Level)>,
     worker: OnceCell<Result<Arc<Worker>, String>>,
 }
 
@@ -299,6 +311,84 @@ impl Plugin {
     pub fn id(&self) -> &str {
         &self.manifest.id
     }
+
+    /// "A", "B", or "unconfined" (a pilot on a machine that cannot confine).
+    pub fn confinement(&self) -> String {
+        self.confine
+            .as_ref()
+            .map(|(_, l)| l.as_str().to_string())
+            .unwrap_or_else(|| "unconfined".into())
+    }
+}
+
+/// The confinement a plugin runs at (Rule 5): its declared level (A when
+/// none), if policy allows it for plugins and this machine can provide it.
+/// `Ok(None)` only for an unconfined pilot.
+fn plugin_confinement(
+    policy: &OrgPolicy,
+    m: &PluginManifest,
+) -> Result<Option<(PathBuf, columbus_confine::Level)>, String> {
+    let declared = m
+        .confinement
+        .as_ref()
+        .and_then(|c| c.level.clone())
+        .unwrap_or_else(|| "A".into());
+    let level = columbus_confine::Level::parse(&declared)
+        .ok_or_else(|| format!("confinement level {declared:?} is not A, B or C"))?;
+    if level == columbus_confine::Level::C {
+        return Err("engine plugins cannot run at confinement level C".into());
+    }
+    if !policy
+        .plugins
+        .levels
+        .iter()
+        .any(|l| l.eq_ignore_ascii_case(level.as_str()))
+    {
+        return Err(format!(
+            "confinement level {} is not allowed for plugins by organization policy",
+            level.as_str()
+        ));
+    }
+    match columbus_confine::ready(level) {
+        Ok(launcher) => Ok(Some((launcher, level))),
+        Err(_) if policy.servers.allow_unconfined_local => Ok(None),
+        Err(e) => Err(format!(
+            "plugins run confined (level {}), and {e}",
+            level.as_str()
+        )),
+    }
+}
+
+/// The folders a Python interpreter loads from (its own and, for a virtual
+/// environment, the base installation), which a confined plugin must be
+/// able to read. Asked once per interpreter.
+fn python_dirs(python: &Path) -> Vec<PathBuf> {
+    static CACHE: std::sync::Mutex<BTreeMap<PathBuf, Vec<PathBuf>>> =
+        std::sync::Mutex::new(BTreeMap::new());
+    if let Some(v) = CACHE.lock().expect("python dirs").get(python) {
+        return v.clone();
+    }
+    let out = std::process::Command::new(python)
+        .args([
+            "-I",
+            "-c",
+            "import sys, json; print(json.dumps(sorted({sys.base_prefix, sys.prefix, sys.exec_prefix, sys.base_exec_prefix})))",
+        ])
+        .output();
+    let dirs: Vec<PathBuf> = out
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| serde_json::from_slice::<Vec<String>>(&o.stdout).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute() && p.is_dir())
+        .collect();
+    CACHE
+        .lock()
+        .expect("python dirs")
+        .insert(python.to_path_buf(), dirs.clone());
+    dirs
 }
 
 /// Hash over `plugin.yaml` and the entry file.
@@ -328,6 +418,7 @@ pub struct Plugins {
     python: PathBuf,
     host_script: PathBuf,
     workspace: PathBuf,
+    memory_mb: u64,
     pub notes: Vec<String>,
 }
 
@@ -382,6 +473,17 @@ impl Plugins {
                     ));
                     continue;
                 }
+                let (confine, confine_gate) = match plugin_confinement(policy, &manifest) {
+                    Ok(Some(c)) => (Some(c), None),
+                    Ok(None) => {
+                        notes.push(format!(
+                            "Plugin {} runs unconfined: this machine cannot confine it and organization policy allows unconfined pilots.",
+                            manifest.id
+                        ));
+                        (None, None)
+                    }
+                    Err(reason) => (None, Some(PluginStatus::Blocked { reason })),
+                };
                 let (hash, gate) = match plugin_hash(&dir, &text, &manifest.entry) {
                     Err(e) => (String::new(), Some(PluginStatus::Error { reason: e })),
                     Ok(h) => {
@@ -403,12 +505,14 @@ impl Plugins {
                         (h, gate)
                     }
                 };
+                let gate = confine_gate.or(gate);
                 plugins.push(Arc::new(Plugin {
                     manifest,
                     dir,
                     hash,
                     personal,
                     gate,
+                    confine,
                     worker: OnceCell::new(),
                 }));
             }
@@ -418,6 +522,7 @@ impl Plugins {
             python,
             host_script,
             workspace,
+            memory_mb: policy.plugins.memory_mb,
             notes,
         }
     }
@@ -443,8 +548,8 @@ impl Plugins {
     fn launch(&self, p: &Plugin) -> Launch {
         let tmp = self.workspace.join("tmp").join(&p.manifest.id);
         let _ = std::fs::create_dir_all(&tmp);
-        match p.manifest.runtime {
-            Runtime::Python => Launch::plugin(
+        let (program, args, extra_read) = match p.manifest.runtime {
+            Runtime::Python => (
                 self.python.clone(),
                 vec![
                     OsString::from("-I"),
@@ -453,17 +558,44 @@ impl Plugins {
                     p.dir.clone().into_os_string(),
                     OsString::from(&p.manifest.entry),
                 ],
-                self.workspace.clone(),
-                tmp,
+                // The interpreter and its libraries, and the SDK beside the
+                // plugin host.
+                python_dirs(&self.python)
+                    .into_iter()
+                    .chain(self.host_script.parent().map(PathBuf::from))
+                    .collect::<Vec<_>>(),
             ),
             Runtime::Rust => {
                 let mut exe = p.dir.join(&p.manifest.entry);
                 if cfg!(windows) && exe.extension().is_none() {
                     exe.set_extension("exe");
                 }
-                Launch::plugin(exe, vec![], self.workspace.clone(), tmp)
+                (exe, vec![], vec![])
             }
+        };
+        let mut launch = Launch::plugin(program, args, self.workspace.clone(), tmp);
+        if let Some((launcher, level)) = &p.confine {
+            let spec = columbus_confine::Spec {
+                level: *level,
+                name: format!("plugin.{}", p.manifest.id),
+                read_write: vec![self.workspace.clone()],
+                read_only: std::iter::once(p.dir.clone()).chain(extra_read).collect(),
+                memory_mb: Some(self.memory_mb),
+                processes: Some(16),
+            };
+            let args: Vec<String> = launch
+                .args
+                .iter()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect();
+            launch.args = spec
+                .launcher_args(&launch.program.to_string_lossy(), &args)
+                .into_iter()
+                .map(OsString::from)
+                .collect();
+            launch.program = launcher.clone();
         }
+        launch
     }
 
     /// Start a plugin that is not yet approved and check its `describe`,
