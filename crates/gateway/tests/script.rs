@@ -462,7 +462,12 @@ print("env", sorted(os.environ))
         "read_connections: refused",
         "list_workspace: refused",
         "network: refused",
-        "link: ok",
+        // A sandboxed process on Windows cannot make links at all.
+        if cfg!(windows) {
+            "link: refused"
+        } else {
+            "link: ok"
+        },
     ] {
         assert!(stdout.contains(line), "{line} in {stdout}");
     }
