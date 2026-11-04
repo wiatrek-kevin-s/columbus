@@ -167,7 +167,8 @@ fn level_a_keeps_files_and_network_in() {
     ] {
         assert!(
             has(&out, l),
-            "expected {l:?}:\n{}{}",
+            "expected {l:?} (exit code {}):\n{}{}",
+            out.code,
             out.stdout,
             out.stderr
         );
@@ -227,7 +228,8 @@ fn level_c_reads_anywhere_but_writes_only_granted_folders() {
     ] {
         assert!(
             has(&out, l),
-            "expected {l:?}:\n{}{}",
+            "expected {l:?} (exit code {}):\n{}{}",
+            out.code,
             out.stdout,
             out.stderr
         );
