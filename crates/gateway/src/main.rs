@@ -31,6 +31,7 @@ mod providers;
 mod raster_tools;
 mod registry_tools;
 mod review_cli;
+mod script_tools;
 mod secrets;
 mod server;
 mod worker;

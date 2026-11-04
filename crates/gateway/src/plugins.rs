@@ -400,9 +400,6 @@ fn plugin_confinement(
     }
 }
 
-/// The folders a Python interpreter loads from (its own and, for a virtual
-/// environment, the base installation), which a confined plugin must be
-/// able to read. Asked once per interpreter.
 /// An engine plugin's own folder in the session workspace: the only place
 /// it may write; each run's inputs and outputs live under `runs/<run>`.
 pub fn plugin_dir(workspace: &Path, id: &str) -> PathBuf {
@@ -419,7 +416,10 @@ pub fn plugin_dir(workspace: &Path, id: &str) -> PathBuf {
     workspace.join("plugins").join(safe)
 }
 
-fn python_dirs(python: &Path) -> Vec<PathBuf> {
+/// The folders a Python interpreter loads from (its own and, for a virtual
+/// environment, the base installation), which a confined plugin must be
+/// able to read. Asked once per interpreter.
+pub(crate) fn python_dirs(python: &Path) -> Vec<PathBuf> {
     static CACHE: std::sync::Mutex<BTreeMap<PathBuf, Vec<PathBuf>>> =
         std::sync::Mutex::new(BTreeMap::new());
     if let Some(v) = CACHE.lock().expect("python dirs").get(python) {

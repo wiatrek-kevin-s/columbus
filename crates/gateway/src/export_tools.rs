@@ -78,7 +78,7 @@ const DEVICE_NAMES: &[&str] = &[
     "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
 ];
 
-fn valid_name(n: &str) -> bool {
+pub(crate) fn valid_name(n: &str) -> bool {
     let stem = n
         .split('.')
         .next()
@@ -599,6 +599,8 @@ impl Gateway {
                 summary,
                 detail: Some(detail),
                 approval_id: args.approval_id.as_deref(),
+                every_time: false,
+                shown: None,
             };
             match self.seek_approval(&ctx, ask).await {
                 Ok(Sought::Granted(id)) => rec.approval = Some(id),
@@ -858,7 +860,7 @@ fn same_name(dir: &Path, name: &str) -> Vec<(String, Option<String>)> {
     out
 }
 
-fn write_new(to: &Path, bytes: &[u8]) -> std::io::Result<()> {
+pub(crate) fn write_new(to: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
     let mut f = std::fs::OpenOptions::new()
         .write(true)

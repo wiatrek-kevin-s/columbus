@@ -474,6 +474,8 @@ impl Gateway {
                     json!({"url": url.as_str(), "entry": args.id, "license": license, "publisher": entry.get("publisher")}),
                 ),
                 approval_id: args.approval_id.as_deref(),
+                every_time: false,
+                shown: None,
             };
             match self.seek_approval(&ctx, ask).await {
                 Ok(Sought::Granted(id)) => rec.approval = Some(id),

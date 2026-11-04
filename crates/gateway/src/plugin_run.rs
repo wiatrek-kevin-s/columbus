@@ -390,6 +390,8 @@ impl Gateway {
                 summary,
                 detail: Some(detail),
                 approval_id: approval_id.as_deref(),
+                every_time: false,
+                shown: None,
             };
             match self.seek_approval(ctx, ask).await {
                 Ok(crate::approval_flow::Sought::Granted(id)) => rec.approval = Some(id),

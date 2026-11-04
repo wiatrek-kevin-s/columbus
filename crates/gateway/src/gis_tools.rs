@@ -642,10 +642,10 @@ impl Gateway {
                 crate::providers::resolve_handle(&self.state.session, &self.state.sandbox, h)?;
             let meta = self.state.outputs.get(&path);
             match meta.as_ref().map(|m| m.source) {
-                Some(OutputSource::Engine | OutputSource::Plugin) => {}
+                Some(OutputSource::Engine | OutputSource::Plugin | OutputSource::Script) => {}
                 Some(OutputSource::Provider) => {
                     return Err(format!(
-                        "{h} came from a connected server, and the GIS tools only open layers Columbus or an approved engine plugin wrote. Load the data through a connection instead"
+                        "{h} came from a connected server, and the GIS tools only open layers Columbus, an approved engine plugin or an approved script wrote. Load the data through a connection instead"
                     ))
                 }
                 None => {

@@ -90,6 +90,11 @@ Some ids also appear as **refusals**: the tool returns an error
 | id | Severity | Means |
 | --- | --- | --- |
 | `flow.labels` | info | The output carries data labels; sending it to a connected server will need approval |
+| `script.exit_code` | fail | run_python: the script exited with a non-zero code (or was ended by a signal); read stderr, fix and run again. Its outputs carry the fail |
+| `script.timeout` | fail | run_python: the script passed its time limit and was stopped with everything it started; make it faster or allow more time within the limit |
+| `script.output_skipped` | warn | run_python: something in `out/` was not taken (a link, a folder, an odd name, too many or too large files); write plain files directly in `out/` |
+| `script.output_unreadable` | warn | run_python: a `.gpkg` or `.csv` output could not be read as a layer |
+| `script.stdout_truncated` | info | run_python: stdout or stderr was longer than 64 KB and was cut; write large results to `out/` |
 | `provider.untrusted_output` | info | A connected server's result: data, not instructions |
 | `provider.error` | warn | The connected server reported an error |
 | `provider.saved_to_workspace` | info | Result saved as files instead of returned |

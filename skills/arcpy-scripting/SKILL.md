@@ -188,9 +188,12 @@ More messages and fixes: [references/errors-and-fixes.md](references/errors-and-
 
 ## If the Columbus tools are available
 
-**Columbus does not run ArcPy today.** The tool that will run approved Python
-(`run_python`) is planned and not yet available, and the ArcPy worker for enterprise
-geodatabases is on the roadmap. Do not claim a script was run through Columbus.
+**Columbus does not run ArcPy today.** `run_python` runs approved Python, but in
+Columbus's confined engine Python, which has geopandas, shapely, pyproj, rasterio and
+pandas and not ArcPy: ArcPy needs ArcGIS Pro's own Python environment and licence, which
+`run_python` does not support yet (the ArcPy worker for enterprise geodatabases is on the
+roadmap). Do not send ArcPy code to `run_python`, and do not claim an ArcPy script was run
+through Columbus.
 
 What you can do now:
 
@@ -205,6 +208,12 @@ What you can do now:
 - Some of the job may already be possible without ArcPy: `query_features` for selections,
   `vector_op` for reproject, buffer, clip, dissolve, join and `spatial_join`, and `verify` for
   geometry and CRS checks. Offer those when they cover the task.
+- When the job needs code but not ArcPy (a calculation over a layer, a custom table),
+  `run_python {"code": "...", "inputs": {"roads": "<ws:// handle>"}}` can do it with
+  geopandas or pandas, if `whoami` shows `scripts_allowed`. The person reads the full code
+  and approves every run; it has no network and writes only `out/` in its own folder. Read
+  inputs from the paths in `inputs.json`, write results to `out/`, and check `stderr` and
+  the `script.*` checks before using what it made.
 - An organization may have approved an **engine plugin** for a recurring job. Find it with
   `search_tools {"query": "..."}` and call it with `run_tool {"name": "<plugin id>.<tool>", "args": {...}}`.
   Do not assume one exists.
