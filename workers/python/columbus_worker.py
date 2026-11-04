@@ -28,6 +28,7 @@ import base64
 import csv
 import fnmatch
 import importlib
+import importlib.metadata
 import json
 import os
 import re
@@ -61,14 +62,14 @@ ENGINE_ERROR = -32002
 TIMEOUT = -32003
 
 
-def _optional_version(module: str, attr: str = "__version__") -> str | None:
+def _optional_version(dist: str) -> str | None:
+    """An installed package's version, from its metadata. Nothing is
+    imported: importing geopandas or GDAL can take many seconds on a cold
+    Windows start, and ping must stay fast."""
     try:
-        mod = importlib.import_module(module)
-    except Exception:  # noqa: BLE001 - any import failure means "not available"
+        return importlib.metadata.version(dist)
+    except Exception:  # noqa: BLE001 - not installed
         return None
-    if module == "osgeo.gdal":
-        return mod.__version__ if hasattr(mod, "__version__") else mod.VersionInfo("RELEASE_NAME")
-    return str(getattr(mod, attr, "unknown"))
 
 
 def ping(_params: dict[str, Any]) -> dict[str, Any]:
@@ -77,7 +78,7 @@ def ping(_params: dict[str, Any]) -> dict[str, Any]:
         "python": platform.python_version(),
         "engines": {
             "sqlite": sqlite3.sqlite_version,
-            "gdal": _optional_version("osgeo.gdal"),
+            "gdal": _optional_version("GDAL"),
             "pyogrio": _optional_version("pyogrio"),
             "shapely": _optional_version("shapely"),
             "duckdb": _optional_version("duckdb"),
@@ -584,12 +585,20 @@ def _gis():
 
 
 def _gis_versions():
-    try:
-        import columbus_gis
-
-        return columbus_gis.versions()
-    except Exception:  # noqa: BLE001 - absent is fine
+    """Versions of the GIS engine's packages, or None when it is not
+    installed. The libraries' own versions (GDAL, GEOS, PROJ) are added once
+    the engine has been loaded by a GIS call."""
+    names = ("geopandas", "pyogrio", "shapely", "pyproj")
+    found = {n: _optional_version(n) for n in names}
+    if not all(found.values()):
         return None
+    loaded = sys.modules.get("columbus_gis")
+    if loaded is not None:
+        try:
+            found.update(loaded.versions())
+        except Exception:  # noqa: BLE001 - still loading
+            pass
+    return found
 
 
 def _refused(e) -> WorkerError:
@@ -733,5 +742,19 @@ for _name, _fn in (
     plugin.tool(_name)(lambda ctx, fn=_fn: fn(ctx.params))
 
 
+def _preload_gis() -> None:
+    """Load the GIS engine in the background at start-up, so the first GIS
+    call does not pay for importing GDAL and PROJ (many seconds on a cold
+    Windows machine)."""
+    try:
+        import columbus_gis  # noqa: F401
+    except Exception:  # noqa: BLE001 - reported when a GIS tool is called
+        pass
+
+
 if __name__ == "__main__":
+    if os.environ.get("COLUMBUS_GIS_PRELOAD", "1") != "0":
+        import threading
+
+        threading.Thread(target=_preload_gis, name="gis-preload", daemon=True).start()
     plugin.serve()
