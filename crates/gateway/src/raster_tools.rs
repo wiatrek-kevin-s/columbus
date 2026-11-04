@@ -404,6 +404,7 @@ impl Gateway {
         let mut paths = serde_json::Map::new();
         let mut inputs = Vec::new();
         let mut layer_files = Vec::new();
+        let mut all_files: Vec<PathBuf> = Vec::new();
         let mut labels = BTreeSet::new();
         let mut warnings = Vec::new();
         let mut reads = Vec::new();
@@ -431,6 +432,7 @@ impl Gateway {
             match got {
                 Ok((path, record)) => {
                     paths.insert(name.clone(), json!(path));
+                    all_files.push(path);
                     inputs.push(record);
                 }
                 Err(e) => {
@@ -492,6 +494,13 @@ impl Gateway {
             }
         };
         let rows = summary.get("rows").and_then(Value::as_u64);
+        let mut checks = warnings;
+        checks.extend(checks_from(reply.get("checks")));
+        let inherit = self
+            .state
+            .outputs
+            .inherit(&all_files)
+            .with_step_fails(&checks, &prov);
         if let Some(p) = &path {
             self.state.flow.record_file(p, &labels);
             self.state.outputs.record(
@@ -501,13 +510,14 @@ impl Gateway {
                     provenance: Some(prov.clone()),
                     rows,
                     source: OutputSource::Engine,
-                    truncated: !warnings.is_empty(),
+                    truncated: inherit.truncated
+                        || checks.iter().any(|c| c.id == "input.truncated"),
+                    inherited: inherit.fails,
                     ..Default::default()
                 },
             );
         }
-        let mut checks = warnings;
-        checks.extend(checks_from(reply.get("checks")));
+
         if !labels.is_empty() {
             checks.push(Check {
                 id: "flow.labels".into(),
