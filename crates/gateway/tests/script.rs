@@ -478,9 +478,12 @@ print("env", sorted(os.environ))
             && !stdout.contains("COLUMBUS_POLICY")
     );
     assert!(stdout.contains("COLUMBUS_RUN_DIR"));
-    let skipped = check(&r, "script.output_skipped").expect("link reported");
-    assert_eq!(skipped["severity"], "warn");
-    assert!(skipped["message"].as_str().unwrap().contains("link.csv"));
+    // Where the link could be made (not on Windows), it is skipped, not taken.
+    if !cfg!(windows) {
+        let skipped = check(&r, "script.output_skipped").expect("link reported");
+        assert_eq!(skipped["severity"], "warn");
+        assert!(skipped["message"].as_str().unwrap().contains("link.csv"));
+    }
     let outs = r["result"]["outputs"].as_array().unwrap();
     assert_eq!(outs.len(), 1, "{r}");
     assert!(outs[0]["handle"].as_str().unwrap().ends_with("-fine.csv"));
