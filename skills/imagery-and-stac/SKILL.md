@@ -167,9 +167,11 @@ Catalogue terms (Planetary Computer, AWS) apply to access.
 
 ## If the Columbus tools are available
 
-**Columbus has no imagery or raster processing yet.** The raster tool (`raster_op`) is
-planned and not yet available, so Columbus cannot read, mask or composite imagery today.
-Write the pystac-client and odc-stac (or rasterio) code for the person to run, and say so.
+**Columbus cannot search STAC or composite imagery yet.** It reads GeoTIFFs from a `rasters`
+connection and can clip, reproject (with a chosen resampling) and summarize them with
+`raster_op` (see the raster-and-terrain skill), but it has no band math, cloud masking or
+compositing. Write the pystac-client and odc-stac (or rasterio) code for the person to run,
+and say so.
 
 What helps today:
 

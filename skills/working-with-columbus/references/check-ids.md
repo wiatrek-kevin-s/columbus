@@ -35,6 +35,8 @@ Some ids also appear as **refusals**: the tool returns an error
 | `crs.reprojected` | info | vector_op reproject | From and to CRS | Note it |
 | `crs.agreement` | info | clip, intersect, spatial_join | A second input was reprojected to the first input's CRS | Put the CRS you want first |
 | `extent.plausible` | warn | vector_op | The output overlaps no input's extent | Check CRSs and units |
+| `crs.geographic` | info | describe_dataset (raster), raster_op | The raster is in degrees | Reproject before slope, aspect, hillshade or areas |
+| `crs.measure` | refusal | raster_op slope, aspect, hillshade | DEM in degrees or Web Mercator | `raster_op reproject` to a projected CRS (with `resampling`) first |
 
 ## Geometry
 
@@ -58,9 +60,30 @@ Some ids also appear as **refusals**: the tool returns an error
 | `output.too_large` | refusal | join, spatial_join, intersect | Result would pass the read limit | Narrow inputs or aggregate first |
 | `clip.rows` | info | clip | Features kept by the mask | Quote it |
 | `dissolve.null_groups` | warn | dissolve | Features with an empty `by` value were grouped together | Fill or filter first if they should not be |
-| `params` | refusal | vector_op | Bad op, input names or params | Read the message; fix the call |
+| `params` | refusal | vector_op, raster_op | Bad op, input names or params | Read the message; fix the call |
 | `input.geometry`, `input.format` | refusal | vector_op, verify | Input has no geometry, or is not a GeoPackage/CSV layer | Use a layer Columbus wrote |
 | `bbox.invalid`, `bbox.crs` | refusal | query_features | Malformed box, or a bbox CRS on a dataset with none | Fix the box, or give it in the dataset's own coordinates |
+
+## Rasters
+
+| id | Severity | Emitted by | Means | Do |
+| --- | --- | --- | --- | --- |
+| `raster.nodata` | warn | describe_dataset (raster), raster_op | No nodata value set: fill values are read as data | Ask the owner which value marks missing cells; report it |
+| `raster.nodata` | info | raster_op | The input had no nodata, so the output's was chosen; or nodata cells stayed nodata | Note it |
+| `raster.resampling` | warn | raster_op reproject | An integer raster resampled with bilinear, cubic or average: categories blended | Use `nearest` or `mode` for categorical rasters |
+| `raster.cog` | info | describe_dataset (raster), raster_op | Whether the file is a Cloud-Optimized GeoTIFF | Note it |
+| `raster.rotated` | warn or refusal | describe_dataset (raster), raster_op | A rotated grid | Warp it north-up outside Columbus |
+| `raster.stats_sampled` | info | raster_op info | Statistics from an overview or a sample | Say so; extremes may be missed |
+| `raster.empty` | warn | raster_op info | A band with no valid cells | Check nodata and the clip |
+| `input.format` | refusal | describe_dataset (raster), raster_op | A ".tif" whose content is not TIFF, or a path GDAL would not treat as a plain file | Ask the owner for the real GeoTIFF |
+| `output.too_large` | refusal | raster_op | Output (or cells read) over 400 million pixels or the read limit x 1,000 | Clip first, or choose a coarser resolution |
+| `clip.cells`, `clip.empty` | info, refusal | raster_op clip | Cells inside the mask; or none at all | Check the mask's CRS; `all_touched: true` for small masks |
+| `terrain.z_factor`, `terrain.units`, `terrain.edges` | info | raster_op slope, aspect, hillshade | The z-factor used, the output units, cells next to nodata or the edge | Quote the z-factor and units |
+| `zonal.stats` | info | raster_op zonal_stats | Which statistics, band and cell rule | Quote it |
+| `zonal.outside` | warn | raster_op zonal_stats | Zones partly or fully off the raster (`detail`) | Check CRS and coverage; report partial coverage |
+| `zonal.no_pixels` | warn | raster_op zonal_stats | Zones with no valid cells; their stats are empty | `all_touched: true` for small zones, or a finer raster |
+| `zonal.cell_size` | warn | raster_op zonal_stats | The median zone holds fewer than 10 cells | Use a finer raster; report count with each mean |
+| `zonal.nodata`, `zonal.categorical` | info | raster_op zonal_stats | Share of nodata cells in the zones; a mean of an integer (maybe categorical) band | Report it; for classes report counts per class |
 
 ## Data flow, providers, context and registry
 

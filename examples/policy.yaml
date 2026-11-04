@@ -4,7 +4,7 @@
 # GeoPackage/SQLite only, read-only, no scripts, no edits.
 
 # Connection types allowed at all.
-connection_types: [gpkg, sqlite, oracle, sqlserver, postgis]
+connection_types: [gpkg, sqlite, oracle, sqlserver, postgis, rasters]
 
 # Hosts any connection may reach (wildcards allowed).
 hosts: ["*.corp.example", "oraprod.corp.example"]

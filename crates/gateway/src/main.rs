@@ -27,6 +27,7 @@ mod gis_tools;
 mod plugin_run;
 mod plugins;
 mod providers;
+mod raster_tools;
 mod registry_tools;
 mod review_cli;
 mod secrets;

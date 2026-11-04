@@ -19,10 +19,11 @@ Columbus makes a GIS analyst, paired with whatever AI their organization already
 | `search_tools`, `describe_tool` | Find the right tool by describing the job |
 | `list_connections`, `describe_connection` | Connections, effective mode, allowed datasets, row filter, limits. Never secrets. |
 | `list_datasets` | Allowed tables with geometry type, SRS, extent and fields (hidden fields removed) |
-| `describe_dataset` | Fields, geometry column and type, CRS facts (code, units, projected or not, area of use), extent, and the row count under the row filter |
+| `describe_dataset` | Fields, geometry column and type, CRS facts (code, units, projected or not, area of use), extent, and the row count under the row filter; for a raster, bands (data type, nodata), CRS facts, cell size, size, extent, tiling and overviews |
 | `sample_rows` | Up to 50 rows, to see real values (codes, padding, nulls) before filtering |
 | `query_features` | A structured query (fields, where, bbox in any EPSG CRS, order_by, limit) saved as a layer; returns the first rows and a handle |
 | `vector_op` | reproject, buffer, simplify, make_valid, clip, dissolve, intersect, join, spatial_join on handles or governed datasets |
+| `raster_op` | clip, reproject, slope, aspect, hillshade, zonal_stats and info on GeoTIFFs from a `rasters` connection or earlier results; outputs are Cloud-Optimized GeoTIFFs |
 | `verify` | The spatial checks on any layer or dataset |
 | `sql_select` | One checked, read-only `SELECT` (details below) |
 | `context_search`, `context_get`, `describe_data_group` | The organization's context pack: what its datasets, codes, routes and procedures mean; `describe_dataset` attaches the dataset's entry, and `whoami` returns the pack's always-on rules |
@@ -47,8 +48,14 @@ Columbus makes a GIS analyst, paired with whatever AI their organization already
 | `filter.zero_rows`, `filter.all_rows` | A filter that keeps nothing, or everything |
 | `geometry.valid`, `geometry.empty`, `geometry.duplicates`, `geometry.mixed_types` | Bad or surprising geometry |
 | `query.read_limit`, `input.truncated` | A result cut off at the limit, and anything built from one |
+| `raster.nodata`, `crs.geographic` | A raster with no nodata value (fill values read as data), or in degrees (terrain needs a projected CRS) |
+| `raster.resampling` | An integer raster (classes, codes) resampled with bilinear, cubic or average |
+| `zonal.outside`, `zonal.no_pixels`, `zonal.cell_size` | Zones off the raster, zones with no valid cell, and cells too large for the zones (median under 10 cells) |
+| `output.too_large` | A raster output over 400 million pixels, or the read limit x 1,000 if smaller; refused, with the fix to clip first |
 
 Severities are `info`, `warn` and `fail`. A `fail` means the result should not be used as it is.
+
+**Rasters.** A `rasters` connection is a folder of GeoTIFFs; a dataset is a file's path in it with forward slashes (`dem/travis_1m.tif`), under the connection's allow and deny lists. The gateway refuses names with `..`, an absolute path, `\` or `:`, resolves the name inside the folder after following every link and requires the result to be the very file the name spells (so a symlink or junction cannot lead out of the folder, or to a file the lists do not name), and checks its first bytes are TIFF's: GDAL picks a driver from a file's content, so a ".tif" holding VRT XML could otherwise read any file. The worker checks the bytes again, opens it with the GTiff driver only, never with open options or `/vsi` paths, and keeps VRT switched off. `raster_op` takes those files (`"dem:dem/travis_1m.tif"`) or the handles of earlier raster results, and layers (masks, zones) as `vector_op` does. `reproject` needs an explicit `resampling`; `slope`, `aspect` and `hillshade` need the elevations' `z_unit` (the z-factor comes from the CRS's horizontal units) and are refused in degrees or Web Mercator; `zonal_stats` writes the zones with their statistics as a layer. Outputs are Cloud-Optimized GeoTIFFs (DEFLATE) in `results/`, labelled with the connections they came from and checked for CRS and nodata. The size limit is 400 million pixels per output (and per read for `zonal_stats`), or the read limit (`limits.rows`, the tighter of the organization's and each raster connection's) times 1,000 if that is smaller. `export_output` exports vector layers only for now.
 
 **Exports.** `export_output` writes only to the folders the organization lists in policy (`exports: [{id, path, granted}]`), under a plain file name. Before writing it runs the layer's checks, the delivery spec's (`delivery: <context pack entry>`: CRS, field renames, formats, required metadata) and looks back through every step the layer was built from: a `fail` anywhere, or a layer cut off at a row limit, blocks the export unless the person approves an override. A folder marked `granted` needs no approval otherwise; any other folder, replacing a file, or a flow rule (`to: [folder:<id>]`) asks the person. The approval is bound to the request and the exact source content. Files are created new, never written through an existing link, and `<name>.prov.json` beside them records the sources, steps, checks, metadata and approval.
 
@@ -148,6 +155,7 @@ A connection with no stored secret uses integrated sign-in. The gateway reads th
 | --- | --- | --- |
 | GeoPackage, SQLite | `gpkg`, `sqlite` | Works (standard library) |
 | PostgreSQL / PostGIS | `postgis` | Works (needs `psycopg` in the engine environment) |
+| Folder of GeoTIFFs | `rasters` | Works (needs `rasterio`; policy must list `rasters`); read-only, `path` and `datasets` only, see [`local-rasters.yaml`](examples/connections/local-rasters.yaml) |
 | SQL Server, Oracle, enterprise geodatabase | `sqlserver`, `oracle`, `sde` | Configuration and query checking work; engines next |
 
 For development and CI only, `COLUMBUS_DEV_SECRETS=1` reads passwords from `COLUMBUS_SECRET_<ID>` environment variables instead; `whoami` flags it. Platforms other than Windows have only this mode for now.
@@ -168,7 +176,7 @@ examples          a sample policy, connections, server manifests and the LRS che
 
 ## Build and run
 
-Requires Rust (stable, 1.85+) and Python 3.12+. For the GIS tools, `pip install -r workers/python/requirements-gis.txt` (geopandas, pyogrio, shapely, pyproj; the wheels include GDAL and PROJ). For PostGIS, also `pip install "psycopg[binary]"`.
+Requires Rust (stable, 1.85+) and Python 3.12+. For the GIS tools, `pip install -r workers/python/requirements-gis.txt` (geopandas, pyogrio, shapely, pyproj, rasterio; the wheels include GDAL and PROJ). For PostGIS, also `pip install "psycopg[binary]"`.
 
 ```powershell
 cargo build --release
@@ -224,7 +232,7 @@ python -m unittest discover -s workers/python/tests      # worker and GIS engine
 
 PostGIS tests run when `COLUMBUS_TEST_PG_HOST` (and optionally `_PORT`, `_DB`) is set and [`tests/fixtures/postgis.sql`](crates/gateway/tests/fixtures/postgis.sql) is loaded; CI runs them against a PostGIS container. They connect with a login that *can* write, to show writes are refused anyway.
 
-The broker tests run the gateway against a scriptable MCP server ([`examples/fake_mcp_server.rs`](crates/gateway/examples/fake_mcp_server.rs)) and cover the change-1 gates: a changed description is switched off, a poisoned one is flagged, governed data cannot reach a connected server without the person's approval or past a deny rule. The end-to-end test starts the real binary as an MCP client would, with a policy, a GeoPackage connection and the Python worker, and checks over the wire that row filters apply, hidden fields never leave, denied tables and writes are refused, truncation is reported and the audit chain verifies. The GIS test ([`tests/gis.rs`](crates/gateway/tests/gis.rs)) does a full session on a GeoPackage of Austin roads: describe, sample, structured queries, a bbox in lon/lat, buffering refused in degrees and done in feet, a clip, a join whose keys lost their zero padding (flagged with the fix), and verification; and the same queries on PostGIS.
+The broker tests run the gateway against a scriptable MCP server ([`examples/fake_mcp_server.rs`](crates/gateway/examples/fake_mcp_server.rs)) and cover the change-1 gates: a changed description is switched off, a poisoned one is flagged, governed data cannot reach a connected server without the person's approval or past a deny rule. The end-to-end test starts the real binary as an MCP client would, with a policy, a GeoPackage connection and the Python worker, and checks over the wire that row filters apply, hidden fields never leave, denied tables and writes are refused, truncation is reported and the audit chain verifies. The GIS test ([`tests/gis.rs`](crates/gateway/tests/gis.rs)) does a full session on a GeoPackage of Austin roads: describe, sample, structured queries, a bbox in lon/lat, buffering refused in degrees and done in feet, a clip, a join whose keys lost their zero padding (flagged with the fix), and verification; and the same queries on PostGIS. The raster test ([`tests/raster.rs`](crates/gateway/tests/raster.rs)) runs on a folder of GeoTIFFs: listing and describing, names that leave the folder, links and a ".tif" holding VRT XML refused, a clip by a GeoPackage layer, slope, zonal statistics and the size limit.
 
 The confinement tests ([`tests/confine.rs`](crates/gateway/tests/confine.rs)) run the launcher at each level on the machine's own mechanism and check what a confined program can read, write and reach; the plugin test includes the change-1 milestone gate (a level A plugin cannot read outside the workspace). The OAuth tests run `servers signin` against a fake authorization server with an MCP endpoint ([`examples/fake_oauth_server.rs`](crates/gateway/examples/fake_oauth_server.rs)): sign-in, connecting with the stored token, refresh of an expired one, and a grant wider than the manifest refused.
 
@@ -247,7 +255,8 @@ Phase 1 (this repository, in progress):
 - [x] Confinement levels A–C (Windows AppContainer, restricted token and job objects; Landlock and seccomp on Linux)
 - [x] OAuth sign-in for remote servers (PKCE, dynamic registration, tokens in Credential Manager)
 - [x] `vector_op` and `verify` through GDAL (geopandas, pyogrio, shapely, pyproj)
-- [ ] `raster_op`, `pointcloud_pipeline` through GDAL/PDAL; a pinned environment (pixi) for the engine
+- [x] `raster_op` through GDAL (rasterio) on `rasters` connections: clip, reproject, slope, aspect, hillshade, zonal statistics, band statistics; COG outputs
+- [ ] `pointcloud_pipeline` through PDAL; raster export, mosaicking; a pinned environment (pixi) for the engine
 - [x] Verification checks (design section 4) attached to every result: CRS, units, geometry, joins, filters, limits
 - [ ] Remaining checks: topology, linear referencing, tolerance and accuracy, field-level data dictionary rules
 - [x] Open geospatial registry (`registry_search`, `registry_get`, `registry update`)

@@ -358,6 +358,8 @@ def read_layer(path: str):
         if not _is_geopackage(path):
             raise GISError("input.format", f"{os.path.basename(path)} is not a GeoPackage")
         return gpd.read_file(path, engine="pyogrio")
+    if path.lower().endswith((".tif", ".tiff")):
+        raise GISError("input.format", f"{os.path.basename(path)} is a raster; vector tools take GeoPackage or CSV layers (use raster_op for rasters)")
     if not path.lower().endswith(".csv"):
         raise GISError("input.format", "inputs must be GeoPackage (.gpkg) or CSV layers")
     if path.lower().endswith(".csv"):

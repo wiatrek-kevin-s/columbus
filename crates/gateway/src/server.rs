@@ -51,6 +51,7 @@ const ENGINE_READY: &[&str] = &[
     "postgis",
     "postgres",
     "postgresql",
+    "rasters",
 ];
 
 // ---------- standard output envelope ----------
@@ -598,7 +599,8 @@ impl Gateway {
                 + Self::gis_router()
                 + Self::registry_router()
                 + Self::context_router()
-                + Self::export_router(),
+                + Self::export_router()
+                + Self::raster_router(),
         }
     }
 
@@ -701,6 +703,9 @@ impl Gateway {
         conn: &Connection,
     ) -> Result<columbus_shared::sqlcheck::Catalog, String> {
         use columbus_shared::sqlcheck::{Catalog, Relation};
+        if crate::raster_tools::is_rasters(&conn.kind) {
+            return Err(crate::raster_tools::not_tabular(conn));
+        }
         if !Self::engine_ready(&conn.kind) {
             return Ok(Catalog::default());
         }
@@ -1380,6 +1385,20 @@ impl Gateway {
                 rec,
                 format!("listing {} connections is not supported yet", conn.kind),
             ));
+        }
+        if crate::raster_tools::is_rasters(&conn.kind) {
+            let (datasets, total) = match crate::raster_tools::list_rasters(conn, &access) {
+                Ok(v) => v,
+                Err(e) => return Err(self.deny(&ctx, rec, e)),
+            };
+            self.note_read(&conn.id, None, None, None, "list_datasets");
+            let result = DatasetList {
+                connection: conn.id.clone(),
+                not_allowed: total - datasets.len(),
+                datasets,
+            };
+            self.audit(&ctx, rec)?;
+            return Ok(out(result));
         }
         let timeout = access.limits.seconds.unwrap_or(120);
         let handle = match self.handle(conn) {
@@ -2129,7 +2148,7 @@ impl ServerHandler for Gateway {
                  what it refuses and why. Before querying a dataset, call describe_dataset \
                  (and sample_rows to see real values); prefer query_features to raw SQL. \
                  Results are layers in the workspace, passed on as ws:// handles to \
-                 vector_op, verify or other tools. Read the `checks` on every result and never \
+                 vector_op, raster_op, verify or other tools. Read the `checks` on every result and never \
                  report success over a warn or fail without saying so.",
             )
     }

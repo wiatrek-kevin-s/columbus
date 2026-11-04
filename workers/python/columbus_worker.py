@@ -83,6 +83,7 @@ def ping(_params: dict[str, Any]) -> dict[str, Any]:
             "shapely": _optional_version("shapely"),
             "duckdb": _optional_version("duckdb"),
             "pdal": _optional_version("pdal"),
+            "rasterio": _optional_version("rasterio"),
             "psycopg": _optional_version("psycopg"),
             "gis": _gis_versions(),
         },
@@ -873,6 +874,52 @@ def export_layer(params: dict[str, Any]) -> dict[str, Any]:
         raise _refused(e) from None
 
 
+# ---------- Rasters (columbus_raster: rasterio and GDAL) ----------
+
+RASTER_MISSING = "needs the raster engine (rasterio, with the GIS engine) in the engine environment"
+
+
+def _raster():
+    try:
+        import columbus_raster
+
+        return columbus_raster
+    except ImportError as e:
+        raise WorkerError(UNSUPPORTED, f"{RASTER_MISSING} ({e})") from None
+
+
+def describe_raster(params: dict[str, Any]) -> dict[str, Any]:
+    """A raster file a rasters connection allows, resolved and checked by
+    the gateway (inside the connection's folder, TIFF by content); checked
+    again here before rasterio opens it."""
+    r = _raster()
+    path = params.get("path")
+    if not isinstance(path, str):
+        raise WorkerError(INVALID_PARAMS, "path is required")
+    try:
+        return r.describe_raster(path)
+    except r.GISError as e:
+        raise _refused(e) from None
+
+
+def raster_op(params: dict[str, Any]) -> dict[str, Any]:
+    r = _raster()
+    inputs = params.get("inputs")
+    stem = params.get("output_stem")
+    if not isinstance(inputs, dict) or not all(isinstance(v, str) for v in inputs.values()) or not isinstance(stem, str):
+        raise WorkerError(INVALID_PARAMS, "inputs and output_stem are required")
+    op_params = params.get("params") or {}
+    if not isinstance(op_params, dict):
+        raise WorkerError(INVALID_PARAMS, "params must be an object")
+    # Names starting with "_" are set by the server, never by the caller.
+    op_params = {k: v for k, v in op_params.items() if not str(k).startswith("_")}
+    max_pixels = params.get("max_pixels")
+    try:
+        return r.raster_op(str(params.get("op")), inputs, op_params, stem, max_pixels if isinstance(max_pixels, int) else None)
+    except r.GISError as e:
+        raise _refused(e) from None
+
+
 # ---------- Registry (design section 6) ----------
 
 REGISTRY_LIMIT = 50
@@ -990,6 +1037,8 @@ for _name, _fn in (
     ("verify_layer", verify_layer),
     ("read_rows", read_rows),
     ("export_layer", export_layer),
+    ("describe_raster", describe_raster),
+    ("raster_op", raster_op),
     ("registry_search", registry_search),
     ("registry_get", registry_get),
 ):

@@ -188,25 +188,25 @@ struct Plan {
 }
 
 /// A provenance record for one tool call (design section 4).
-struct Prov<'a> {
-    id: &'a str,
-    started: chrono::DateTime<Local>,
-    inputs: Value,
-    steps: Value,
-    labels: Vec<String>,
-    checks: &'a [Check],
-    outputs: Vec<String>,
+pub(crate) struct Prov<'a> {
+    pub(crate) id: &'a str,
+    pub(crate) started: chrono::DateTime<Local>,
+    pub(crate) inputs: Value,
+    pub(crate) steps: Value,
+    pub(crate) labels: Vec<String>,
+    pub(crate) checks: &'a [Check],
+    pub(crate) outputs: Vec<String>,
 }
 
 /// One input to vector_op or verify, ready for the worker.
-struct Input {
-    path: PathBuf,
+pub(crate) struct Input {
+    pub(crate) path: PathBuf,
     /// For the provenance record.
-    record: Value,
+    pub(crate) record: Value,
     /// A check to pass on (an input that was cut off at a limit).
-    warning: Option<Check>,
+    pub(crate) warning: Option<Check>,
     /// (connection, dataset, rows) when the input was read from a dataset.
-    read: Option<(String, String, u64)>,
+    pub(crate) read: Option<(String, String, u64)>,
 }
 
 /// What one governed read produced.
@@ -416,6 +416,9 @@ impl Gateway {
         limit: Option<u64>,
     ) -> Result<Read, String> {
         let (access, conn) = self.access(conn_id).map_err(|e| e.to_string())?;
+        if crate::raster_tools::is_rasters(&conn.kind) {
+            return Err(crate::raster_tools::not_tabular(conn));
+        }
         if !Self::engine_ready(&conn.kind) {
             return Err(format!(
                 "reading {} connections is not supported yet",
@@ -625,7 +628,12 @@ impl Gateway {
 
     /// A workspace file for an input: a handle as is, or a dataset read
     /// through its connection's permissions into the workspace.
-    async fn input_file(&self, name: &str, v: &Value, prov: &str) -> Result<Input, String> {
+    pub(crate) async fn input_file(
+        &self,
+        name: &str,
+        v: &Value,
+        prov: &str,
+    ) -> Result<Input, String> {
         if let Some(h) = v
             .as_str()
             .filter(|s| s.starts_with(crate::providers::HANDLE_SCHEME))
@@ -707,7 +715,7 @@ impl Gateway {
         })
     }
 
-    fn provenance(&self, ctx: &RequestContext<RoleServer>, p: Prov<'_>) {
+    pub(crate) fn provenance(&self, ctx: &RequestContext<RoleServer>, p: Prov<'_>) {
         let record = json!({
             "id": p.id,
             "created": p.started.to_rfc3339(),
@@ -728,7 +736,7 @@ impl Gateway {
 #[tool_router(router = gis_router, vis = "pub(crate)")]
 impl Gateway {
     #[tool(
-        description = "Everything needed before querying a dataset: its fields and types, geometry column and type, coordinate reference system (code, units, whether it is projected, the area it is meant for), extent, and the number of rows this connection's row filter allows. Includes checks such as a missing or misused CRS.",
+        description = "Everything needed before querying a dataset: its fields and types, geometry column and type, coordinate reference system (code, units, whether it is projected, the area it is meant for), extent, and the number of rows this connection's row filter allows. For a raster (a rasters connection): bands with data type and nodata, CRS, cell size, size in cells, extent, tiling and overviews. Includes checks such as a missing or misused CRS or no nodata value.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn describe_dataset(
@@ -764,7 +772,12 @@ impl Gateway {
                 format!("reading {} connections is not supported yet", conn.kind),
             ));
         }
-        let mut info = match self.dataset_info(&access, conn, &args.dataset, true).await {
+        let described = if crate::raster_tools::is_rasters(&conn.kind) {
+            self.raster_describe(conn, &args.dataset).await
+        } else {
+            self.dataset_info(&access, conn, &args.dataset, true).await
+        };
+        let mut info = match described {
             Ok(i) => i,
             Err(e) => {
                 self.audit(
@@ -1200,7 +1213,7 @@ impl Gateway {
 }
 
 /// Record in the audit line which datasets a call read.
-fn note_reads(rec: &mut AuditRecord, reads: &[(String, String, u64)]) {
+pub(crate) fn note_reads(rec: &mut AuditRecord, reads: &[(String, String, u64)]) {
     if reads.is_empty() {
         return;
     }

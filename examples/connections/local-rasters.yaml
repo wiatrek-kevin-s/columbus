@@ -1,0 +1,13 @@
+# A folder of GeoTIFF files (rasters connection). Read-only. A dataset is a
+# file's path inside the folder with forward slashes, e.g. dem/travis_1m.tif.
+# Only .tif and .tiff files whose content is TIFF are served; links that
+# leave the folder are refused. Organization policy must list "rasters" in
+# connection_types. The size limit for raster_op outputs is 400 million
+# pixels, or limits.rows x 1,000 if that is smaller.
+id: dem
+type: rasters
+path: C:\GIS\rasters
+description: Elevation and terrain rasters
+datasets:
+  allow: ["dem/*", "landcover/*.tif"]
+  deny: ["*/restricted/*"]
