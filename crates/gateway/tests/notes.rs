@@ -687,6 +687,32 @@ async fn allowing_note_changes_covers_only_the_data_shown() {
     assert!(!shown.contains("\\nparcels--roadway:"), "{shown}");
     assert!(shown.contains("| parcels--roadway:"), "{shown}");
 
+    // Other line breaks, invisible or reordering characters are refused.
+    for odd in [
+        "\u{2028}",
+        "\u{2029}",
+        "\u{85}",
+        "\u{1b}[2K",
+        "\u{202E}",
+        "\u{200B}",
+    ] {
+        let e = err(&call(&c, "update_notes", json!({"changes": [{"id": "roads--segments", "title": format!("Segments{odd}parcels--roadway:")}]})).await);
+        assert!(e.contains("does not show"), "{odd:?}: {e}");
+    }
+    // More text than one card can show is refused, to be sent in parts.
+    let long = "x".repeat(7000);
+    let e = err(&call(
+        &c,
+        "update_notes",
+        json!({"changes": [
+            {"id": "roads--segments", "add_to_body": long},
+            {"id": "roads--roadway", "add_to_body": long},
+            {"id": "parcels--segments", "add_to_body": long},
+        ]}),
+    )
+    .await);
+    assert!(e.contains("smaller batches"), "{e}");
+
     // Loose fields with no id are refused, not ignored.
     let e = err(&call(&c, "update_notes", json!({"title": "No id"})).await);
     assert!(e.contains("belong in an entry"), "{e}");

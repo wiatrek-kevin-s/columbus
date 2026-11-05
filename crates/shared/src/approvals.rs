@@ -164,6 +164,7 @@ impl ApprovalStore {
         now: DateTime<Utc>,
     ) -> Result<Approval, Denied> {
         let hash = request_hash(tool, args);
+        let scopes: Vec<String> = offer.scopes.iter().map(|v| request_hash(tool, v)).collect();
         {
             let mut inner = self.inner.lock().expect("approval store poisoned");
             inner.approvals.retain(|_, a| {
@@ -174,11 +175,13 @@ impl ApprovalStore {
                     a.state = State::Expired;
                 }
             }
-            if let Some(same) = inner
-                .approvals
-                .values()
-                .find(|a| a.state == State::Pending && a.hash == hash && a.tool == tool)
-            {
+            if let Some(same) = inner.approvals.values().find(|a| {
+                a.state == State::Pending
+                    && a.hash == hash
+                    && a.tool == tool
+                    && a.scopes == scopes
+                    && a.offer_always == offer.always
+            }) {
                 return Ok(same.clone());
             }
             let waiting = inner
@@ -207,7 +210,7 @@ impl ApprovalStore {
             decided_via: None,
             offer_always: offer.always,
             always_covers: offer.covers.filter(|_| offer.always),
-            scopes: offer.scopes.iter().map(|v| request_hash(tool, v)).collect(),
+            scopes,
         };
         let mut inner = self.inner.lock().expect("approval store poisoned");
         inner
@@ -621,5 +624,52 @@ mod tests {
         s.decide(&a.id, Decision::AlwaysThisSession, now).unwrap();
         assert!(!s.standing_covers("n", &[json!({"scope": "notes"})]));
         assert!(!s.standing_allows("n", &json!({"x": 1})));
+    }
+
+    #[test]
+    fn a_waiting_request_is_reused_only_with_the_same_offer() {
+        let s = ApprovalStore::new();
+        let now = Utc::now();
+        let args = json!({"x": 1});
+        let offer = |scopes: Vec<Value>| Offer {
+            always: true,
+            covers: None,
+            scopes,
+        };
+        let a = s
+            .request_offering(
+                "n",
+                &args,
+                Risk::Notes,
+                "s".into(),
+                None,
+                offer(vec![json!({"a": 1})]),
+                now,
+            )
+            .unwrap();
+        let same = s
+            .request_offering(
+                "n",
+                &args,
+                Risk::Notes,
+                "s".into(),
+                None,
+                offer(vec![json!({"a": 1})]),
+                now,
+            )
+            .unwrap();
+        assert_eq!(a.id, same.id);
+        let other = s
+            .request_offering(
+                "n",
+                &args,
+                Risk::Notes,
+                "s".into(),
+                None,
+                offer(vec![json!({"a": 2})]),
+                now,
+            )
+            .unwrap();
+        assert_ne!(a.id, other.id);
     }
 }

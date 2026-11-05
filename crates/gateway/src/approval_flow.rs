@@ -102,7 +102,7 @@ impl Gateway {
                 .consume(id, ask.tool, ask.request, self.now())?;
             return Ok(Sought::Granted(id.to_string()));
         }
-        if !ask.every_time {
+        if !ask.every_time && !matches!(ask.risk, Risk::Script | Risk::Edit) {
             let stands = match ask.standing {
                 Some(scopes) => st.approvals.standing_covers(ask.tool, scopes),
                 None => st.approvals.standing_allows(ask.tool, ask.request),
@@ -111,7 +111,9 @@ impl Gateway {
                 return Ok(Sought::Granted("standing".into()));
             }
         }
-        let offer_always = !ask.every_time;
+        // Scripts are approved one run at a time and edits one change set
+        // at a time, wherever the person is asked.
+        let offer_always = !ask.every_time && !matches!(ask.risk, Risk::Script | Risk::Edit);
         let covers = ask.always_covers.clone().filter(|_| offer_always);
         // The prompt in the person's client says what it covers too.
         let prompt = match &covers {

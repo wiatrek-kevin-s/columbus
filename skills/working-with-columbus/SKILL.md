@@ -114,7 +114,11 @@ person's own notes (cards say `"pack": "the person's own notes"`, with the
   approves the batch once and may allow note changes for the rest of the session. Never
   send one call per note or per field: each call can be an approval for them to click.
   One bad entry refuses the whole batch, so check ids and field names against
-  `context_get` first.
+  `context_get` first. Notes in one batch are treated as read together, so data from
+  one connection's notes counts as going into another's: when you can, send notes
+  about one connection per batch. Use plain text (no invisible or direction
+  characters, which are refused), and keep a batch short enough to read (very long
+  text is refused; send it in parts).
 - Only drafts change; a note the person marked `reviewed` is theirs. Notes about a
   connection, dataset or field the rules no longer allow are not shown.
 

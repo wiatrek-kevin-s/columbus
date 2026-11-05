@@ -1721,7 +1721,19 @@ fn apply_changes(
         if s.chars().count() > max {
             return Err(format!("at most {max} characters"));
         }
-        Ok(s.replace('\r', ""))
+        let s = s.replace('\r', "");
+        // Nothing that would show differently to the person than it reads:
+        // no other line breaks, controls, invisible or reordering characters.
+        if let Some(c) = s
+            .chars()
+            .find(|&c| c != '\n' && c != '\t' && crate::edit_tools::hidden_char(c))
+        {
+            return Err(format!(
+                "contains a character that does not show or that reorders text (U+{:04X}); use plain text",
+                c as u32
+            ));
+        }
+        Ok(s)
     };
     let k = |s: &str| serde_yaml::Value::from(s);
     let mut lines: Vec<String> = Vec::new();
