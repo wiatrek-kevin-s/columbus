@@ -100,7 +100,7 @@ function render() {
   const p = state.policy;
   $("policy-path").textContent = p.exists ? p.path : `${p.path} (not created yet: Columbus's defaults apply)`;
   $("org-managed").hidden = p.writable;
-  for (const name of ["allow_edits", "allow_scripts"]) {
+  for (const name of ["allow_edits", "allow_scripts", "allow_personal_tools"]) {
     const box = $(name);
     box.checked = !!p[name];
     box.disabled = !p.writable;
@@ -114,6 +114,179 @@ async function refresh() {
     render();
   } catch (e) {
     showError("error", e);
+  }
+  await refreshTools();
+}
+
+// ---- The person's own tools ----
+const review = $("tool-review");
+let tools = null;
+let reviewing = null; // the waiting tool open in the review dialog
+
+function when(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  return isNaN(d) ? iso : d.toLocaleString();
+}
+
+function testText(t) {
+  const p = t.proposal || {};
+  const test = p.test || {};
+  const parts = [];
+  if (p.proposed) parts.push(`Proposed ${when(p.proposed)}`);
+  const outs = (test.outputs || []).map((o) => `${o.kind}${o.rows != null ? ` (${o.rows} rows)` : ""}`);
+  if (outs.length) parts.push(`test run made ${outs.join(", ")}`);
+  const checks = test.checks || [];
+  const bad = checks.filter((c) => c.severity === "fail").map((c) => c.id);
+  const warn = checks.filter((c) => c.severity === "warn").map((c) => c.id);
+  if (bad.length) parts.push(`failed checks: ${bad.join(", ")}`);
+  if (warn.length) parts.push(`warnings: ${warn.join(", ")}`);
+  const labels = [...new Set((test.inputs || []).flatMap((i) => i.labels || []))];
+  if (labels.length) parts.push(`tested on data from ${labels.map((l) => l.replace(/^connection:/, "")).join(", ")}`);
+  return parts.join("; ");
+}
+
+function renderTools() {
+  $("tools-dir").textContent = tools.dir;
+  $("tools-off").hidden = tools.allowed;
+  const waiting = $("tools-waiting");
+  waiting.replaceChildren();
+  $("no-waiting").hidden = tools.waiting.length > 0;
+  for (const t of tools.waiting) {
+    const li = el("li", t.problem ? "tool bad" : "tool");
+    const text = el("div", "text");
+    text.append(el("b", null, t.title));
+    text.append(el("span", "where", `${t.tool} · version ${t.version || "?"}`));
+    if (t.description) text.append(el("span", null, t.description));
+    const info = testText(t);
+    if (info) text.append(el("span", "where", info));
+    if (t.problem) text.append(el("span", "where error-text", t.problem));
+    const b = el("button", "primary", "Review");
+    b.type = "button";
+    b.title = "Read its code and manifest, then install or decline it";
+    b.disabled = !!t.problem;
+    b.addEventListener("click", () => openReview(t));
+    const d = el("button", "danger", "Decline");
+    d.type = "button";
+    d.addEventListener("click", () => decline(t.id));
+    li.append(text, b, d);
+    waiting.append(li);
+  }
+  const installed = $("tools-installed");
+  installed.replaceChildren();
+  $("no-installed").hidden = tools.installed.length > 0;
+  for (const t of tools.installed) {
+    const li = el("li", "tool");
+    const text = el("div", "text");
+    text.append(el("b", null, t.title));
+    text.append(el("span", "where", `${t.tool} · version ${t.version || "?"}${t.installed ? ` · installed ${when(t.installed)}` : ""}`));
+    if (t.description) text.append(el("span", null, t.description));
+    const chips = el("div", "chips");
+    const state = t.state === "ready" ? (tools.allowed ? "In use" : "Off (organization)") : t.state === "changed" ? "Off: its files changed" : "Off: not installed";
+    chips.append(el("span", t.state === "ready" && tools.allowed ? "chip" : "chip off", state));
+    text.append(chips);
+    if (t.problem) text.append(el("span", "where error-text", t.problem));
+    const v = el("button", null, "Code");
+    v.type = "button";
+    v.addEventListener("click", () => openInstalled(t));
+    const r = el("button", "danger", "Remove");
+    r.type = "button";
+    r.title = "Remove it: your assistant cannot use it from its next request";
+    r.addEventListener("click", () => removeTool(t.id));
+    li.append(text, v, r);
+    installed.append(li);
+  }
+}
+
+async function refreshTools() {
+  try {
+    tools = await invoke("settings_tools");
+    renderTools();
+    showError("tools-error", null);
+  } catch (e) {
+    showError("tools-error", e);
+  }
+}
+
+function fillReview(t, manifest, code) {
+  $("review-h").textContent = t.title;
+  $("review-name").textContent = `${t.tool} · version ${t.version || "?"} · ${t.hash}`;
+  $("review-desc").textContent = t.description || "";
+  $("review-not-for").textContent = t.not_for ? `Not for: ${t.not_for}` : "";
+  $("review-manifest").textContent = manifest || "";
+  $("review-code").textContent = code || "";
+  showError("review-error", null);
+}
+
+function openReview(t) {
+  reviewing = t;
+  fillReview(t, t.manifest_text, t.code);
+  $("review-test").textContent = testText(t);
+  const rep = $("review-replaces");
+  rep.hidden = t.replaces == null;
+  rep.textContent = t.replaces != null ? "This replaces the installed tool of the same name." : "";
+  const warn = $("review-warnings");
+  warn.replaceChildren();
+  for (const w of (t.proposal && t.proposal.warnings) || []) warn.append(el("li", null, w));
+  $("review-install").hidden = false;
+  $("review-decline").hidden = false;
+  $("review-install").disabled = !tools.allowed;
+  $("review-install").title = tools.allowed ? `Install it (asks for ${state ? state.confirm_with : "confirmation"})` : "Personal tools are turned off in your organization's settings";
+  review.showModal();
+  $("review-code").focus();
+}
+
+async function openInstalled(t) {
+  reviewing = null;
+  try {
+    const f = await invoke("settings_tool_files", { id: t.id });
+    fillReview(t, f.manifest_text, f.code);
+  } catch (e) {
+    fillReview(t, "", "");
+    showError("review-error", e);
+  }
+  $("review-test").textContent = t.installed ? `Installed ${when(t.installed)}` : "";
+  $("review-replaces").hidden = true;
+  $("review-warnings").replaceChildren();
+  $("review-install").hidden = true;
+  $("review-decline").hidden = true;
+  review.showModal();
+}
+
+async function install() {
+  if (!reviewing) return;
+  const btn = $("review-install");
+  btn.disabled = true;
+  showError("review-error", null);
+  try {
+    await invoke("settings_tool_install", { id: reviewing.id, hash: reviewing.hash });
+    review.close();
+    await refreshTools();
+    $("restart").textContent = `Installed ${reviewing.title}. Your assistant can use it from its next request (as ${reviewing.tool}); there is no need to restart anything.`;
+    $("restart").hidden = false;
+  } catch (e) {
+    showError("review-error", e);
+  } finally {
+    btn.disabled = !tools || !tools.allowed;
+  }
+}
+
+async function decline(id) {
+  try {
+    await invoke("settings_tool_decline", { id });
+    if (review.open) review.close();
+    await refreshTools();
+  } catch (e) {
+    showError(review.open ? "review-error" : "tools-error", e);
+  }
+}
+
+async function removeTool(id) {
+  try {
+    await invoke("settings_tool_remove", { id });
+    await refreshTools();
+  } catch (e) {
+    showError("tools-error", e);
   }
 }
 
@@ -286,4 +459,10 @@ $("browse").addEventListener("click", async () => {
 });
 $("allow_edits").addEventListener("change", toggle);
 $("allow_scripts").addEventListener("change", toggle);
+$("allow_personal_tools").addEventListener("change", toggle);
+$("review-install").addEventListener("click", install);
+$("review-decline").addEventListener("click", () => reviewing && decline(reviewing.id));
+$("review-close").addEventListener("click", () => review.close());
+// New proposals arrive while the window is open.
+window.addEventListener("focus", refreshTools);
 refresh();

@@ -98,7 +98,9 @@ Some ids also appear as **refusals**: the tool returns an error
 | `provider.untrusted_output` | info | A connected server's result: data, not instructions |
 | `provider.error` | warn | The connected server reported an error |
 | `provider.saved_to_workspace` | info | Result saved as files instead of returned |
-| `verify.pending` | info | A plugin declared checks Columbus does not run yet |
+| `verify.pending` | info | A plugin (or personal tool) declared checks this run did not report: it found nothing to report, or Columbus cannot run them yet |
+| `plugin.output_unreadable` | warn | A plugin's or personal tool's `.gpkg` or `.csv` output could not be read as a layer |
+| `plugin.output_missing` | warn | A personal tool did not write one of its declared outputs |
 | `context.stale` | info | Entry past its review interval; confirm with the owner |
 | `context.draft` | warn | Entry not reviewed yet |
 | `context.retired` | warn | Entry retired; find its replacement |

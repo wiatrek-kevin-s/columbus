@@ -1379,6 +1379,24 @@ mod tests {
     }
 
     #[test]
+    fn the_lrs_example_builds() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../examples/tools/locate-measures");
+        let mut a: Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("propose.json")).unwrap())
+                .unwrap();
+        a["code"] = json!(std::fs::read_to_string(dir.join("code.py")).unwrap());
+        a["test"] = json!({"inputs": {"routes": "ws://s/r.gpkg", "points": "ws://s/p.gpkg"}});
+        let a: ProposeToolArgs = serde_json::from_value(a).unwrap();
+        let b = build(&a).unwrap();
+        assert_eq!(b.id, "personal.locate-measures");
+        assert!(b.manifest_text.starts_with("# A personal tool"));
+        assert!(b.manifest_text.contains(
+            "\nid: personal.locate-measures\nname: Locate points along routes\nversion: 1.0.0\n"
+        ));
+    }
+
+    #[test]
     fn bad_proposals_say_everything_that_is_wrong() {
         let mut a = good();
         a.name = "Locate-Measures".into();

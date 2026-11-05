@@ -306,6 +306,100 @@ pub async fn plugins_approve(id: &str) -> Result<()> {
     Ok(())
 }
 
+/// `columbus-mcp tools list`: the person's own tools, installed and waiting.
+pub fn tools_list() -> Result<()> {
+    use columbus_shared::tools;
+    let paths = Paths::from_env();
+    let (policy, _) = config::load_policy(&paths)?;
+    println!("Personal tools in {}", paths.tools.display());
+    if !policy.allow_personal_tools {
+        println!("note: organization policy turns personal tools off (allow_personal_tools); none of these are used.");
+    }
+    for t in tools::list_installed(&paths.tools) {
+        println!(
+            "installed  {:<32} {:<8} {}  {}",
+            t.tool,
+            t.version,
+            t.state.as_deref().unwrap_or(""),
+            t.problem.as_deref().unwrap_or(&t.title)
+        );
+    }
+    for t in tools::list_proposals(&paths.tools) {
+        println!(
+            "waiting    {:<32} {:<8} {}  {}",
+            t.tool,
+            t.version,
+            t.hash,
+            t.problem.as_deref().unwrap_or(&t.title)
+        );
+    }
+    Ok(())
+}
+
+/// `columbus-mcp tools show ID`: a waiting tool's manifest and code in full.
+pub fn tools_show(id: &str) -> Result<()> {
+    let paths = Paths::from_env();
+    let t = columbus_shared::tools::read_proposal(&paths.tools, id).map_err(|e| anyhow!(e))?;
+    println!(
+        "{} ({}) version {}, contents {}",
+        t.title, t.tool, t.version, t.hash
+    );
+    if t.replaces.is_some() {
+        println!("It replaces the installed tool of the same id.");
+    }
+    println!(
+        "\n----- plugin.yaml -----\n{}",
+        t.manifest_text.unwrap_or_default()
+    );
+    println!("----- tool.py -----\n{}", t.code.unwrap_or_default());
+    Ok(())
+}
+
+/// `columbus-mcp tools install ID`: install a waiting tool, confirmed on the
+/// terminal itself (not stdin), as plugins are approved, so an agent that
+/// can run commands cannot install one for the person.
+pub fn tools_install(id: &str) -> Result<()> {
+    use columbus_shared::tools;
+    let paths = Paths::from_env();
+    let (policy, _) = config::load_policy(&paths)?;
+    if !policy.allow_personal_tools {
+        bail!("organization policy turns personal tools off (allow_personal_tools)");
+    }
+    let t = tools::read_proposal(&paths.tools, id).map_err(|e| anyhow!(e))?;
+    println!(
+        "{} ({}) version {}, contents {}\n{}\nRead it in full with `columbus-mcp tools show {id}`.",
+        t.title, t.tool, t.version, t.hash, t.description
+    );
+    let confirm = rpassword::prompt_password(format!(
+        "\nInstall {id} at {}? Your assistant may then run it on your data without asking. Type the tool id to confirm: ",
+        t.hash
+    ))
+    .context("installing needs an interactive terminal")?;
+    if confirm.trim() != id {
+        bail!("not confirmed; nothing changed");
+    }
+    tools::install(&paths.tools, id, &t.hash, &tools::now()).map_err(|e| anyhow!(e))?;
+    println!(
+        "Installed {}. Running sessions can use it from their next call.",
+        t.tool
+    );
+    Ok(())
+}
+
+pub fn tools_decline(id: &str) -> Result<()> {
+    let paths = Paths::from_env();
+    columbus_shared::tools::decline(&paths.tools, id).map_err(|e| anyhow!(e))?;
+    println!("Declined {id}.");
+    Ok(())
+}
+
+pub fn tools_remove(id: &str) -> Result<()> {
+    let paths = Paths::from_env();
+    columbus_shared::tools::remove(&paths.tools, id).map_err(|e| anyhow!(e))?;
+    println!("Removed {id}. Running sessions stop using it from their next call.");
+    Ok(())
+}
+
 /// `columbus-mcp servers signin ID`: sign in to a remote server in the
 /// browser (design change 1, section 8). Tokens go to the credential store;
 /// nothing is printed but the outcome.

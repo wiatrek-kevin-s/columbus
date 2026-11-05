@@ -123,6 +123,12 @@ tools:
     checks: [geometry.valid, lrs.measures]
 ```
 
-Parameter types: `dataset` (`access: read`), `number` and `integer` (`unit`, `default`, `min`, `max`), `string` (`enum`, `default`), `boolean` (`default`), `file` (a workspace handle). Output types: `layer` (GeoJSON), `table` (CSV), `file` (`format`).
+Parameter types: `dataset` (`access: read`), `number` and `integer` (`unit`, `default`, `min`, `max`), `string` (`enum`, `default`), `boolean` (`default`), `file` (a workspace handle; `kind` layer or table, `geometry`, `crs`, `fields` [{`name`, `type`, `description`}] say what it must be). Every parameter may have a `description`, and scalars may be `optional` (no default, may be left out). Output types: `layer` (GeoJSON, or GeoPackage with `format: gpkg`; `geometry`, `crs`, `fields`), `table` (CSV; `fields`), `file` (`format`); each may have a `description`. Outputs Columbus can read as layers (GeoPackage, CSV) are checked as layers after the run, and their fails go with them.
+
+A tool may also carry, for the assistants that call it: `title`, `description` (what it does and when to use it; `summary` stays its one-line card), `not_for` (when not to), `check_notes` (what each id in `checks` means) and `examples` ([{`description`, `arguments`}]). `describe_tool` shows them all.
+
+### Personal tools
+
+A person's own tools (`propose_tool`, installed from the Columbus app) are engine plugins too, with stricter rules: the id is `personal.<name>`, the runtime Python, the entry `tool.py`, confinement level A (never unconfined), one tool named `run` with `risk: read`, inputs that are workspace files (`type: file`, never `dataset`) and scalars, and at least one output. `tool.py` is the assistant's `run(ctx)` function followed by a few lines Columbus adds to serve it with the Python SDK. They live in the person's tools folder (`tools/` beside the workspaces, or `COLUMBUS_TOOLS`) and run only while its `approved.yaml` holds the hash of exactly their `plugin.yaml` and `tool.py`. See the [README](../README.md#personal-tools).
 
 The agent passes a dataset as `"<connection>:<dataset>"`, for example `"roads-prod:ROADS.ROADWAY_INVENTORY"`, or as an object `{"connection": …, "dataset": …, "where": …}`. The gateway checks it against that connection's permissions, applies the row filter and the optional `where` (checked like any where clause), extracts it, and adds the connection's data label to the session and to every output of the run.

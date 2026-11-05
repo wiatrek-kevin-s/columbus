@@ -1690,7 +1690,7 @@ impl Gateway {
                 if let Some(why) = self.state.problem() {
                     notes.insert(0, why);
                 }
-                notes.push("Changes the person makes in the Columbus app's Settings (connections, edits, scripts) apply to this session within a second, from the next call: no restart is needed. Call whoami again to see them. When a change narrows what a connection allows, workspace files made from its data are removed, and every approval not yet used is withdrawn.".into());
+                notes.push("Changes the person makes in the Columbus app's Settings (connections, edits, scripts, personal tools, tools they install or remove) apply to this session within a second, from the next call: no restart is needed. Call whoami again to see them. When a change narrows what a connection allows, workspace files made from its data are removed, and every approval not yet used is withdrawn.".into());
                 notes
             },
         };

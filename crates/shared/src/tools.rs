@@ -68,6 +68,11 @@ pub fn tools_dir() -> PathBuf {
     crate::paths::platform_dirs().2.join("tools")
 }
 
+/// Now, as the install record writes it.
+pub fn now() -> String {
+    chrono::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, false)
+}
+
 /// `personal.<name>`: a personal tool's id.
 pub fn id_ok(id: &str) -> bool {
     id.strip_prefix(ID_PREFIX).is_some_and(|n| {
