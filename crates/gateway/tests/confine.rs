@@ -766,7 +766,9 @@ fn on_macos_a_fork_bomb_leaves_nothing_behind() {
     let d = dirs();
     let marker = format!("columbus-fork-bomb-{}", std::process::id());
     let s = format!(
-        "# {marker}\nimport os\nfor _ in range(400):\n    try:\n        os.fork()\n    except OSError:\n        pass\nimport time\ntime.sleep(30)\n"
+        // Bounded (at most 64 processes), so a failure cannot take the
+        // machine down: six rounds in which every process forks.
+        "# {marker}\nimport os\nfor _ in range(6):\n    try:\n        os.fork()\n    except OSError:\n        pass\nimport time\ntime.sleep(30)\n"
     );
     let start = std::time::Instant::now();
     let out = run("A", &d.ws, &["--processes", "20"], &py, &s);
