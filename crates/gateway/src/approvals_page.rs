@@ -873,7 +873,7 @@ fn from_app(h: &HeaderMap, s: &Shared) -> Result<(), Box<Response<Body>>> {
 }
 
 /// `POST /api/test-hello`: the first half of a test. The app sends a fresh
-/// challenge (`X-Columbus-Test-Hello`, 64 hex digits) and gets back this
+/// challenge, signed (`X-Columbus-Test-Hello: <64 hex digits>.<proof>`), and gets back this
 /// server's proof that it holds the key in `live/<session>.key`, so the app
 /// knows it talks to its own Columbus before it sends a password; and a
 /// challenge of the server's own for the request that follows. The key
@@ -882,13 +882,24 @@ async fn test_hello(State(s): State<Arc<Shared>>, h: HeaderMap) -> Response<Body
     if let Err(r) = from_app(&h, &s) {
         return *r;
     }
-    let Some(theirs) = h
+    // `<challenge>.<proof>`: the app's fresh challenge, signed with the
+    // key, so no one else can take up (or push out) the server's challenges.
+    let Some((theirs, signed)) = h
         .get("x-columbus-test-hello")
         .and_then(|v| v.to_str().ok())
-        .filter(|c| c.len() == 64 && c.bytes().all(|b| b.is_ascii_hexdigit()))
+        .and_then(|v| v.split_once('.'))
+        .filter(|(c, _)| c.len() == 64 && c.bytes().all(|b| b.is_ascii_hexdigit()))
     else {
-        return status(StatusCode::BAD_REQUEST, "expected a challenge");
+        return status(StatusCode::FORBIDDEN, "refused");
     };
+    let want = columbus_shared::proof::prove(
+        &s.test_key,
+        columbus_shared::proof::HELLO,
+        &[theirs.as_bytes()],
+    );
+    if !columbus_shared::proof::same(signed, &want) {
+        return status(StatusCode::FORBIDDEN, "refused");
+    }
     let ours = token();
     {
         let mut c = s.challenges.lock().expect("challenges");

@@ -50,6 +50,9 @@ pub fn same(a: &str, b: &str) -> bool {
             == 0
 }
 
+/// The app's request for a challenge (over its own fresh challenge), so
+/// only a holder of the key can ask for one.
+pub const HELLO: &str = "columbus-test-hello";
 /// The server's answer to the app's challenge.
 pub const SERVER: &str = "columbus-test-server";
 /// The app's proof for one test request (over the server's challenge and

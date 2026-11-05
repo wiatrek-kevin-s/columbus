@@ -329,7 +329,13 @@ fn test_connection(form: ConnForm) -> Result<Value, String> {
         let (code, hello) = match post_local(
             s.port,
             "/api/test-hello",
-            &[("X-Columbus-Test-Hello", &mine)],
+            &[(
+                "X-Columbus-Test-Hello",
+                &format!(
+                    "{mine}.{}",
+                    proof::prove(key, proof::HELLO, &[mine.as_bytes()])
+                ),
+            )],
             b"",
         ) {
             Ok(v) => v,

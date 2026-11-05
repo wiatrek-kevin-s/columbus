@@ -491,9 +491,12 @@ async fn send(port: u16, body: &Value, key: Option<&str>, origin: Option<&str>) 
     let http = reqwest::Client::new();
     let base = format!("http://127.0.0.1:{port}");
     let mine = "ab".repeat(32);
+    // Only a key holder can ask; without one, sign with a wrong key.
+    let signer = key.unwrap_or("not-the-key");
+    let hello_sig = proof::prove(signer, proof::HELLO, &[mine.as_bytes()]);
     let mut hello = http
         .post(format!("{base}/api/test-hello"))
-        .header("X-Columbus-Test-Hello", &mine);
+        .header("X-Columbus-Test-Hello", format!("{mine}.{hello_sig}"));
     if let Some(o) = origin {
         hello = hello.header("Origin", o);
     }
@@ -602,6 +605,14 @@ async fn the_settings_window_can_test_a_connection_before_saving_it() {
         send(port, &good, k, Some("https://example.org")).await.0,
         403
     );
+    // Asking for a challenge without the key is refused.
+    let r = reqwest::Client::new()
+        .post(format!("{own}/api/test-hello"))
+        .header("X-Columbus-Test-Hello", "ef".repeat(32))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 403);
     // A proof for one body does not cover another, and a challenge is
     // good once.
     {
@@ -609,7 +620,14 @@ async fn the_settings_window_can_test_a_connection_before_saving_it() {
         let http = reqwest::Client::new();
         let h: Value = http
             .post(format!("{own}/api/test-hello"))
-            .header("X-Columbus-Test-Hello", "cd".repeat(32))
+            .header(
+                "X-Columbus-Test-Hello",
+                format!(
+                    "{}.{}",
+                    "cd".repeat(32),
+                    proof::prove(&key, proof::HELLO, &["cd".repeat(32).as_bytes()])
+                ),
+            )
             .send()
             .await
             .unwrap()

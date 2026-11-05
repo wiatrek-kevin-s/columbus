@@ -77,7 +77,8 @@ impl Gateway {
         let generation = st.generation();
         let settled = |granted: String| -> Sought {
             st.refresh();
-            if st.generation() != generation || st.problem().is_some() {
+            // A change seen but not yet settled counts too: it is about to apply.
+            if st.generation() != generation || st.problem().is_some() || st.unsettled() {
                 Sought::Declined("Columbus's settings changed while the person was deciding, so this approval was not used. Call the tool again: the request is checked against the new settings and the person is asked again.".into())
             } else {
                 Sought::Granted(granted)

@@ -431,6 +431,9 @@ pub struct Live {
     tightenings: Vec<(u64, bool, std::collections::BTreeSet<String>)>,
     /// Files a reload could not delete, tried again at the next one.
     leftovers: Vec<PathBuf>,
+    /// Entries before this generation were dropped from `tightenings`: a
+    /// call older than that is treated as having lost everything.
+    tightenings_from: u64,
 }
 
 /// The organization policy in force when it was taken; it stays the same
@@ -511,6 +514,12 @@ impl State {
     pub fn load(paths: Paths) -> anyhow::Result<Self> {
         let (digest, settings) = crate::config::read_settings(&paths);
         let settings = settings?;
+        if settings.source.found && settings.policy_empty {
+            anyhow::bail!(
+                "the organization policy file {} is empty; Columbus does not start on it (delete it to use the defaults, or fill it in)",
+                settings.source.path
+            );
+        }
         let policy = settings.policy.clone();
         let session = format!(
             "{}-{}",
@@ -657,6 +666,7 @@ impl State {
                 stalled: false,
                 tightenings: Vec::new(),
                 leftovers: Vec::new(),
+                tightenings_from: 0,
             }),
             scope: ProjectScope::default(),
             sandbox,
@@ -699,11 +709,21 @@ fn tightened(
     old: &crate::config::Settings,
     new: &crate::config::Settings,
 ) -> (bool, std::collections::BTreeSet<String>) {
+    // A newly hidden field, or fewer rows or seconds allowed, takes away
+    // from every connection.
+    let less = |a: Option<u64>, b: Option<u64>| match (a, b) {
+        (_, None) => false,
+        (None, Some(_)) => true,
+        (Some(a), Some(b)) => b < a,
+    };
     let everything = new
         .policy
         .hide_fields
         .iter()
-        .any(|f| !old.policy.hide_fields.contains(f));
+        .any(|f| !old.policy.hide_fields.contains(f))
+        || less(old.policy.return_rows, new.policy.return_rows)
+        || less(old.policy.limits.rows, new.policy.limits.rows)
+        || less(old.policy.limits.seconds, new.policy.limits.seconds);
     let reach = |c: &Connection| {
         let mut v = serde_json::to_value(c).unwrap_or(Value::Null);
         if let Some(o) = v.as_object_mut() {
@@ -776,7 +796,7 @@ impl State {
     /// What the changes applied after `generation` took away.
     pub fn tightened_since(&self, generation: u64) -> (bool, std::collections::BTreeSet<String>) {
         let live = self.live();
-        let mut everything = false;
+        let mut everything = generation < live.tightenings_from;
         let mut labels = std::collections::BTreeSet::new();
         for (g, all, l) in &live.tightenings {
             if *g > generation {
@@ -833,6 +853,12 @@ impl State {
     /// Changes every time new settings take effect.
     pub fn generation(&self) -> u64 {
         self.live().generation
+    }
+
+    /// A change to the files has been seen but has not settled yet.
+    pub fn unsettled(&self) -> bool {
+        let live = self.live();
+        live.pending.is_some() || live.unsettled_since.is_some()
     }
 
     /// Why tools are refused until the settings files are fixed, if they are.
@@ -928,7 +954,8 @@ impl State {
                     let g = live.generation;
                     live.tightenings.push((g, everything, narrowed.clone()));
                     if live.tightenings.len() > 256 {
-                        live.tightenings.remove(0);
+                        let (dropped, _, _) = live.tightenings.remove(0);
+                        live.tightenings_from = dropped;
                     }
                 }
                 // What was learned under the old settings is not reused.
@@ -2721,21 +2748,46 @@ impl ServerHandler for Gateway {
             }
         });
         if !gone.is_empty() || touched {
+            let client_name_owned = client;
+            // What already happened outside the workspace is said plainly:
+            // a write that committed, an export already in its folder.
+            let done = match &result {
+                Ok(rmcp::model::CallToolResponse::Complete(r)) => {
+                    let v = r.structured_content.as_ref().map(|v| &v["result"]);
+                    match v.and_then(|v| v["status"].as_str()) {
+                        Some("written") => Some(format!(
+                            " The edits were written to {} on {} before that ({}); they are in the source now, so do not propose them again.",
+                            v.map(|v| v["dataset"].to_string()).unwrap_or_default(),
+                            v.map(|v| v["connection"].to_string()).unwrap_or_default(),
+                            v.map(|v| v["written"].to_string()).unwrap_or_default(),
+                        )),
+                        Some("exported") => Some(format!(
+                            " The export had already been written to the folder {} ({}); it stays there.",
+                            v.map(|v| v["folder"].to_string()).unwrap_or_default(),
+                            v.map(|v| v["files"].to_string()).unwrap_or_default(),
+                        )),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            };
             let _ = self.state.audit.append(&AuditRecord {
                 user: self.state.user.clone(),
-                client,
-                tool,
+                client: client_name_owned.clone(),
+                tool: tool.clone(),
                 decision: "denied".into(),
                 reason: Some(format!(
-                    "the settings narrowed while the call ran; its answer was withheld and {} file(s) withdrawn",
-                    gone.len()
+                    "the settings narrowed while the call ran; its answer was withheld and {} file(s) withdrawn{}",
+                    gone.len(),
+                    if done.is_some() { "; it had already committed what it reports (see the line before)" } else { "" }
                 )),
                 ..Default::default()
             });
             return Ok(rmcp::model::CallToolResult::error(vec![
-                rmcp::model::ContentBlock::text(
-                    "refused: the person narrowed Columbus's settings while this call ran, so its answer was withheld and what it made was removed. Call whoami to see the settings in force, then call again.",
-                ),
+                rmcp::model::ContentBlock::text(format!(
+                    "refused: the person narrowed Columbus's settings while this call ran, so the rest of its answer was withheld and the workspace files it made were removed.{} Call whoami to see the settings in force, then call again.",
+                    done.unwrap_or_default()
+                )),
             ])
             .into());
         }

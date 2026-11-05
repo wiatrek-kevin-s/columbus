@@ -967,7 +967,15 @@ enum DsnHost<'a> {
     Other,
 }
 
+/// Strictly `[tcp://|tcps://][//]host[:port][/service[:server][/instance]]`
+/// (EZConnect, one address), or a bare alias; anything else, a second
+/// address after `;` included, is `Other`.
 fn dsn_host(dsn: &str) -> DsnHost<'_> {
+    let word = |t: &str| {
+        !t.is_empty()
+            && t.chars()
+                .all(|c| c.is_ascii_alphanumeric() || "._-".contains(c))
+    };
     let d = dsn.trim();
     if !d.is_empty()
         && d.chars()
@@ -975,28 +983,59 @@ fn dsn_host(dsn: &str) -> DsnHost<'_> {
     {
         return DsnHost::Alias;
     }
-    if d.contains(['(', ')', ',', ' ', '@', '?']) {
-        return DsnHost::Other;
-    }
     let lower = d.to_ascii_lowercase();
     let rest = ["tcps://", "tcp://"]
         .iter()
         .find_map(|p| lower.starts_with(p).then(|| &d[p.len()..]))
         .unwrap_or(d);
     let rest = rest.strip_prefix("//").unwrap_or(rest);
-    let host = if let Some(r) = rest.strip_prefix('[') {
+    let (host, after) = if let Some(r) = rest.strip_prefix('[') {
         match r.split_once(']') {
-            Some((h, _)) => h,
-            None => return DsnHost::Other,
+            Some((h, a))
+                if !h.is_empty() && h.chars().all(|c| c.is_ascii_hexdigit() || c == ':') =>
+            {
+                (h, a)
+            }
+            _ => return DsnHost::Other,
         }
     } else {
-        rest.split([':', '/']).next().unwrap_or("")
+        let end = rest.find([':', '/']).unwrap_or(rest.len());
+        let h = &rest[..end];
+        if !word(h) {
+            return DsnHost::Other;
+        }
+        (h, &rest[end..])
     };
-    if host.is_empty() {
-        DsnHost::Other
-    } else {
-        DsnHost::Host(host)
+    let (port, path) = match after.strip_prefix(':') {
+        Some(a) => {
+            let end = a.find('/').unwrap_or(a.len());
+            (Some(&a[..end]), &a[end..])
+        }
+        None => (None, after),
+    };
+    if port.is_some_and(|p| p.is_empty() || p.len() > 5 || !p.chars().all(|c| c.is_ascii_digit())) {
+        return DsnHost::Other;
     }
+    if !path.is_empty() {
+        let Some(p) = path.strip_prefix('/') else {
+            return DsnHost::Other;
+        };
+        let mut parts = p.splitn(2, '/');
+        let service = parts.next().unwrap_or("");
+        let (name, server) = match service.split_once(':') {
+            Some((n, s)) => (n, Some(s)),
+            None => (service, None),
+        };
+        if !word(name) || server.is_some_and(|s| !word(s)) {
+            return DsnHost::Other;
+        }
+        if let Some(instance) = parts.next() {
+            if !word(instance) {
+                return DsnHost::Other;
+            }
+        }
+    }
+    DsnHost::Host(host)
 }
 
 #[cfg(test)]
@@ -1045,6 +1084,21 @@ mod host_tests {
             dsn_host("(DESCRIPTION=(ADDRESS=(HOST=evil)))"),
             DsnHost::Other
         ));
+        // A second address, options or odd characters: refused.
+        for bad in [
+            "db.corp.example:1521;evil.example:1521/svc",
+            "db.corp.example:;evil.example/svc",
+            "db.corp.example:1521/svc;x",
+            "db.corp.example:15x1/svc",
+            "db.corp.example/svc?x=1",
+            "db.corp.example/svc/inst/more",
+            "db.corp.example:1521/svc:dedicated/inst",
+        ] {
+            let ok = matches!(dsn_host(bad), DsnHost::Other)
+                || (bad.ends_with("dedicated/inst")
+                    && matches!(dsn_host(bad), DsnHost::Host("db.corp.example")));
+            assert!(ok, "{bad}");
+        }
         // A dotted name is a host, not an alias.
         assert!(matches!(
             dsn_host("evil.example"),
