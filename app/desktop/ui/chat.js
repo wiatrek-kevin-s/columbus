@@ -151,10 +151,12 @@ function approval(e) {
   card.append(el("p", "body", e.summary));
   if (e.code != null) {
     // Written by the AI: in its own box, never mixed with the server's words.
-    const n = e.code.split("\n").length;
+    // Counted as the server counts them: a final line break adds no line.
+    const lines = e.code.replace(/\r?\n$/, "").split(/\r?\n/);
+    const n = lines.length;
     card.append(el("p", "code-label", `Code written by the AI (${n} line${n === 1 ? "" : "s"}). Read it before allowing:`));
     const pre = el("pre", "code");
-    e.code.split("\n").forEach((line) => pre.append(el("span", "ln", line === "" ? " " : line)));
+    lines.forEach((line) => pre.append(el("span", "ln", line === "" ? " " : line)));
     card.append(pre);
   }
   const row = el("div", "row");

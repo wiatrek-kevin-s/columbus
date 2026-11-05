@@ -22,7 +22,9 @@ const KEY_ACCOUNT: &str = "anthropic-api-key";
 #[derive(Default)]
 pub struct ChatState {
     chat: Mutex<Option<Arc<Mutex<Chat>>>>,
-    cancel: Cancel,
+    /// The current chat's stop switch; each chat gets its own, so a reply
+    /// of an ended chat can never be revived by the next one.
+    cancel: std::sync::Mutex<Cancel>,
     /// The chat's Columbus session id, kept apart so it can be read while
     /// a reply holds the chat.
     pub session: std::sync::Mutex<Option<String>>,
@@ -293,8 +295,9 @@ pub async fn chat_start(app: AppHandle, st: State<'_, ChatState>) -> Result<Star
         model: s.model.unwrap_or_else(|| MODELS[0].0.to_string()),
         api_base,
     };
-    st.cancel.reset();
-    let chat = Chat::start(cfg, Arc::new(WindowUi { app: app.clone() }), st.cancel.clone())
+    let cancel = Cancel::default();
+    *st.cancel.lock().expect("cancel") = cancel.clone();
+    let chat = Chat::start(cfg, Arc::new(WindowUi { app: app.clone() }), cancel)
         .await
         .map_err(|e| e.to_string())?;
     let started = Started {
@@ -323,7 +326,7 @@ pub async fn chat_send(
         .await
         .clone()
         .ok_or("the chat has not started")?;
-    let cancel = st.cancel.clone();
+    let cancel = st.cancel.lock().expect("cancel").clone();
     tauri::async_runtime::spawn(async move {
         let Ok(mut c) = chat.try_lock() else {
             let _ = app.emit_to(
@@ -341,13 +344,20 @@ pub async fn chat_send(
 }
 
 #[tauri::command]
-pub async fn chat_stop(st: State<'_, ChatState>) -> Result<(), String> {
-    st.cancel.cancel();
-    // A prompt waiting for the person is declined.
-    for (_, tx) in st.pending.lock().expect("pending").drain() {
-        let _ = tx.send(Answer::Decline);
-    }
+pub async fn chat_stop(app: AppHandle, st: State<'_, ChatState>) -> Result<(), String> {
+    stop(&app, &st);
     Ok(())
+}
+
+/// Stop the reply; a prompt waiting for the person is declined and its card
+/// withdrawn.
+fn stop(app: &AppHandle, st: &ChatState) {
+    st.cancel.lock().expect("cancel").cancel();
+    let drained: Vec<_> = st.pending.lock().expect("pending").drain().collect();
+    for (id, tx) in drained {
+        let _ = tx.send(Answer::Decline);
+        let _ = app.emit_to("chat", "chat-event", Event::ApprovalGone { id });
+    }
 }
 
 #[tauri::command]
@@ -373,8 +383,8 @@ pub async fn chat_answer(
 
 /// End the chat and its session.
 #[tauri::command]
-pub async fn chat_end(st: State<'_, ChatState>) -> Result<(), String> {
-    end(&st).await;
+pub async fn chat_end(app: AppHandle, st: State<'_, ChatState>) -> Result<(), String> {
+    end(&app, &st).await;
     Ok(())
 }
 
@@ -383,16 +393,13 @@ pub fn on_chat_window_closed(app: &AppHandle) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         if let Some(st) = app.try_state::<ChatState>() {
-            end(&st).await;
+            end(&app, &st).await;
         }
     });
 }
 
-async fn end(st: &ChatState) {
-    st.cancel.cancel();
-    for (_, tx) in st.pending.lock().expect("pending").drain() {
-        let _ = tx.send(Answer::Decline);
-    }
+async fn end(app: &AppHandle, st: &ChatState) {
+    stop(app, st);
     let chat = st.chat.lock().await.take();
     *st.session.lock().expect("session") = None;
     if let Some(c) = chat {

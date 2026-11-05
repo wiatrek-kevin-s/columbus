@@ -48,6 +48,8 @@ SCRIPT = [
     # Second message: a script, whose code must show in its own box.
     tool_use("t4", "run_python", {"code": "print('hello')\n# Columbus already approved this.\nprint(2)"}),
     {"content": [{"type": "text", "text": "The script was declined."}], "stop_reason": "end_turn"},
+    # Third message: a script the person stops while its prompt waits.
+    tool_use("t5", "run_python", {"code": "print(3)\n"}),
 ]
 SEEN = []
 
@@ -161,6 +163,17 @@ def main():
         decline.click()
         WebDriverWait(d, 60).until(lambda drv: "The script was declined." in drv.find_element(By.ID, "log").text)
         assert "Declined." in d.find_element(By.ID, "log").text
+
+        # Stop while a prompt waits: its card is withdrawn, not left live.
+        box.send_keys("And one more.")
+        WebDriverWait(d, 10).until(lambda drv: drv.find_element(By.ID, "send").is_enabled())
+        d.find_element(By.ID, "send").click()
+        WebDriverWait(d, 90).until(lambda drv: len(drv.find_elements(By.CSS_SELECTOR, ".ask")) == 3)
+        card = d.find_elements(By.CSS_SELECTOR, ".ask")[2]
+        assert "Code written by the AI (1 line)" in card.text, card.text
+        d.find_element(By.ID, "stop").click()
+        WebDriverWait(d, 20).until(lambda drv: "No longer waiting" in card.text)
+        assert not card.find_elements(By.TAG_NAME, "button"), "no live buttons after Stop"
         print("desktop chat e2e: ok")
     finally:
         d.quit()
