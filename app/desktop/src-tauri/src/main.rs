@@ -72,6 +72,8 @@ struct Session {
     user: Option<String>,
     started: Option<String>,
     server: Option<String>,
+    /// When the session's assistant last called a tool; none if never.
+    last_used: Option<String>,
 }
 
 /// A port that answers like a Columbus page: `GET /api/state` without a
@@ -137,9 +139,18 @@ fn live_sessions() -> Vec<Session> {
             user: s("user"),
             started: s("started"),
             server: s("server"),
+            last_used: s("last_used"),
         });
     }
-    out.sort_by(|a, b| b.started.cmp(&a.started));
+    // The session in use first, then the most recently started. (RFC 3339
+    // times from one computer sort as text.)
+    out.sort_by(|a, b| {
+        b.last_used
+            .is_some()
+            .cmp(&a.last_used.is_some())
+            .then_with(|| b.last_used.cmp(&a.last_used))
+            .then_with(|| b.started.cmp(&a.started))
+    });
     out
 }
 

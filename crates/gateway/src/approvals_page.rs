@@ -305,8 +305,10 @@ pub struct ApprovalsPage {
     ui_dir: Option<PathBuf>,
     live_dir: Option<PathBuf>,
     companion: std::sync::OnceLock<Arc<crate::companion::Companion>>,
-    /// The `live/<session>.json` this server wrote, removed when it stops.
+    /// The `live/<session>.json` this server wrote, removed when it stops,
+    /// with what it says and when it last said the session was used.
     live_file: Mutex<Option<PathBuf>>,
+    live_body: Mutex<Option<(serde_json::Value, Option<std::time::Instant>)>>,
     running: OnceCell<Result<Arc<Shared>, String>>,
 }
 
@@ -354,6 +356,7 @@ impl ApprovalsPage {
             live_dir,
             companion: std::sync::OnceLock::new(),
             live_file: Mutex::new(None),
+            live_body: Mutex::new(None),
             running: OnceCell::new(),
         }
     }
@@ -385,7 +388,36 @@ impl ApprovalsPage {
         std::fs::write(&file, serde_json::to_vec_pretty(&body).unwrap_or_default())
             .map_err(|e| e.to_string())?;
         *self.live_file.lock().expect("live file") = Some(file.clone());
+        *self.live_body.lock().expect("live body") = Some((body, None));
         Ok(file)
+    }
+
+    /// The session was just used (a tool call): say so in its live file,
+    /// at most every few seconds, so the Columbus app can show which
+    /// session is in use.
+    pub fn touch_live(&self) {
+        const EVERY: std::time::Duration = std::time::Duration::from_secs(5);
+        let Some(file) = self.live_file.lock().ok().and_then(|f| f.clone()) else {
+            return;
+        };
+        let mut g = match self.live_body.lock() {
+            Ok(g) => g,
+            Err(_) => return,
+        };
+        let Some((body, last)) = g.as_mut() else {
+            return;
+        };
+        if last.is_some_and(|t| t.elapsed() < EVERY) {
+            return;
+        }
+        *last = Some(std::time::Instant::now());
+        body["last_used"] = json!(chrono::Local::now().to_rfc3339());
+        let bytes = serde_json::to_vec_pretty(body).unwrap_or_default();
+        // Written whole, then moved in place: the app never reads half a file.
+        let tmp = file.with_extension("json.tmp");
+        if std::fs::write(&tmp, bytes).is_ok() {
+            let _ = std::fs::rename(&tmp, &file);
+        }
     }
 
     async fn start(&self) -> Result<Arc<Shared>, String> {

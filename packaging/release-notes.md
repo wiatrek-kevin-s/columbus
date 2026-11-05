@@ -1,6 +1,6 @@
 Columbus {{VERSION}}, a test release. Click a link to download that file.
 
-**New in this version:** the session's layers stay on the map when you turn the basemap on (in 0.3.1 they disappeared until it was off again). Since 0.3.0: on a Mac, engine plugins, `run_python` scripts and local MCP servers run inside the macOS sandbox instead of being refused.
+**New in this version:** the Columbus app shows when each session was last used ("Used 2 minutes ago", or "Not used yet") and lists the one in use first; update both the extension and the app. Claude desktop often starts a second, idle Columbus session: it is harmless. Since 0.3.0: on a Mac, engine plugins, `run_python` scripts and local MCP servers run inside the macOS sandbox instead of being refused.
 
 ## Mac (Apple Silicon: M1 or later)
 

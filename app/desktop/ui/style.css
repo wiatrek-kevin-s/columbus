@@ -17,6 +17,8 @@ ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
 .text { display: grid; flex: 1; min-width: 0; }
 .name { font-weight: 600; }
 .when { color: var(--soft); font-size: 13px; }
+.used { font-size: 13px; font-weight: 600; color: var(--ink, inherit); }
+.used.idle { font-weight: 400; color: var(--soft); }
 .id { color: var(--soft); font-size: 12px; overflow-wrap: anywhere; }
 button { font: inherit; border-radius: 6px; padding: 7px 16px; cursor: pointer; border: 1px solid var(--hydro); }
 button.primary { background: var(--hydro); color: var(--on-hydro); font-weight: 600; }
