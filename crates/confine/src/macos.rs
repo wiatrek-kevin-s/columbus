@@ -86,11 +86,6 @@ const DENIED_SERVICES: &str = "(deny mach-lookup \
      (global-name \"com.apple.tccd\") \
      (global-name \"com.apple.tccd.system\"))\n";
 
-/// What no Columbus profile grants: a path under a folder nobody may write.
-/// A process that may not write it is sandboxed; with the launch's own tag
-/// writable, it is this launch's.
-const PROBE: &str = "/private/var/empty/columbus-confine-probe";
-
 extern "C" {
     fn sandbox_check(
         pid: libc::pid_t,
@@ -185,14 +180,17 @@ fn canonical(p: &Path) -> PathBuf {
     p.canonicalize().unwrap_or_else(|_| p.to_path_buf())
 }
 
-/// One launch's sandbox: the path only it may write.
+/// One launch's sandbox, told apart from every other process by two empty
+/// files the launcher creates: the profile lets this sandbox write `tag`
+/// and nothing else lets it write `probe` beside it. (The system's check
+/// answers only for paths that exist.)
 struct Tag {
     tag: CString,
     probe: CString,
-    report: bool,
 }
 
 impl Tag {
+    /// Create the two files, in a folder of the launcher's own.
     fn new() -> Result<Tag, Error> {
         let mut b = [0u8; 16];
         let n = unsafe { libc::getentropy(b.as_mut_ptr() as *mut libc::c_void, b.len()) };
@@ -200,38 +198,85 @@ impl Tag {
             return Err(Error::Setup("no randomness for the sandbox tag".into()));
         }
         let hex: String = b.iter().map(|x| format!("{x:02x}")).collect();
-        Tag::from_hex(&hex)
+        let dir = canonical(&std::env::temp_dir()).join("columbus-confine");
+        let setup =
+            |e: std::io::Error| Error::Setup(format!("the sandbox tag in {}: {e}", dir.display()));
+        match std::fs::create_dir(&dir) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(setup(e)),
+        }
+        {
+            use std::os::unix::fs::{MetadataExt, PermissionsExt};
+            // Ours alone: another user must not be able to remove the files
+            // (the launcher would then lose sight of the sandbox).
+            let m = std::fs::symlink_metadata(&dir).map_err(setup)?;
+            if !m.is_dir() || m.uid() != unsafe { libc::getuid() } {
+                return Err(Error::Setup(format!(
+                    "{} is not a folder of this user's",
+                    dir.display()
+                )));
+            }
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
+                .map_err(setup)?;
+        }
+        let tag = dir.join(format!("{hex}.tag"));
+        let probe = dir.join(format!("{hex}.probe"));
+        for f in [&tag, &probe] {
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(f)
+                .map_err(setup)?;
+        }
+        Tag::from_paths(&tag.display().to_string(), &probe.display().to_string())
     }
 
-    fn from_hex(hex: &str) -> Result<Tag, Error> {
-        if hex.len() != 32 || !hex.bytes().all(|c| c.is_ascii_hexdigit()) {
-            return Err(Error::Usage("bad sandbox tag".into()));
+    /// As passed to the guard: two files beside each other, named alike.
+    fn from_paths(tag: &str, probe: &str) -> Result<Tag, Error> {
+        let bad = || Error::Usage("bad sandbox tag".into());
+        let hex = tag.strip_suffix(".tag").ok_or_else(bad)?;
+        let name = Path::new(hex)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(bad)?;
+        if !tag.starts_with('/')
+            || name.len() != 32
+            || !name.bytes().all(|c| c.is_ascii_hexdigit())
+            || probe != format!("{hex}.probe")
+        {
+            return Err(bad());
         }
         Ok(Tag {
-            tag: CString::new(format!("/private/var/empty/columbus-confine-{hex}")).expect("tag"),
-            probe: CString::new(PROBE).expect("probe"),
-            report: false,
+            tag: CString::new(tag).map_err(|_| bad())?,
+            probe: CString::new(probe).map_err(|_| bad())?,
         })
     }
 
-    fn hex(&self) -> &str {
-        let s = self.tag.to_str().expect("tag");
-        &s[s.len() - 32..]
+    fn tag_path(&self) -> &str {
+        self.tag.to_str().expect("tag")
     }
 
-    fn check(&self, pid: libc::pid_t, path: &CStr) -> libc::c_int {
-        let flags = if self.report {
-            SANDBOX_FILTER_PATH
-        } else {
-            SANDBOX_FILTER_PATH | SANDBOX_CHECK_NO_REPORT
-        };
-        unsafe { sandbox_check(pid, c"file-write-data".as_ptr(), flags, path.as_ptr()) }
+    fn probe_path(&self) -> &str {
+        self.probe.to_str().expect("probe")
+    }
+
+    fn may_write(pid: libc::pid_t, path: &CStr) -> libc::c_int {
+        unsafe {
+            sandbox_check(
+                pid,
+                c"file-write-data".as_ptr(),
+                SANDBOX_FILTER_PATH | SANDBOX_CHECK_NO_REPORT,
+                path.as_ptr(),
+            )
+        }
     }
 
     /// Whether `pid` runs in this launch's sandbox.
     fn holds(&self, pid: libc::pid_t) -> bool {
         // Most processes are not sandboxed: one check rules them out.
-        self.check(pid, &self.probe) == 1 && self.check(pid, &self.tag) == 0
+        unsafe { sandbox_check(pid, std::ptr::null(), 0) == 1 }
+        &&Tag::may_write(pid, &self.tag) == 0 && Tag::may_write(pid, &self.probe) == 1
     }
 
     /// Every process in this launch's sandbox.
@@ -256,6 +301,11 @@ impl Tag {
             }
             std::thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    fn remove(&self) {
+        let _ = std::fs::remove_file(self.tag_path());
+        let _ = std::fs::remove_file(self.probe_path());
     }
 }
 
@@ -302,8 +352,7 @@ fn sandbox_command(level: Level, ro: &[PathBuf], rw: &[PathBuf], tag: &Tag) -> C
     for (i, p) in rw.iter().enumerate() {
         cmd.arg("-D").arg(format!("RW{i}={}", p.display()));
     }
-    cmd.arg("-D")
-        .arg(format!("TAG={}", tag.tag.to_str().expect("tag")));
+    cmd.arg("-D").arg(format!("TAG={}", tag.tag_path()));
     cmd
 }
 
@@ -311,57 +360,54 @@ fn sandbox_command(level: Level, ro: &[PathBuf], rw: &[PathBuf], tag: &Tag) -> C
 /// processes it confines? Without that, a program could outlive its limits,
 /// so confinement is refused.
 fn self_test() -> Result<(), String> {
-    let mut tag = Tag::new().map_err(|e| e.to_string())?;
-    let mut child = sandbox_command(Level::A, &[], &[], &tag)
-        .arg("--")
-        .arg("/bin/sleep")
-        .arg("10")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|e| format!("{SANDBOX_EXEC}: {e}"))?;
-    let pid = child.id() as libc::pid_t;
-    let deadline = Instant::now() + Duration::from_secs(3);
-    let mut ok = false;
-    while Instant::now() < deadline {
-        if tag.holds(pid) {
-            ok = true;
-            break;
+    let tag = Tag::new().map_err(|e| e.to_string())?;
+    let result = (|| {
+        let mut child = sandbox_command(Level::A, &[], &[], &tag)
+            .arg("--")
+            .arg("/bin/sleep")
+            .arg("10")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| format!("{SANDBOX_EXEC}: {e}"))?;
+        let pid = child.id() as libc::pid_t;
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut seen = false;
+        while Instant::now() < deadline && !seen {
+            seen = tag.holds(pid);
+            if !seen {
+                std::thread::sleep(Duration::from_millis(30));
+            }
         }
-        // Some versions refuse the no-report flag; try without it.
-        tag.report = !tag.report;
-        if tag.holds(pid) {
-            ok = true;
-            break;
+        let me = std::process::id() as libc::pid_t;
+        let ok = seen && !tag.holds(me) && !tag.holds(1);
+        let _ = child.kill();
+        let _ = child.wait();
+        if ok {
+            Ok(())
+        } else {
+            Err("this Mac's sandbox cannot tell Columbus which processes it confines, so it could not stop them all; confinement is refused".to_string())
         }
-        tag.report = !tag.report;
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    let me = unsafe { libc::getpid() };
-    let unsandboxed = !tag.holds(me);
-    let _ = child.kill();
-    let _ = child.wait();
-    if ok && unsandboxed {
-        if tag.report {
-            REPORT.store(1, Ordering::SeqCst);
-        }
-        Ok(())
-    } else {
-        Err("this Mac's sandbox cannot tell Columbus which processes it confines, so it could not stop them all; confinement is refused".into())
-    }
+    })();
+    tag.remove();
+    result
 }
-
-/// 1 when the self-test found the no-report flag refused.
-static REPORT: AtomicU8 = AtomicU8::new(0);
 
 pub fn launch(spec: &Spec, program: &str, args: &[String]) -> Result<i32, Error> {
     available(spec.level)?;
     let ro: Vec<PathBuf> = spec.read_only.iter().map(|p| canonical(p)).collect();
     let rw: Vec<PathBuf> = spec.read_write.iter().map(|p| canonical(p)).collect();
-    let mut tag = Tag::new()?;
-    tag.report = REPORT.load(Ordering::SeqCst) == 1;
-    let tag = Arc::new(tag);
+    let tag = Arc::new(Tag::new()?);
+    // A program that could write beside its tag would hide from the check.
+    let tag_dir = Path::new(tag.tag_path()).parent().map(Path::to_path_buf);
+    if let Some(d) = tag_dir.filter(|d| rw.iter().any(|f| d.starts_with(f))) {
+        tag.remove();
+        return Err(Error::Setup(format!(
+            "a writable folder contains the launcher's own folder {}",
+            d.display()
+        )));
+    }
 
     // The guard stops the sandbox's processes if this launcher is killed.
     // It runs in its own process group, so a group kill aimed at the
@@ -370,24 +416,36 @@ pub fn launch(spec: &Spec, program: &str, args: &[String]) -> Result<i32, Error>
     let mut guard = Command::new(exe);
     guard
         .arg("--guard")
-        .arg(tag.hex())
+        .arg(tag.tag_path())
+        .arg(tag.probe_path())
         .arg(std::process::id().to_string())
-        .arg(if tag.report { "report" } else { "quiet" })
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .env_clear()
         .process_group(0);
-    let mut guard = guard
-        .spawn()
-        .map_err(|e| Error::Setup(format!("the sandbox guard: {e}")))?;
+    let mut guard = match guard.spawn() {
+        Ok(g) => g,
+        Err(e) => {
+            tag.remove();
+            return Err(Error::Setup(format!("the sandbox guard: {e}")));
+        }
+    };
 
-    let mut child = sandbox_command(spec.level, &ro, &rw, &tag)
+    let child = sandbox_command(spec.level, &ro, &rw, &tag)
         .arg("--")
         .arg(program)
         .args(args)
-        .spawn()
-        .map_err(|e| Error::Setup(format!("{SANDBOX_EXEC}: {e}")))?;
+        .spawn();
+    let mut child = match child {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = guard.kill();
+            let _ = guard.wait();
+            tag.remove();
+            return Err(Error::Setup(format!("{SANDBOX_EXEC}: {e}")));
+        }
+    };
     let parent = unsafe { libc::getppid() };
     let limit = spec.memory_mb.map(|m| m.saturating_mul(1024 * 1024));
     let procs = spec.processes;
@@ -427,6 +485,7 @@ pub fn launch(spec: &Spec, program: &str, args: &[String]) -> Result<i32, Error>
     let _ = watch.join();
     let _ = guard.kill();
     let _ = guard.wait();
+    tag.remove();
     let status = status.map_err(|e| Error::Setup(format!("waiting for the program: {e}")))?;
     match over.load(Ordering::SeqCst) {
         1 => {
@@ -450,17 +509,16 @@ pub fn launch(spec: &Spec, program: &str, args: &[String]) -> Result<i32, Error>
         .unwrap_or_else(|| 128 + status.signal().unwrap_or(0)))
 }
 
-/// The guard (`columbus-confine --guard <tag> <launcher pid> <report|quiet>`):
+/// The guard (`columbus-confine --guard <tag> <probe> <launcher pid>`):
 /// waits while the launcher lives, then stops whatever is left in its
 /// sandbox.
 pub fn guard(args: &[String]) -> i32 {
-    let (Some(hex), Some(pid), Some(mode)) = (args.first(), args.get(1), args.get(2)) else {
+    let (Some(tag), Some(probe), Some(pid)) = (args.first(), args.get(1), args.get(2)) else {
         return crate::EXIT_CONFINE_FAILED;
     };
-    let Ok(mut tag) = Tag::from_hex(hex) else {
+    let Ok(tag) = Tag::from_paths(tag, probe) else {
         return crate::EXIT_CONFINE_FAILED;
     };
-    tag.report = mode == "report";
     let Ok(launcher) = pid.parse::<libc::pid_t>() else {
         return crate::EXIT_CONFINE_FAILED;
     };
@@ -468,6 +526,7 @@ pub fn guard(args: &[String]) -> i32 {
         std::thread::sleep(Duration::from_millis(200));
     }
     tag.stop_all();
+    tag.remove();
     0
 }
 
@@ -494,8 +553,14 @@ mod tests {
 
     #[test]
     fn tags_are_checked() {
-        assert!(Tag::from_hex("00112233445566778899aabbccddeeff").is_ok());
-        assert!(Tag::from_hex("../../etc").is_err());
-        assert!(Tag::from_hex("0011223344556677").is_err());
+        let h = "/t/columbus-confine/00112233445566778899aabbccddeeff";
+        assert!(Tag::from_paths(&format!("{h}.tag"), &format!("{h}.probe")).is_ok());
+        assert!(Tag::from_paths(&format!("{h}.tag"), "/etc/passwd").is_err());
+        assert!(Tag::from_paths("/t/../../etc.tag", "/t/../../etc.probe").is_err());
+        assert!(Tag::from_paths(
+            "rel/00112233445566778899aabbccddeeff.tag",
+            "rel/00112233445566778899aabbccddeeff.probe"
+        )
+        .is_err());
     }
 }
