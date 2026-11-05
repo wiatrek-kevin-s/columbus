@@ -1,14 +1,29 @@
-A test release of the Columbus GIS server, for Windows (x64) and macOS (Apple Silicon).
+Columbus {{VERSION}}, a test release. Click a link to download that file.
 
-| File | For |
+## Mac (Apple Silicon: M1 or later)
+
+**Already set up Columbus before? Update with these two files:**
+
+1. **Claude extension:** [columbus-{{VERSION}}-macos-arm64.mcpb]({{BASE}}/columbus-{{VERSION}}-macos-arm64.mcpb). Double-click it in your Downloads folder. Claude desktop asks to install or update the extension: accept, check that **Engine Python** still says `/Users/<you>/Columbus/engine/venv/bin/python3`, then quit Claude with **Cmd+Q** and open it again.
+2. **Columbus app (optional):** [columbus-app-{{VERSION}}-macos-arm64.dmg]({{BASE}}/columbus-app-{{VERSION}}-macos-arm64.dmg). Double-click it and drag **Columbus** onto **Applications**. Then, once, in Terminal: `xattr -dr com.apple.quarantine /Applications/Columbus.app`
+
+**New to Columbus?** Also download the server folder, [columbus-{{VERSION}}-macos-arm64.zip]({{BASE}}/columbus-{{VERSION}}-macos-arm64.zip), and follow the [Mac install guide](https://github.com/wiatrek-kevin-s/columbus/blob/main/docs/install-macos.md) from step 1. You only need the folder once, to set up the GIS engine.
+
+## Windows (10 and 11, 64-bit)
+
+**Already set up Columbus before? Update with these two files:**
+
+1. **Claude extension:** [columbus-{{VERSION}}-windows-x64.mcpb]({{BASE}}/columbus-{{VERSION}}-windows-x64.mcpb). Double-click it, accept the update in Claude desktop, check **Engine Python**, then quit Claude completely (not just its window) and open it again.
+2. **Columbus app (optional):** [columbus-app-{{VERSION}}-windows-x64-setup.exe]({{BASE}}/columbus-app-{{VERSION}}-windows-x64-setup.exe). Run it; it installs for you alone, no administrator needed. Windows SmartScreen warns because it is not signed yet: **More info**, then **Run anyway**. For IT: [the .msi]({{BASE}}/columbus-app-{{VERSION}}-windows-x64.msi).
+
+**New to Columbus?** Also download the server folder, [columbus-{{VERSION}}-windows-x64.zip]({{BASE}}/columbus-{{VERSION}}-windows-x64.zip), and follow the [Windows install guide](https://github.com/wiatrek-kevin-s/columbus/blob/main/docs/install.md) from step 1.
+
+## What the files are
+
+| File | What it is |
 | --- | --- |
-| `columbus-<version>-windows-x64.zip` and `.mcpb` | Windows 10 and 11: see [docs/install.md](https://github.com/wiatrek-kevin-s/columbus/blob/main/docs/install.md) |
-| `columbus-<version>-macos-arm64.zip` and `.mcpb` | Macs with M1 or later, macOS 13 or later: see [docs/install-macos.md](https://github.com/wiatrek-kevin-s/columbus/blob/main/docs/install-macos.md) |
+| `.mcpb` | The Columbus server as a Claude desktop extension: Claude starts it for you |
+| `columbus-app-…` | The Columbus app: each running session's layers on a map, its tables, checks, and the requests waiting for your decision (you decide them in your browser) |
+| `.zip` | The server as a folder, with the GIS engine setup script, examples, skills and guides |
 
-Unpack the zip and set up the GIS engine once; the `.mcpb` adds Columbus to Claude desktop as an extension.
-
-`columbus-app-<version>-macos-arm64.dmg` and `columbus-app-<version>-windows-x64-setup.exe` (or `.msi`) are the Columbus desktop app: it shows each session running on your computer, with its layers on a map, its tables, checks and provenance, and the requests waiting for your decision (decided in your browser).
-
-On macOS, engine plugins, `run_python` scripts and local MCP servers are refused: Columbus has no Mac sandbox for them yet. Everything else works as on Windows.
-
-The programs are not code-signed yet, so Windows SmartScreen and macOS Gatekeeper warn about them; the install guides say what to do.
+On a Mac, engine plugins, `run_python` scripts and local MCP servers are refused for now: Columbus has no Mac sandbox for them yet. Nothing is code-signed yet, which is why macOS and Windows warn; the steps above say what to do.
