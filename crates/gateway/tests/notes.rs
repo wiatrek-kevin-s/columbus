@@ -40,6 +40,8 @@ type During = Box<dyn Fn() + Send>;
 struct Person {
     asked: Arc<AtomicUsize>,
     during: Arc<std::sync::Mutex<Option<During>>>,
+    /// Answer "allow for this session" instead of "allow once".
+    always: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl ClientHandler for Person {
@@ -63,7 +65,7 @@ impl ClientHandler for Person {
             f();
         }
         Ok(ElicitResult::new(ElicitationAction::Accept)
-            .with_content(json!({"decision": "allow_once"})))
+            .with_content(json!({"decision": if self.always.load(Ordering::SeqCst) { "always_this_session" } else { "allow_once" }})))
     }
 }
 
@@ -450,4 +452,129 @@ fn walk(dir: &Path) -> Vec<PathBuf> {
         }
     }
     out
+}
+
+#[tokio::test]
+async fn many_note_changes_are_approved_together() {
+    let Some(py) = python() else {
+        eprintln!("skipped: needs Python with geopandas, pyogrio and shapely");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let root: PathBuf = dir.path().to_path_buf();
+    std::fs::create_dir_all(root.join("connections")).unwrap();
+    let file = gpkg(&py, &root);
+    let policy = root.join("policy.yaml");
+    put(
+        &policy,
+        "connection_types: [gpkg]\nhide_fields: [\"*ssn*\"]\n",
+    );
+    put(
+        &root.join("connections/roads.yaml"),
+        &conn_yaml("roads", &file, "").replace("allow: [\"*\"]", "allow: [roadway, segments]"),
+    );
+    let person = Person::default();
+    let c = start(&root, &py, person.clone()).await;
+    ok(&call(&c, "draft_notes", json!({"connection": "roads"})).await);
+    assert_eq!(person.asked.load(Ordering::SeqCst), 1);
+
+    // Three notes, many changes: one approval.
+    let r = ok(&call(&c, "update_notes", json!({"changes": [
+        {"id": "roads--roadway--status", "labels": {"A": "Active", "R": "Retired"}},
+        {"id": "roads--roadway", "summary": "Roadway segments.", "fields": {"FC": {"alias": "Functional class"}}},
+        {"id": "roads--segments", "title": "Segments"},
+    ]})).await);
+    assert_eq!(r["result"]["notes"].as_array().unwrap().len(), 3, "{r}");
+    assert_eq!(person.asked.load(Ordering::SeqCst), 2);
+    assert!(
+        std::fs::read_to_string(root.join("notes/datasets/roads/segments.md"))
+            .unwrap()
+            .contains("title: Segments")
+    );
+
+    // A bad change refuses the whole batch: nothing is written.
+    let before = std::fs::read_to_string(root.join("notes/datasets/roads/segments.md")).unwrap();
+    let e = err(&call(
+        &c,
+        "update_notes",
+        json!({"changes": [
+            {"id": "roads--segments", "title": "Changed"},
+            {"id": "roads--roadway", "fields": {"NOPE": {"note": "x"}}},
+        ]}),
+    )
+    .await);
+    assert!(e.contains("NOPE"), "{e}");
+    assert_eq!(
+        before,
+        std::fs::read_to_string(root.join("notes/datasets/roads/segments.md")).unwrap()
+    );
+    assert_eq!(
+        person.asked.load(Ordering::SeqCst),
+        2,
+        "refused before the person is asked"
+    );
+
+    // "Allow for this session": later changes go through without asking...
+    person.always.store(true, Ordering::SeqCst);
+    ok(&call(
+        &c,
+        "update_notes",
+        json!({"changes": [{"id": "roads--segments", "summary": "One."}]}),
+    )
+    .await);
+    assert_eq!(person.asked.load(Ordering::SeqCst), 3);
+    person.always.store(false, Ordering::SeqCst);
+    ok(&call(
+        &c,
+        "update_notes",
+        json!({"changes": [{"id": "roads--segments", "summary": "Two."}]}),
+    )
+    .await);
+    ok(&call(
+        &c,
+        "update_notes",
+        json!({"id": "roads--roadway", "summary": "Three."}),
+    )
+    .await);
+    assert_eq!(
+        person.asked.load(Ordering::SeqCst),
+        3,
+        "no more asking this session"
+    );
+    assert!(audit_text(&root).matches("\"update_notes\"").count() >= 4);
+
+    // ...until the session reads data from somewhere new: then it asks again.
+    put(
+        &root.join("connections/other.yaml"),
+        &conn_yaml("other", &file, ""),
+    );
+    ok(&call(&c, "list_datasets", json!({"connection": "other"})).await);
+    ok(&call(
+        &c,
+        "update_notes",
+        json!({"changes": [{"id": "roads--segments", "summary": "Four."}]}),
+    )
+    .await);
+    assert_eq!(person.asked.load(Ordering::SeqCst), 4);
+
+    // An organization that wants every change asked about gets that.
+    put(
+        &policy,
+        "connection_types: [gpkg]\nhide_fields: [\"*ssn*\"]\nnotes: { ask_each_change: true }\n",
+    );
+    ok(&call(
+        &c,
+        "update_notes",
+        json!({"changes": [{"id": "roads--segments", "summary": "Five."}]}),
+    )
+    .await);
+    assert_eq!(person.asked.load(Ordering::SeqCst), 5);
+    c.cancel().await.unwrap();
+}
+
+fn audit_text(root: &Path) -> String {
+    walk(&root.join("audit"))
+        .iter()
+        .map(|p| std::fs::read_to_string(p).unwrap_or_default())
+        .collect()
 }

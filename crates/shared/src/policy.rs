@@ -166,11 +166,19 @@ pub struct NotesPolicy {
     /// to label. Off: fields, types, keys and comments only.
     #[serde(default = "yes")]
     pub values: bool,
+    /// Ask the person about every change the assistant makes to their notes.
+    /// Off (the default): one approval covers a whole batch of changes, and
+    /// the person may allow note changes for the rest of the session.
+    #[serde(default)]
+    pub ask_each_change: bool,
 }
 
 impl Default for NotesPolicy {
     fn default() -> Self {
-        NotesPolicy { values: true }
+        NotesPolicy {
+            values: true,
+            ask_each_change: false,
+        }
     }
 }
 

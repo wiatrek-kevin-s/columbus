@@ -1,6 +1,6 @@
 Columbus {{VERSION}}, a test release. Click a link to download that file.
 
-**New in this version: notes about your data, drafted from your database.** In Settings, **Draft notes** next to a connection (or ask your assistant to draft them) writes notes about its tables from the database itself: fields and types, row counts, keys, relationships between tables, the descriptions written in the database, and the codes short fields hold. Your assistant reads them before it queries, so it knows your data. Fill in what things mean, or ask your assistant to from your documents: you approve every change it makes. Hidden fields and refused tables never appear. Update both the extension and the app. Since 0.6.0: Settings changes apply without a restart, and Test checks a connection before you save it.
+**New in this version: far fewer approvals when your assistant fills in notes.** Your assistant now sends all its note changes at once, and you approve them together: one card listing every change, instead of one per note. Choose **Allow for this session** to let it carry on without asking; it asks again if it reads data from somewhere new. Every change is still recorded, your organization's data rules still apply, and notes stay drafts until you mark them reviewed. Since 0.7.0: notes about your data, drafted from your database (Draft notes in Settings).
 
 ## Mac (Apple Silicon: M1 or later)
 

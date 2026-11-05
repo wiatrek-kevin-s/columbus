@@ -2,7 +2,7 @@
 # Copy it into a plugin folder as plugin.yaml next to the built executable.
 id: columbus.example-rust
 name: Geometry statistics (Rust example)
-version: 0.7.0                 # the columbus-plugin crate version
+version: 0.7.1                 # the columbus-plugin crate version
 runtime: rust
 entry: geometry_stats         # ".exe" is added on Windows
 tools:

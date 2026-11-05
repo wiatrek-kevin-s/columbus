@@ -104,7 +104,9 @@ export function ApprovalCard(props: {
                 ? a.risk === "edit"
                   ? "Edits are approved one change set at a time."
                   : "Scripts are approved one run at a time."
-                : "Allow for this session allows this exact request again until the assistant's session ends."}
+                : a.risk === "notes"
+                  ? "Allow for this session lets the assistant change your notes until its session ends, without asking (it asks again if it reads data from somewhere new). Every change is still recorded, and notes stay drafts until you mark them reviewed."
+                  : "Allow for this session allows this exact request again until the assistant's session ends."}
             </p>
           </>
         ) : null}

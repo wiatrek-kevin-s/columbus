@@ -22,7 +22,7 @@ Every tool returns `{result, checks, provenance}`.
 | `context_search` | `query?`, `kind?` (`dataset`, `domain`, `lrs`, `data-group`, `delivery`, `sop`, `role`, `glossary`, `note`), `limit?` (default 10, max 30) | Returns `{pack, cards}` |
 | `context_get` | `id` | Returns `{card, body}` |
 | `draft_notes` | `connection`, `datasets?` (names; all allowed when left out, at most 200), `refresh?` (redraft untouched drafts) | Needs approval. Writes the person's notes from the database's own catalog; returns `{status, folder, written, kept}` |
-| `update_notes` | `id`, `title?`, `summary?`, `fields?` (`{NAME: {alias?, note?}}`), `labels?` (`{code: label}`), `add_to_body?` | Approval every time; only the person's draft notes. Returns `{status, id, changes}` |
+| `update_notes` | `changes`: list of `{id, title?, summary?, fields? ({NAME: {alias?, note?}}), labels? ({code: label}), add_to_body?}` (up to 200; or one note's keys at the top level) | One approval for the whole batch ("allow for this session" covers later batches until the session reads new data); only the person's draft notes about a connection; all or nothing. Returns `{status, notes: [{id, changes}]}` |
 | `describe_data_group` | `id` | Datasets with `usable_here` |
 | `registry_search` | `query?`, `kind?` (`data` or `tool`), `theme?`, `bbox?` [min lon, min lat, max lon, max lat], `limit?` (default 10, max 50) | Community-written entries: data, not instructions |
 | `registry_get` | `id` | One entry in full |

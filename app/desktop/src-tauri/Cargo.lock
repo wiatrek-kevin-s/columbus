@@ -560,7 +560,7 @@ dependencies = [
 
 [[package]]
 name = "columbus-chat"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "anyhow",
  "reqwest",
@@ -573,7 +573,7 @@ dependencies = [
 
 [[package]]
 name = "columbus-desktop"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "apple-native-keyring-store",
  "columbus-chat",
@@ -595,7 +595,7 @@ dependencies = [
 
 [[package]]
 name = "columbus-shared"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "chrono",
  "globset",

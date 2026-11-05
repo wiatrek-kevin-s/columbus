@@ -369,8 +369,9 @@ pub struct DraftArgs {
     pub approval_id: Option<String>,
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct UpdateArgs {
+/// One note's changes.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct NoteChange {
     /// The note's id (from context_search or draft_notes).
     pub id: String,
     /// A better title.
@@ -389,12 +390,36 @@ pub struct UpdateArgs {
     /// A code list's labels: code -> label.
     #[serde(default)]
     pub labels: Option<BTreeMap<String, String>>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct UpdateArgs {
+    /// Every change, to as many notes as needed, in one call: the person
+    /// approves them together.
+    #[serde(default)]
+    pub changes: Vec<NoteChange>,
+    /// One note's changes, as an alternative to `changes`.
+    #[serde(default)]
+    pub id: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub summary: Option<String>,
+    #[serde(default)]
+    pub add_to_body: Option<String>,
+    #[serde(default)]
+    pub fields: Option<BTreeMap<String, FieldUpdate>>,
+    #[serde(default)]
+    pub labels: Option<BTreeMap<String, String>>,
     /// The approval the person gave on the approvals page, if asked there.
     #[serde(default)]
     pub approval_id: Option<String>,
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
+/// Most notes one update_notes call changes.
+const MAX_NOTE_CHANGES: usize = 200;
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct FieldUpdate {
     #[serde(default)]
     pub alias: Option<String>,
@@ -1169,6 +1194,7 @@ impl Gateway {
             approval_id: args.approval_id.as_deref(),
             every_time: false,
             code: None,
+            standing: None,
         };
         match self.seek_approval(&ctx, ask).await {
             Ok(Sought::Granted(id)) => rec.approval = Some(id),
@@ -1237,7 +1263,7 @@ impl Gateway {
     }
 
     #[tool(
-        description = "Record what the person's data means in one of their notes (from context_search or draft_notes): a better title or summary, field aliases and notes, labels for a code list's codes, or text added to the note (what it is for, how to read it, where the information came from: the person, or the document you read). The person sees exactly what changes and approves every update. Only the person's own notes can be changed, never the organization's pack, and a note stays a draft until the person marks it reviewed.",
+        description = "Record what the person's data means in their notes (from context_search or draft_notes): better titles or summaries, field aliases and notes, labels for a code list's codes, or text added to a note (what it is for, how to read it, where the information came from: the person, or the document you read). Send every change in one call, as `changes` (one entry per note, up to 200): the person sees them all and approves them together, and may allow note changes for the rest of the session. Only the person's own notes about a connection can be changed, never the organization's pack, and a note stays a draft until the person marks it reviewed.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -1249,12 +1275,42 @@ impl Gateway {
         Parameters(args): Parameters<UpdateArgs>,
         ctx: RequestContext<RoleServer>,
     ) -> Result<Json<Output<Value>>, String> {
-        let asked = json!({
-            "id": args.id, "title": args.title, "summary": args.summary, "add_to_body": args.add_to_body,
-            "fields": args.fields.as_ref().map(|m| m.iter().map(|(k, v)| (k.clone(), json!({"alias": v.alias, "note": v.note}))).collect::<serde_json::Map<_, _>>()),
-            "labels": args.labels,
-        });
-        let rec = self.gate(&ctx, "update_notes", &asked)?;
+        let mut changes = args.changes.clone();
+        if let Some(id) = &args.id {
+            changes.push(NoteChange {
+                id: id.clone(),
+                title: args.title.clone(),
+                summary: args.summary.clone(),
+                add_to_body: args.add_to_body.clone(),
+                fields: args.fields.clone(),
+                labels: args.labels.clone(),
+            });
+        }
+        let asked: Vec<Value> = changes.iter().map(change_json).collect();
+        let rec = self.gate(&ctx, "update_notes", &json!({"changes": asked}))?;
+        if changes.is_empty() {
+            return Err(self.deny(&ctx, rec, "nothing to change: give `changes`".to_string()));
+        }
+        if changes.len() > MAX_NOTE_CHANGES {
+            return Err(self.deny(
+                &ctx,
+                rec,
+                format!("at most {MAX_NOTE_CHANGES} notes in one call"),
+            ));
+        }
+        let mut seen_ids = BTreeSet::new();
+        for c in &changes {
+            if !seen_ids.insert(c.id.clone()) {
+                return Err(self.deny(
+                    &ctx,
+                    rec,
+                    format!(
+                        "{} appears twice: put all of a note's changes in one entry",
+                        c.id
+                    ),
+                ));
+            }
+        }
         let Some(pack) = self.notes_pack() else {
             return Err(self.deny(
                 &ctx,
@@ -1262,171 +1318,76 @@ impl Gateway {
                 "there are no notes yet: draft some with draft_notes".to_string(),
             ));
         };
-        let Some(raw) = pack.get(&args.id).cloned() else {
-            return Err(self.deny(
-                &ctx,
-                rec,
-                format!("no note {:?} among the person's notes", args.id),
-            ));
+        let Ok(root) = notes_root(&self.state.paths) else {
+            return Err(self.deny(&ctx, rec, "the notes folder is not usable".to_string()));
         };
-        let Some(visible) = self.visible_note(&raw) else {
-            return Err(self.deny(
-                &ctx,
-                rec,
-                format!("no note {:?} among the person's notes", args.id),
-            ));
-        };
-        self.note_served(&raw);
-        // Only notes about a connection: what is written into one is that
-        // connection's, and its readers carry its label.
-        let Some(conn_id) = raw.str_field("connection") else {
-            return Err(self.deny(
-                &ctx,
-                rec,
-                format!(
-                    "{} is not about a connection; only the person changes it",
-                    args.id
-                ),
-            ));
-        };
-        if raw.str_field("status").as_deref() != Some("draft") {
-            return Err(self.deny(
-                &ctx,
-                rec,
-                format!(
-                    "{} is marked {}: only the person changes it now",
-                    args.id,
-                    raw.str_field("status").unwrap_or_default()
-                ),
-            ));
-        }
-        // The approval covers this exact file as it is now.
-        let before = match std::fs::read(&raw.file) {
-            Ok(b) => b,
-            Err(e) => return Err(self.deny(&ctx, rec, format!("{}: {e}", raw.file.display()))),
-        };
-        let file_sha = {
-            let mut h = Sha256::new();
-            h.update(&before);
-            h.finalize()
-                .iter()
-                .map(|b| format!("{b:02x}"))
-                .collect::<String>()
-        };
-        // The note is the file as it is now, not as it was when the notes
-        // were loaded: a change since then is not overwritten.
-        let (now_card, now_body) = {
-            let text = String::from_utf8_lossy(&before).to_string();
-            let (yaml, body) = if raw.file.extension().and_then(|x| x.to_str()) == Some("md") {
-                match crate::context::front_matter(&text) {
-                    Some((y, b)) => (Some(y.to_string()), b.to_string()),
-                    None => (None, String::new()),
+        // Everything is checked before the person is asked; nothing is
+        // written unless all of it can be.
+        let session = self.state.flow.session_labels();
+        let policy = self.state.policy();
+        let mut rule_asks: BTreeSet<usize> = BTreeSet::new();
+        let mut planned: Vec<Planned> = Vec::new();
+        for c in &changes {
+            match self.plan_change(&pack, &root, c, &session, &policy.flows, &ctx) {
+                Ok((p, asks)) => {
+                    if let Some(r) = asks {
+                        rule_asks.insert(r);
+                    }
+                    planned.push(p);
                 }
-            } else {
-                (Some(text.clone()), String::new())
-            };
-            (
-                yaml.and_then(|y| serde_yaml::from_str::<serde_yaml::Mapping>(&y).ok()),
-                body,
-            )
-        };
-        if now_card.as_ref() != Some(&raw.card) || now_body != raw.body {
-            return Err(self.deny(
-                &ctx,
-                rec,
-                format!(
-                    "{} changed just now; read it again and propose the change again",
-                    args.id
-                ),
-            ));
-        }
-        // What this session has read goes into the note with the words: a
-        // flow rule that keeps that data from this connection applies, and
-        // later readers of the note carry its labels.
-        let own = columbus_flow::connection_label(&conn_id);
-        let mut labels: BTreeSet<String> = self.state.flow.session_labels();
-        labels.remove(&own);
-        let dest = format!("connection:{conn_id}");
-        let decision = columbus_flow::evaluate_to(&self.state.policy().flows, &labels, &dest);
-        if let columbus_flow::FlowDecision::Deny { labels, rule } = &decision {
-            return Err(self.deny(
-                &ctx,
-                rec,
-                format!(
-                    "organization flow rule {} forbids writing data from {} into notes about {conn_id}",
-                    rule + 1,
-                    labels.join(", ")
-                ),
-            ));
-        }
-        let rule_asks = match &decision {
-            columbus_flow::FlowDecision::Approve { rule: Some(r), .. } => Some(*r),
-            _ => None,
-        };
-        let mut request = asked.clone();
-        request["file_sha256"] = json!(file_sha);
-        // What the note will be treated as holding is part of what is approved.
-        request["labels"] = json!(labels.iter().collect::<Vec<_>>());
-        // The changes are checked on the note as the rules let it be seen
-        // (a field now hidden cannot be named), then made to the file as it
-        // is, so nothing the rules hide today is lost from it.
-        let mut seen = visible.card.clone();
-        let lines = match apply_changes(&mut seen, &visible.kind, &args) {
-            Ok(l) => l,
-            Err(e) => return Err(self.deny(&ctx, rec, e)),
-        };
-        let mut card = raw.card.clone();
-        if let Err(e) = apply_changes(&mut card, &raw.kind, &args) {
-            return Err(self.deny(&ctx, rec, e));
-        }
-        let mut body = raw.body.clone();
-        if let Some(add) = &args.add_to_body {
-            let add = add.replace('\r', "");
-            if raw.kind != "domain" {
-                body = format!("{}\n\n{}\n", body.trim_end(), add.trim());
+                Err(e) => return Err(self.deny(&ctx, rec, e)),
             }
         }
-        if lines.is_empty() {
-            return Err(self.deny(&ctx, rec, "nothing to change".to_string()));
-        }
-        let k = |s: &str| serde_yaml::Value::from(s);
-        card.insert(
-            k("edited_by"),
-            k(&format!(
-                "{} for {} on {}",
-                crate::server::client_name(&ctx),
-                self.state.user,
-                chrono::Local::now().date_naive()
-            )),
+        let carried: BTreeSet<String> = planned
+            .iter()
+            .flat_map(|p| p.carries.iter().cloned())
+            .collect();
+        let request = json!({
+            "changes": asked,
+            "files": planned.iter().map(|p| p.file_sha.clone()).collect::<Vec<_>>(),
+            "labels": carried.iter().collect::<Vec<_>>(),
+        });
+        // "Allow for this session" covers note changes while the session
+        // carries the same data; reading data from somewhere new asks again.
+        let scope = json!({"scope": "the person's own notes", "labels": session.iter().collect::<Vec<_>>()});
+        let mut summary = format!(
+            "{} change{} to {} of your notes:\n",
+            planned.iter().map(|p| p.lines.len()).sum::<usize>(),
+            if planned.iter().map(|p| p.lines.len()).sum::<usize>() == 1 {
+                ""
+            } else {
+                "s"
+            },
+            planned.len()
         );
-        card.remove(k("draft_sha256"));
-        card.remove(k("drafted_by"));
-        if !labels.is_empty() {
-            let mut carries: BTreeSet<String> = match card.get(k("carries")) {
-                Some(serde_yaml::Value::Sequence(l)) => l
-                    .iter()
-                    .filter_map(|x| x.as_str().map(String::from))
-                    .collect(),
-                _ => BTreeSet::new(),
-            };
-            carries.extend(labels.iter().cloned());
-            card.insert(
-                k("carries"),
-                serde_yaml::Value::Sequence(carries.into_iter().map(|x| k(&x)).collect()),
-            );
+        let mut shown = 0;
+        for p in &planned {
+            if summary.len() > 6000 {
+                break;
+            }
+            summary.push_str(&format!("\n{}:\n", p.id));
+            for l in &p.lines {
+                summary.push_str(&format!("  {l}\n"));
+            }
+            shown += 1;
         }
-        let mut summary = format!("Change your note {}:\n{}", args.id, lines.join("\n"));
-        if !labels.is_empty() {
+        if shown < planned.len() {
             summary.push_str(&format!(
-                "\n\nThis session has read data from {}; the note will be treated as holding it.",
-                labels
+                "\n… and {} more notes (all listed in the details).\n",
+                planned.len() - shown
+            ));
+        }
+        if !carried.is_empty() {
+            summary.push_str(&format!(
+                "\nThis session has read data from {}; these notes will be treated as holding it.",
+                carried
                     .iter()
                     .map(|l| l.trim_start_matches("connection:"))
                     .collect::<Vec<_>>()
                     .join(", ")
             ));
         }
-        if let Some(r) = rule_asks {
+        for r in &rule_asks {
             summary.push_str(&format!(
                 "\nOrganization flow rule {} asks for your approval for this.",
                 r + 1
@@ -1434,15 +1395,19 @@ impl Gateway {
         }
         let ask = Ask {
             tool: "update_notes",
-            label: "a change to your notes",
+            label: "changes to your notes",
             request: &request,
-            risk: Risk::Edit,
+            risk: Risk::Notes,
             summary,
-            detail: Some(json!({"arguments": asked, "changes": lines})),
+            detail: Some(
+                json!({"changes": planned.iter().map(|p| json!({"id": p.id, "changes": p.lines})).collect::<Vec<_>>()}),
+            ),
             approval_id: args.approval_id.as_deref(),
-            every_time: true,
+            every_time: policy.notes.ask_each_change || !rule_asks.is_empty(),
             code: None,
+            standing: Some(&scope),
         };
+        drop(policy);
         let mut rec = rec;
         match self.seek_approval(&ctx, ask).await {
             Ok(Sought::Granted(id)) => rec.approval = Some(id),
@@ -1464,37 +1429,219 @@ impl Gateway {
             }
             Err(e) => return Err(self.deny(&ctx, rec, e)),
         }
-        // Changed while the person decided (by them, say): nothing is written.
-        if std::fs::read(&raw.file).ok().as_deref() != Some(before.as_slice()) {
-            return Err(self.deny(&ctx, rec, format!("{} changed while the person was deciding; nothing was written. Read it again and propose the change again", args.id)));
-        }
-        let Ok(root) = notes_root(&self.state.paths) else {
-            return Err(self.deny(&ctx, rec, "the notes folder is not usable".to_string()));
-        };
-        let rel = match raw.file.strip_prefix(&root) {
-            Ok(r) => r.to_path_buf(),
-            Err(_) => {
-                return Err(self.deny(&ctx, rec, "the note is not in the notes folder".to_string()))
+        // Any of them changed while the person decided: none is written.
+        for p in &planned {
+            if std::fs::read(root.join(&p.rel)).ok().as_deref() != Some(p.before.as_slice()) {
+                return Err(self.deny(&ctx, rec, format!("{} changed while the person was deciding; nothing was written. Read the notes again and propose the changes again", p.id)));
             }
+        }
+        let mut written = Vec::new();
+        for p in &planned {
+            if let Err(e) = write_note(&root, &p.rel, &p.text) {
+                rec.reason = Some(format!(
+                    "{} note(s) written before an error: {}",
+                    written.len(),
+                    written.join(", ")
+                ));
+                return Err(self.deny(
+                    &ctx,
+                    rec,
+                    format!(
+                        "{}: {e} ({} written before it: {})",
+                        p.id,
+                        written.len(),
+                        written.join(", ")
+                    ),
+                ));
+            }
+            written.push(p.id.clone());
+        }
+        rec.reason = Some(format!(
+            "{} note(s) changed: {}",
+            written.len(),
+            written.join(", ")
+        ));
+        self.audit(&ctx, rec)?;
+        Ok(Json(Output {
+            result: json!({
+                "status": "updated",
+                "notes": planned.iter().map(|p| json!({"id": p.id, "changes": p.lines})).collect::<Vec<_>>(),
+            }),
+            checks: vec![],
+            provenance: None,
+        }))
+    }
+}
+
+/// One note's change, checked and ready to write.
+struct Planned {
+    id: String,
+    rel: PathBuf,
+    before: Vec<u8>,
+    file_sha: String,
+    text: String,
+    lines: Vec<String>,
+    carries: BTreeSet<String>,
+}
+
+fn change_json(c: &NoteChange) -> Value {
+    json!({
+        "id": c.id, "title": c.title, "summary": c.summary, "add_to_body": c.add_to_body,
+        "fields": c.fields.as_ref().map(|m| m.iter().map(|(k, v)| (k.clone(), json!({"alias": v.alias, "note": v.note}))).collect::<serde_json::Map<_, _>>()),
+        "labels": c.labels,
+    })
+}
+
+impl Gateway {
+    /// Check one note's change against the rules and the file as it is now,
+    /// and make the text to write; the flow rule asking for approval, if any.
+    fn plan_change(
+        &self,
+        pack: &Pack,
+        root: &Path,
+        c: &NoteChange,
+        session: &BTreeSet<String>,
+        flows: &[columbus_shared::policy::FlowRule],
+        ctx: &RequestContext<RoleServer>,
+    ) -> Result<(Planned, Option<usize>), String> {
+        let missing = || format!("no note {:?} among the person's notes", c.id);
+        let raw = pack.get(&c.id).cloned().ok_or_else(missing)?;
+        let visible = self.visible_note(&raw).ok_or_else(missing)?;
+        self.note_served(&raw);
+        // Only notes about a connection: what is written into one is that
+        // connection's, and its readers carry its label.
+        let conn_id = raw.str_field("connection").ok_or_else(|| {
+            format!(
+                "{} is not about a connection; only the person changes it",
+                c.id
+            )
+        })?;
+        if raw.str_field("status").as_deref() != Some("draft") {
+            return Err(format!(
+                "{} is marked {}: only the person changes it now",
+                c.id,
+                raw.str_field("status").unwrap_or_default()
+            ));
+        }
+        let rel = raw
+            .file
+            .strip_prefix(root)
+            .map(|r| r.to_path_buf())
+            .map_err(|_| format!("{} is not in the notes folder", c.id))?;
+        // The approval covers this exact file as it is now.
+        let before =
+            std::fs::read(&raw.file).map_err(|e| format!("{}: {e}", raw.file.display()))?;
+        let file_sha = {
+            let mut h = Sha256::new();
+            h.update(&before);
+            h.finalize()
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
         };
-        let yaml = match serde_yaml::to_string(&card) {
-            Ok(y) => y,
-            Err(e) => return Err(self.deny(&ctx, rec, e.to_string())),
+        // The note is the file as it is now, not as it was when the notes
+        // were loaded: a change since then is not overwritten.
+        let md = raw.file.extension().and_then(|x| x.to_str()) == Some("md");
+        let (now_card, now_body) = {
+            let text = String::from_utf8_lossy(&before).to_string();
+            let (yaml, body) = if md {
+                match crate::context::front_matter(&text) {
+                    Some((y, b)) => (Some(y.to_string()), b.to_string()),
+                    None => (None, String::new()),
+                }
+            } else {
+                (Some(text.clone()), String::new())
+            };
+            (
+                yaml.and_then(|y| serde_yaml::from_str::<serde_yaml::Mapping>(&y).ok()),
+                body,
+            )
         };
-        let text = if raw.file.extension().and_then(|x| x.to_str()) == Some("md") {
+        if now_card.as_ref() != Some(&raw.card) || now_body != raw.body {
+            return Err(format!(
+                "{} changed just now; read it again and propose the change again",
+                c.id
+            ));
+        }
+        // What this session has read goes into the note with the words: a
+        // flow rule that keeps that data from this connection applies, and
+        // later readers of the note carry its labels.
+        let mut labels = session.clone();
+        labels.remove(&columbus_flow::connection_label(&conn_id));
+        let decision = columbus_flow::evaluate_to(flows, &labels, &format!("connection:{conn_id}"));
+        if let columbus_flow::FlowDecision::Deny { labels, rule } = &decision {
+            return Err(format!(
+                "organization flow rule {} forbids writing data from {} into notes about {conn_id} ({})",
+                rule + 1,
+                labels.join(", "),
+                c.id
+            ));
+        }
+        let asks = match &decision {
+            columbus_flow::FlowDecision::Approve { rule: Some(r), .. } => Some(*r),
+            _ => None,
+        };
+        // Checked on the note as the rules let it be seen (a field now hidden
+        // cannot be named), then made to the file as it is, so nothing the
+        // rules hide today is lost from it.
+        let mut seen = visible.card.clone();
+        let lines =
+            apply_changes(&mut seen, &visible.kind, c).map_err(|e| format!("{}: {e}", c.id))?;
+        if lines.is_empty() {
+            return Err(format!("{}: nothing to change", c.id));
+        }
+        let mut card = raw.card.clone();
+        apply_changes(&mut card, &raw.kind, c).map_err(|e| format!("{}: {e}", c.id))?;
+        let mut body = raw.body.clone();
+        if let Some(add) = &c.add_to_body {
+            if raw.kind != "domain" {
+                body = format!("{}\n\n{}\n", body.trim_end(), add.replace('\r', "").trim());
+            }
+        }
+        let k = |s: &str| serde_yaml::Value::from(s);
+        card.insert(
+            k("edited_by"),
+            k(&format!(
+                "{} for {} on {}",
+                crate::server::client_name(ctx),
+                self.state.user,
+                chrono::Local::now().date_naive()
+            )),
+        );
+        card.remove(k("draft_sha256"));
+        card.remove(k("drafted_by"));
+        if !labels.is_empty() {
+            let mut carries: BTreeSet<String> = match card.get(k("carries")) {
+                Some(serde_yaml::Value::Sequence(l)) => l
+                    .iter()
+                    .filter_map(|x| x.as_str().map(String::from))
+                    .collect(),
+                _ => BTreeSet::new(),
+            };
+            carries.extend(labels.iter().cloned());
+            card.insert(
+                k("carries"),
+                serde_yaml::Value::Sequence(carries.into_iter().map(|x| k(&x)).collect()),
+            );
+        }
+        let yaml = serde_yaml::to_string(&card).map_err(|e| e.to_string())?;
+        let text = if md {
             format!("---\n{yaml}---\n\n{}", body.trim_start())
         } else {
             yaml
         };
-        if let Err(e) = write_note(&root, &rel, &text) {
-            return Err(self.deny(&ctx, rec, e));
-        }
-        self.audit(&ctx, rec)?;
-        Ok(Json(Output {
-            result: json!({"status": "updated", "id": args.id, "changes": lines}),
-            checks: vec![],
-            provenance: None,
-        }))
+        Ok((
+            Planned {
+                id: c.id.clone(),
+                rel,
+                before,
+                file_sha,
+                text,
+                lines,
+                carries: labels,
+            },
+            asks,
+        ))
     }
 }
 
@@ -1502,7 +1649,7 @@ impl Gateway {
 fn apply_changes(
     card: &mut serde_yaml::Mapping,
     kind: &str,
-    args: &UpdateArgs,
+    args: &NoteChange,
 ) -> Result<Vec<String>, String> {
     let clean = |s: &str, max: usize| -> Result<String, String> {
         if s.chars().count() > max {

@@ -26,6 +26,9 @@ const KEEP_MINUTES: i64 = 120;
 #[serde(rename_all = "snake_case")]
 pub enum Risk {
     Edit,
+    /// Changes to the person's own notes (never data, never the
+    /// organization's pack).
+    Notes,
     Script,
     Export,
     Download,
@@ -182,6 +185,18 @@ impl ApprovalStore {
             }
         }
         n
+    }
+
+    /// Allow every request to `tool` that names `scope` for the rest of the
+    /// session (an "allow for this session" wider than one exact request,
+    /// where the tool says what it covers).
+    pub fn stand(&self, tool: &str, scope: &Value) {
+        let hash = request_hash(tool, scope);
+        self.inner
+            .lock()
+            .expect("approval store poisoned")
+            .standing
+            .insert(hash, tool.to_string());
     }
 
     /// True when the person already said "always for this session" to this exact request.

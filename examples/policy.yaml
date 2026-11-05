@@ -67,4 +67,6 @@ fetch_hosts: ["tigerweb.geo.census.gov", "hazards.fema.gov", "*.arcgis.com"]
 # Notes Columbus drafts from a connection's database (draft_notes, or Draft
 # notes in the app): list the codes short fields hold, as code lists to label.
 # Off: fields, types, keys, relationships and comments only.
-notes: { values: true }
+# ask_each_change: ask the person about every change the assistant makes to
+# their notes. Off: one approval per batch, and "allow for this session".
+notes: { values: true, ask_each_change: false }

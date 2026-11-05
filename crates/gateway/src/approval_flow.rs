@@ -46,6 +46,9 @@ pub(crate) struct Ask<'a> {
     /// script), sent to the client as its own part; the page shows it from
     /// `detail`.
     pub code: Option<&'a str>,
+    /// What "allow for this session" covers, when wider than this exact
+    /// request (the tool's own choice; None: this exact request).
+    pub standing: Option<&'a Value>,
 }
 
 impl Gateway {
@@ -84,12 +87,22 @@ impl Gateway {
                 Sought::Granted(granted)
             }
         };
+        // "Allow for this session" on this request also covers its scope.
+        let widen = || {
+            if let Some(scope) = ask.standing {
+                if !ask.every_time && st.approvals.standing_allows(ask.tool, ask.request) {
+                    st.approvals.stand(ask.tool, scope);
+                }
+            }
+        };
         if let Some(id) = ask.approval_id {
             st.approvals
                 .consume(id, ask.tool, ask.request, self.now())?;
+            widen();
             return Ok(Sought::Granted(id.to_string()));
         }
-        if !ask.every_time && st.approvals.standing_allows(ask.tool, ask.request) {
+        let scope = ask.standing.unwrap_or(ask.request);
+        if !ask.every_time && st.approvals.standing_allows(ask.tool, scope) {
             return Ok(Sought::Granted("standing".into()));
         }
         let ap = st.approvals.request_with_detail(
@@ -121,6 +134,7 @@ impl Gateway {
                 st.approvals.decide_via(&ap.id, d, self.now(), "client")?;
                 st.approvals
                     .consume(&ap.id, ask.tool, ask.request, self.now())?;
+                widen();
                 return Ok(settled(ap.id));
             }
             Asked::Declined => {
@@ -145,6 +159,7 @@ impl Gateway {
                         match st.approvals.status(&ap.id, self.now()).map(|a| a.state) {
                             Some(State::Approved) => {
                                 st.approvals.consume(&ap.id, ask.tool, ask.request, self.now())?;
+                                widen();
                                 return Ok(settled(ap.id));
                             }
                             Some(State::Declined) => return Ok(Sought::Declined(declined())),

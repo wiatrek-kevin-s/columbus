@@ -108,8 +108,13 @@ person's own notes (cards say `"pack": "the person's own notes"`, with the
   SOP, a data dictionary), and record it with `update_notes`: `title`, `summary`,
   `fields: {NAME: {alias, note}}` for a dataset, `labels: {code: label}` for a code
   list, `add_to_body` for how to read it. Say where each fact came from ("from the
-  2024 roadway data dictionary, p. 12"). Every update is shown to the person and
-  approved. Never invent a meaning; leave it blank and ask.
+  2024 roadway data dictionary, p. 12"). Never invent a meaning; leave it blank and ask.
+- **Batch.** Work out everything first, then send it in ONE `update_notes` call:
+  `{"changes": [{"id": ..., ...}, {"id": ..., ...}]}` (up to 200 notes). The person
+  approves the batch once and may allow note changes for the rest of the session. Never
+  send one call per note or per field: each call can be an approval for them to click.
+  One bad entry refuses the whole batch, so check ids and field names against
+  `context_get` first.
 - Only drafts change; a note the person marked `reviewed` is theirs. Notes about a
   connection, dataset or field the rules no longer allow are not shown.
 
