@@ -392,6 +392,10 @@ fn level_a_on_macos_reaches_no_socket_service_or_home_folder() {
     let d = dirs();
     let sock = d.outside.join("bus.sock");
     let _listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+    // A local TCP service outside. Seatbelt refuses the connection, not the
+    // socket call, so the test connects.
+    let tcp = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let tcp_port = tcp.local_addr().unwrap().port();
     let home = std::env::var("HOME").unwrap();
     let s = [
         format!(
@@ -410,7 +414,10 @@ fn level_a_on_macos_reaches_no_socket_service_or_home_folder() {
             "keychains",
             &format!("os.listdir({:?})", format!("{home}/Library/Keychains")),
         ),
-        attempt("tcp", "socket.socket(socket.AF_INET)"),
+        attempt(
+            "tcp",
+            &format!("socket.create_connection(('127.0.0.1', {tcp_port}), timeout=3)"),
+        ),
         attempt(
             "exec_outside",
             "subprocess.run(['/usr/bin/true'], check=True)",
