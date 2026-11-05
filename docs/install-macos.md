@@ -2,13 +2,13 @@
 
 Columbus is a governed GIS server for AI agents. It runs on your computer, beside the AI client you already use (Claude desktop, or any MCP client), and enforces what the agent may read, write, run and send.
 
-This build is for Macs with Apple Silicon (M1 and later) on macOS 13 or later. It is the server alone: the Columbus desktop app comes later. For Windows, see [install.md](install.md).
+This build is for Macs with Apple Silicon (M1 and later) on macOS 13 or later. The Columbus app (step 5) is optional. For Windows, see [install.md](install.md).
 
-## What works on a Mac, and what doesn't yet
+## What works on a Mac
 
-Works as on Windows: describing, querying and processing vector and raster data; PostGIS, Oracle, SQL Server, GeoPackage and file connections; verification checks; exports to approved folders; the context pack; the open geospatial registry and its downloads; approvals; the audit log; remote (HTTP) MCP servers.
+Everything works as on Windows: describing, querying and processing vector and raster data; PostGIS, Oracle, SQL Server, GeoPackage and file connections; verification checks; exports to approved folders; the context pack; the open geospatial registry and its downloads; approvals; the audit log; remote (HTTP) MCP servers.
 
-Refused on a Mac for now: engine plugins, `run_python` scripts, and local MCP servers. On Windows and Linux these run inside a sandbox that limits what they can touch. Columbus has no Mac sandbox yet, so it refuses them rather than run them unprotected. `whoami` says so.
+Engine plugins, `run_python` scripts and local MCP servers run inside the macOS sandbox, which limits what they can read, write and reach (see "Confinement levels" in the README). Before the first one starts, Columbus checks that the sandbox works on this Mac, and refuses them if not; `whoami` says which.
 
 ## 1. Download and unpack
 

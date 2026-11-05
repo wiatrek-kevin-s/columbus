@@ -26,4 +26,4 @@ Columbus {{VERSION}}, a test release. Click a link to download that file.
 | `columbus-app-…` | The Columbus app: each running session's layers on a map, its tables, checks, and the requests waiting for your decision (you decide them in your browser) |
 | `.zip` | The server as a folder, with the GIS engine setup script, examples, skills and guides |
 
-On a Mac, engine plugins, `run_python` scripts and local MCP servers are refused for now: Columbus has no Mac sandbox for them yet. Nothing is code-signed yet, which is why macOS and Windows warn; the steps above say what to do.
+Nothing is code-signed yet, which is why macOS and Windows warn; the steps above say what to do.
