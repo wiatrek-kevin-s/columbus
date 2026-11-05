@@ -6,6 +6,7 @@ const RISK: Record<string, string> = {
   download: "Download",
   script: "Script",
   edit: "Edit",
+  notes: "Notes",
   long_job: "Long job",
   policy: "Policy",
 };
@@ -30,7 +31,7 @@ export function ApprovalCard(props: {
 }) {
   const { a } = props;
   const d = a.detail || {};
-  const once = a.risk === "script" || a.risk === "edit";
+  const once = a.offer_always === false || a.risk === "script" || a.risk === "edit";
   const [open, setOpen] = useState(false);
   // A card that has just appeared cannot be clicked by accident.
   const [armed, setArmed] = useState(false);
@@ -68,6 +69,21 @@ export function ApprovalCard(props: {
             ))}
           </dl>
         )}
+        {Array.isArray(d.changes) &&
+          d.changes.map((n, i) => (
+            <div key={i}>
+              <p className="approval-sub">{String(n.id)}:</p>
+              <pre className="code">
+                {(Array.isArray(n.changes) ? n.changes : [])
+                  .flatMap((line) => String(line).split("\n"))
+                  .map((part, j) => (
+                    <span key={j} className="ln">
+                      {part === "" ? " " : part}
+                    </span>
+                  ))}
+              </pre>
+            </div>
+          ))}
         {typeof d.code === "string" && (
           <>
             <p className="approval-sub">The code that will run{d.lines ? ` (${d.lines} lines)` : ""}:</p>
@@ -103,10 +119,10 @@ export function ApprovalCard(props: {
               {once
                 ? a.risk === "edit"
                   ? "Edits are approved one change set at a time."
-                  : "Scripts are approved one run at a time."
-                : a.risk === "notes"
-                  ? "Allow for this session lets the assistant change your notes until its session ends, without asking (it asks again if it reads data from somewhere new). Every change is still recorded, and notes stay drafts until you mark them reviewed."
-                  : "Allow for this session allows this exact request again until the assistant's session ends."}
+                  : a.risk === "script"
+                    ? "Scripts are approved one run at a time."
+                    : "This is asked every time."
+                : a.always_covers || "Allow for this session allows this exact request again until the assistant's session ends."}
             </p>
           </>
         ) : null}

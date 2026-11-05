@@ -78,6 +78,28 @@ pub struct Approval {
     /// Where the person decided: `client` (in-client prompt) or `page`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub decided_via: Option<String>,
+    /// Whether "allow for this session" may be chosen (never for scripts
+    /// and edits, nor where policy asks every time).
+    pub offer_always: bool,
+    /// What "allow for this session" would cover, in the person's words,
+    /// when it is wider than this exact request.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub always_covers: Option<String>,
+    /// The scopes "allow for this session" grants, fixed when the person is
+    /// asked (so a decision covers what they were shown, nothing later).
+    #[serde(skip)]
+    scopes: Vec<String>,
+}
+
+/// How an approval may be granted beyond this one call.
+#[derive(Debug, Clone, Default)]
+pub struct Offer {
+    pub always: bool,
+    /// Shown to the person: what "allow for this session" covers.
+    pub covers: Option<String>,
+    /// Granted, all of them, by "allow for this session"; empty: this exact
+    /// request only.
+    pub scopes: Vec<Value>,
 }
 
 #[derive(Default)]
@@ -119,6 +141,26 @@ impl ApprovalStore {
         risk: Risk,
         summary: String,
         detail: Option<Value>,
+        now: DateTime<Utc>,
+    ) -> Result<Approval, Denied> {
+        let offer = Offer {
+            always: !matches!(risk, Risk::Script | Risk::Edit),
+            ..Offer::default()
+        };
+        self.request_offering(tool, args, risk, summary, detail, offer, now)
+    }
+
+    /// As [`request_with_detail`](Self::request_with_detail), saying what
+    /// "allow for this session" may cover.
+    #[allow(clippy::too_many_arguments)]
+    pub fn request_offering(
+        &self,
+        tool: &str,
+        args: &Value,
+        risk: Risk,
+        summary: String,
+        detail: Option<Value>,
+        offer: Offer,
         now: DateTime<Utc>,
     ) -> Result<Approval, Denied> {
         let hash = request_hash(tool, args);
@@ -163,6 +205,9 @@ impl ApprovalStore {
             detail,
             decided_at: None,
             decided_via: None,
+            offer_always: offer.always,
+            always_covers: offer.covers.filter(|_| offer.always),
+            scopes: offer.scopes.iter().map(|v| request_hash(tool, v)).collect(),
         };
         let mut inner = self.inner.lock().expect("approval store poisoned");
         inner
@@ -187,16 +232,23 @@ impl ApprovalStore {
         n
     }
 
-    /// Allow every request to `tool` that names `scope` for the rest of the
-    /// session (an "allow for this session" wider than one exact request,
-    /// where the tool says what it covers).
-    pub fn stand(&self, tool: &str, scope: &Value) {
-        let hash = request_hash(tool, scope);
-        self.inner
-            .lock()
-            .expect("approval store poisoned")
-            .standing
-            .insert(hash, tool.to_string());
+    /// True when "allow for this session" covers every one of `scopes`
+    /// (none: never).
+    pub fn standing_covers(&self, tool: &str, scopes: &[Value]) -> bool {
+        !scopes.is_empty() && scopes.iter().all(|s| self.standing_allows(tool, s))
+    }
+
+    /// Take back what one approval's "allow for this session" granted (its
+    /// decision came under settings that have since changed).
+    pub fn unstand(&self, id: &str) {
+        let mut inner = self.inner.lock().expect("approval store poisoned");
+        let Some(a) = inner.approvals.get(id).cloned() else {
+            return;
+        };
+        inner.standing.remove(&a.hash);
+        for h in &a.scopes {
+            inner.standing.remove(h);
+        }
     }
 
     /// True when the person already said "always for this session" to this exact request.
@@ -243,6 +295,11 @@ impl ApprovalStore {
                 "approval {id} was already decided"
             )));
         }
+        let decision = if decision == Decision::AlwaysThisSession && !a.offer_always {
+            Decision::AllowOnce
+        } else {
+            decision
+        };
         a.state = match decision {
             Decision::Decline => State::Declined,
             Decision::AllowOnce | Decision::AlwaysThisSession => State::Approved,
@@ -252,6 +309,9 @@ impl ApprovalStore {
         let out = a.clone();
         if decision == Decision::AlwaysThisSession {
             inner.standing.insert(out.hash.clone(), out.tool.clone());
+            for h in &out.scopes {
+                inner.standing.insert(h.clone(), out.tool.clone());
+            }
         }
         Ok(out)
     }
@@ -444,7 +504,12 @@ mod tests {
 
     #[test]
     fn always_this_session_covers_only_the_same_request() {
-        let (s, a, args, now) = setup();
+        let s = ApprovalStore::new();
+        let args = json!({"connection": "roads-prod", "edits": 37});
+        let now = Utc::now();
+        let a = s
+            .request("apply_edits", &args, Risk::Export, "Send".into(), now)
+            .unwrap();
         s.decide(&a.id, Decision::AlwaysThisSession, now).unwrap();
         assert!(s.standing_allows("apply_edits", &args));
         assert!(!s.standing_allows(
@@ -452,5 +517,109 @@ mod tests {
             &json!({"connection": "roads-prod", "edits": 1})
         ));
         assert!(!s.standing_allows("run_python", &args));
+    }
+
+    #[test]
+    fn edits_and_scripts_are_never_allowed_for_the_session() {
+        let (s, a, args, now) = setup();
+        assert!(!a.offer_always);
+        s.decide(&a.id, Decision::AlwaysThisSession, now).unwrap();
+        assert!(!s.standing_allows("apply_edits", &args), "counted as once");
+        s.consume(&a.id, "apply_edits", &args, now).unwrap();
+    }
+
+    #[test]
+    fn allow_for_the_session_grants_the_scopes_shown_when_asked() {
+        let s = ApprovalStore::new();
+        let now = Utc::now();
+        let base = json!({"scope": "notes"});
+        let flow = json!({"scope": "notes", "into": "parcels", "from": "connection:roads"});
+        let other = json!({"scope": "notes", "into": "parcels", "from": "connection:hr"});
+        let offer = |scopes: Vec<Value>| Offer {
+            always: true,
+            covers: Some("covers".into()),
+            scopes,
+        };
+        let a = s
+            .request_offering(
+                "n",
+                &json!({"x": 1}),
+                Risk::Notes,
+                "s".into(),
+                None,
+                offer(vec![base.clone()]),
+                now,
+            )
+            .unwrap();
+        assert_eq!(a.always_covers.as_deref(), Some("covers"));
+        // Before the person decides, nothing stands.
+        assert!(!s.standing_covers("n", std::slice::from_ref(&base)));
+        s.decide(&a.id, Decision::AlwaysThisSession, now).unwrap();
+        assert!(s.standing_covers("n", std::slice::from_ref(&base)));
+        // A flow not shown is not covered, alone or with the base.
+        assert!(!s.standing_covers("n", &[base.clone(), flow.clone()]));
+        assert!(!s.standing_covers("n", &[]), "no scopes: never");
+        let b = s
+            .request_offering(
+                "n",
+                &json!({"x": 2}),
+                Risk::Notes,
+                "s".into(),
+                None,
+                offer(vec![base.clone(), flow.clone()]),
+                now,
+            )
+            .unwrap();
+        s.decide(&b.id, Decision::AlwaysThisSession, now).unwrap();
+        assert!(s.standing_covers("n", &[base.clone(), flow.clone()]));
+        assert!(!s.standing_covers("n", &[base.clone(), other]));
+        assert!(
+            !s.standing_covers("m", std::slice::from_ref(&base)),
+            "bound to the tool"
+        );
+        // Taken back (settings changed while the person decided).
+        s.unstand(&b.id);
+        assert!(!s.standing_covers("n", &[base.clone(), flow]));
+        // All of what it granted, the base scope too.
+        assert!(!s.standing_covers("n", &[base]));
+        // Allow once grants nothing for later.
+        let c = s
+            .request_offering(
+                "n",
+                &json!({"x": 3}),
+                Risk::Notes,
+                "s".into(),
+                None,
+                offer(vec![json!({"scope": "z"})]),
+                now,
+            )
+            .unwrap();
+        s.decide(&c.id, Decision::AllowOnce, now).unwrap();
+        assert!(!s.standing_covers("n", &[json!({"scope": "z"})]));
+    }
+
+    #[test]
+    fn not_offered_means_once() {
+        let s = ApprovalStore::new();
+        let now = Utc::now();
+        let a = s
+            .request_offering(
+                "n",
+                &json!({"x": 1}),
+                Risk::Notes,
+                "s".into(),
+                None,
+                Offer {
+                    always: false,
+                    covers: Some("covers".into()),
+                    scopes: vec![json!({"scope": "notes"})],
+                },
+                now,
+            )
+            .unwrap();
+        assert!(a.always_covers.is_none());
+        s.decide(&a.id, Decision::AlwaysThisSession, now).unwrap();
+        assert!(!s.standing_covers("n", &[json!({"scope": "notes"})]));
+        assert!(!s.standing_allows("n", &json!({"x": 1})));
     }
 }

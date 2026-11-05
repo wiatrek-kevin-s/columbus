@@ -601,8 +601,9 @@ pub enum Asked {
 
 /// Ask the person, through their MCP client's own interface, whether to
 /// allow a call. The agent cannot answer this: elicitation is shown to the
-/// person by the client, outside the model's turn. Without `offer_always`
-/// the only choice is to allow this one call. Keeps apart the
+/// person by the client, outside the model's turn. `always` is the text
+/// describing "allow for this session" (what it covers); without it the
+/// only choice is to allow this one call. Keeps apart the
 /// parts a client that draws its own prompt should show separately: the server's summary, and code written by the AI that the
 /// person must read (`_meta` key `io.columbus/approval`). `message` carries
 /// both for clients that show only text.
@@ -611,9 +612,10 @@ pub async fn ask_person_with(
     title: &str,
     summary: &str,
     code: Option<&str>,
-    offer_always: bool,
+    always: Option<&str>,
     timeout: Duration,
 ) -> Asked {
+    let offer_always = always.is_some();
     if !ctx
         .peer
         .supported_elicitation_modes()
@@ -621,12 +623,12 @@ pub async fn ask_person_with(
     {
         return Asked::Unsupported;
     }
-    let decision = if offer_always {
+    let decision = if let Some(text) = always {
         EnumSchema::builder(vec![
             "allow_once".to_string(),
             "always_this_session".to_string(),
         ])
-        .description("Allow once, or allow this exact request again for the rest of the session")
+        .description(text.to_string())
         .build()
     } else {
         EnumSchema::builder(vec!["allow_once".to_string()])

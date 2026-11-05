@@ -1,6 +1,6 @@
 Columbus {{VERSION}}, a test release. Click a link to download that file.
 
-**New in this version: far fewer approvals when your assistant fills in notes.** Your assistant now sends all its note changes at once, and you approve them together: one card listing every change, instead of one per note. Choose **Allow for this session** to let it carry on without asking; it asks again if it reads data from somewhere new. Every change is still recorded, your organization's data rules still apply, and notes stay drafts until you mark them reviewed. Since 0.7.0: notes about your data, drafted from your database (Draft notes in Settings).
+**New in this version: far fewer approvals when your assistant fills in notes.** Your assistant now sends all its note changes at once, and you approve them together: one card listing every change, instead of one per note. Choose **Allow for this session** to let it carry on without asking; the card says exactly what that covers, and it asks again before putting data from one connection into notes about another that you haven't seen on a card. Every change is still recorded, your organization's data rules still apply, and notes stay drafts until you mark them reviewed. Since 0.7.0: notes about your data, drafted from your database (Draft notes in Settings).
 
 ## Mac (Apple Silicon: M1 or later)
 

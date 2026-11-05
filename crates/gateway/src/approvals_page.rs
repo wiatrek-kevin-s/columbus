@@ -767,14 +767,12 @@ async fn decide(
         );
     };
     // Scripts are approved one run at a time, edits one change set at a
-    // time: "for this session" counts as once.
+    // time, and some requests are asked every time: "for this session"
+    // counts as once where it is not offered.
     if body.decision == Decision::AlwaysThisSession
-        && s.store.status(&id, Utc::now()).is_some_and(|a| {
-            matches!(
-                a.risk,
-                columbus_shared::approvals::Risk::Script | columbus_shared::approvals::Risk::Edit
-            )
-        })
+        && s.store
+            .status(&id, Utc::now())
+            .is_some_and(|a| !a.offer_always)
     {
         body.decision = Decision::AllowOnce;
     }

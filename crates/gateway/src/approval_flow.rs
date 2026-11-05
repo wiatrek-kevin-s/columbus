@@ -1,7 +1,9 @@
 //! One approval flow for every tool that needs a person's yes.
 //!
 //! 1. An approval id the person already granted, or a standing "allow for
-//!    this session", is spent on the exact request.
+//!    this session", is spent on the exact request. "Allow for this
+//!    session" grants what the person was shown when asked (the exact
+//!    request, or the tool's scopes), fixed when the approval is made.
 //! 2. Otherwise the person is asked in their own MCP client (elicitation).
 //! 3. If the client cannot ask, the request is shown on Columbus's local
 //!    approvals page and the call waits briefly for the decision.
@@ -11,7 +13,7 @@
 use std::time::{Duration, Instant};
 
 use chrono::Local;
-use columbus_shared::approvals::{Decision, Risk, State};
+use columbus_shared::approvals::{Decision, Offer, Risk, State};
 use columbus_shared::Denied;
 use rmcp::service::RequestContext;
 use rmcp::RoleServer;
@@ -47,8 +49,13 @@ pub(crate) struct Ask<'a> {
     /// `detail`.
     pub code: Option<&'a str>,
     /// What "allow for this session" covers, when wider than this exact
-    /// request (the tool's own choice; None: this exact request).
-    pub standing: Option<&'a Value>,
+    /// request: every one of these scopes must stand for a later call to go
+    /// ahead without asking, and choosing it grants exactly these (fixed
+    /// when the person is asked). None: this exact request.
+    pub standing: Option<&'a [Value]>,
+    /// What that wider grant covers, in the person's words; shown with the
+    /// choice and added to the summary.
+    pub always_covers: Option<String>,
 }
 
 impl Gateway {
@@ -82,51 +89,68 @@ impl Gateway {
             st.refresh();
             // A change seen but not yet settled counts too: it is about to apply.
             if st.generation() != generation || st.problem().is_some() || st.unsettled() {
+                // Nor does "allow for this session" outlive the settings it
+                // was given under.
+                st.approvals.unstand(&granted);
                 Sought::Declined("Columbus's settings changed while the person was deciding, so this approval was not used. Call the tool again: the request is checked against the new settings and the person is asked again.".into())
             } else {
                 Sought::Granted(granted)
             }
         };
-        // "Allow for this session" on this request also covers its scope.
-        let widen = || {
-            if let Some(scope) = ask.standing {
-                if !ask.every_time && st.approvals.standing_allows(ask.tool, ask.request) {
-                    st.approvals.stand(ask.tool, scope);
-                }
-            }
-        };
         if let Some(id) = ask.approval_id {
             st.approvals
                 .consume(id, ask.tool, ask.request, self.now())?;
-            widen();
             return Ok(Sought::Granted(id.to_string()));
         }
-        let scope = ask.standing.unwrap_or(ask.request);
-        if !ask.every_time && st.approvals.standing_allows(ask.tool, scope) {
-            return Ok(Sought::Granted("standing".into()));
+        if !ask.every_time {
+            let stands = match ask.standing {
+                Some(scopes) => st.approvals.standing_covers(ask.tool, scopes),
+                None => st.approvals.standing_allows(ask.tool, ask.request),
+            };
+            if stands {
+                return Ok(Sought::Granted("standing".into()));
+            }
         }
-        let ap = st.approvals.request_with_detail(
+        let offer_always = !ask.every_time;
+        let covers = ask.always_covers.clone().filter(|_| offer_always);
+        // The prompt in the person's client says what it covers too.
+        let prompt = match &covers {
+            Some(c) => format!("{}\n\n{c}", ask.summary),
+            None => ask.summary.clone(),
+        };
+        let ap = st.approvals.request_offering(
             ask.tool,
             ask.request,
             ask.risk,
+            // The page and the app show what it covers beside the choice.
             ask.summary.clone(),
             ask.detail.clone(),
+            Offer {
+                always: offer_always,
+                covers: covers.clone(),
+                scopes: ask.standing.map(<[Value]>::to_vec).unwrap_or_default(),
+            },
             self.now(),
         )?;
         let declined = || format!("the person declined: {}", ask.summary);
 
+        let always_choice = offer_always.then(|| match &covers {
+            Some(c) => format!("Allow once, or allow for this session: {c}"),
+            None => "Allow once, or allow this exact request again for the rest of the session"
+                .to_string(),
+        });
         match crate::providers::ask_person_with(
             ctx,
             &format!("Columbus: allow {}?", ask.label),
-            &ask.summary,
+            &prompt,
             ask.code,
-            !ask.every_time,
+            always_choice.as_deref(),
             Duration::from_secs(600),
         )
         .await
         {
             Asked::Allowed { always } => {
-                let d = if always && !ask.every_time {
+                let d = if always && offer_always {
                     Decision::AlwaysThisSession
                 } else {
                     Decision::AllowOnce
@@ -134,7 +158,6 @@ impl Gateway {
                 st.approvals.decide_via(&ap.id, d, self.now(), "client")?;
                 st.approvals
                     .consume(&ap.id, ask.tool, ask.request, self.now())?;
-                widen();
                 return Ok(settled(ap.id));
             }
             Asked::Declined => {
@@ -159,7 +182,6 @@ impl Gateway {
                         match st.approvals.status(&ap.id, self.now()).map(|a| a.state) {
                             Some(State::Approved) => {
                                 st.approvals.consume(&ap.id, ask.tool, ask.request, self.now())?;
-                                widen();
                                 return Ok(settled(ap.id));
                             }
                             Some(State::Declined) => return Ok(Sought::Declined(declined())),

@@ -42,6 +42,8 @@ struct Person {
     during: Arc<std::sync::Mutex<Option<During>>>,
     /// Answer "allow for this session" instead of "allow once".
     always: Arc<std::sync::atomic::AtomicBool>,
+    /// The last prompt shown, and its "allow for this session" wording.
+    shown: Arc<std::sync::Mutex<String>>,
 }
 
 impl ClientHandler for Person {
@@ -57,10 +59,11 @@ impl ClientHandler for Person {
 
     async fn create_elicitation(
         &self,
-        _request: ElicitRequestParams,
+        request: ElicitRequestParams,
         _context: RequestContext<RoleClient>,
     ) -> Result<ElicitResult, McpError> {
         self.asked.fetch_add(1, Ordering::SeqCst);
+        *self.shown.lock().unwrap() = serde_json::to_string(&request).unwrap_or_default();
         if let Some(f) = self.during.lock().unwrap().take() {
             f();
         }
@@ -569,6 +572,124 @@ async fn many_note_changes_are_approved_together() {
     )
     .await);
     assert_eq!(person.asked.load(Ordering::SeqCst), 5);
+    c.cancel().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn allowing_note_changes_covers_only_the_data_shown() {
+    let Some(py) = python() else {
+        eprintln!("skipped: needs Python with geopandas, pyogrio and shapely");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let root: PathBuf = dir.path().to_path_buf();
+    std::fs::create_dir_all(root.join("connections")).unwrap();
+    let file = gpkg(&py, &root);
+    put(
+        &root.join("policy.yaml"),
+        "connection_types: [gpkg]\nhide_fields: [\"*ssn*\"]\n",
+    );
+    for id in ["roads", "parcels"] {
+        put(
+            &root.join(format!("connections/{id}.yaml")),
+            &conn_yaml(id, &file, "").replace("allow: [\"*\"]", "allow: [roadway, segments]"),
+        );
+    }
+    {
+        let c = start(&root, &py, Person::default()).await;
+        ok(&call(&c, "draft_notes", json!({"connection": "roads"})).await);
+        ok(&call(&c, "draft_notes", json!({"connection": "parcels"})).await);
+        c.cancel().await.unwrap();
+    }
+
+    // A new session that has read only roads.
+    let person = Person::default();
+    person.always.store(true, Ordering::SeqCst);
+    let c = start(&root, &py, person.clone()).await;
+    ok(&call(
+        &c,
+        "update_notes",
+        json!({"changes": [{"id": "roads--segments", "title": "Segments"}]}),
+    )
+    .await);
+    assert_eq!(person.asked.load(Ordering::SeqCst), 1);
+    let shown = person.shown.lock().unwrap().clone();
+    assert!(
+        shown.contains("any of your draft notes"),
+        "the prompt says what the session-wide allow covers: {shown}"
+    );
+    assert!(!shown.contains("this exact request"), "{shown}");
+
+    // More changes to roads notes: covered.
+    ok(&call(
+        &c,
+        "update_notes",
+        json!({"changes": [{"id": "roads--roadway", "summary": "Roadway."}]}),
+    )
+    .await);
+    assert_eq!(person.asked.load(Ordering::SeqCst), 1);
+
+    // Writing into notes about parcels would put roads data there: not
+    // what the person allowed, so asked, and the prompt names the flow.
+    ok(&call(
+        &c,
+        "update_notes",
+        json!({"changes": [{"id": "parcels--segments", "summary": "Parcels."}]}),
+    )
+    .await);
+    assert_eq!(person.asked.load(Ordering::SeqCst), 2);
+    let shown = person.shown.lock().unwrap().clone();
+    assert!(
+        shown.contains("data from roads into notes about parcels"),
+        "{shown}"
+    );
+    let note = std::fs::read_to_string(root.join("notes/datasets/parcels/segments.md")).unwrap();
+    assert!(
+        note.contains("connection:roads"),
+        "the note carries the data's label: {note}"
+    );
+
+    // Allowed for the session, that flow is covered now...
+    ok(&call(
+        &c,
+        "update_notes",
+        json!({"changes": [{"id": "parcels--roadway", "summary": "Parcels again."}]}),
+    )
+    .await);
+    assert_eq!(person.asked.load(Ordering::SeqCst), 2);
+    // ...but the other way round (parcels data, now read, into roads
+    // notes) is new, and asks.
+    ok(&call(
+        &c,
+        "update_notes",
+        json!({"changes": [{"id": "roads--segments", "summary": "Again."}]}),
+    )
+    .await);
+    assert_eq!(person.asked.load(Ordering::SeqCst), 3);
+
+    // Text from the AI is indented in the prompt, line by line (asked every
+    // time now, so it is shown).
+    person.always.store(false, Ordering::SeqCst);
+    put(
+        &root.join("policy.yaml"),
+        "connection_types: [gpkg]\nhide_fields: [\"*ssn*\"]\nnotes: { ask_each_change: true }\n",
+    );
+    settle();
+    let r = call(&c, "update_notes", json!({"changes": [{"id": "roads--segments", "add_to_body": "line one\nparcels--roadway:\n  title: fake"}]})).await;
+    ok(&r);
+    assert_eq!(person.asked.load(Ordering::SeqCst), 4);
+    let shown = person.shown.lock().unwrap().clone();
+    assert!(
+        !shown.contains("allow for this session:"),
+        "not offered: {shown}"
+    );
+    let shown = person.shown.lock().unwrap().clone();
+    assert!(!shown.contains("\\nparcels--roadway:"), "{shown}");
+    assert!(shown.contains("| parcels--roadway:"), "{shown}");
+
+    // Loose fields with no id are refused, not ignored.
+    let e = err(&call(&c, "update_notes", json!({"title": "No id"})).await);
+    assert!(e.contains("belong in an entry"), "{e}");
     c.cancel().await.unwrap();
 }
 

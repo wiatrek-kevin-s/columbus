@@ -142,6 +142,23 @@ fn untouched_draft(path: &Path) -> bool {
 
 /// Write a file in the notes folder: never through a link, whole, then
 /// moved into place.
+/// A note's file and the folders to it are plain (no links, no
+/// devices), checked before the person is asked and again when written.
+fn plain_place(root: &Path, rel: &Path) -> Result<(), String> {
+    let mut at = root.to_path_buf();
+    for c in rel.parent().into_iter().flat_map(|p| p.components()) {
+        at.push(c);
+        if std::fs::symlink_metadata(&at).is_ok_and(|m| m.file_type().is_symlink() || !m.is_dir()) {
+            return Err(format!("{} is not a plain folder", at.display()));
+        }
+    }
+    let path = root.join(rel);
+    if std::fs::symlink_metadata(&path).is_ok_and(|m| !m.is_file()) {
+        return Err(format!("{} is not a plain file", path.display()));
+    }
+    Ok(())
+}
+
 fn write_note(root: &Path, rel: &Path, text: &str) -> Result<(), String> {
     let path = root.join(rel);
     let mut at = root.to_path_buf();
@@ -416,6 +433,8 @@ pub struct UpdateArgs {
     pub approval_id: Option<String>,
 }
 
+/// The most text one approval of note changes may show the person.
+const MAX_NOTES_SUMMARY: usize = 20_000;
 /// Most notes one update_notes call changes.
 const MAX_NOTE_CHANGES: usize = 200;
 
@@ -1195,6 +1214,7 @@ impl Gateway {
             every_time: false,
             code: None,
             standing: None,
+            always_covers: None,
         };
         match self.seek_approval(&ctx, ask).await {
             Ok(Sought::Granted(id)) => rec.approval = Some(id),
@@ -1276,6 +1296,11 @@ impl Gateway {
         ctx: RequestContext<RoleServer>,
     ) -> Result<Json<Output<Value>>, String> {
         let mut changes = args.changes.clone();
+        let loose = args.title.is_some()
+            || args.summary.is_some()
+            || args.add_to_body.is_some()
+            || args.fields.is_some()
+            || args.labels.is_some();
         if let Some(id) = &args.id {
             changes.push(NoteChange {
                 id: id.clone(),
@@ -1288,6 +1313,13 @@ impl Gateway {
         }
         let asked: Vec<Value> = changes.iter().map(change_json).collect();
         let rec = self.gate(&ctx, "update_notes", &json!({"changes": asked}))?;
+        if loose && args.id.is_none() {
+            return Err(self.deny(
+                &ctx,
+                rec,
+                "title, summary, add_to_body, fields and labels belong in an entry of `changes`, with the note's id".to_string(),
+            ));
+        }
         if changes.is_empty() {
             return Err(self.deny(&ctx, rec, "nothing to change: give `changes`".to_string()));
         }
@@ -1322,7 +1354,16 @@ impl Gateway {
             return Err(self.deny(&ctx, rec, "the notes folder is not usable".to_string()));
         };
         // Everything is checked before the person is asked; nothing is
-        // written unless all of it can be.
+        // written unless all of it can be. Reading these notes adds their
+        // labels first, so what the person is shown is what the session
+        // holds once they are read.
+        for c in &changes {
+            if let Some(raw) = pack.get(&c.id) {
+                if self.visible_note(raw).is_some() {
+                    self.note_served(raw);
+                }
+            }
+        }
         let session = self.state.flow.session_labels();
         let policy = self.state.policy();
         let mut rule_asks: BTreeSet<usize> = BTreeSet::new();
@@ -1338,53 +1379,59 @@ impl Gateway {
                 Err(e) => return Err(self.deny(&ctx, rec, e)),
             }
         }
-        let carried: BTreeSet<String> = planned
+        // Where data this session read goes: into notes about which
+        // connection, from where.
+        let flows: BTreeSet<(String, String)> = planned
             .iter()
-            .flat_map(|p| p.carries.iter().cloned())
+            .flat_map(|p| p.carries.iter().map(|l| (p.connection.clone(), l.clone())))
             .collect();
+        let flow_text = |(into, from): &(String, String)| {
+            format!(
+                "data from {} into notes about {into}",
+                from.trim_start_matches("connection:")
+            )
+        };
         let request = json!({
             "changes": asked,
             "files": planned.iter().map(|p| p.file_sha.clone()).collect::<Vec<_>>(),
-            "labels": carried.iter().collect::<Vec<_>>(),
+            "flows": flows.iter().map(flow_text).collect::<Vec<_>>(),
         });
-        // "Allow for this session" covers note changes while the session
-        // carries the same data; reading data from somewhere new asks again.
-        let scope = json!({"scope": "the person's own notes", "labels": session.iter().collect::<Vec<_>>()});
+        // "Allow for this session" covers changes to the person's draft
+        // notes, and each flow of data shown here; a later change that
+        // takes data anywhere else asks again.
+        const NOTES_SCOPE: &str = "the person's own notes";
+        let scopes: Vec<Value> = std::iter::once(json!({"scope": NOTES_SCOPE}))
+            .chain(
+                flows
+                    .iter()
+                    .map(|(into, from)| json!({"scope": NOTES_SCOPE, "into": into, "from": from})),
+            )
+            .collect();
+        let count = planned.iter().map(|p| p.lines.len()).sum::<usize>();
         let mut summary = format!(
-            "{} change{} to {} of your notes:\n",
-            planned.iter().map(|p| p.lines.len()).sum::<usize>(),
-            if planned.iter().map(|p| p.lines.len()).sum::<usize>() == 1 {
-                ""
-            } else {
-                "s"
-            },
+            "{count} change{} to {} of your notes:\n",
+            if count == 1 { "" } else { "s" },
             planned.len()
         );
-        let mut shown = 0;
         for p in &planned {
-            if summary.len() > 6000 {
-                break;
-            }
             summary.push_str(&format!("\n{}:\n", p.id));
             for l in &p.lines {
-                summary.push_str(&format!("  {l}\n"));
+                // Every line of the AI's text indented, so it cannot pass
+                // for the summary's own lines.
+                summary.push_str(&format!("  {}\n", l.replace('\n', "\n    | ")));
             }
-            shown += 1;
         }
-        if shown < planned.len() {
-            summary.push_str(&format!(
-                "\n… and {} more notes (all listed in the details).\n",
-                planned.len() - shown
+        if summary.chars().count() > MAX_NOTES_SUMMARY {
+            return Err(self.deny(
+                &ctx,
+                rec,
+                format!("these changes are too long to show the person in one approval (more than {MAX_NOTES_SUMMARY} characters): send them in smaller batches"),
             ));
         }
-        if !carried.is_empty() {
+        if !flows.is_empty() {
             summary.push_str(&format!(
-                "\nThis session has read data from {}; these notes will be treated as holding it.",
-                carried
-                    .iter()
-                    .map(|l| l.trim_start_matches("connection:"))
-                    .collect::<Vec<_>>()
-                    .join(", ")
+                "\nThis session has read data that these notes will be treated as holding: {}.",
+                flows.iter().map(flow_text).collect::<Vec<_>>().join("; ")
             ));
         }
         for r in &rule_asks {
@@ -1393,6 +1440,17 @@ impl Gateway {
                 r + 1
             ));
         }
+        let always_covers = format!(
+            "\"Allow for this session\" lets the assistant make further changes to any of your draft notes, without asking, until its session ends{}. It asks again before a change would put data from anywhere else into your notes. Every change is recorded, and notes stay drafts until you mark them reviewed.",
+            if flows.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    ", including putting {}",
+                    flows.iter().map(flow_text).collect::<Vec<_>>().join("; ")
+                )
+            }
+        );
         let ask = Ask {
             tool: "update_notes",
             label: "changes to your notes",
@@ -1405,7 +1463,8 @@ impl Gateway {
             approval_id: args.approval_id.as_deref(),
             every_time: policy.notes.ask_each_change || !rule_asks.is_empty(),
             code: None,
-            standing: Some(&scope),
+            standing: Some(&scopes),
+            always_covers: Some(always_covers),
         };
         drop(policy);
         let mut rec = rec;
@@ -1435,27 +1494,31 @@ impl Gateway {
                 return Err(self.deny(&ctx, rec, format!("{} changed while the person was deciding; nothing was written. Read the notes again and propose the changes again", p.id)));
             }
         }
-        let mut written = Vec::new();
+        let mut written: Vec<&Planned> = Vec::new();
         for p in &planned {
             if let Err(e) = write_note(&root, &p.rel, &p.text) {
-                rec.reason = Some(format!(
-                    "{} note(s) written before an error: {}",
-                    written.len(),
-                    written.join(", ")
-                ));
-                return Err(self.deny(
-                    &ctx,
-                    rec,
+                // All or nothing: the notes already written go back as
+                // they were.
+                let mut kept = Vec::new();
+                for w in &written {
+                    if write_note(&root, &w.rel, &String::from_utf8_lossy(&w.before)).is_err() {
+                        kept.push(w.id.clone());
+                    }
+                }
+                let why = if kept.is_empty() {
+                    format!("{}: {e}; nothing was changed", p.id)
+                } else {
                     format!(
-                        "{}: {e} ({} written before it: {})",
+                        "{}: {e}; these could not be put back and keep the change: {}",
                         p.id,
-                        written.len(),
-                        written.join(", ")
-                    ),
-                ));
+                        kept.join(", ")
+                    )
+                };
+                return Err(self.deny(&ctx, rec, why));
             }
-            written.push(p.id.clone());
+            written.push(p);
         }
+        let written: Vec<String> = written.iter().map(|p| p.id.clone()).collect();
         rec.reason = Some(format!(
             "{} note(s) changed: {}",
             written.len(),
@@ -1476,6 +1539,8 @@ impl Gateway {
 /// One note's change, checked and ready to write.
 struct Planned {
     id: String,
+    /// The connection the note is about.
+    connection: String,
     rel: PathBuf,
     before: Vec<u8>,
     file_sha: String,
@@ -1507,7 +1572,6 @@ impl Gateway {
         let missing = || format!("no note {:?} among the person's notes", c.id);
         let raw = pack.get(&c.id).cloned().ok_or_else(missing)?;
         let visible = self.visible_note(&raw).ok_or_else(missing)?;
-        self.note_served(&raw);
         // Only notes about a connection: what is written into one is that
         // connection's, and its readers carry its label.
         let conn_id = raw.str_field("connection").ok_or_else(|| {
@@ -1528,6 +1592,7 @@ impl Gateway {
             .strip_prefix(root)
             .map(|r| r.to_path_buf())
             .map_err(|_| format!("{} is not in the notes folder", c.id))?;
+        plain_place(root, &rel).map_err(|e| format!("{}: {e}", c.id))?;
         // The approval covers this exact file as it is now.
         let before =
             std::fs::read(&raw.file).map_err(|e| format!("{}: {e}", raw.file.display()))?;
@@ -1633,6 +1698,7 @@ impl Gateway {
         Ok((
             Planned {
                 id: c.id.clone(),
+                connection: conn_id.clone(),
                 rel,
                 before,
                 file_sha,

@@ -57,7 +57,10 @@ export interface Approval {
   request: unknown;
   expires: string;
   state: string;
+  offer_always?: boolean;
+  always_covers?: string;
   detail?: {
+    changes?: { id: string; changes: string[] }[];
     destination?: string;
     files?: { name: string; rows?: number | null }[];
     labels?: string[];

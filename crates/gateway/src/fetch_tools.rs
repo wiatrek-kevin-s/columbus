@@ -477,6 +477,7 @@ impl Gateway {
                 every_time: false,
                 code: None,
                 standing: None,
+                always_covers: None,
             };
             match self.seek_approval(&ctx, ask).await {
                 Ok(Sought::Granted(id)) => rec.approval = Some(id),

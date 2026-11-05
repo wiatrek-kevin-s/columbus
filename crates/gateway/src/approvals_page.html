@@ -119,6 +119,19 @@ button:disabled { opacity: .5; cursor: default; }
       });
     }
     if (dl.childNodes.length) c.appendChild(dl);
+    if (Array.isArray(d.changes)) {
+      // Every note change, in full, as text.
+      d.changes.forEach(function (n) {
+        c.appendChild(el("p", "sub", String(n.id) + ":"));
+        var pre = el("pre", "code", "");
+        (Array.isArray(n.changes) ? n.changes : []).forEach(function (line) {
+          String(line).split("\n").forEach(function (part) {
+            pre.appendChild(el("span", "ln", part === "" ? " " : part));
+          });
+        });
+        c.appendChild(pre);
+      });
+    }
     if (typeof d.code === "string") {
       // A script is always shown in full before it runs.
       c.appendChild(el("p", "sub", "The code that will run" + (d.lines ? " (" + d.lines + " lines)" : "") + ":"));
@@ -136,7 +149,7 @@ button:disabled { opacity: .5; cursor: default; }
     det.appendChild(el("pre", null, JSON.stringify(a.request, null, 2)));
     c.appendChild(det);
     var actions = el("div", "actions");
-    var once = a.risk === "script" || a.risk === "edit";
+    var once = a.offer_always === false || a.risk === "script" || a.risk === "edit";
     [["allow_once", "Allow once", "primary"], ["always_this_session", "Allow for this session", ""], ["decline", "Decline", "danger"]]
       .filter(function (b) { return !(once && b[0] === "always_this_session"); })
       .forEach(function (b) {
@@ -147,7 +160,7 @@ button:disabled { opacity: .5; cursor: default; }
         actions.appendChild(btn);
       });
     c.appendChild(actions);
-    c.appendChild(el("p", "hint", once ? (a.risk === "edit" ? "Edits are approved one change set at a time." : "Scripts are approved one run at a time.") : (a.risk === "notes" ? "Allow for this session lets the assistant change your notes until its session ends, without asking (it asks again if it reads data from somewhere new). Every change is still recorded, and notes stay drafts until you mark them reviewed." : "Allow for this session allows this exact request again until the assistant's session ends.")));
+    c.appendChild(el("p", "hint", once ? (a.risk === "edit" ? "Edits are approved one change set at a time." : a.risk === "script" ? "Scripts are approved one run at a time." : "This is asked every time.") : (a.always_covers || "Allow for this session allows this exact request again until the assistant's session ends.")));
     return c;
   }
 
