@@ -14,7 +14,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO / "app/ui/e2e"))
-from companion import Mcp, wait_file  # noqa: E402
+from mcp_client import Mcp, wait_file  # noqa: E402
 
 GATEWAY = Path(sys.argv[1]) if len(sys.argv) > 1 else REPO / "target/debug/columbus-mcp"
 APP = Path(sys.argv[2]) if len(sys.argv) > 2 else REPO / "app/desktop/src-tauri/target/debug/columbus-desktop"

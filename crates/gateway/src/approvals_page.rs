@@ -79,8 +79,8 @@ const SEEN_WINDOW: Duration = Duration::from_secs(6);
 const RELAUNCH_GAP: Duration = Duration::from_secs(30);
 /// Most tabs Columbus opens in one session for approvals.
 const MAX_LAUNCHES: u32 = 10;
-/// A window asked for (from the Columbus app, or "review in the browser"):
-/// a short gap against double clicks, and a cap.
+/// A window the Columbus app asked for: a short gap against double clicks,
+/// and a cap.
 const ASKED_GAP: Duration = Duration::from_secs(3);
 const MAX_ASKED: u32 = 20;
 /// The Columbus app counts as running while its heartbeat is this fresh.
@@ -210,7 +210,10 @@ impl Shared {
     /// the app's windows get a view token.
     fn launch(&self, why: Launch) -> Result<Shown, String> {
         match why {
-            Launch::Approval => {
+            // Review opens the same page as an approval does, under the
+            // same limits: an approve link in a browser's command line is
+            // what a local program could try to catch.
+            Launch::Approval | Launch::Review => {
                 if self.seen_within(SEEN_WINDOW) {
                     return Ok(Shown::AlreadyOpen);
                 }
@@ -225,7 +228,7 @@ impl Shared {
                 }
                 *l = (Some(Instant::now()), l.1 + 1);
             }
-            Launch::Review | Launch::View => {
+            Launch::View => {
                 let mut a = self.asked.lock().expect("asked");
                 if a.0.is_some_and(|t| t.elapsed() < ASKED_GAP) {
                     return Ok(Shown::Opened);
@@ -1012,6 +1015,32 @@ mod tests {
             );
         }
         assert!(s.session_for("guess", now).is_none());
+    }
+
+    #[test]
+    fn review_links_are_limited_like_approval_links() {
+        let (d, mut s) = shared();
+        s.opener = Opener::File(d.path().join("link.txt"));
+        assert_eq!(s.launch(Launch::Review).unwrap(), Shown::Opened);
+        let link = std::fs::read_to_string(d.path().join("link.txt")).unwrap();
+        assert!(
+            link.starts_with("http://127.0.0.1:"),
+            "approve links are http: {link}"
+        );
+        // A second ask straight after mints nothing new.
+        let _ = s.launch(Launch::Review);
+        let _ = s.launch(Launch::Approval);
+        assert_eq!(s.launch.lock().unwrap().len(), 1);
+        // App windows have their own allowance, and view tokens.
+        s.launch(Launch::View).unwrap();
+        let scopes: Vec<Scope> = s
+            .launch
+            .lock()
+            .unwrap()
+            .values()
+            .map(|(_, sc)| *sc)
+            .collect();
+        assert!(scopes.contains(&Scope::View) && scopes.contains(&Scope::Approve));
     }
 
     #[test]

@@ -223,6 +223,7 @@ fn heartbeat() {
 }
 
 fn main() {
+    #[allow(unused_mut)] // only Windows and Linux add a plugin here
     let mut builder = tauri::Builder::default();
     #[cfg(any(windows, target_os = "linux"))]
     {
