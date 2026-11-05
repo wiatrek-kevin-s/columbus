@@ -296,7 +296,9 @@ async fn test_connection(
     let fail = |m: String| (id.clone(), m);
     conn.validate(std::path::Path::new("the form"))
         .map_err(|e| fail(e.to_string()))?;
-    s.refresh();
+    crate::server::Gateway::with_state(s.clone())
+        .reload_settled()
+        .await;
     if let Some(why) = s.problem() {
         return Err(fail(why));
     }

@@ -129,7 +129,11 @@ gpd.GeoDataFrame({"RTE": ["IH0035", "US0183"], "district": [14, 12]}, geometry=[
 
         # Draft notes from the database: the running session writes them.
         d.find_element(By.XPATH, "//ul[@id='connections']//button[normalize-space()='Draft notes']").click()
-        wait.until(lambda drv: "Drafted" in drv.find_element(By.CSS_SELECTOR, ".draft-status").text)
+        try:
+            WebDriverWait(d, 60).until(lambda drv: "Drafted" in drv.find_element(By.CSS_SELECTOR, ".draft-status").text)
+        except Exception:
+            d.save_screenshot(str(OUT / "settings-notes-failed.png"))
+            raise SystemExit("Draft notes said: " + d.find_element(By.CSS_SELECTOR, ".draft-status").get_attribute("textContent"))
         note = root / "notes" / "datasets" / "roads" / "routes.md"
         assert note.exists(), list((root / "notes").rglob("*"))
         text = note.read_text()

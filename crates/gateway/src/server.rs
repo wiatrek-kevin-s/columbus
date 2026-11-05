@@ -1082,6 +1082,20 @@ impl Gateway {
             ));
         }
     }
+
+    /// For the person's own requests from the Columbus app (Test, Draft
+    /// notes), which often come right after a change they just saved: wait
+    /// (a few seconds at most) for a change still settling to apply.
+    pub(crate) async fn reload_settled(&self) {
+        let until = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            self.reload().await;
+            if !self.state.unsettled() || std::time::Instant::now() >= until {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
 }
 
 pub(crate) fn connection_handle(conn: &Connection, secret: Option<String>) -> Value {

@@ -1581,7 +1581,7 @@ fn apply_changes(
 /// person's own action (no approval asked; audited as the app's).
 pub(crate) async fn draft_from_app(state: std::sync::Arc<State>, connection: String) -> Value {
     let gw = Gateway::with_state(state.clone());
-    gw.reload().await;
+    gw.reload_settled().await;
     if let Some(why) = state.problem() {
         return json!({"ok": false, "message": why});
     }
