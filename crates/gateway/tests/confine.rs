@@ -629,6 +629,23 @@ fn on_macos_processes_and_memory_count_the_whole_tree() {
     }
     let d = dirs();
     let many = "import os, time\nfor i in range(12):\n    if os.fork() == 0:\n        time.sleep(20); os._exit(0)\ntime.sleep(20)\nprint('many: ok')\n";
+    // The program cannot lift the kernel's limit itself.
+    let lift = "import os, resource, time\nsoft, hard = resource.getrlimit(resource.RLIMIT_NPROC)\ntry:\n    resource.setrlimit(resource.RLIMIT_NPROC, (hard + 1000, hard + 1000))\n    print('raise: ok')\nexcept (ValueError, OSError):\n    print('raise: refused')\nn = 0\nfor i in range(200):\n    try:\n        if os.fork() == 0:\n            time.sleep(20); os._exit(0)\n        n += 1\n    except OSError:\n        break\nprint('forked', n, flush=True)\ntime.sleep(20)\n";
+    let out = run("A", &d.ws, &["--processes", "5"], &py, lift);
+    assert!(has(&out, "raise: refused"), "{}{}", out.stdout, out.stderr);
+    let forked: usize = out
+        .stdout
+        .lines()
+        .find_map(|l| {
+            l.strip_prefix("forked ")
+                .and_then(|n| n.trim().parse().ok())
+        })
+        .unwrap_or(0);
+    assert!(
+        forked < 200,
+        "the kernel refused forks past the limit: {}",
+        out.stdout
+    );
     let out = run("A", &d.ws, &["--processes", "5"], &py, many);
     assert!(!has(&out, "many: ok"), "{}{}", out.stdout, out.stderr);
     assert_eq!(out.code, 137, "{}", out.stderr);

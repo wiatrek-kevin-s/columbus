@@ -1,6 +1,6 @@
 Columbus {{VERSION}}, a test release. Click a link to download that file.
 
-**New in this version:** the app's chat shows code the AI wrote for a Python script in its own box, apart from what Columbus says about the run; requests you no longer need to answer are marked as withdrawn; closing the chat window ends its session.
+**New in this version:** on a Mac, engine plugins, `run_python` scripts and local MCP servers now run inside the macOS sandbox instead of being refused (see "Confinement levels" in the README for what it limits, and its known limits on a Mac). Before the first one starts, Columbus checks that the sandbox works on this Mac and refuses them if not.
 
 ## Mac (Apple Silicon: M1 or later)
 

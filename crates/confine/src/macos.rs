@@ -545,9 +545,14 @@ pub fn launch(spec: &Spec, program: &str, args: &[String]) -> Result<i32, Error>
         unsafe {
             cmd.pre_exec(move || {
                 let mut r: libc::rlimit = std::mem::zeroed();
-                if libc::getrlimit(libc::RLIMIT_NPROC, &mut r) == 0 && cap < r.rlim_cur {
+                if libc::getrlimit(libc::RLIMIT_NPROC, &mut r) == 0 && cap < r.rlim_max {
+                    // The hard limit too: a process may raise its own soft
+                    // limit, never its hard one.
                     r.rlim_cur = cap;
-                    libc::setrlimit(libc::RLIMIT_NPROC, &r);
+                    r.rlim_max = cap;
+                    if libc::setrlimit(libc::RLIMIT_NPROC, &r) != 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
                 }
                 Ok(())
             });
@@ -605,7 +610,12 @@ pub fn launch(spec: &Spec, program: &str, args: &[String]) -> Result<i32, Error>
         let _ = guard.wait();
         tag.remove();
     }
-    // Otherwise the guard, which outlives this launcher, keeps at it.
+    // Otherwise the guard, which outlives this launcher, keeps at it; the
+    // gateway is told.
+    if !empty {
+        eprintln!("columbus-confine: some of the program's processes could not be stopped yet; still trying");
+        return Ok(crate::EXIT_CONFINE_FAILED);
+    }
     let status = status.map_err(|e| Error::Setup(format!("waiting for the program: {e}")))?;
     match over.load(Ordering::SeqCst) {
         1 => {
