@@ -1,6 +1,6 @@
 Columbus {{VERSION}}, a test release. Click a link to download that file.
 
-**New in this version: editing data** (GeoPackage and PostGIS). The assistant proposes changes with `propose_edits` (nothing is written); `apply_edits` writes them to a copy in the workspace, or to your data after you approve a card that lists every change. Writing to your data stays off until your settings file has `allow_edits: true` and the connection has `mode: read-write`. Update the extension; the app is unchanged since 0.3.3.
+**New in this version: Settings in the Columbus app.** Add, edit and remove connections (Browse for a GeoPackage or a raster folder, or fill in a database; passwords go into your Keychain or Credential Manager) and turn edits and scripts on or off, without editing files. Anything that gives your assistant more access asks for Touch ID or your password (Windows Hello on Windows) first. Update both the extension and the app. Since 0.4.0: editing data in GeoPackage and PostGIS.
 
 ## Mac (Apple Silicon: M1 or later)
 

@@ -129,6 +129,16 @@ fn has_password(id: &str) -> bool {
         .is_some_and(|e| e.get_password().is_ok())
 }
 
+/// Whether a secret may be stored under this name. Fails closed: an answer
+/// other than "none" (the person declined the Keychain's prompt, say)
+/// counts as one. No credential store at all means none can be.
+fn secret_may_exist(id: &str) -> bool {
+    let Ok(e) = secret_entry(id) else {
+        return false;
+    };
+    !matches!(e.get_password(), Err(keyring_core::Error::NoEntry))
+}
+
 /// Every connection file in the folder, with the file it came from.
 fn scan(dir: &Path) -> Vec<(PathBuf, Result<Connection, String>)> {
     let mut out = vec![];
@@ -517,8 +527,8 @@ fn widening(old: Option<&Connection>, new: &Connection, password: bool) -> Strin
     parts.join("; ")
 }
 
-/// Credential names that connected servers' manifests use (kept when a
-/// connection of the same name is removed).
+/// Credential names that connected servers' manifests use (`auth:
+/// {credential: …}`), lower case.
 fn manifest_credentials() -> Vec<String> {
     let mut out = vec![];
     for d in paths::servers_dirs() {
@@ -526,18 +536,18 @@ fn manifest_credentials() -> Vec<String> {
             continue;
         };
         for e in entries.flatten() {
-            let Ok(text) = std::fs::read_to_string(e.path()) else {
+            let Some(v) = std::fs::read_to_string(e.path())
+                .ok()
+                .and_then(|t| serde_yaml::from_str::<serde_yaml::Value>(&t).ok())
+            else {
                 continue;
             };
-            for (i, _) in text.match_indices("credential:") {
-                let rest = text[i + "credential:".len()..].trim_start();
-                let name: String = rest
-                    .chars()
-                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
-                    .collect();
-                if !name.is_empty() {
-                    out.push(name.to_lowercase());
-                }
+            if let Some(c) = v
+                .get("auth")
+                .and_then(|a| a.get("credential"))
+                .and_then(|c| c.as_str())
+            {
+                out.push(c.to_lowercase());
             }
         }
     }
@@ -595,7 +605,13 @@ fn save_connection(form: ConnForm) -> Result<String, String> {
     let password = form.password.as_deref().filter(|p| !p.is_empty());
     // A password left under this name (by an earlier connection, the
     // command line, or a connected server's key) would go to the new place.
-    if old.is_none() && password.is_none() && has_password(&new.id) {
+    if old.is_none() && manifest_credentials().contains(&new.id.to_lowercase()) {
+        return Err(format!(
+            "{:?} is the name of a connected server's key; choose another name",
+            new.id
+        ));
+    }
+    if old.is_none() && password.is_none() && secret_may_exist(&new.id) {
         return Err(format!(
             "a password named {:?} is already stored on this computer (from an earlier connection or a connected server). Enter this connection's password, or choose another name",
             new.id
