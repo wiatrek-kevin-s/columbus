@@ -5,17 +5,31 @@
   "version": "0.0.0",
   "description": "A governed GIS server: query and process your organization's geodatabases, rasters and open data, with permissions, approvals, checks and provenance enforced by the server.",
   "long_description": "Columbus gives an AI agent GIS tools (describe and query datasets, vector and raster processing, verification, exports, the open geospatial registry, your organization's context pack) while the server enforces what it may read, write, run and send: database permissions and row filters, hidden fields, approvals in your own client, confinement for local servers and plugins, and a hash-chained audit log. Set up the GIS engine once with engine\\setup-engine.ps1.",
-  "author": { "name": "Columbus contributors" },
-  "repository": { "type": "git", "url": "https://github.com/wiatrek-kevin-s/columbus" },
+  "author": {
+    "name": "Columbus contributors"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/wiatrek-kevin-s/columbus"
+  },
   "homepage": "https://github.com/wiatrek-kevin-s/columbus",
   "license": "Apache-2.0",
-  "keywords": ["gis", "geospatial", "postgis", "geopackage", "raster", "governance"],
+  "keywords": [
+    "gis",
+    "geospatial",
+    "postgis",
+    "geopackage",
+    "raster",
+    "governance"
+  ],
   "server": {
     "type": "binary",
     "entry_point": "columbus-mcp.exe",
     "mcp_config": {
       "command": "${__dirname}/columbus-mcp.exe",
-      "args": ["serve"],
+      "args": [
+        "serve"
+      ],
       "env": {
         "COLUMBUS_CONNECTIONS": "${user_config.connections}",
         "COLUMBUS_CONTEXT": "${user_config.context_pack}",
@@ -40,9 +54,13 @@
       "type": "file",
       "title": "Engine Python",
       "description": "The engine's Python: engine\\setup-engine.ps1 prints the path to paste here.",
-      "required": false
+      "required": true
     }
   },
-  "compatibility": { "platforms": ["win32"] },
+  "compatibility": {
+    "platforms": [
+      "win32"
+    ]
+  },
   "tools_generated": true
 }

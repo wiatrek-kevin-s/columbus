@@ -30,10 +30,19 @@ pub struct Paths {
     pub context: PathBuf,
 }
 
+/// A location from the environment. Empty counts as unset, and so does an
+/// unfilled `${...}` placeholder: Claude desktop passes an optional `.mcpb`
+/// setting the person left empty as the literal `${user_config.<name>}`.
 fn env_path(name: &str) -> Option<PathBuf> {
     std::env::var_os(name)
-        .filter(|v| !v.is_empty())
+        .filter(|v| !v.is_empty() && !is_placeholder(v))
         .map(PathBuf::from)
+}
+
+fn is_placeholder(v: &std::ffi::OsStr) -> bool {
+    v.to_str()
+        .map(str::trim)
+        .is_some_and(|s| s.starts_with("${") && s.ends_with('}'))
 }
 
 impl Paths {
@@ -168,4 +177,21 @@ pub fn load_policy(paths: &Paths) -> Result<(OrgPolicy, PolicySource)> {
 
 pub fn load_connections(paths: &Paths) -> Result<Vec<Connection>> {
     Connection::load_dir(&paths.connections).with_context(|| "loading connections")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unfilled_mcpb_settings_count_as_unset() {
+        use std::ffi::OsStr;
+        assert!(is_placeholder(OsStr::new("${user_config.python}")));
+        assert!(!is_placeholder(OsStr::new(
+            "/Users/me/engine/venv/bin/python3"
+        )));
+        assert!(!is_placeholder(OsStr::new(
+            "C:\\Columbus\\${odd}\\python.exe"
+        )));
+    }
 }
