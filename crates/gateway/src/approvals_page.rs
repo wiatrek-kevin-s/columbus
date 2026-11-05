@@ -685,11 +685,15 @@ async fn decide(
             "expected {\"decision\": \"decline\" | \"allow_once\" | \"always_this_session\"}",
         );
     };
-    // Scripts are approved one run at a time: "for this session" counts as once.
+    // Scripts are approved one run at a time, edits one change set at a
+    // time: "for this session" counts as once.
     if body.decision == Decision::AlwaysThisSession
-        && s.store
-            .status(&id, Utc::now())
-            .is_some_and(|a| a.risk == columbus_shared::approvals::Risk::Script)
+        && s.store.status(&id, Utc::now()).is_some_and(|a| {
+            matches!(
+                a.risk,
+                columbus_shared::approvals::Risk::Script | columbus_shared::approvals::Risk::Edit
+            )
+        })
     {
         body.decision = Decision::AllowOnce;
     }

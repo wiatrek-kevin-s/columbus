@@ -23,6 +23,7 @@ mod approvals_page;
 mod companion;
 mod config;
 mod context;
+mod edit_tools;
 mod export_tools;
 mod fetch_tools;
 mod gis_tools;

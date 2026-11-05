@@ -30,7 +30,7 @@ export function ApprovalCard(props: {
 }) {
   const { a } = props;
   const d = a.detail || {};
-  const once = a.risk === "script";
+  const once = a.risk === "script" || a.risk === "edit";
   const [open, setOpen] = useState(false);
   // A card that has just appeared cannot be clicked by accident.
   const [armed, setArmed] = useState(false);
@@ -101,7 +101,9 @@ export function ApprovalCard(props: {
             </div>
             <p className="hint">
               {once
-                ? "Scripts are approved one run at a time."
+                ? a.risk === "edit"
+                  ? "Edits are approved one change set at a time."
+                  : "Scripts are approved one run at a time."
                 : "Allow for this session allows this exact request again until the assistant's session ends."}
             </p>
           </>

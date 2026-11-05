@@ -118,7 +118,7 @@ button.link { border: 0; background: none; padding: 2px 0; color: var(--hydro); 
 .approval.risk-script .approval-band, .approval.risk-edit .approval-band { background: var(--fail); }
 .approval.risk-download .approval-band { background: var(--hydro); color: var(--hydro-ink); }
 .approval-body { padding: 12px 16px 12px; }
-.approval-summary { font-size: 16px; font-weight: 600; margin: 0 0 2px; max-width: 70ch; }
+.approval-summary { font-size: 16px; font-weight: 600; margin: 0 0 2px; max-width: 70ch; white-space: pre-line; overflow-wrap: anywhere; }
 .approval-meta { margin: 0 0 8px; color: var(--ink-soft); font-size: 12.5px; }
 .approval-facts { display: grid; gap: 2px; margin: 0 0 8px; font-size: 13px; }
 .approval-facts div { display: grid; grid-template-columns: 120px 1fr; gap: 8px; }

@@ -249,6 +249,30 @@ through one. `export_output` copies one out to an export folder `whoami` lists, 
 full checks; a `fail` anywhere in the layer's history blocks it unless the person approves
 an override (see the maps-and-deliverables skill).
 
+### 11. Edits
+
+Columbus edits in two steps, and only GeoPackage and PostGIS datasets so far.
+
+1. `propose_edits` with `connection`, `dataset` and `changes`, each one of
+   `{"op": "update", "key": <primary key>, "values": {...}, "geometry": <GeoJSON>}`
+   (values, geometry or both), `{"op": "insert", "values": {...}, "geometry": <GeoJSON>}` or
+   `{"op": "delete", "key": <primary key>}`. Geometries are GeoJSON in EPSG:4326 unless you
+   pass `crs`; the server reprojects them, checks validity and type, and refuses rows outside
+   the connection's row filter, hidden or unknown fields, the key, and values of the wrong
+   type. It writes nothing to the source: it returns a `change` handle, a `changes` list
+   (before → after) and a `preview` layer.
+2. Show the person the `changes` list in plain words, then `apply_edits` with the `change`
+   handle and `target`:
+   - `"copy"`: a new workspace layer with the edits made. No approval, the source untouched.
+     Use it to check the result, or when edits to the source are not allowed.
+   - `"source"`: writes the dataset. Needs `policy.edits_allowed`, a `read-write` connection
+     and the person's approval of that exact change set (every time). It is one transaction:
+     if a row changed since you proposed, or a change would move a row outside the row filter,
+     nothing is written and you must propose again.
+
+Never describe edits as made until `apply_edits` returns `"status": "written"` (source) or
+`"applied_to_copy"` (copy), and say which.
+
 ### Worked session (illustrative values)
 
 ```text

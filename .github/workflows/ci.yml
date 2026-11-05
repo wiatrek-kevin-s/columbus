@@ -85,7 +85,9 @@ jobs:
           npm run build
       - run: cargo build -p columbus-mcp --locked
       - name: The window in a browser, against a real session
-        run: python app/ui/e2e/companion.py target/debug/columbus-mcp
+        run: |
+          python app/ui/e2e/companion.py target/debug/columbus-mcp
+          python app/ui/e2e/edits.py target/debug/columbus-mcp
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -184,7 +186,7 @@ jobs:
       - name: Worker tests against PostGIS
         run: python -m unittest discover -s workers/python/tests -v
       - name: Gateway end to end against PostGIS
-        run: cargo test -p columbus-mcp --test postgis --test gis --locked -- --nocapture
+        run: cargo test -p columbus-mcp --test postgis --test gis --test edits --locked -- --nocapture
 
   oracle:
     name: Oracle engine

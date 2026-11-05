@@ -246,7 +246,7 @@ class _Scrub:
         return text.replace(self.secret, "***") if self.secret else text
 
 
-def _pg_connect(conn: dict[str, Any], timeout_s: float):
+def _pg_connect(conn: dict[str, Any], timeout_s: float, write: bool = False):
     try:
         import psycopg
     except ImportError as e:
@@ -262,9 +262,12 @@ def _pg_connect(conn: dict[str, Any], timeout_s: float):
     # same name in a configured schema would be found before the built-in
     # one, and the server's checks are about the built-in ones.
     search_path = ",".join(["pg_catalog"] + [p for p in search_path.split(",") if p and p != "pg_catalog"])
-    # Read-only at the server, for every transaction in this session.
+    # Read-only at the server, for every transaction in this session; only
+    # the edit tool's application of an approved change set opens one that
+    # may write (columbus_edits).
+    ro = "off" if write else "on"
     options = (
-        f"-c default_transaction_read_only=on -c statement_timeout={ms} "
+        f"-c default_transaction_read_only={ro} -c statement_timeout={ms} "
         f"-c idle_in_transaction_session_timeout=60000 -c search_path={search_path}"
     )
     kwargs = {
@@ -282,7 +285,7 @@ def _pg_connect(conn: dict[str, Any], timeout_s: float):
         db = psycopg.connect(**{k: v for k, v in kwargs.items() if v not in (None, "")})
     except psycopg.Error as e:
         raise WorkerError(ENGINE_ERROR, scrub(f"cannot connect: {e}".strip())) from None
-    db.read_only = True
+    db.read_only = not write
     try:
         _pg_refuse_foreign_operators(db, [x for x in search_path.split(",") if x != "pg_catalog"])
     except WorkerError:
@@ -1768,8 +1771,17 @@ for _name, _fn in (
     ("raster_op", raster_op),
     ("registry_search", registry_search),
     ("registry_get", registry_get),
+    ("edit_schema", lambda p: _edits().edit_schema(p)),
+    ("edit_prepare", lambda p: _edits().edit_prepare(p)),
+    ("edit_apply", lambda p: _edits().edit_apply(p)),
 ):
     plugin.tool(_name)(lambda ctx, fn=_fn: fn(ctx.params))
+
+
+def _edits():
+    import columbus_edits
+
+    return columbus_edits
 
 
 def _preload_gis() -> None:

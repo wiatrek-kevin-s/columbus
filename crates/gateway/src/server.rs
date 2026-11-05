@@ -436,6 +436,8 @@ pub struct State {
     pub outputs: crate::providers::Outputs,
     /// `run_python` runs one script at a time per session.
     pub scripts: tokio::sync::Mutex<()>,
+    /// Change sets propose_edits made in this session.
+    pub edits: crate::edit_tools::ChangeSets,
     pub session: String,
     pub user: String,
     pub notes: Vec<String>,
@@ -592,6 +594,7 @@ impl State {
             flow: columbus_flow::FlowState::new(),
             outputs: crate::providers::Outputs::default(),
             scripts: tokio::sync::Mutex::new(()),
+            edits: Default::default(),
             paths,
             policy,
             policy_source,
@@ -632,7 +635,8 @@ impl Gateway {
                 + Self::export_router()
                 + Self::fetch_router()
                 + Self::raster_router()
-                + Self::script_router(),
+                + Self::script_router()
+                + Self::edit_router(),
         }
     }
 

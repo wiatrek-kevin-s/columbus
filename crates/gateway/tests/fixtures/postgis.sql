@@ -65,6 +65,20 @@ CREATE OPERATOR lookalike.= (LEFTARG = text, RIGHTARG = text, FUNCTION = pg_cata
 
 ANALYZE roads.roadway_inventory;
 
+-- For the edit tests alone (tests/edits.rs), so their writes never change
+-- what the read tests count. fid 4 is outside district 14.
+CREATE TABLE roads.edit_parcels (
+  fid serial PRIMARY KEY,
+  name text NOT NULL,
+  district_nbr integer NOT NULL,
+  owner_name text,
+  geom geometry(Polygon, 3081)
+);
+INSERT INTO roads.edit_parcels (name, district_nbr, owner_name, geom)
+SELECT chr(64 + i), CASE WHEN i = 4 THEN 12 ELSE 14 END, 'Owner ' || i,
+       ST_MakeEnvelope(1000000 + i * 1000, 7000000, 1000000 + i * 1000 + 900, 7000900, 3081)
+FROM generate_series(1, 5) AS i;
+
 CREATE ROLE columbus_ro LOGIN PASSWORD 'columbus_ro_test';
 GRANT USAGE ON SCHEMA roads TO columbus_ro;
 GRANT SELECT ON roads.roadway_inventory, roads.roadway_audit TO columbus_ro;

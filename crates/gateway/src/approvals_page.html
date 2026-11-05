@@ -26,7 +26,7 @@ h1 { font-size: 1.15rem; margin: 0; }
 h2 { font-size: .8rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 24px 0 8px; }
 .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin: 0 0 12px; }
 .card.waiting { border-color: var(--warn-line); box-shadow: 0 0 0 3px var(--warn-bg); }
-.summary { font-size: 1.02rem; margin: 0 0 10px; }
+.summary { font-size: 1.02rem; margin: 0 0 10px; white-space: pre-line; overflow-wrap: anywhere; }
 .meta { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 10px; }
 .chip { background: var(--chip); border-radius: 999px; padding: 2px 10px; font-size: .8rem; color: var(--muted); }
 dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 0 0 10px; font-size: .9rem; }
@@ -136,7 +136,7 @@ button:disabled { opacity: .5; cursor: default; }
     det.appendChild(el("pre", null, JSON.stringify(a.request, null, 2)));
     c.appendChild(det);
     var actions = el("div", "actions");
-    var once = a.risk === "script";
+    var once = a.risk === "script" || a.risk === "edit";
     [["allow_once", "Allow once", "primary"], ["always_this_session", "Allow for this session", ""], ["decline", "Decline", "danger"]]
       .filter(function (b) { return !(once && b[0] === "always_this_session"); })
       .forEach(function (b) {
@@ -147,7 +147,7 @@ button:disabled { opacity: .5; cursor: default; }
         actions.appendChild(btn);
       });
     c.appendChild(actions);
-    c.appendChild(el("p", "hint", once ? "Scripts are approved one run at a time." : "Allow for this session allows this exact request again until the assistant's session ends."));
+    c.appendChild(el("p", "hint", once ? (a.risk === "edit" ? "Edits are approved one change set at a time." : "Scripts are approved one run at a time.") : "Allow for this session allows this exact request again until the assistant's session ends."));
     return c;
   }
 

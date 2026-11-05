@@ -191,7 +191,7 @@ fn name_ok(s: &str) -> bool {
 /// by dots (`roads`, `roads.roadway_inventory`, `Tribal Census Tract`).
 /// Each part is a plain identifier, or a name `quotable` accepts, which
 /// `dataset_sql` quotes; nothing in it can change the statement.
-fn dataset_ok(d: &str) -> Result<(), String> {
+pub(crate) fn dataset_ok(d: &str) -> Result<(), String> {
     let parts: Vec<&str> = d.split('.').collect();
     if parts.len() > 3 || !parts.iter().all(|p| name_ok(p)) {
         return Err(format!(
@@ -220,7 +220,7 @@ pub(crate) fn dataset_sql(d: &str, dialect: SqlDialect) -> Result<String, String
 
 /// A quoted identifier. The names reaching here cannot hold a quote or a
 /// bracket, but they are escaped anyway.
-fn quote(name: &str, d: SqlDialect) -> String {
+pub(crate) fn quote(name: &str, d: SqlDialect) -> String {
     match d {
         SqlDialect::MsSql => format!("[{}]", name.replace(']', "]]")),
         _ => format!("\"{}\"", name.replace('"', "\"\"")),
@@ -230,7 +230,7 @@ fn quote(name: &str, d: SqlDialect) -> String {
 /// A file name stem from a dataset name: lower case, anything but letters,
 /// digits, `_` and `-` as `_`, and never starting with `-` (which a command
 /// line would read as an option).
-fn file_stem(dataset: &str) -> String {
+pub(crate) fn file_stem(dataset: &str) -> String {
     let s: String = dataset
         .rsplit('.')
         .next()
@@ -304,7 +304,7 @@ struct Read {
 
 impl Gateway {
     /// `describe_dataset`'s answer for a dataset, cached for the session.
-    async fn dataset_info(
+    pub(crate) async fn dataset_info(
         &self,
         access: &EffectiveAccess,
         conn: &Connection,
