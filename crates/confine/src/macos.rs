@@ -176,7 +176,7 @@ pub(crate) fn profile(level: Level, n_ro: usize, n_rw: usize) -> String {
         ),
         Level::B => p.push_str(
             "(allow system-socket (socket-domain AF_INET))\n\
-             (allow network-outbound (remote ip))\n\
+             (allow network-outbound (remote ip4))\n\
              (deny network-outbound (remote ip \"localhost:*\"))\n\
              (allow network-outbound (literal \"/private/var/run/mDNSResponder\"))\n\
              (allow mach-lookup (global-name \"com.apple.dnssd.service\") (global-name \"com.apple.trustd\") \
@@ -591,7 +591,7 @@ pub fn launch(spec: &Spec, program: &str, args: &[String]) -> Result<i32, Error>
                     tag.stop_all();
                     return;
                 }
-                std::thread::sleep(Duration::from_millis(150));
+                std::thread::sleep(Duration::from_millis(50));
             }
         })
     };

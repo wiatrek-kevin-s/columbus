@@ -269,7 +269,9 @@ fn memory_limit_applies() {
     if cfg!(target_os = "macos") {
         // macOS does not refuse the allocation; the launcher stops the
         // program once it is using the memory.
-        let s = "b = bytearray(1024 * 1024 * 1024)\nfor i in range(0, len(b), 4096): b[i] = 1\nprint('big: ok')\n";
+        // Polled, not enforced by the kernel: the program holds the memory
+        // for a moment, as real work does.
+        let s = "import time\nb = bytearray(1024 * 1024 * 1024)\nfor i in range(0, len(b), 4096): b[i] = 1\ntime.sleep(2)\nprint('big: ok')\n";
         let out = run("A", &d.ws, &["--memory-mb", "256"], &py, s);
         assert!(!has(&out, "big: ok"), "{}{}", out.stdout, out.stderr);
         assert_eq!(out.code, 137, "{}", out.stderr);
