@@ -34,7 +34,7 @@ def _split(dataset: str) -> tuple[str | None, str]:
     """``schema.table`` (quotes and brackets removed), or just the table."""
     clean = dataset.replace('"', "").replace("[", "").replace("]", "")
     if "." in clean:
-        schema, table = clean.split(".", 1)
+        schema, table = clean.rsplit(".", 1)
         return schema, table
     return None, clean
 

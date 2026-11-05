@@ -123,7 +123,7 @@ pub struct Pack {
     pub problems: Vec<String>,
 }
 
-fn front_matter(text: &str) -> Option<(&str, &str)> {
+pub(crate) fn front_matter(text: &str) -> Option<(&str, &str)> {
     let t = text.strip_prefix('\u{feff}').unwrap_or(text);
     let rest = t
         .strip_prefix("---\n")
@@ -756,6 +756,9 @@ impl Gateway {
                 if cards.iter().any(|c| c["id"] == json!(e.id)) || cards.len() >= limit {
                     continue;
                 }
+                // Reading a note about a connection is reading its data:
+                // the session carries its label, so flow rules apply.
+                self.note_served(e);
                 let mut c = e.card_json(n.info.review_interval_months, today);
                 c["pack"] = json!("the person's own notes");
                 cards.push(c);
@@ -818,6 +821,7 @@ impl Gateway {
         let today = chrono::Local::now().date_naive();
         let mut card = e.card_json(interval, today);
         if personal {
+            self.note_served(&e);
             card["pack"] = json!("the person's own notes");
         }
         let mut checks: Vec<Check> = stale_check(std::slice::from_ref(&card))

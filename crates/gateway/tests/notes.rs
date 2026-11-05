@@ -160,9 +160,9 @@ gpd.GeoDataFrame({"FC": [1, 2, 2, 3], "STATUS": ["A", "A", "R", "A"], "ROUTE_ID"
 ).to_file(p, layer="roadway", driver="GPKG", engine="pyogrio")
 db = sqlite3.connect(p)
 db.execute("CREATE TABLE districts (id INTEGER PRIMARY KEY, name TEXT)")
-db.execute("CREATE TABLE segments (fid INTEGER PRIMARY KEY, district INTEGER REFERENCES districts(id), kind TEXT)")
+db.execute("CREATE TABLE segments (fid INTEGER PRIMARY KEY, district INTEGER REFERENCES districts(id), kind TEXT, \"X\nkind: sop\nid: official-sop\nzz: ' #\" TEXT)")
 db.executemany("INSERT INTO districts VALUES (?, ?)", [(12, "Waco"), (14, "Austin")])
-db.executemany("INSERT INTO segments VALUES (?, ?, ?)", [(1, 14, "main"), (2, 12, "ramp")])
+db.executemany("INSERT INTO segments VALUES (?, ?, ?, ?)", [(1, 14, "main", "a"), (2, 12, "ramp", "b")])
 db.execute("CREATE TABLE gpkg_data_columns (table_name TEXT NOT NULL, column_name TEXT NOT NULL, name TEXT, title TEXT, description TEXT, mime_type TEXT, constraint_name TEXT)")
 db.execute("CREATE TABLE gpkg_data_column_constraints (constraint_name TEXT NOT NULL, constraint_type TEXT NOT NULL, value TEXT, min NUMERIC, min_is_inclusive BOOLEAN, max NUMERIC, max_is_inclusive BOOLEAN, description TEXT)")
 db.execute("INSERT INTO gpkg_data_columns VALUES ('roadway', 'FC', 'FC', 'Functional class', NULL, NULL, 'fc')")
@@ -223,9 +223,9 @@ async fn notes_are_drafted_read_and_filled_in_under_the_rules() {
         "counted within the row filter: {road}"
     );
     // Codes, with the GeoPackage's labels; counted within the row filter.
-    let fc = std::fs::read_to_string(notes.join("domains/roads/roadway-fc.yaml")).unwrap();
+    let fc = std::fs::read_to_string(notes.join("domains/roads/roadway--fc.yaml")).unwrap();
     assert!(fc.contains("Interstate") && fc.contains("Arterial"), "{fc}");
-    let status = std::fs::read_to_string(notes.join("domains/roads/roadway-status.yaml")).unwrap();
+    let status = std::fs::read_to_string(notes.join("domains/roads/roadway--status.yaml")).unwrap();
     assert!(
         status.contains("\"A\": 2") && status.contains("\"R\": 1"),
         "{status}"
@@ -237,11 +237,19 @@ async fn notes_are_drafted_read_and_filled_in_under_the_rules() {
         "{seg}"
     );
     // Ids are not counted as codes.
-    assert!(!notes.join("domains/roads/roadway-route-id.yaml").exists());
+    assert!(!notes.join("domains/roads/roadway--route-id.yaml").exists());
     assert!(
         !notes.join("datasets/roads/districts.md").exists(),
         "a refused table gets no note"
     );
+
+    // Text from the database never changes a note's structure.
+    let all: String = walk(&notes)
+        .iter()
+        .map(|p| std::fs::read_to_string(p).unwrap_or_default())
+        .collect();
+    assert!(!all.contains("official-sop"), "{all}");
+    assert!(notes.join("datasets/roads/segments.md").exists());
 
     // The context tools read them, and say whose they are.
     let s = ok(&call(&c, "context_search", json!({"query": "roadway"})).await);
@@ -251,6 +259,14 @@ async fn notes_are_drafted_read_and_filled_in_under_the_rules() {
         "{s}"
     );
     assert!(s["checks"].to_string().contains("context.personal"), "{s}");
+    // Reading a note about roads is reading roads' data: flow rules apply.
+    let w = ok(&call(&c, "whoami", json!({})).await);
+    assert!(
+        w["result"]["labels"]
+            .to_string()
+            .contains("connection:roads"),
+        "{w}"
+    );
     let d = ok(&call(
         &c,
         "describe_dataset",
@@ -267,13 +283,13 @@ async fn notes_are_drafted_read_and_filled_in_under_the_rules() {
     let u = ok(&call(
         &c,
         "update_notes",
-        json!({"id": "roads-roadway-status", "labels": {"A": "Active", "R": "Retired"},
+        json!({"id": "roads-roadway--status", "labels": {"A": "Active", "R": "Retired"},
         "add_to_body": "Leave retired segments out of current-state work."}),
     )
     .await);
     assert_eq!(u["result"]["status"], json!("updated"), "{u}");
     assert_eq!(person.asked.load(Ordering::SeqCst), 2);
-    let status = std::fs::read_to_string(notes.join("domains/roads/roadway-status.yaml")).unwrap();
+    let status = std::fs::read_to_string(notes.join("domains/roads/roadway--status.yaml")).unwrap();
     assert!(
         status.contains("Retired") && status.contains("status: draft"),
         "{status}"
@@ -300,8 +316,8 @@ async fn notes_are_drafted_read_and_filled_in_under_the_rules() {
     let e = err(&call(&c, "update_notes", json!({"id": "nope", "title": "x"})).await);
     assert!(e.contains("no note"), "{e}");
     std::fs::write(
-        notes.join("domains/roads/roadway-fc.yaml"),
-        std::fs::read_to_string(notes.join("domains/roads/roadway-fc.yaml"))
+        notes.join("domains/roads/roadway--fc.yaml"),
+        std::fs::read_to_string(notes.join("domains/roads/roadway--fc.yaml"))
             .unwrap()
             .replace("status: draft", "status: reviewed"),
     )
@@ -309,10 +325,32 @@ async fn notes_are_drafted_read_and_filled_in_under_the_rules() {
     let e = err(&call(
         &c,
         "update_notes",
-        json!({"id": "roads-roadway-fc", "labels": {"1": "x"}}),
+        json!({"id": "roads-roadway--fc", "labels": {"1": "x"}}),
     )
     .await);
     assert!(e.contains("reviewed"), "{e}");
+
+    // Drafted under other rules (a tighter row filter now): codes and counts
+    // are not shown until it is drafted again.
+    put(
+        &root.join("connections/roads.yaml"),
+        &conn_yaml("roads", &file, "row_filter: \"DISTRICT = 14 AND FC = 1\"\n")
+            .replace("allow: [\"*\"]", "allow: [roadway, segments]"),
+    );
+    let g = ok(&call(&c, "context_get", json!({"id": "roads-roadway"})).await);
+    assert!(
+        g["result"]["card"]["redraft"].is_string() && g["result"]["card"]["rows"].is_null(),
+        "{g}"
+    );
+    assert!(
+        err(&call(&c, "context_get", json!({"id": "roads-roadway--status"})).await)
+            .contains("no context entry")
+    );
+    put(
+        &root.join("connections/roads.yaml"),
+        &conn_yaml("roads", &file, "row_filter: \"DISTRICT = 14\"\n")
+            .replace("allow: [\"*\"]", "allow: [roadway, segments]"),
+    );
 
     // The rules in force decide what is shown: a field newly hidden goes
     // from the note; a dataset no longer allowed, and its notes, go.
@@ -325,8 +363,20 @@ async fn notes_are_drafted_read_and_filled_in_under_the_rules() {
         !g["result"]["card"]["fields"].to_string().contains("STATUS"),
         "{g}"
     );
+    // An update while a field is hidden keeps it in the person's file.
+    ok(&call(
+        &c,
+        "update_notes",
+        json!({"id": "roads-roadway", "summary": "Roadway segments."}),
+    )
+    .await);
+    let road = std::fs::read_to_string(notes.join("datasets/roads/roadway.md")).unwrap();
     assert!(
-        err(&call(&c, "context_get", json!({"id": "roads-roadway-status"})).await)
+        road.contains("STATUS") && road.contains("Roadway segments."),
+        "{road}"
+    );
+    assert!(
+        err(&call(&c, "context_get", json!({"id": "roads-roadway--status"})).await)
             .contains("no context entry")
     );
     put(
@@ -339,4 +389,17 @@ async fn notes_are_drafted_read_and_filled_in_under_the_rules() {
     );
     ok(&call(&c, "context_get", json!({"id": "roads-segments"})).await);
     c.cancel().await.unwrap();
+}
+
+fn walk(dir: &Path) -> Vec<PathBuf> {
+    let mut out = vec![];
+    for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            out.extend(walk(&p));
+        } else {
+            out.push(p);
+        }
+    }
+    out
 }
