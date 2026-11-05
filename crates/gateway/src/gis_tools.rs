@@ -155,23 +155,83 @@ fn ident_ok(s: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
 }
 
-/// A dataset name the GIS tools put into SQL: one to three plain
-/// identifiers separated by dots (`roads`, `roads.roadway_inventory`). Only
-/// letters, digits, `_` and `$`, so nothing in it can change the statement.
+/// A name that is not a plain identifier but is safe to quote: letters
+/// (any script), digits, spaces and `_ $ # -`, as GeoPackage and file
+/// geodatabase layer names often are (`Tribal Census Tract`). No quotes,
+/// brackets, dots, control or invisible characters; no space at either end.
+fn quotable(s: &str) -> bool {
+    !s.is_empty()
+        && s.chars().count() <= 128
+        && s.trim() == s
+        && s.chars()
+            .all(|c| c.is_alphanumeric() || matches!(c, ' ' | '_' | '$' | '#' | '-'))
+}
+
+/// A field or dataset name part the GIS tools accept.
+fn name_ok(s: &str) -> bool {
+    ident_ok(s) || quotable(s)
+}
+
+/// A dataset name the GIS tools put into SQL: one to three parts separated
+/// by dots (`roads`, `roads.roadway_inventory`, `Tribal Census Tract`).
+/// Each part is a plain identifier, or a name `quotable` accepts, which
+/// `dataset_sql` quotes; nothing in it can change the statement.
 fn dataset_ok(d: &str) -> Result<(), String> {
     let parts: Vec<&str> = d.split('.').collect();
-    if parts.len() > 3 || !parts.iter().all(|p| ident_ok(p)) {
+    if parts.len() > 3 || !parts.iter().all(|p| name_ok(p)) {
         return Err(format!(
-            "{d:?} is not a dataset name the GIS tools accept (letters, digits and _ separated by dots); use the name list_datasets shows, or sql_select"
+            "{d:?} is not a dataset name the GIS tools accept (letters, digits, spaces and _ $ # -, with dots between schema and table); use the name list_datasets shows, or sql_select"
         ));
     }
     Ok(())
 }
 
+/// The dataset as SQL. Plain identifiers stay unquoted, so the database's
+/// own case rules apply as before (Oracle's `roads` is `ROADS`); any other
+/// part is quoted exactly.
+pub(crate) fn dataset_sql(d: &str, dialect: SqlDialect) -> Result<String, String> {
+    dataset_ok(d)?;
+    Ok(d.split('.')
+        .map(|p| {
+            if ident_ok(p) {
+                p.to_string()
+            } else {
+                quote(p, dialect)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("."))
+}
+
+/// A quoted identifier. The names reaching here cannot hold a quote or a
+/// bracket, but they are escaped anyway.
 fn quote(name: &str, d: SqlDialect) -> String {
     match d {
-        SqlDialect::MsSql => format!("[{name}]"),
-        _ => format!("\"{name}\""),
+        SqlDialect::MsSql => format!("[{}]", name.replace(']', "]]")),
+        _ => format!("\"{}\"", name.replace('"', "\"\"")),
+    }
+}
+
+/// A file name stem from a dataset name: lower case, and anything but
+/// letters, digits, `_` and `-` as `_`.
+fn file_stem(dataset: &str) -> String {
+    let s: String = dataset
+        .rsplit('.')
+        .next()
+        .unwrap_or("query")
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if s.is_empty() {
+        "query".into()
+    } else {
+        s
     }
 }
 
@@ -233,7 +293,7 @@ impl Gateway {
         dataset: &str,
         refresh: bool,
     ) -> Result<Value, String> {
-        dataset_ok(dataset)?;
+        let from = dataset_sql(dataset, SqlDialect::for_connection_type(&conn.kind))?;
         let key = (conn.id.clone(), dataset.to_string());
         if !refresh {
             if let Some(v) = self.state.datasets.lock().expect("datasets").get(&key) {
@@ -242,7 +302,7 @@ impl Gateway {
         }
         let cols = self.table_columns(access, conn).await?;
         let count = check_select(
-            &format!("SELECT COUNT(*) AS n FROM {dataset}"),
+            &format!("SELECT COUNT(*) AS n FROM {from}"),
             access,
             2,
             &cols,
@@ -335,7 +395,7 @@ impl Gateway {
         let known = Self::field_names(info);
         let geom = info.get("geometry_column").and_then(Value::as_str);
         let find = |f: &str| -> Result<String, String> {
-            if !ident_ok(f) {
+            if !name_ok(f) {
                 return Err(format!("{f:?} is not a field name"));
             }
             known
@@ -378,7 +438,7 @@ impl Gateway {
         if cols.is_empty() {
             return Err(format!("{dataset} has no fields you are allowed to read"));
         }
-        let mut sql = format!("SELECT {cols} FROM {dataset}");
+        let mut sql = format!("SELECT {cols} FROM {}", dataset_sql(dataset, dialect)?);
         if let Some(w) = q.where_.as_deref().filter(|w| !w.trim().is_empty()) {
             let w = check_where(w, dialect).map_err(|e| e.to_string())?;
             sql.push_str(&format!(" WHERE {w}"));
@@ -920,14 +980,7 @@ impl Gateway {
         rec.dataset = Some(args.dataset.clone());
         let prov = new_prov_id();
         let started = Local::now();
-        let stem = format!(
-            "results/{}-{prov}",
-            args.dataset
-                .rsplit('.')
-                .next()
-                .unwrap_or("query")
-                .to_lowercase()
-        );
+        let stem = format!("results/{}-{prov}", file_stem(&args.dataset));
         let r = match self
             .governed_read(&args.connection, &args, Some(&stem), 500, args.limit)
             .await

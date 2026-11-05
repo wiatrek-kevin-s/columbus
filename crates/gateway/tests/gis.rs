@@ -475,6 +475,117 @@ async fn gis_session_on_a_geopackage() {
     }
 }
 
+/// Layer and field names with spaces, as Census TIGER GeoPackages have
+/// them ("Tribal Census Tract"): every GIS tool takes the name list_datasets
+/// shows, and names that could change the statement are still refused.
+#[tokio::test]
+async fn names_with_spaces_work_in_every_gis_tool() {
+    let Some(py) = python("import geopandas, pyogrio, shapely, pyproj") else {
+        eprintln!("skipping: the GIS engine is not installed");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_path_buf();
+    let script = r#"
+import sys, os
+import geopandas as gpd
+from shapely.geometry import box
+path = os.path.join(sys.argv[1], "tiger.gpkg")
+gpd.GeoDataFrame({"NAME": ["A", "B", "C"], "Land Area": [10.0, 20.0, 30.0]},
+    geometry=[box(-97.8 + i * 0.1, 30.2, -97.75 + i * 0.1, 30.25) for i in range(3)],
+    crs="EPSG:4269").to_file(path, layer="Tribal Census Tract", driver="GPKG", engine="pyogrio")
+"#;
+    assert!(StdCommand::new(&py)
+        .arg("-c")
+        .arg(script)
+        .arg(&root)
+        .status()
+        .unwrap()
+        .success());
+    std::fs::create_dir_all(root.join("connections")).unwrap();
+    std::fs::write(root.join("policy.yaml"), "connection_types: [gpkg]\n").unwrap();
+    let gpkg = serde_json::to_string(&root.join("tiger.gpkg").display().to_string()).unwrap();
+    std::fs::write(
+        root.join("connections").join("tiger.yaml"),
+        format!("id: tiger\ntype: gpkg\npath: {gpkg}\ndatasets:\n  allow: [\"*\"]\n"),
+    )
+    .unwrap();
+    let client = start(&root, &py, &[]).await;
+    let ds = "Tribal Census Tract";
+
+    let l = ok(&call(&client, "list_datasets", json!({"connection": "tiger"})).await);
+    assert_eq!(l["result"]["datasets"][0]["name"], ds);
+    let d = ok(&call(
+        &client,
+        "describe_dataset",
+        json!({"connection": "tiger", "dataset": ds}),
+    )
+    .await);
+    assert_eq!(d["result"]["rows"], 3, "{d}");
+    let s = ok(&call(
+        &client,
+        "sample_rows",
+        json!({"connection": "tiger", "dataset": ds, "n": 2}),
+    )
+    .await);
+    assert_eq!(s["result"]["rows_returned"], 2, "{s}");
+
+    let q = ok(&call(
+        &client,
+        "query_features",
+        json!({"connection": "tiger", "dataset": ds, "fields": ["NAME", "Land Area"],
+               "where": "\"Land Area\" >= 20", "order_by": "Land Area"}),
+    )
+    .await);
+    assert_eq!(q["result"]["rows_read"], 2, "{q}");
+    let sql = q["result"]["executed_sql"].as_str().unwrap();
+    assert!(
+        sql.contains("\"Tribal Census Tract\"") && sql.contains("\"Land Area\""),
+        "{sql}"
+    );
+    let handle = q["result"]["layer"]["handle"].as_str().unwrap().to_string();
+    assert!(!handle.contains(' '), "output names stay plain: {handle}");
+
+    let v = ok(&call(&client, "verify", json!({"layer": format!("tiger:{ds}")})).await);
+    assert!(v["checks"].is_array(), "{v}");
+    let r = ok(&call(
+        &client,
+        "vector_op",
+        json!({"op": "reproject", "inputs": {"layer": format!("tiger:{ds}")}, "params": {"crs": "EPSG:3081"}}),
+    )
+    .await);
+    assert_eq!(
+        r["result"]["layer"]["summary"]["crs"]["code"], "EPSG:3081",
+        "{r}"
+    );
+
+    // Still refused: anything that could close the quoting or add SQL.
+    for bad in [
+        "Tribal\" Census",
+        "Tract]; DROP",
+        "x\u{202e}y",
+        " Tribal",
+        "a.b.c.d",
+        "roads; SELECT 1",
+    ] {
+        let e = err(&call(
+            &client,
+            "query_features",
+            json!({"connection": "tiger", "dataset": bad}),
+        )
+        .await);
+        assert!(e.contains("not a dataset name"), "{bad:?}: {e}");
+    }
+    let e = err(&call(
+        &client,
+        "query_features",
+        json!({"connection": "tiger", "dataset": ds, "fields": ["NAME\" FROM x --"]}),
+    )
+    .await);
+    assert!(e.contains("not a field name"), "{e}");
+    client.cancel().await.unwrap();
+}
+
 #[tokio::test]
 async fn gis_query_on_postgis() {
     let Ok(host) = std::env::var("COLUMBUS_TEST_PG_HOST") else {

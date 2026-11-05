@@ -233,7 +233,11 @@ impl Gateway {
                 ));
             }
             let dialect = SqlDialect::for_connection_type(&conn.kind);
-            let mut sql = format!("SELECT * FROM {dataset}");
+            let from = match crate::gis_tools::dataset_sql(&dataset, dialect) {
+                Ok(f) => f,
+                Err(e) => return Err(self.deny(ctx, rec, e)),
+            };
+            let mut sql = format!("SELECT * FROM {from}");
             if let Some(w) = &where_ {
                 match check_where(w, dialect) {
                     Ok(w) => sql.push_str(&format!(" WHERE {w}")),
