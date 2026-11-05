@@ -12,20 +12,18 @@ Refused on a Mac for now: engine plugins, `run_python` scripts, and local MCP se
 
 ## 1. Download and unpack
 
-In Terminal (Applications → Utilities → Terminal), with the version from the release page in place of `<version>`:
+Download `columbus-<version>-macos-arm64.zip` from the release page in your browser (while the repository is private, you must be signed in to GitHub; `curl` in Terminal gets a "Not Found" page instead). Safari unpacks it in Downloads, into a folder named after the file but cut at the first dot, such as `columbus-0`. Then, in Terminal (Applications → Utilities → Terminal):
 
 ```sh
-mkdir -p ~/Columbus && cd ~/Columbus
-curl -LO https://github.com/wiatrek-kevin-s/columbus/releases/download/v<version>/columbus-<version>-macos-arm64.zip
-unzip -q columbus-<version>-macos-arm64.zip && rm columbus-<version>-macos-arm64.zip
-./columbus-mcp --version
-```
-
-Downloading with `curl` matters. The program is not signed with an Apple Developer ID yet, and macOS blocks unsigned programs downloaded in a browser ("cannot be opened because Apple cannot check it for malicious software"). If you did download it in a browser, clear the download mark once:
-
-```sh
+mkdir -p ~/Columbus
+cp -R ~/Downloads/columbus-0/ ~/Columbus/        # the folder Safari made
 xattr -dr com.apple.quarantine ~/Columbus
+~/Columbus/columbus-mcp --version
 ```
+
+If the zip was not unpacked for you, use `unzip -q ~/Downloads/columbus-<version>-macos-arm64.zip -d ~/Columbus` in place of the `cp` line.
+
+The `xattr` line matters: the program is not signed with an Apple Developer ID yet, and macOS blocks unsigned programs downloaded in a browser ("cannot be opened because Apple cannot check it for malicious software") until that mark is cleared.
 
 ## 2. Set up the GIS engine (once)
 
@@ -33,6 +31,7 @@ The engine needs Python 3.12: install it from [python.org](https://www.python.or
 
 ```sh
 cd ~/Columbus
+conda deactivate 2>/dev/null   # only matters if Anaconda shows (base) in your prompt
 sh engine/setup-engine.sh
 ```
 
@@ -64,7 +63,7 @@ SQL Server connections also need unixODBC and Microsoft ODBC Driver 18 (`brew in
 
 ## 4. Connect Claude desktop
 
-**The extension:** download `columbus-<version>-macos-arm64.mcpb` from the release and open it; Claude desktop installs it as an extension. Leave the folder fields empty, and paste the Python path from step 2 into **Engine Python**.
+**The extension:** download `columbus-<version>-macos-arm64.mcpb` from the release and open it; Claude desktop installs it as an extension. Paste the Python path from step 2 into **Engine Python** (required). The folder fields can stay empty from version 0.1.4; in earlier versions, fill them in (Connections folder: `~/Library/Application Support/Columbus/connections`), because an empty field reached the server as the text `${user_config.connections}`. In a file picker, Cmd+Shift+G lets you paste a path.
 
 **Or the config file:** in Claude desktop, Settings → Developer → Edit Config, and add (with your own user name):
 
