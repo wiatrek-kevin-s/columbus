@@ -74,10 +74,18 @@ fn slug(s: &str) -> String {
     }
     let t = out.trim_matches('-');
     let t: String = t.chars().take(60).collect();
+    let t = t.trim_end_matches('-').to_string();
+    // Names Windows keeps for devices are not file names there.
+    let reserved = matches!(t.as_str(), "con" | "prn" | "aux" | "nul")
+        || ((t.starts_with("com") || t.starts_with("lpt"))
+            && t.len() == 4
+            && t[3..].chars().all(|c| c.is_ascii_digit()));
     if t.is_empty() {
         "x".into()
+    } else if reserved {
+        format!("{t}-x")
     } else {
-        t.trim_end_matches('-').to_string()
+        t
     }
 }
 
@@ -161,8 +169,6 @@ fn write_note(root: &Path, rel: &Path, text: &str) -> Result<(), String> {
 /// The notes folder is the person's, never inside the organization's pack.
 fn notes_root(paths: &crate::config::Paths) -> Result<PathBuf, String> {
     let root = notes_dir(paths);
-    // Made first, so both are compared as the file system resolves them.
-    let _ = std::fs::create_dir_all(&root);
     let canon = |p: &Path| {
         let c = p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
         if cfg!(windows) {
@@ -171,7 +177,8 @@ fn notes_root(paths: &crate::config::Paths) -> Result<PathBuf, String> {
             c
         }
     };
-    if canon(&root).starts_with(canon(&paths.context)) {
+    let (r, c) = (canon(&root), canon(&paths.context));
+    if r.starts_with(&c) || c.starts_with(&r) {
         return Err(format!(
             "the notes folder {} is inside the organization's context folder; set COLUMBUS_NOTES elsewhere",
             root.display()
@@ -451,6 +458,8 @@ impl Gateway {
         }
         let root = notes_root(&self.state.paths)?;
         ensure_pack(&root)?;
+        // Checked again now that it exists, as the file system resolves it.
+        let root = notes_root(&self.state.paths)?;
         // Codes only where the assistant could read rows anyway, and no more
         // of them than a call may return.
         let codes_cap = self.codes_cap(&access);
@@ -818,10 +827,19 @@ impl Gateway {
     /// The person's notes as a pack, if there are any.
     pub(crate) fn notes_pack(&self) -> Option<Pack> {
         let root = notes_root(&self.state.paths).ok()?;
-        root.join("pack.yaml")
+        let mut pack = root
+            .join("pack.yaml")
             .is_file()
             .then(|| Pack::load(&root).ok())
-            .flatten()
+            .flatten()?;
+        // Two notes with one id (a copied file, say): neither is served, so
+        // what is shown and what its reader takes on can never differ.
+        let mut count: BTreeMap<String, usize> = BTreeMap::new();
+        for e in &pack.entries {
+            *count.entry(e.id.clone()).or_default() += 1;
+        }
+        pack.entries.retain(|e| count.get(&e.id) == Some(&1));
+        Some(pack)
     }
 
     /// A note as the rules in force now let it be shown: None when it is
@@ -850,8 +868,15 @@ impl Gateway {
         // Drafted under other rules (or before notes recorded them): its
         // counts and codes may come from rows or fields the rules no longer
         // allow, so they are not shown; text in it was written then too.
-        let drafted =
-            e.card.contains_key(key("drafted_by")) || e.card.contains_key(key("drafted_under"));
+        let drafted = [
+            "drafted_by",
+            "drafted_under",
+            "edited_by",
+            "rows",
+            "rows_with",
+        ]
+        .iter()
+        .any(|k| e.card.contains_key(key(k)));
         if drafted {
             let now = drafted_under(&access, &dataset, self.codes_cap(&access));
             if e.str_field("drafted_under").as_deref() != Some(now.as_str()) {
@@ -860,6 +885,14 @@ impl Gateway {
                 }
                 for k in ["rows", "referenced_by"] {
                     e.card.remove(key(k));
+                }
+                // Which fields had a code list says how few values they had.
+                if let Some(serde_yaml::Value::Mapping(m)) = e.card.get_mut(key("fields")) {
+                    for (_, f) in m.iter_mut() {
+                        if let serde_yaml::Value::Mapping(f) = f {
+                            f.remove(key("domain"));
+                        }
+                    }
                 }
                 e.card.insert(
                     key("redraft"),
@@ -1284,16 +1317,22 @@ impl Gateway {
         };
         // The note is the file as it is now, not as it was when the notes
         // were loaded: a change since then is not overwritten.
-        let now_card = {
+        let (now_card, now_body) = {
             let text = String::from_utf8_lossy(&before).to_string();
-            let yaml = if raw.file.extension().and_then(|x| x.to_str()) == Some("md") {
-                crate::context::front_matter(&text).map(|(y, _)| y.to_string())
+            let (yaml, body) = if raw.file.extension().and_then(|x| x.to_str()) == Some("md") {
+                match crate::context::front_matter(&text) {
+                    Some((y, b)) => (Some(y.to_string()), b.to_string()),
+                    None => (None, String::new()),
+                }
             } else {
-                Some(text.clone())
+                (Some(text.clone()), String::new())
             };
-            yaml.and_then(|y| serde_yaml::from_str::<serde_yaml::Mapping>(&y).ok())
+            (
+                yaml.and_then(|y| serde_yaml::from_str::<serde_yaml::Mapping>(&y).ok()),
+                body,
+            )
         };
-        if now_card.as_ref() != Some(&raw.card) {
+        if now_card.as_ref() != Some(&raw.card) || now_body != raw.body {
             return Err(self.deny(
                 &ctx,
                 rec,
@@ -1322,8 +1361,14 @@ impl Gateway {
                 ),
             ));
         }
+        let rule_asks = match &decision {
+            columbus_flow::FlowDecision::Approve { rule: Some(r), .. } => Some(*r),
+            _ => None,
+        };
         let mut request = asked.clone();
         request["file_sha256"] = json!(file_sha);
+        // What the note will be treated as holding is part of what is approved.
+        request["labels"] = json!(labels.iter().collect::<Vec<_>>());
         // The changes are checked on the note as the rules let it be seen
         // (a field now hidden cannot be named), then made to the file as it
         // is, so nothing the rules hide today is lost from it.
@@ -1381,6 +1426,12 @@ impl Gateway {
                     .map(|l| l.trim_start_matches("connection:"))
                     .collect::<Vec<_>>()
                     .join(", ")
+            ));
+        }
+        if let Some(r) = rule_asks {
+            summary.push_str(&format!(
+                "\nOrganization flow rule {} asks for your approval for this.",
+                r + 1
             ));
         }
         let ask = Ask {
