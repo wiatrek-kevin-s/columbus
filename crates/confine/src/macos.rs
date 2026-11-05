@@ -198,7 +198,7 @@ impl Tag {
             return Err(Error::Setup("no randomness for the sandbox tag".into()));
         }
         let hex: String = b.iter().map(|x| format!("{x:02x}")).collect();
-        let dir = canonical(&std::env::temp_dir()).join("columbus-confine");
+        let dir = canonical(&user_temp_dir()?).join("columbus-confine");
         let setup =
             |e: std::io::Error| Error::Setup(format!("the sandbox tag in {}: {e}", dir.display()));
         match std::fs::create_dir(&dir) {
@@ -307,6 +307,28 @@ impl Tag {
         let _ = std::fs::remove_file(self.tag_path());
         let _ = std::fs::remove_file(self.probe_path());
     }
+}
+
+/// This user's own temporary folder as macOS assigns it (not `TMPDIR`,
+/// which the gateway points into the program's own folder).
+fn user_temp_dir() -> Result<PathBuf, Error> {
+    let mut buf = vec![0u8; 1024];
+    let n = unsafe {
+        libc::confstr(
+            libc::_CS_DARWIN_USER_TEMP_DIR,
+            buf.as_mut_ptr() as *mut libc::c_char,
+            buf.len(),
+        )
+    };
+    if n == 0 || n > buf.len() {
+        return Err(Error::Setup(
+            "macOS gave no temporary folder for this user".into(),
+        ));
+    }
+    buf.truncate(n - 1);
+    let s = String::from_utf8(buf)
+        .map_err(|_| Error::Setup("this user's temporary folder has an unreadable name".into()))?;
+    Ok(PathBuf::from(s))
 }
 
 fn all_pids() -> Vec<libc::pid_t> {
