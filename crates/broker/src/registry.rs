@@ -362,7 +362,17 @@ impl Broker {
                                 ));
                             }
                             let ws_root = self.workspace.parent().unwrap_or(&self.workspace);
-                            if f.starts_with(ws_root) || ws_root.starts_with(&f) {
+                            // Compared as resolved, since the sandbox grants
+                            // what a link or another spelling points at.
+                            let real = |p: &std::path::Path| {
+                                p.canonicalize().unwrap_or_else(|_| p.to_path_buf())
+                            };
+                            let (rf, rws) = (real(&f), real(ws_root));
+                            if f.starts_with(ws_root)
+                                || ws_root.starts_with(&f)
+                                || rf.starts_with(&rws)
+                                || rws.starts_with(&rf)
+                            {
                                 return Err(format!(
                                     "declared folder {} overlaps Columbus's workspaces",
                                     f.display()

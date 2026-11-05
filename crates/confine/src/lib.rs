@@ -350,6 +350,10 @@ pub fn launch(spec: &Spec, program: &str, args: &[String]) -> Result<i32, Error>
 /// Entry point for the `columbus-confine` binary.
 pub fn main_cli() -> i32 {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    #[cfg(target_os = "macos")]
+    if args.first().map(String::as_str) == Some("--guard") {
+        return macos::guard(&args[1..]);
+    }
     if args.first().map(String::as_str) == Some("--check") {
         let level = args
             .get(1)

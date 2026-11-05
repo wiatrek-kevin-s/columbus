@@ -422,6 +422,7 @@ fn level_a_on_macos_reaches_no_socket_service_or_home_folder() {
             "exec_outside",
             "subprocess.run(['/usr/bin/true'], check=True)",
         ),
+        MAC_PROBES.to_string(),
     ]
     .concat();
     let out = run("A", &d.ws, &[], &py, &s);
@@ -432,6 +433,14 @@ fn level_a_on_macos_reaches_no_socket_service_or_home_folder() {
         "keychains: refused",
         "tcp: refused",
         "exec_outside: ok",
+        // The certificate service fetches from the network for its caller.
+        "svc com.apple.trustd: refused",
+        "svc com.apple.coreservices.launchservicesd: refused",
+        "svc com.apple.coreservices.appleevents: refused",
+        "svc com.apple.pasteboard.1: refused",
+        "svc com.apple.SecurityServer: refused",
+        "procargs parent: refused",
+        "proc list: refused",
     ] {
         assert!(
             has(&out, l),
@@ -483,4 +492,225 @@ fn level_a_has_no_unix_sockets_and_cannot_leave_its_process_group() {
             out.stderr
         );
     }
+}
+
+/// Python run inside the confinement on a Mac: reaches system services,
+/// other processes' arguments and launchd.
+#[cfg(target_os = "macos")]
+const MAC_PROBES: &str = r#"
+import ctypes, os
+_lib = ctypes.CDLL("/usr/lib/libSystem.B.dylib")
+_bp = ctypes.c_uint.in_dll(_lib, "bootstrap_port")
+for _n in ["com.apple.trustd", "com.apple.coreservices.launchservicesd", "com.apple.coreservices.appleevents",
+           "com.apple.pasteboard.1", "com.apple.SecurityServer"]:
+    _port = ctypes.c_uint(0)
+    _kr = _lib.bootstrap_look_up(_bp, _n.encode(), ctypes.byref(_port))
+    print(f"svc {_n}:", "ok" if _kr == 0 else "refused")
+def _sysctl(mib):
+    m = (ctypes.c_int * len(mib))(*mib)
+    size = ctypes.c_size_t(0)
+    if _lib.sysctl(m, len(mib), None, ctypes.byref(size), None, 0) != 0 or size.value == 0:
+        return "refused"
+    buf = ctypes.create_string_buffer(size.value)
+    return "ok" if _lib.sysctl(m, len(mib), buf, ctypes.byref(size), None, 0) == 0 else "refused"
+print("procargs parent:", _sysctl([1, 49, os.getppid()]))
+print("proc list:", _sysctl([1, 14, 0]))
+"#;
+
+/// Launch with a program that leaves a process behind: it double-forks,
+/// leaves the process group (setsid) and keeps writing a heartbeat.
+#[cfg(target_os = "macos")]
+fn escapee(beat: &Path, main_sleep: f64) -> String {
+    format!(
+        r#"
+import os, time
+if os.fork() == 0:
+    os.setsid()
+    if os.fork() == 0:
+        for i in range(600):
+            with open({beat:?}, "a") as f: f.write("x")
+            time.sleep(0.1)
+        os._exit(0)
+    os._exit(0)
+time.sleep({main_sleep})
+print("main: done")
+"#,
+        beat = beat.display().to_string()
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn still_beating(beat: &Path) -> bool {
+    let a = std::fs::metadata(beat).map(|m| m.len()).unwrap_or(0);
+    std::thread::sleep(std::time::Duration::from_millis(1200));
+    let b = std::fs::metadata(beat).map(|m| m.len()).unwrap_or(0);
+    b > a
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn on_macos_nothing_outlives_the_program() {
+    let Some(py) = python() else { return };
+    if !can_confine() {
+        return;
+    }
+    let d = dirs();
+    let beat = d.ws.join("beat.txt");
+    let out = run("A", &d.ws, &[], &py, &escapee(&beat, 1.0));
+    assert!(has(&out, "main: done"), "{}{}", out.stdout, out.stderr);
+    assert!(beat.exists(), "the escapee ran: {}", out.stderr);
+    assert!(
+        !still_beating(&beat),
+        "a process that left the group was stopped with the program"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn on_macos_killing_the_launcher_stops_the_sandbox() {
+    let Some(py) = python() else { return };
+    if !can_confine() {
+        return;
+    }
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let d = dirs();
+    let beat = d.ws.join("beat.txt");
+    let mut args: Vec<String> = vec![
+        "--level".into(),
+        "A".into(),
+        "--name".into(),
+        "test.confine".into(),
+        "--rw".into(),
+        d.ws.display().to_string(),
+    ];
+    for p in python_dirs(&py) {
+        args.push("--ro".into());
+        args.push(p);
+    }
+    args.extend([
+        "--".into(),
+        py.clone(),
+        "-I".into(),
+        "-c".into(),
+        escapee(&beat, 60.0),
+    ]);
+    let mut child = Command::new(launcher())
+        .args(&args)
+        .current_dir(&d.ws)
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let start = std::time::Instant::now();
+    while !beat.exists() && start.elapsed().as_secs() < 20 {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    assert!(beat.exists(), "the escapee ran");
+    // As the gateway stops a plugin: SIGKILL to the launcher alone.
+    child.kill().unwrap();
+    child.wait().unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(800));
+    assert!(
+        !still_beating(&beat),
+        "the guard stopped what the killed launcher left"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn on_macos_processes_and_memory_count_the_whole_tree() {
+    let Some(py) = python() else { return };
+    if !can_confine() {
+        return;
+    }
+    let d = dirs();
+    let many = "import os, time\nfor i in range(12):\n    if os.fork() == 0:\n        time.sleep(20); os._exit(0)\ntime.sleep(20)\nprint('many: ok')\n";
+    let out = run("A", &d.ws, &["--processes", "5"], &py, many);
+    assert!(!has(&out, "many: ok"), "{}{}", out.stdout, out.stderr);
+    assert_eq!(out.code, 137, "{}", out.stderr);
+    assert!(
+        out.stderr.contains("more than 5 processes"),
+        "{}",
+        out.stderr
+    );
+    // Three children of 120 MB each: none alone passes 256 MB, together they do.
+    let wide = "import os, time\nfor i in range(3):\n    if os.fork() == 0:\n        b = bytearray(120 * 1024 * 1024)\n        for j in range(0, len(b), 4096): b[j] = 1\n        time.sleep(20); os._exit(0)\ntime.sleep(20)\nprint('wide: ok')\n";
+    let out = run("A", &d.ws, &["--memory-mb", "256"], &py, wide);
+    assert!(!has(&out, "wide: ok"), "{}{}", out.stdout, out.stderr);
+    assert_eq!(out.code, 137, "{}", out.stderr);
+    assert!(out.stderr.contains("more than 256 MB"), "{}", out.stderr);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn on_macos_level_b_reaches_the_internet_side_only() {
+    let Some(py) = python() else { return };
+    if !can_confine() {
+        return;
+    }
+    let d = dirs();
+    let tcp = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = tcp.local_addr().unwrap().port();
+    let s = [
+        "import socket\n".to_string(),
+        attempt(
+            "loopback",
+            &format!("socket.create_connection(('127.0.0.1', {port}), timeout=3)"),
+        ),
+        attempt(
+            "localhost",
+            &format!("socket.create_connection(('localhost', {port}), timeout=3)"),
+        ),
+        attempt(
+            "udp",
+            "socket.socket(socket.AF_INET, socket.SOCK_DGRAM).sendto(b'x', ('127.0.0.1', 9))",
+        ),
+    ]
+    .concat();
+    let out = run("B", &d.ws, &[], &py, &s);
+    for l in ["loopback: refused", "localhost: refused", "udp: refused"] {
+        assert!(
+            has(&out, l),
+            "expected {l:?}:\n{}{}",
+            out.stdout,
+            out.stderr
+        );
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn on_macos_level_c_cannot_act_through_other_programs() {
+    let Some(py) = python() else { return };
+    if !can_confine() {
+        return;
+    }
+    let d = dirs();
+    let marker = d.outside.join("launchd-wrote-this");
+    let s = format!(
+        "{MAC_PROBES}\nimport subprocess, time\nr = subprocess.run(['/bin/launchctl', 'submit', '-l', 'io.columbus.test-escape', '--', '/usr/bin/touch', {m:?}], capture_output=True)\nprint('launchctl rc', r.returncode)\ntime.sleep(2)\nsubprocess.run(['/bin/launchctl', 'remove', 'io.columbus.test-escape'], capture_output=True)\n",
+        m = marker.display().to_string()
+    );
+    let out = run("C", &d.ws, &[], &py, &s);
+    for l in [
+        "svc com.apple.coreservices.launchservicesd: refused",
+        "svc com.apple.coreservices.appleevents: refused",
+        "svc com.apple.pasteboard.1: refused",
+        "svc com.apple.SecurityServer: refused",
+    ] {
+        assert!(
+            has(&out, l),
+            "expected {l:?}:\n{}{}",
+            out.stdout,
+            out.stderr
+        );
+    }
+    let _ = Command::new("/bin/launchctl")
+        .args(["remove", "io.columbus.test-escape"])
+        .output();
+    assert!(
+        !marker.exists(),
+        "launchd ran a job for the confined program outside its sandbox:\n{}{}",
+        out.stdout,
+        out.stderr
+    );
 }
