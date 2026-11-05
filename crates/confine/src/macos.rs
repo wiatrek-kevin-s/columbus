@@ -70,6 +70,7 @@ pub(crate) fn profile(level: Level, n_ro: usize, n_rw: usize) -> String {
     let mut p = String::from(
         "(version 1)\n\
          (deny default)\n\
+         (import \"system.sb\")\n\
          (allow process-fork)\n\
          (allow signal (target same-sandbox))\n\
          (allow process-info* (target same-sandbox))\n\
