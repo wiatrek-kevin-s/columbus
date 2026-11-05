@@ -121,6 +121,11 @@ pub struct OrgPolicy {
     pub allow_scripts: bool,
     #[serde(default)]
     pub allow_edits: bool,
+    /// The person's own tools: scripts the assistant packaged with
+    /// `propose_tool` and the person installed in the Columbus app. Off by
+    /// default; off hides every installed one at once.
+    #[serde(default)]
+    pub allow_personal_tools: bool,
     #[serde(default)]
     pub limits: Limits,
     /// Rows returned to the AI provider per call.
@@ -347,6 +352,7 @@ impl Default for OrgPolicy {
             deny_tools: vec![],
             allow_scripts: false,
             allow_edits: false,
+            allow_personal_tools: false,
             limits: DEFAULT_LIMITS,
             return_rows: Some(DEFAULT_RETURN_ROWS),
             hide_fields: vec![],

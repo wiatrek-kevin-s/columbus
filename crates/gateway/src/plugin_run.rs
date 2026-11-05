@@ -18,7 +18,7 @@ use rmcp::service::RequestContext;
 use rmcp::{Json, RoleServer};
 use serde_json::{json, Value};
 
-use crate::plugins::{ParamSpec, Plugin};
+use crate::plugins::{ParamSpec, Plugin, Plugins};
 use crate::providers::{OutputMeta, SavedFile};
 use crate::server::{
     client_name, new_prov_id, Check, Gateway, Output, RunToolResult, Severity, SERVER_NAME,
@@ -51,13 +51,21 @@ impl Gateway {
         &self,
         ctx: &RequestContext<RoleServer>,
         mut rec: AuditRecord,
+        host: &Plugins,
         p: Arc<Plugin>,
         tool: &str,
         args: serde_json::Map<String, Value>,
         approval_id: Option<String>,
         request: &Value,
+        test_run: bool,
     ) -> Result<Json<Output<RunToolResult>>, String> {
         let full = format!("{}.{tool}", p.id());
+        // A test run's outputs say so wherever they are listed.
+        let made_by = if test_run {
+            format!("{full} (test run of a proposed tool)")
+        } else {
+            full.clone()
+        };
         rec.provider = Some(p.id().to_string());
         rec.provider_version = Some(p.manifest.version.clone());
         rec.tools_hash = Some(p.hash.clone());
@@ -67,7 +75,7 @@ impl Gateway {
         if let Some(extra) = args.keys().find(|k| !spec.params.contains_key(*k)) {
             return Err(self.deny(ctx, rec, format!("{full} has no parameter {extra:?}")));
         }
-        let worker = match self.state.plugins.worker(&p).await {
+        let worker = match host.worker(&p).await {
             Ok(w) => w,
             Err(e) => return Err(self.deny(ctx, rec, e)),
         };
@@ -89,7 +97,7 @@ impl Gateway {
                 continue;
             }
             let checked = match (ps, v) {
-                (ParamSpec::Dataset { .. } | ParamSpec::File, _) => continue,
+                (ParamSpec::Dataset { .. } | ParamSpec::File { .. }, _) => continue,
                 (
                     ParamSpec::Number {
                         default, min, max, ..
@@ -168,7 +176,7 @@ impl Gateway {
 
         // Workspace files.
         for (name, ps) in &spec.params {
-            if !matches!(ps, ParamSpec::File) {
+            if !matches!(ps, ParamSpec::File { .. }) {
                 continue;
             }
             let Some(h) = args.get(name).and_then(Value::as_str) else {
@@ -190,6 +198,15 @@ impl Gateway {
             };
             if !self.state.outputs.unchanged(&path) {
                 return Err(self.deny(ctx, rec, format!("{h} changed after Columbus wrote it")));
+            }
+            // A tool an assistant wrote opens its inputs with GDAL, as a
+            // script does: only files Columbus, a plugin or a script wrote.
+            if p.personal_tool && meta.source == crate::providers::OutputSource::Provider {
+                return Err(self.deny(
+                    ctx,
+                    rec,
+                    format!("{name}: {h} came from a connected server; personal tools get only files Columbus, an approved engine plugin or an approved script wrote"),
+                ));
             }
             inputs.insert(name.clone(), json!({"kind": "file", "path": path}));
             recheck.push((
@@ -573,14 +590,54 @@ impl Gateway {
                 }
             };
             let c = counts.get(name);
-            let rows = c
+            let mut rows = c
                 .and_then(|c| c.get("rows").or_else(|| c.get("features")))
                 .and_then(Value::as_u64);
+            // Layers and tables Columbus can read are checked as layers, as
+            // a script's are; their fails go with them.
+            let mut own: Vec<Check> = Vec::new();
+            let ext = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            if ext == "gpkg" || ext == "csv" {
+                match self
+                    .state
+                    .worker
+                    .core(
+                        "verify_layer",
+                        json!({"path": path}),
+                        Duration::from_secs(120),
+                    )
+                    .await
+                {
+                    Ok(r) => {
+                        for mut c in crate::server::checks_from(r.get("checks")) {
+                            c.message = format!("{name}: {}", c.message);
+                            own.push(c);
+                        }
+                        if rows.is_none() {
+                            rows = r.pointer("/summary/rows").and_then(Value::as_u64);
+                        }
+                    }
+                    Err(e) => own.push(Check {
+                        id: "plugin.output_unreadable".into(),
+                        severity: Severity::Warn,
+                        message: format!("{name} could not be read as a layer: {e}"),
+                        detail: None,
+                        fix: Some(
+                            "Write a GeoPackage with one layer, or a CSV with a header row".into(),
+                        ),
+                    }),
+                }
+            }
+            let mine = inherit.clone().with_step_fails(&own, &prov);
             self.state.flow.record_file(path, &labels);
             self.state.outputs.record_with_hash(
                 path,
                 OutputMeta {
-                    made_by: full.clone(),
+                    made_by: made_by.clone(),
                     provenance: Some(prov.clone()),
                     rows,
                     source: if from_provider {
@@ -588,8 +645,8 @@ impl Gateway {
                     } else {
                         crate::providers::OutputSource::Plugin
                     },
-                    truncated: inherit.truncated,
-                    inherited: inherit.fails.clone(),
+                    truncated: mine.truncated,
+                    inherited: mine.fails,
                     sha256: None,
                 },
                 sha,
@@ -600,6 +657,28 @@ impl Gateway {
                 kind: spec.outputs[name].kind().to_string(),
                 path: path.clone(),
             });
+            checks.extend(own);
+        }
+        if p.personal_tool {
+            let written: BTreeSet<&str> = out_paths
+                .iter()
+                .filter(|(_, _, path)| path.exists())
+                .map(|(n, _, _)| n.as_str())
+                .collect();
+            for (name, _) in &spec.outputs {
+                if !written.contains(name.as_str()) {
+                    checks.push(Check {
+                        id: "plugin.output_missing".into(),
+                        severity: Severity::Warn,
+                        message: format!("The tool did not write its output {name}"),
+                        detail: None,
+                        fix: Some(
+                            "Write every output to ctx.output_path(name), even when it is empty"
+                                .into(),
+                        ),
+                    });
+                }
+            }
         }
         if !labels.is_empty() {
             checks.push(Check {
@@ -613,13 +692,20 @@ impl Gateway {
                 fix: None,
             });
         }
-        let declared: BTreeSet<&String> = spec.checks.iter().collect();
+        // Declared checks this run did not report (a check the tool reports
+        // only when it finds something, or one Columbus cannot run yet).
+        let reported: BTreeSet<String> = checks.iter().map(|c| c.id.clone()).collect();
+        let declared: BTreeSet<&String> = spec
+            .checks
+            .iter()
+            .filter(|c| !reported.contains(*c))
+            .collect();
         if !declared.is_empty() {
             checks.push(Check {
                 id: "verify.pending".into(),
                 severity: Severity::Info,
                 message: format!(
-                    "Declared checks not yet run by Columbus (verification lands in a later build): {}",
+                    "Declared checks not reported by this run (the tool found nothing to report, or Columbus cannot run them yet): {}",
                     declared.into_iter().cloned().collect::<Vec<_>>().join(", ")
                 ),
                 detail: None,
@@ -638,6 +724,7 @@ impl Gateway {
             "steps": [{
                 "tool": full, "plugin": p.id(), "plugin_version": p.manifest.version,
                 "plugin_hash": p.hash, "run": run_id, "params": params, "approval": rec.approval,
+                "personal_tool": p.personal_tool, "test_run": test_run,
             }],
             "checks": checks,
             "outputs": saved.iter().map(|f| f.handle.clone()).collect::<Vec<_>>(),

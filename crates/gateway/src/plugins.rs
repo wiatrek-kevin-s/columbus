@@ -35,12 +35,25 @@ pub enum Runtime {
     Rust,
 }
 
+/// A field a layer or table input must have, or an output will have.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct FieldSpec {
+    pub name: String,
+    /// text, integer, number, boolean, date or any.
+    #[serde(default, rename = "type", skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum ParamSpec {
     Dataset {
         #[serde(default)]
         access: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
     },
     Number {
         #[serde(default)]
@@ -54,6 +67,8 @@ pub enum ParamSpec {
         /// No default, and may be left out.
         #[serde(default)]
         optional: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
     },
     Integer {
         #[serde(default)]
@@ -65,6 +80,10 @@ pub enum ParamSpec {
         /// No default, and may be left out.
         #[serde(default)]
         optional: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        unit: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
     },
     String {
         #[serde(default, rename = "enum")]
@@ -74,6 +93,8 @@ pub enum ParamSpec {
         /// No default, and may be left out.
         #[serde(default)]
         optional: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
     },
     Boolean {
         #[serde(default)]
@@ -81,8 +102,26 @@ pub enum ParamSpec {
         /// No default, and may be left out.
         #[serde(default)]
         optional: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
     },
-    File,
+    /// A workspace file (a layer or table handle).
+    File {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+        /// layer or table.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<String>,
+        /// point, line, polygon or any.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        geometry: Option<String>,
+        /// What CRS it must be in ("EPSG:3081", "projected", "any").
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        crs: Option<String>,
+        /// Fields it must have.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        fields: Vec<FieldSpec>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -91,20 +130,37 @@ pub enum OutputSpec {
     Layer {
         #[serde(default)]
         geometry: Option<String>,
+        /// gpkg or geojson (the default).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        format: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        crs: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        fields: Vec<FieldSpec>,
     },
-    Table,
+    Table {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        fields: Vec<FieldSpec>,
+    },
     File {
         #[serde(default)]
         format: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
     },
 }
 
 impl OutputSpec {
     pub fn extension(&self) -> String {
         match self {
+            OutputSpec::Layer { format, .. } if format.as_deref() == Some("gpkg") => "gpkg".into(),
             OutputSpec::Layer { .. } => "geojson".into(),
-            OutputSpec::Table => "csv".into(),
-            OutputSpec::File { format } => format
+            OutputSpec::Table { .. } => "csv".into(),
+            OutputSpec::File { format, .. } => format
                 .as_deref()
                 .filter(|f| f.chars().all(|c| c.is_ascii_alphanumeric()) && !f.is_empty())
                 .unwrap_or("bin")
@@ -114,8 +170,15 @@ impl OutputSpec {
     pub fn kind(&self) -> &'static str {
         match self {
             OutputSpec::Layer { .. } => "layer",
-            OutputSpec::Table => "table",
+            OutputSpec::Table { .. } => "table",
             OutputSpec::File { .. } => "file",
+        }
+    }
+    pub fn description(&self) -> Option<&str> {
+        match self {
+            OutputSpec::Layer { description, .. }
+            | OutputSpec::Table { description, .. }
+            | OutputSpec::File { description, .. } => description.as_deref(),
         }
     }
 }
@@ -132,6 +195,22 @@ pub struct PluginTool {
     /// Verification checks the tool's results should pass (design section 4).
     #[serde(default)]
     pub checks: Vec<String>,
+    /// A short name for people.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// What it does and when to use it, for other assistants (the summary
+    /// is its first sentence).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// When not to use it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub not_for: Option<String>,
+    /// What each check in `checks` means.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub check_notes: BTreeMap<String, String>,
+    /// Example calls: `{description, arguments}`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub examples: Vec<Value>,
 }
 
 fn default_risk() -> Risk {
@@ -162,7 +241,20 @@ pub struct PluginConfinement {
 }
 
 impl PluginManifest {
+    /// An organization's or the person's engine plugin.
     pub fn parse(text: &str) -> Result<Self, String> {
+        let m = Self::parse_any(text)?;
+        if m.id.starts_with(columbus_shared::tools::ID_PREFIX) {
+            return Err(format!(
+                "id {:?}: ids starting with \"personal.\" are the person's own tools, installed from the Columbus app",
+                m.id
+            ));
+        }
+        Ok(m)
+    }
+
+    /// The rules every manifest follows, personal tools' too.
+    pub fn parse_any(text: &str) -> Result<Self, String> {
         let m: PluginManifest = serde_yaml::from_str(text).map_err(|e| e.to_string())?;
         let ok = !m.id.is_empty()
             && m.id.len() <= 64
@@ -206,6 +298,49 @@ impl PluginManifest {
         Ok(m)
     }
 
+    /// A personal tool's manifest: the rules for every plugin, and those
+    /// that keep a tool the assistant wrote small and contained: Python,
+    /// `tool.py`, level A, one read-only tool named `run` whose inputs are
+    /// workspace files and scalars (never a connection's dataset).
+    pub fn parse_personal(text: &str, id: &str) -> Result<Self, String> {
+        use columbus_shared::tools;
+        let m = Self::parse_any(text)?;
+        if m.id != id || !tools::id_ok(&m.id) {
+            return Err(format!("{:?} is not the personal tool {id}", m.id));
+        }
+        if m.runtime != Runtime::Python || m.entry != tools::ENTRY {
+            return Err("a personal tool is Python, with tool.py as its entry".into());
+        }
+        if let Some(l) = m.confinement.as_ref().and_then(|c| c.level.as_deref()) {
+            if !l.eq_ignore_ascii_case("A") {
+                return Err("a personal tool runs at confinement level A only".into());
+            }
+        }
+        if m.tools.len() != 1 || !m.tools.contains_key(tools::TOOL) {
+            return Err("a personal tool has exactly one tool, named run".into());
+        }
+        let t = &m.tools[tools::TOOL];
+        if t.risk != Risk::Read {
+            return Err(
+                "a personal tool only reads its inputs and writes its outputs (risk: read)".into(),
+            );
+        }
+        if let Some(n) = t
+            .params
+            .iter()
+            .find(|(_, p)| matches!(p, ParamSpec::Dataset { .. }))
+            .map(|(n, _)| n)
+        {
+            return Err(format!(
+                "{n}: a personal tool takes workspace layers and tables (type: file), not datasets"
+            ));
+        }
+        if t.outputs.is_empty() {
+            return Err("a personal tool has at least one output".into());
+        }
+        Ok(m)
+    }
+
     pub fn display_name(&self) -> String {
         self.name.clone().unwrap_or_else(|| self.id.clone())
     }
@@ -224,9 +359,78 @@ impl ParamSpec {
             ParamSpec::String {
                 default, optional, ..
             } => *optional && default.is_none(),
-            ParamSpec::Boolean { default, optional } => *optional && default.is_none(),
-            ParamSpec::Dataset { .. } | ParamSpec::File => false,
+            ParamSpec::Boolean {
+                default, optional, ..
+            } => *optional && default.is_none(),
+            ParamSpec::Dataset { .. } | ParamSpec::File { .. } => false,
         }
+    }
+
+    pub fn description(&self) -> Option<&str> {
+        match self {
+            ParamSpec::Dataset { description, .. }
+            | ParamSpec::Number { description, .. }
+            | ParamSpec::Integer { description, .. }
+            | ParamSpec::String { description, .. }
+            | ParamSpec::Boolean { description, .. }
+            | ParamSpec::File { description, .. } => description.as_deref(),
+        }
+    }
+}
+
+/// Fields in words: `ROUTE_ID (text): the route's id; MEAS (number)`.
+pub fn fields_text(fields: &[FieldSpec]) -> String {
+    fields
+        .iter()
+        .map(|f| {
+            let mut s = f.name.clone();
+            if let Some(k) = &f.kind {
+                s.push_str(&format!(" ({k})"));
+            }
+            if let Some(d) = &f.description {
+                s.push_str(&format!(": {d}"));
+            }
+            s
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+/// What a workspace-file input expects, in words.
+fn file_text(
+    description: &Option<String>,
+    kind: &Option<String>,
+    geometry: &Option<String>,
+    crs: &Option<String>,
+    fields: &[FieldSpec],
+) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(d) = description {
+        parts.push(d.trim_end_matches('.').to_string());
+    }
+    parts.push(format!(
+        "A workspace {} handle, ws://<session>/<path> (from query_features, vector_op or another tool)",
+        kind.as_deref().unwrap_or("file")
+    ));
+    if let Some(g) = geometry {
+        parts.push(format!("geometry: {g}"));
+    }
+    if let Some(c) = crs {
+        parts.push(format!("CRS: {c}"));
+    }
+    if !fields.is_empty() {
+        parts.push(format!("required fields: {}", fields_text(fields)));
+    }
+    parts.join(". ") + "."
+}
+
+/// The schema's description for a scalar: the plugin's own words, then its unit.
+fn scalar_text(description: Option<&str>, unit: Option<&str>) -> Option<String> {
+    match (description, unit) {
+        (Some(d), Some(u)) => Some(format!("{} (in {u}).", d.trim_end_matches('.'))),
+        (Some(d), None) => Some(d.to_string()),
+        (None, Some(u)) => Some(format!("In {u}")),
+        (None, None) => None,
     }
 }
 
@@ -235,9 +439,12 @@ pub fn input_schema(t: &PluginTool) -> Value {
     let mut props = serde_json::Map::new();
     let mut required = Vec::new();
     for (name, p) in &t.params {
-        let (schema, req) = match p {
-            ParamSpec::Dataset { .. } => (
-                json!({"description": "A dataset as \"<connection>:<dataset>\", or {\"connection\", \"dataset\", \"where\"}. Columbus reads it through the connection's permissions and row filter.",
+        let (mut schema, req) = match p {
+            ParamSpec::Dataset { description, .. } => (
+                json!({"description": match description {
+                        Some(d) => format!("{} A dataset as \"<connection>:<dataset>\", or {{\"connection\", \"dataset\", \"where\"}}. Columbus reads it through the connection's permissions and row filter.", d.trim_end()),
+                        None => "A dataset as \"<connection>:<dataset>\", or {\"connection\", \"dataset\", \"where\"}. Columbus reads it through the connection's permissions and row filter.".to_string(),
+                       },
                        "oneOf": [{"type": "string"}, {"type": "object", "properties": {
                            "connection": {"type": "string"}, "dataset": {"type": "string"}, "where": {"type": "string"}},
                            "required": ["connection", "dataset"]}]}),
@@ -249,10 +456,11 @@ pub fn input_schema(t: &PluginTool) -> Value {
                 min,
                 max,
                 optional,
+                description,
             } => {
                 let mut s = json!({"type": "number"});
-                if let Some(u) = unit {
-                    s["description"] = json!(format!("In {u}"));
+                if let Some(d) = scalar_text(description.as_deref(), unit.as_deref()) {
+                    s["description"] = json!(d);
                 }
                 if let Some(d) = default {
                     s["default"] = json!(d);
@@ -270,8 +478,13 @@ pub fn input_schema(t: &PluginTool) -> Value {
                 min,
                 max,
                 optional,
+                unit,
+                description,
             } => {
                 let mut s = json!({"type": "integer"});
+                if let Some(d) = scalar_text(description.as_deref(), unit.as_deref()) {
+                    s["description"] = json!(d);
+                }
                 if let Some(d) = default {
                     s["default"] = json!(d);
                 }
@@ -287,6 +500,7 @@ pub fn input_schema(t: &PluginTool) -> Value {
                 choices,
                 default,
                 optional,
+                ..
             } => {
                 let mut s = json!({"type": "string"});
                 if let Some(c) = choices {
@@ -297,24 +511,92 @@ pub fn input_schema(t: &PluginTool) -> Value {
                 }
                 (s, default.is_none() && !optional)
             }
-            ParamSpec::Boolean { default, optional } => {
+            ParamSpec::Boolean {
+                default, optional, ..
+            } => {
                 let mut s = json!({"type": "boolean"});
                 if let Some(d) = default {
                     s["default"] = json!(d);
                 }
                 (s, default.is_none() && !optional)
             }
-            ParamSpec::File => (
-                json!({"type": "string", "description": "A workspace file handle, ws://<session>/<path>"}),
+            ParamSpec::File {
+                description,
+                kind,
+                geometry,
+                crs,
+                fields,
+            } => (
+                json!({"type": "string", "description": file_text(description, kind, geometry, crs, fields)}),
                 true,
             ),
         };
+        if matches!(p, ParamSpec::String { .. } | ParamSpec::Boolean { .. }) {
+            if let Some(d) = p.description() {
+                schema["description"] = json!(d);
+            }
+        }
         props.insert(name.clone(), schema);
         if req {
             required.push(name.clone());
         }
     }
     json!({"type": "object", "properties": props, "required": required, "additionalProperties": false})
+}
+
+/// The full description `describe_tool` gives: what it does, when not to
+/// use it, its outputs, its checks and examples.
+pub fn describe_text(t: &PluginTool) -> String {
+    let mut out = t.description.clone().unwrap_or_else(|| t.summary.clone());
+    if let Some(n) = &t.not_for {
+        out.push_str(&format!("\n\nNot for: {n}"));
+    }
+    if !t.outputs.is_empty() {
+        out.push_str("\n\nOutputs, saved to the workspace:");
+        for (n, o) in &t.outputs {
+            let mut line = format!("\n- {n} ({})", o.kind());
+            if let OutputSpec::Layer { geometry, crs, .. } = o {
+                let bits: Vec<String> = [
+                    geometry.as_ref().map(|g| format!("geometry {g}")),
+                    crs.as_ref().map(|c| format!("CRS {c}")),
+                ]
+                .into_iter()
+                .flatten()
+                .collect();
+                if !bits.is_empty() {
+                    line.push_str(&format!(", {}", bits.join(", ")));
+                }
+            }
+            if let Some(d) = o.description() {
+                line.push_str(&format!(": {d}"));
+            }
+            let fields = match o {
+                OutputSpec::Layer { fields, .. } | OutputSpec::Table { fields, .. } => {
+                    fields.as_slice()
+                }
+                OutputSpec::File { .. } => &[],
+            };
+            if !fields.is_empty() {
+                line.push_str(&format!(" Fields: {}.", fields_text(fields)));
+            }
+            out.push_str(&line);
+        }
+    }
+    if !t.checks.is_empty() {
+        out.push_str("\n\nChecks it reports:");
+        for c in &t.checks {
+            match t.check_notes.get(c) {
+                Some(n) => out.push_str(&format!("\n- {c}: {n}")),
+                None => out.push_str(&format!("\n- {c}")),
+            }
+        }
+    }
+    for e in &t.examples {
+        let d = e.get("description").and_then(Value::as_str).unwrap_or("");
+        let a = e.get("arguments").cloned().unwrap_or(Value::Null);
+        out.push_str(&format!("\n\nExample: {d}\n{a}"));
+    }
+    out
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -342,6 +624,9 @@ pub struct Plugin {
     pub dir: PathBuf,
     pub hash: String,
     pub personal: bool,
+    /// A personal tool: proposed by an assistant with `propose_tool` and
+    /// installed by the person in the Columbus app (see personal_tools.rs).
+    pub personal_tool: bool,
     gate: Option<PluginStatus>,
     /// The launcher and level, or None for an unconfined pilot.
     confine: Option<(PathBuf, columbus_confine::Level)>,
@@ -568,6 +853,7 @@ impl Plugins {
                     dir,
                     hash,
                     personal,
+                    personal_tool: false,
                     gate,
                     confine,
                     worker: OnceCell::new(),
@@ -582,6 +868,144 @@ impl Plugins {
             memory_mb: policy.plugins.memory_mb,
             notes,
         }
+    }
+
+    /// The person's own tools (personal tools): each folder in `root` named
+    /// for its id, with the plugin.yaml and tool.py the person installed
+    /// from the Columbus app, on only while `approved.yaml` holds the hash
+    /// of exactly those files. Always confined at level A, never unconfined.
+    /// `reuse`: tools already loaded, kept (with their running workers)
+    /// when nothing about them changed.
+    #[allow(clippy::too_many_arguments)]
+    pub fn load_personal_tools(
+        policy: &OrgPolicy,
+        root: &Path,
+        python: PathBuf,
+        host_script: PathBuf,
+        workspace: PathBuf,
+        taken: &BTreeSet<String>,
+        reuse: &[Arc<Plugin>],
+    ) -> Self {
+        use columbus_shared::tools;
+        let mut notes = Vec::new();
+        let mut plugins: Vec<Arc<Plugin>> = Vec::new();
+        let host = |plugins, notes| Plugins {
+            plugins,
+            python: python.clone(),
+            host_script: host_script.clone(),
+            workspace: workspace.clone(),
+            memory_mb: policy.plugins.memory_mb,
+            notes,
+        };
+        if !policy.allow_personal_tools {
+            return host(plugins, notes);
+        }
+        let approvals = tools::read_approvals(root);
+        let confine = match columbus_confine::ready(columbus_confine::Level::A) {
+            Ok(l) if policy.plugins.levels.iter().any(|x| x.eq_ignore_ascii_case("A")) => {
+                Ok((l, columbus_confine::Level::A))
+            }
+            Ok(_) => Err("organization policy allows no confinement level A for plugins, and personal tools run only at A".to_string()),
+            Err(e) => Err(format!("personal tools run only confined (level A: no network, writes only their own folder), and {e}")),
+        };
+        for v in tools::list_installed(root) {
+            let dir = root.join(&v.id);
+            let read = std::fs::read(dir.join(tools::MANIFEST))
+                .and_then(|m| std::fs::read(dir.join(tools::ENTRY)).map(|e| (m, e)));
+            let Ok((mtext, entry)) = read else {
+                notes.push(format!(
+                    "Personal tool {} not loaded: its files cannot be read.",
+                    v.id
+                ));
+                continue;
+            };
+            let manifest = match tools::check_files(&v.id, &mtext, &entry)
+                .and_then(|_| String::from_utf8(mtext.clone()).map_err(|e| e.to_string()))
+                .and_then(|t| PluginManifest::parse_personal(&t, &v.id))
+            {
+                Ok(m) => m,
+                Err(e) => {
+                    notes.push(format!("Personal tool {} not loaded: {e}", v.id));
+                    continue;
+                }
+            };
+            if taken.contains(&manifest.id) {
+                notes.push(format!(
+                    "Personal tool {:?} not loaded: another provider uses that id.",
+                    manifest.id
+                ));
+                continue;
+            }
+            let hash = tools::content_hash(&mtext, &entry);
+            let gate = match (&confine, approvals.get(&manifest.id)) {
+                (Err(reason), _) => Some(PluginStatus::Blocked {
+                    reason: reason.clone(),
+                }),
+                (_, None) => Some(PluginStatus::Unapproved { hash: hash.clone() }),
+                (_, Some(a)) if *a != hash => Some(PluginStatus::Changed { hash: hash.clone() }),
+                _ => None,
+            };
+            let same = reuse.iter().find(|p| {
+                p.id() == manifest.id
+                    && p.hash == hash
+                    && p.dir == dir
+                    && p.gate.is_none()
+                    && gate.is_none()
+            });
+            if let Some(p) = same {
+                plugins.push(p.clone());
+                continue;
+            }
+            plugins.push(Arc::new(Plugin {
+                manifest,
+                dir,
+                hash,
+                personal: true,
+                personal_tool: true,
+                gate,
+                confine: confine.as_ref().ok().cloned(),
+                worker: OnceCell::new(),
+            }));
+        }
+        host(plugins, notes)
+    }
+
+    /// One proposed tool, for its test run only: its files are in `dir`
+    /// (outside every folder a plugin may write), it is confined at level
+    /// A, and the person approved this run.
+    pub fn for_test(
+        policy: &OrgPolicy,
+        manifest: PluginManifest,
+        dir: PathBuf,
+        hash: String,
+        python: PathBuf,
+        host_script: PathBuf,
+        workspace: PathBuf,
+    ) -> Result<(Self, Arc<Plugin>), String> {
+        let launcher = columbus_confine::ready(columbus_confine::Level::A).map_err(|e| {
+            format!("tools run only confined (level A: no network, writes only their own folder), and {e}; Columbus never runs one unconfined")
+        })?;
+        let p = Arc::new(Plugin {
+            manifest,
+            dir,
+            hash,
+            personal: true,
+            personal_tool: true,
+            gate: None,
+            confine: Some((launcher, columbus_confine::Level::A)),
+            worker: OnceCell::new(),
+        });
+        Ok((
+            Plugins {
+                plugins: vec![p.clone()],
+                python,
+                host_script,
+                workspace,
+                memory_mb: policy.plugins.memory_mb,
+                notes: vec![],
+            },
+            p,
+        ))
     }
 
     pub fn all(&self) -> &[Arc<Plugin>] {
@@ -632,6 +1056,20 @@ impl Plugins {
             }
         };
         let mut launch = Launch::plugin(program, args, own.clone(), tmp);
+        if p.personal_tool {
+            // As for scripts: no PROJ downloads, no GDAL formats that can
+            // point at other files or URLs.
+            if let Some(env) = launch.env.as_mut() {
+                for (k, v) in [
+                    ("PYTHONIOENCODING", "utf-8"),
+                    ("PROJ_NETWORK", "OFF"),
+                    ("GDAL_SKIP", "GDALG OGR_VRT VRT"),
+                    ("OGR_SQLITE_ALLOW_EXTERNAL_ACCESS", "NO"),
+                ] {
+                    env.push((k.into(), v.into()));
+                }
+            }
+        }
         if let Some((launcher, level)) = &p.confine {
             let spec = columbus_confine::Spec {
                 level: *level,
@@ -736,6 +1174,13 @@ pub fn check_describe(m: &PluginManifest, d: &Value) -> Result<(), String> {
 }
 
 pub fn describe_status(id: &str, s: &PluginStatus) -> String {
+    if id.starts_with(columbus_shared::tools::ID_PREFIX) {
+        match s {
+            PluginStatus::Unapproved { .. } => return format!("{id} is not installed; the person installs it from Settings, Tools, in the Columbus app"),
+            PluginStatus::Changed { .. } => return format!("{id} changed since the person installed it, so it is off; propose it again with propose_tool and the person installs it again"),
+            _ => {}
+        }
+    }
     match s {
         PluginStatus::Ready => format!("{id} is ready"),
         PluginStatus::Unapproved { .. } => format!("{id} has not been approved; a person approves it with `columbus-mcp plugins approve {id}`"),

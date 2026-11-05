@@ -1778,8 +1778,15 @@ for _name, _fn in (
     ("edit_prepare", lambda p: _edits().edit_prepare(p)),
     ("edit_apply", lambda p: _edits().edit_apply(p)),
     ("catalog_details", lambda p: _catalog().catalog_details(p)),
+    ("lint_tool", lambda p: _toollint().lint_tool(p.get("code"))),
 ):
     plugin.tool(_name)(lambda ctx, fn=_fn: fn(ctx.params))
+
+
+def _toollint():
+    import columbus_toollint
+
+    return columbus_toollint
 
 
 def _catalog():

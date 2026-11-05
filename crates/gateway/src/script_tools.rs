@@ -398,18 +398,18 @@ fn check(id: &str, severity: Severity, message: String, fix: Option<&str>) -> Ch
 }
 
 /// One input, checked and bound.
-struct ScriptInput {
-    name: String,
-    handle: String,
-    path: PathBuf,
-    meta: OutputMeta,
-    sha256: String,
+pub(crate) struct ScriptInput {
+    pub(crate) name: String,
+    pub(crate) handle: String,
+    pub(crate) path: PathBuf,
+    pub(crate) meta: OutputMeta,
+    pub(crate) sha256: String,
 }
 
 impl Gateway {
     /// A workspace file Columbus recorded in this session, not from a
     /// connected server, unchanged (as `own_output` for exports).
-    fn script_input(&self, name: &str, handle: &str) -> Result<ScriptInput, String> {
+    pub(crate) fn script_input(&self, name: &str, handle: &str) -> Result<ScriptInput, String> {
         let path =
             crate::providers::resolve_handle(&self.state.session, &self.state.sandbox, handle)
                 .map_err(|e| format!("input {name}: {e}"))?;
