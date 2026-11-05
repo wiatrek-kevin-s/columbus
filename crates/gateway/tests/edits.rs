@@ -572,11 +572,18 @@ async fn postgis_edits_follow_the_same_rules() {
         json!({"connection": "parcels", "dataset": ds, "order_by": "name"}),
     )
     .await);
+    // Rows come as lists, in the order of "columns".
+    let col = q["result"]["columns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .position(|c| c == "name" || c["name"] == "name")
+        .expect("a name column");
     let names: Vec<&str> = q["result"]["rows"]
         .as_array()
         .unwrap()
         .iter()
-        .filter_map(|r| r.get("name").and_then(Value::as_str))
+        .filter_map(|r| r[col].as_str())
         .collect();
     // District 14 now: B, E, the new row and One; C deleted, D outside.
     assert_eq!(names, vec!["B", "E", "New", "One"], "{q}");
