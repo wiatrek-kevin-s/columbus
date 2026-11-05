@@ -52,6 +52,10 @@ export function MapView(props: {
   const [ready, setReady] = useState(0);
   const bound = useRef(new Set<string>());
   const failed = useRef(false);
+  // Whether the current style has loaded, so sources and layers can be
+  // added. Not `isStyleLoaded()`: with a basemap that stays false while its
+  // icons and tiles load, long after the style itself is ready.
+  const styled = useRef(false);
   const onBasemapFailed = useRef(props.onBasemapFailed);
   onBasemapFailed.current = props.onBasemapFailed;
   const onIdentify = useRef(props.onIdentify);
@@ -69,7 +73,10 @@ export function MapView(props: {
     });
     m.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
     m.addControl(new maplibregl.ScaleControl({ unit: "imperial" }), "bottom-left");
-    m.on("style.load", () => setReady((n) => n + 1));
+    m.on("style.load", () => {
+      styled.current = true;
+      setReady((n) => n + 1);
+    });
     m.on("error", (e: maplibregl.ErrorEvent) => {
       // Offline, or the basemap host blocked: carry on with a plain
       // background, so the session's own layers still show.
@@ -77,6 +84,7 @@ export function MapView(props: {
       const fromBasemap = String(e.error?.message || "").includes("openfreemap");
       if (fromBasemap || !m.isStyleLoaded()) {
         failed.current = true;
+        styled.current = false;
         m.setStyle(BLANK);
         onBasemapFailed.current();
       }
@@ -96,13 +104,15 @@ export function MapView(props: {
       return;
     }
     failed.current = false;
+    styled.current = false;
+    if (box.current) box.current.dataset.layers = "0";
     map.current?.setStyle(props.basemap ? BASEMAP : BLANK);
   }, [props.basemap]);
 
   // Keep the map's sources and layers in step with the list.
   useEffect(() => {
     const m = map.current;
-    if (!m || !m.isStyleLoaded()) return;
+    if (!m || !styled.current) return;
     const want = new Set(props.layers.map((l) => id(l.handle)));
     for (const s of Object.keys(m.getStyle().sources || {})) {
       if (s.startsWith("l-") && !want.has(s)) {
@@ -159,6 +169,9 @@ export function MapView(props: {
         m.on("mouseleave", sid + suffix, () => (m.getCanvas().style.cursor = ""));
       }
     }
+    // How many of the session's layers the map holds, for the window's own
+    // tests.
+    if (box.current) box.current.dataset.layers = String(props.layers.filter((l) => m.getSource(id(l.handle))).length);
   }, [props.layers, ready]);
 
   // Zoom to a layer when asked, once per request (`handle` or
@@ -186,7 +199,7 @@ export function MapView(props: {
   const last = useRef<{ source: string; id: number } | null>(null);
   useEffect(() => {
     const m = map.current;
-    if (!m || !m.isStyleLoaded()) return;
+    if (!m || !styled.current) return;
     if (last.current && m.getSource(last.current.source)) {
       m.setFeatureState(last.current, { selected: false });
     }

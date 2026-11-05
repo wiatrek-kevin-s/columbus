@@ -14,6 +14,7 @@ finish. Screenshots go to e2e/out/.
 Needs the GIS engine (geopandas, pyogrio, shapely, pyproj) and Playwright.
 """
 
+import base64
 import json
 import os
 import subprocess
@@ -34,6 +35,8 @@ OUT = HERE / "out"
 
 
 from mcp_client import Mcp, wait_file  # noqa: E402
+
+PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")
 
 
 def main():
@@ -89,12 +92,22 @@ def main():
             tiles = []
             ofm = "https://tiles.openfreemap.org"
             # Vector tiles, as OpenFreeMap's: the map's worker fetches them.
-            style = {"version": 8, "sources": {"t": {"type": "vector",
+            style = {"version": 8, "sprite": ofm + "/sprites/test", "sources": {"t": {"type": "vector",
                      "tiles": [ofm + "/test/{z}/{x}/{y}.pbf"]}},
                      "layers": [{"id": "t", "type": "fill", "source": "t", "source-layer": "water"}]}
 
             def fake_ofm(route):
                 url = route.request.url
+                if "/sprites/" in url:
+                    # Icons that take a moment, as a real basemap's do.
+                    time.sleep(0.8)
+                    if url.endswith(".json"):
+                        route.fulfill(status=200, content_type="application/json", body="{}",
+                                      headers={"access-control-allow-origin": "*"})
+                    else:
+                        route.fulfill(status=200, content_type="image/png", body=PNG,
+                                      headers={"access-control-allow-origin": "*"})
+                    return
                 if "/styles/" in url:
                     route.fulfill(status=200, content_type="application/json", body=json.dumps(style),
                                   headers={"access-control-allow-origin": "*"})
@@ -126,6 +139,20 @@ def main():
             assert tiles, "no basemap tile was requested"
             expect(page.get_by_text("could not be loaded")).to_have_count(0)
             expect(page.get_by_role("checkbox", name="Basemap")).to_be_checked()
+            # The session's layer is still on the map over the basemap, and
+            # after switching it off again.
+            expect(page.locator(".map[data-layers='1']")).to_have_count(1, timeout=10000)
+            page.wait_for_timeout(1500)
+            page.screenshot(path=str(OUT / "1-basemap.png"))
+            page.get_by_role("checkbox", name="Basemap").uncheck()
+            expect(page.locator(".map[data-layers='1']")).to_have_count(1, timeout=10000)
+            page.get_by_role("checkbox", name="Basemap").check()
+            expect(page.locator(".map[data-layers='1']")).to_have_count(1, timeout=10000)
+            # Off again for the rest: the slow icons above hold up the
+            # browser's other requests while they wait.
+            page.get_by_role("checkbox", name="Basemap").uncheck()
+            expect(page.locator(".map[data-layers='1']")).to_have_count(1, timeout=10000)
+            page.wait_for_timeout(1000)
 
             # Click a row: it is selected.
             page.locator("table tbody tr").nth(2).click()

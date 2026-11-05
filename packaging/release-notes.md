@@ -1,6 +1,6 @@
 Columbus {{VERSION}}, a test release. Click a link to download that file.
 
-**New in this version:** the basemap in the Columbus app's map loads again (0.3.0 showed "could not be loaded"). Also since 0.3.0: on a Mac, engine plugins, `run_python` scripts and local MCP servers run inside the macOS sandbox instead of being refused.
+**New in this version:** the session's layers stay on the map when you turn the basemap on (in 0.3.1 they disappeared until it was off again). Since 0.3.0: on a Mac, engine plugins, `run_python` scripts and local MCP servers run inside the macOS sandbox instead of being refused.
 
 ## Mac (Apple Silicon: M1 or later)
 
