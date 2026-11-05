@@ -255,6 +255,13 @@ async fn read_and_export_outputs() {
     )
     .await);
     assert_eq!(x["result"]["status"], "exported", "{x}");
+    assert!(
+        x["result"]["allowed_by"]["how"]
+            .as_str()
+            .unwrap()
+            .contains("folder is granted"),
+        "{x}"
+    );
     let out = env.root.join("share").join("district roads.gpkg");
     assert!(out.is_file());
     assert!(env

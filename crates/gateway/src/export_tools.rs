@@ -768,10 +768,18 @@ impl Gateway {
         let _ = self.write_provenance(&prov, &record);
         rec.prov = Some(prov.clone());
         rec.rows = meta.rows;
+        let approval = rec.approval.clone();
         self.audit(&ctx, rec)?;
         Ok(Json(Output {
             result: json!({"status": "exported", "folder": folder.id, "files": written,
-                           "provenance_file": sidecar, "summary": reply.get("summary")}),
+            "provenance_file": sidecar, "summary": reply.get("summary"),
+            // Say how it was allowed, so an agent does not
+            // mistake an approval given while the call waited
+            // for no approval at all.
+            "allowed_by": match &approval {
+                Some(id) => json!({"approval": id, "how": "the person approved this export while the call waited"}),
+                None => json!({"how": "the folder is granted and every check passed, so no approval was needed"}),
+            }}),
             checks,
             provenance: Some(prov),
         }))

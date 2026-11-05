@@ -73,6 +73,29 @@ class CrsTests(unittest.TestCase):
         self.assertEqual(far[-1]["id"], "crs.area_of_use")
         self.assertEqual(g.crs_checks(None, [0, 0, 1, 1])[0]["id"], "crs.present")
 
+    def test_area_of_use_across_the_180_line_and_far_beyond(self):
+        """NAD83's area runs from 167.65°E across the 180° line to 40.73°W;
+        lower-48 data is inside it. A projection made for Texas used for the
+        whole country is warned about; one used where it is meant is not."""
+        from pyproj import Transformer
+
+        def area(code, ll):
+            crs = g.crs_from_spec({"code": code})
+            ext = list(Transformer.from_crs(4326, crs, always_xy=True).transform_bounds(*ll)) if crs.is_projected else ll
+            return [c for c in g.crs_checks(crs, ext) if c["id"] == "crs.area_of_use"]
+
+        lower48 = [-124.09, 25.75, -67.03, 48.63]
+        self.assertEqual(area("EPSG:4269", lower48), [])
+        self.assertEqual(area("EPSG:4269", [-179.23, 51.17, 179.86, 71.44]), [], "Aleutians, across the line")
+        self.assertEqual(area("EPSG:4269", [-160.3, 18.9, -154.8, 22.3]), [], "Hawaii")
+        stretched = area("EPSG:3081", lower48)
+        self.assertEqual(len(stretched), 1)
+        self.assertIn("well beyond", stretched[0]["message"])
+        self.assertIn("EPSG:5070", stretched[0]["fix"])
+        self.assertEqual(area("EPSG:3081", [-97.9, 30.1, -97.6, 30.5]), [], "Austin in the Texas system")
+        self.assertEqual(area("EPSG:2277", [-97.9, 30.1, -97.6, 30.5]), [], "Austin in Texas Central")
+        self.assertIn("fall outside", area("EPSG:2277", [-96.9, 32.7, -96.7, 32.9])[0]["message"], "Dallas is in North Central")
+
     def test_geometry_checks(self):
         bowtie = Polygon([(0, 0), (1, 1), (1, 0), (0, 1), (0, 0)])
         gs = gpd.GeoSeries([bowtie, Point(0, 0), None, LineString()], crs="EPSG:3081")

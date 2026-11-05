@@ -187,15 +187,69 @@ def crs_checks(crs: CRS | None, extent: list[float] | None, has_geometry: bool =
         return out
     if any(not math.isfinite(v) for v in ll):
         return out
-    if not _overlaps(ll, area, margin=1.0):
+    beyond = _beyond(ll, area)
+    if beyond is None:
         swapped = [extent[1], extent[0], extent[3], extent[2]]
         fix = "Check the CRS is right; if the data was labelled with the wrong CRS, assign the right one rather than reprojecting"
-        if crs.is_geographic and _overlaps(swapped, area, margin=1.0):
+        if crs.is_geographic and _beyond(swapped, area) is not None:
             fix = "Longitude and latitude look swapped; swap X and Y"
         out.append(check("crs.area_of_use", "warn",
                          f"{what}'s coordinates fall outside the area {_label(crs)} is meant for ({aou.name})",
                          detail={"extent_lonlat": [round(v, 4) for v in ll], "area_of_use": area}, fix=fix))
+    elif crs.is_projected and _far_beyond(beyond, area):
+        # Partly inside: fine for a geographic CRS, but a projection made
+        # for a smaller area distorts distances and areas away from it.
+        out.append(check("crs.area_of_use", "warn",
+                         f"{what} reaches well beyond the area {_label(crs)} is meant for ({aou.name}); "
+                         "distances and areas measured far from it are distorted",
+                         detail={"extent_lonlat": [round(v, 4) for v in ll], "area_of_use": area,
+                                 "degrees_beyond": {k: round(v, 2) for k, v in beyond.items()}},
+                         fix="Use a CRS meant for the whole extent (an equal-area CRS such as EPSG:5070 for the "
+                             "contiguous US), or split the data by area"))
     return out
+
+
+def _lon_range(west: float, east: float) -> tuple[float, float]:
+    """A longitude range as an increasing pair; one that crosses the 180°
+    line (west > east, as NAD83's 167.65 to -40.73) gets east + 360."""
+    return (west, east + 360.0) if east < west else (west, east)
+
+
+def _beyond(ll: list[float], area: list[float], margin: float = 0.25) -> dict[str, float] | None:
+    """How many degrees a lon/lat extent reaches past an area of use on each
+    side, or None when the two do not meet at all (within ``margin``). Both
+    may cross the 180° line; data spanning more than 300° of longitude (a
+    layer that itself crosses it, such as the Aleutians) is compared by
+    latitude only."""
+    aw, ae = _lon_range(area[0], area[2])
+    s_beyond = max(0.0, area[1] - ll[1])
+    n_beyond = max(0.0, ll[3] - area[3])
+    lat_meets = not (ll[3] < area[1] - margin or ll[1] > area[3] + margin)
+    dw, de = _lon_range(ll[0], ll[2])
+    if de - dw > 300:
+        return {"west": 0.0, "east": 0.0, "south": s_beyond, "north": n_beyond} if lat_meets else None
+    best = None
+    for shift in (-360.0, 0.0, 360.0):
+        w, e = dw + shift, de + shift
+        if e < aw - margin or w > ae + margin:
+            continue
+        cand = {"west": max(0.0, aw - w), "east": max(0.0, e - ae)}
+        if best is None or cand["west"] + cand["east"] < best["west"] + best["east"]:
+            best = cand
+    if best is None or not lat_meets:
+        return None
+    return {**best, "south": s_beyond, "north": n_beyond}
+
+
+def _far_beyond(beyond: dict[str, float], area: list[float]) -> bool:
+    """Reaching past the area by more than a quarter of its size (and at
+    least 1°) on any side."""
+    aw, ae = _lon_range(area[0], area[2])
+    width, height = ae - aw, area[3] - area[1]
+    lon_limit = max(1.0, width / 4)
+    lat_limit = max(1.0, height / 4)
+    return (beyond["west"] > lon_limit or beyond["east"] > lon_limit
+            or beyond["south"] > lat_limit or beyond["north"] > lat_limit)
 
 
 # ---------------------------------------------------------------------------
