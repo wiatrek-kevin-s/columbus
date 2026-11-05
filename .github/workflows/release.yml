@@ -157,12 +157,6 @@ jobs:
             cp "$b"/nsis/*-setup.exe "dist/columbus-app-$version-windows-x64-setup.exe"
           fi
           ls -l dist
-          # The notes link to this release's own files by name.
-          base="https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG"
-          sed -e "s|{{VERSION}}|$version|g" -e "s|{{BASE}}|$base|g" packaging/release-notes.md > "$RUNNER_TEMP/notes.md"
-          for f in $(grep -o "$base/[^)]*" "$RUNNER_TEMP/notes.md" | sed "s|$base/||" | sort -u); do
-            [ -f "dist/$f" ] || { echo "The release notes link to $f, which was not built." >&2; exit 1; }
-          done
       - uses: actions/upload-artifact@v4
         with:
           name: columbus-app-${{ matrix.name }}
@@ -203,6 +197,12 @@ jobs:
             exit 1
           fi
           ls -l dist
+          # The notes link to this release's own files by name.
+          base="https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG"
+          sed -e "s|{{VERSION}}|$version|g" -e "s|{{BASE}}|$base|g" packaging/release-notes.md > "$RUNNER_TEMP/notes.md"
+          for f in $(grep -o "$base/[^)]*" "$RUNNER_TEMP/notes.md" | sed "s|$base/||" | sort -u); do
+            [ -f "dist/$f" ] || { echo "The release notes link to $f, which was not built." >&2; exit 1; }
+          done
           if ! gh release view "$TAG" >/dev/null 2>&1; then
             gh release create "$TAG" --target "$GITHUB_SHA" --title "Columbus $version (test release)" --notes-file "$RUNNER_TEMP/notes.md" --prerelease
           else
