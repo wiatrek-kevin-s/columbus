@@ -650,7 +650,12 @@ async fn narrowing_a_connection_removes_what_was_read_from_it() {
             json!({"connection": conn, "dataset": "tracts"}),
         )
     };
-    let layer = |r: CallToolResult| ok(&r)["result"]["layer"]["handle"].as_str().unwrap().to_string();
+    let layer = |r: CallToolResult| {
+        ok(&r)["result"]["layer"]["handle"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
     let read = |h: String| call(&c, "read_output", json!({"handle": h}));
     // Read from u first: a file carries every label the session had when it
     // was made, so one made after reading t counts as t's data too.
