@@ -243,6 +243,42 @@ async fn notes_are_drafted_read_and_filled_in_under_the_rules() {
         "a refused table gets no note"
     );
 
+    // Data from another connection written into a note: a flow rule that
+    // forbids it holds, and otherwise the note carries that data's label.
+    put(
+        &root.join("connections/other.yaml"),
+        &conn_yaml("other", &file, ""),
+    );
+    ok(&call(&c, "list_datasets", json!({"connection": "other"})).await);
+    put(
+        &policy,
+        "connection_types: [gpkg]\nhide_fields: [\"*ssn*\"]\nflows:\n  - { from: [\"connection:other\"], to: [\"connection:roads\"], action: deny }\n",
+    );
+    let e = err(&call(
+        &c,
+        "update_notes",
+        json!({"id": "roads--segments", "summary": "copied"}),
+    )
+    .await);
+    assert!(e.contains("flow rule"), "{e}");
+    put(
+        &policy,
+        "connection_types: [gpkg]\nhide_fields: [\"*ssn*\"]\n",
+    );
+    ok(&call(
+        &c,
+        "update_notes",
+        json!({"id": "roads--segments", "summary": "Segments, per the other data."}),
+    )
+    .await);
+    let seg = std::fs::read_to_string(notes.join("datasets/roads/segments.md")).unwrap();
+    assert!(
+        seg.contains("carries") && seg.contains("connection:other"),
+        "{seg}"
+    );
+    std::fs::remove_file(root.join("connections/other.yaml")).unwrap();
+    settle();
+
     // Text from the database never changes a note's structure.
     let all: String = walk(&notes)
         .iter()
@@ -255,7 +291,7 @@ async fn notes_are_drafted_read_and_filled_in_under_the_rules() {
     let s = ok(&call(&c, "context_search", json!({"query": "roadway"})).await);
     let cards = s["result"]["cards"].as_array().unwrap().clone();
     assert!(
-        cards.iter().any(|c| c["id"] == json!("roads-roadway")),
+        cards.iter().any(|c| c["id"] == json!("roads--roadway")),
         "{s}"
     );
     assert!(s["checks"].to_string().contains("context.personal"), "{s}");
@@ -275,7 +311,7 @@ async fn notes_are_drafted_read_and_filled_in_under_the_rules() {
     .await);
     assert_eq!(
         d["result"]["context"]["card"]["id"],
-        json!("roads-roadway"),
+        json!("roads--roadway"),
         "{d}"
     );
 
@@ -283,18 +319,19 @@ async fn notes_are_drafted_read_and_filled_in_under_the_rules() {
     let u = ok(&call(
         &c,
         "update_notes",
-        json!({"id": "roads-roadway--status", "labels": {"A": "Active", "R": "Retired"},
+        json!({"id": "roads--roadway--status", "labels": {"A": "Active", "R": "Retired"},
         "add_to_body": "Leave retired segments out of current-state work."}),
     )
     .await);
     assert_eq!(u["result"]["status"], json!("updated"), "{u}");
-    assert_eq!(person.asked.load(Ordering::SeqCst), 2);
+    // Drafting, the segments update above, and this one.
+    assert_eq!(person.asked.load(Ordering::SeqCst), 3);
     let status = std::fs::read_to_string(notes.join("domains/roads/roadway--status.yaml")).unwrap();
     assert!(
         status.contains("Retired") && status.contains("status: draft"),
         "{status}"
     );
-    let u = ok(&call(&c, "update_notes", json!({"id": "roads-roadway", "fields": {"FC": {"alias": "Functional class", "note": "FHWA class"}}})).await);
+    let u = ok(&call(&c, "update_notes", json!({"id": "roads--roadway", "fields": {"FC": {"alias": "Functional class", "note": "FHWA class"}}})).await);
     assert_eq!(u["result"]["status"], json!("updated"));
     // Edited notes are never redrafted over.
     let r = ok(&call(
@@ -304,7 +341,7 @@ async fn notes_are_drafted_read_and_filled_in_under_the_rules() {
     )
     .await);
     assert!(
-        r["result"]["kept"].to_string().contains("roads-roadway\""),
+        r["result"]["kept"].to_string().contains("roads--roadway\""),
         "{r}"
     );
     assert!(
@@ -325,7 +362,7 @@ async fn notes_are_drafted_read_and_filled_in_under_the_rules() {
     let e = err(&call(
         &c,
         "update_notes",
-        json!({"id": "roads-roadway--fc", "labels": {"1": "x"}}),
+        json!({"id": "roads--roadway--fc", "labels": {"1": "x"}}),
     )
     .await);
     assert!(e.contains("reviewed"), "{e}");
@@ -337,13 +374,13 @@ async fn notes_are_drafted_read_and_filled_in_under_the_rules() {
         &conn_yaml("roads", &file, "row_filter: \"DISTRICT = 14 AND FC = 1\"\n")
             .replace("allow: [\"*\"]", "allow: [roadway, segments]"),
     );
-    let g = ok(&call(&c, "context_get", json!({"id": "roads-roadway"})).await);
+    let g = ok(&call(&c, "context_get", json!({"id": "roads--roadway"})).await);
     assert!(
         g["result"]["card"]["redraft"].is_string() && g["result"]["card"]["rows"].is_null(),
         "{g}"
     );
     assert!(
-        err(&call(&c, "context_get", json!({"id": "roads-roadway--status"})).await)
+        err(&call(&c, "context_get", json!({"id": "roads--roadway--status"})).await)
             .contains("no context entry")
     );
     put(
@@ -358,7 +395,7 @@ async fn notes_are_drafted_read_and_filled_in_under_the_rules() {
         &policy,
         "connection_types: [gpkg]\nhide_fields: [\"*ssn*\", \"STATUS\"]\n",
     );
-    let g = ok(&call(&c, "context_get", json!({"id": "roads-roadway"})).await);
+    let g = ok(&call(&c, "context_get", json!({"id": "roads--roadway"})).await);
     assert!(
         !g["result"]["card"]["fields"].to_string().contains("STATUS"),
         "{g}"
@@ -367,7 +404,7 @@ async fn notes_are_drafted_read_and_filled_in_under_the_rules() {
     ok(&call(
         &c,
         "update_notes",
-        json!({"id": "roads-roadway", "summary": "Roadway segments."}),
+        json!({"id": "roads--roadway", "summary": "Roadway segments."}),
     )
     .await);
     let road = std::fs::read_to_string(notes.join("datasets/roads/roadway.md")).unwrap();
@@ -376,7 +413,7 @@ async fn notes_are_drafted_read_and_filled_in_under_the_rules() {
         "{road}"
     );
     assert!(
-        err(&call(&c, "context_get", json!({"id": "roads-roadway--status"})).await)
+        err(&call(&c, "context_get", json!({"id": "roads--roadway--status"})).await)
             .contains("no context entry")
     );
     put(
@@ -384,10 +421,10 @@ async fn notes_are_drafted_read_and_filled_in_under_the_rules() {
         &conn_yaml("roads", &file, "").replace("allow: [\"*\"]", "allow: [segments]"),
     );
     assert!(
-        err(&call(&c, "context_get", json!({"id": "roads-roadway"})).await)
+        err(&call(&c, "context_get", json!({"id": "roads--roadway"})).await)
             .contains("no context entry")
     );
-    ok(&call(&c, "context_get", json!({"id": "roads-segments"})).await);
+    ok(&call(&c, "context_get", json!({"id": "roads--segments"})).await);
     c.cancel().await.unwrap();
 }
 

@@ -100,9 +100,21 @@ fn draft_hash(text: &str) -> String {
     h.finalize().iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// Fill in the one line that is exactly `draft_sha256:` (text from the
+/// database elsewhere in the note can hold the same words).
 fn with_hash(text: &str) -> String {
     let h = draft_hash(text);
-    text.replacen("draft_sha256:", &format!("draft_sha256: {h}"), 1)
+    let mut done = false;
+    let mut out: Vec<String> = Vec::new();
+    for l in text.split('\n') {
+        if !done && l == "draft_sha256:" {
+            out.push(format!("draft_sha256: {h}"));
+            done = true;
+        } else {
+            out.push(l.to_string());
+        }
+    }
+    out.join("\n")
 }
 
 /// Whether `path` is a draft Columbus wrote that no one has changed.
@@ -149,7 +161,16 @@ fn write_note(root: &Path, rel: &Path, text: &str) -> Result<(), String> {
 /// The notes folder is the person's, never inside the organization's pack.
 fn notes_root(paths: &crate::config::Paths) -> Result<PathBuf, String> {
     let root = notes_dir(paths);
-    let canon = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    // Made first, so both are compared as the file system resolves them.
+    let _ = std::fs::create_dir_all(&root);
+    let canon = |p: &Path| {
+        let c = p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+        if cfg!(windows) {
+            PathBuf::from(c.to_string_lossy().to_lowercase())
+        } else {
+            c
+        }
+    };
     if canon(&root).starts_with(canon(&paths.context)) {
         return Err(format!(
             "the notes folder {} is inside the organization's context folder; set COLUMBUS_NOTES elsewhere",
@@ -203,6 +224,20 @@ fn short_hash(s: &str) -> String {
         .collect()
 }
 
+impl Gateway {
+    /// How many codes a field's code list may hold under the rules in force:
+    /// none unless codes are on, the assistant could read rows anyway (a row
+    /// tool allowed) and a call may return rows; then at most that many.
+    pub(crate) fn codes_cap(&self, access: &EffectiveAccess) -> Option<u64> {
+        let p = self.state.policy();
+        let row_tools = ["sql_select", "query_features", "sample_rows"]
+            .iter()
+            .any(|t| p.tool_allowed(t));
+        (p.notes.values && row_tools && access.return_rows > 0)
+            .then(|| (MAX_CODES as u64).min(access.return_rows))
+    }
+}
+
 /// What decided a draft's facts: the filters on the dataset, the fields
 /// hidden, and whether codes were listed. When the rules in force differ,
 /// the counts and codes in the note are no longer shown.
@@ -227,19 +262,29 @@ fn card_of(path: &Path) -> Option<serde_yaml::Mapping> {
 /// The file a note goes in: the plain name, unless a note about something
 /// else already has it (two names with the same slug), then the name with a
 /// short hash of the exact names.
-fn note_path(root: &Path, plain: PathBuf, hashed: PathBuf, want: &[(&str, &str)]) -> PathBuf {
-    let theirs = card_of(&root.join(&plain));
-    let same = theirs.is_none_or(|c| {
-        want.iter().all(|(k, v)| {
-            c.get(serde_yaml::Value::from(*k))
-                .and_then(|x| x.as_str())
-                .is_some_and(|x| x == *v)
-        })
-    });
-    if same {
-        plain
+fn note_path(
+    root: &Path,
+    plain: PathBuf,
+    hashed: PathBuf,
+    want: &[(&str, &str)],
+) -> Option<PathBuf> {
+    let ours = |rel: &Path| {
+        let path = root.join(rel);
+        !path.exists()
+            || card_of(&path).is_some_and(|c| {
+                want.iter().all(|(k, v)| {
+                    c.get(serde_yaml::Value::from(*k))
+                        .and_then(|x| x.as_str())
+                        .is_some_and(|x| x == *v)
+                })
+            })
+    };
+    if ours(&plain) {
+        Some(plain)
+    } else if ours(&hashed) {
+        Some(hashed)
     } else {
-        hashed
+        None
     }
 }
 
@@ -408,12 +453,33 @@ impl Gateway {
         ensure_pack(&root)?;
         // Codes only where the assistant could read rows anyway, and no more
         // of them than a call may return.
-        let policy = self.state.policy();
-        let row_tools = ["sql_select", "query_features", "sample_rows"]
-            .iter()
-            .any(|t| policy.tool_allowed(t));
-        let codes_cap = (policy.notes.values && row_tools && access.return_rows > 0)
-            .then(|| (MAX_CODES as u64).min(access.return_rows));
+        let codes_cap = self.codes_cap(&access);
+        // Ids the notes already use, and whose they are: a name clash never
+        // replaces another dataset's note.
+        let mut owners: BTreeMap<String, (String, String, String)> = BTreeMap::new();
+        if let Ok(p) = Pack::load(&root) {
+            for e in &p.entries {
+                owners.insert(
+                    e.id.clone(),
+                    (
+                        e.str_field("connection").unwrap_or_default(),
+                        e.str_field("physical")
+                            .or_else(|| e.str_field("dataset"))
+                            .unwrap_or_default(),
+                        e.str_field("field").unwrap_or_default(),
+                    ),
+                );
+            }
+        }
+        let mut claim = |id: &str, owner: (String, String, String)| -> bool {
+            match owners.get(id) {
+                Some(o) if *o != owner => false,
+                _ => {
+                    owners.insert(id.to_string(), owner);
+                    true
+                }
+            }
+        };
         let mut out = Drafted {
             folder: root.display().to_string(),
             ..Default::default()
@@ -455,33 +521,34 @@ impl Gateway {
         for (ds, info, cat) in &drafts {
             let under = drafted_under(&access, ds, codes_cap);
             let want = [("connection", conn.id.as_str()), ("physical", ds.as_str())];
-            let plain_slug = format!("{cslug}-{}", slug(ds));
-            let hashed_slug = format!(
-                "{plain_slug}-{}",
-                short_hash(&format!("{}\u{0}{ds}", conn.id))
-            );
-            let rel = note_path(
+            let hash = short_hash(&format!("{}\u{0}{ds}", conn.id));
+            let Some(rel) = note_path(
                 &root,
                 PathBuf::from("datasets")
                     .join(&cslug)
                     .join(format!("{}.md", slug(ds))),
-                PathBuf::from("datasets").join(&cslug).join(format!(
-                    "{}-{}.md",
-                    slug(ds),
-                    short_hash(&format!("{}\u{0}{ds}", conn.id))
-                )),
+                PathBuf::from("datasets")
+                    .join(&cslug)
+                    .join(format!("{}-{hash}.md", slug(ds))),
                 &want,
-            );
+            ) else {
+                out.problems.push(format!(
+                    "{ds}: another dataset's note has its name; left out"
+                ));
+                continue;
+            };
             let dslug = rel
                 .file_stem()
                 .and_then(|x| x.to_str())
                 .unwrap_or("x")
                 .to_string();
-            let id = if dslug == slug(ds) {
-                plain_slug
-            } else {
-                hashed_slug
-            };
+            // `--` between parts: a slug never holds two dashes together.
+            let id = format!("{cslug}--{dslug}");
+            if !claim(&id, (conn.id.clone(), ds.clone(), String::new())) {
+                out.problems
+                    .push(format!("{ds}: another note has the id {id}; left out"));
+                continue;
+            }
             let path = root.join(&rel);
             if path.exists() && !(refresh && untouched_draft(&path)) {
                 out.kept.push(id);
@@ -489,7 +556,22 @@ impl Gateway {
             }
             // Code lists first: the dataset entry links to them.
             let mut domains: BTreeMap<String, String> = BTreeMap::new();
-            let catalog_domains = cat["domains"].as_object().cloned().unwrap_or_default();
+            // The GeoPackage's own code lists, as codes are: only when codes
+            // are listed at all, coded ones, and no longer than the cap.
+            let catalog_domains: serde_json::Map<String, Value> = cat["domains"]
+                .as_object()
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|(_, d)| {
+                    d["type"] == "coded"
+                        && codes_cap.is_some_and(|cap| {
+                            d["values"]
+                                .as_object()
+                                .is_some_and(|v| v.len() as u64 <= cap)
+                        })
+                })
+                .collect();
             let mut fields_with_values: BTreeMap<String, Vec<(String, u64)>> = BTreeMap::new();
             let cap = codes_cap.unwrap_or(0) as usize;
             for (field, v) in cat["values"].as_object().into_iter().flatten() {
@@ -524,24 +606,35 @@ impl Gateway {
                     ("field", field.as_str()),
                 ];
                 let fslug = slug(field);
-                let drel = note_path(
+                let fhash = short_hash(&format!("{}\u{0}{ds}\u{0}{field}", conn.id));
+                let Some(drel) = note_path(
                     &root,
                     PathBuf::from("domains")
                         .join(&cslug)
                         .join(format!("{dslug}--{fslug}.yaml")),
-                    PathBuf::from("domains").join(&cslug).join(format!(
-                        "{dslug}--{fslug}-{}.yaml",
-                        short_hash(&format!("{}\u{0}{ds}\u{0}{field}", conn.id))
-                    )),
+                    PathBuf::from("domains")
+                        .join(&cslug)
+                        .join(format!("{dslug}--{fslug}-{fhash}.yaml")),
                     &dwant,
-                );
-                let did = format!(
-                    "{id}--{}",
-                    drel.file_stem()
-                        .and_then(|x| x.to_str())
-                        .unwrap_or("x")
-                        .trim_start_matches(&format!("{dslug}--"))
-                );
+                ) else {
+                    out.problems.push(format!(
+                        "{ds}.{field}: another code list has its name; left out"
+                    ));
+                    continue;
+                };
+                let fpart = drel
+                    .file_stem()
+                    .and_then(|x| x.to_str())
+                    .unwrap_or("x")
+                    .trim_start_matches(&format!("{dslug}--"))
+                    .to_string();
+                let did = format!("{id}--{fpart}");
+                if !claim(&did, (conn.id.clone(), ds.clone(), field.clone())) {
+                    out.problems.push(format!(
+                        "{ds}.{field}: another note has the id {did}; left out"
+                    ));
+                    continue;
+                }
                 let dpath = root.join(&drel);
                 domains.insert(field.clone(), did.clone());
                 if dpath.exists() && !(refresh && untouched_draft(&dpath)) {
@@ -754,18 +847,14 @@ impl Gateway {
             }
         }
         let mut e = e.clone();
-        // Drafted under other rules: its counts and codes may come from rows
-        // or fields the rules no longer allow, so they are not shown.
-        if let Some(under) = e.str_field("drafted_under") {
-            let codes = {
-                let p = self.state.policy();
-                let row_tools = ["sql_select", "query_features", "sample_rows"]
-                    .iter()
-                    .any(|t| p.tool_allowed(t));
-                (p.notes.values && row_tools && access.return_rows > 0)
-                    .then(|| (MAX_CODES as u64).min(access.return_rows))
-            };
-            if under != drafted_under(&access, &dataset, codes) {
+        // Drafted under other rules (or before notes recorded them): its
+        // counts and codes may come from rows or fields the rules no longer
+        // allow, so they are not shown; text in it was written then too.
+        let drafted =
+            e.card.contains_key(key("drafted_by")) || e.card.contains_key(key("drafted_under"));
+        if drafted {
+            let now = drafted_under(&access, &dataset, self.codes_cap(&access));
+            if e.str_field("drafted_under").as_deref() != Some(now.as_str()) {
                 if e.kind == "domain" {
                     return None;
                 }
@@ -774,10 +863,12 @@ impl Gateway {
                 }
                 e.card.insert(
                     key("redraft"),
-                    key("The rules for this connection changed since this note was drafted; its counts and code lists are not shown. Draft it again (refresh) to bring it up to date."),
+                    key("The rules for this connection changed since this note was drafted: its counts and code lists are not shown, and its text was written under the earlier rules, so confirm it with the person. If no one has edited it, drafting again (refresh) brings it up to date."),
                 );
             }
         }
+        e.card.remove(key("drafted_under"));
+        e.card.remove(key("carries"));
         let hidden = |v: &serde_yaml::Value| v.as_str().is_some_and(|n| access.field_hidden(n));
         if let Some(serde_yaml::Value::Mapping(m)) = e.card.get_mut(key("fields")) {
             m.retain(|k, _| !hidden(k));
@@ -820,6 +911,15 @@ impl Gateway {
         if let Some(c) = e.str_field("connection") {
             self.state.flow.add(columbus_flow::connection_label(&c));
         }
+        // And what was written into it from other data.
+        if let Some(serde_yaml::Value::Sequence(l)) = e.card.get(serde_yaml::Value::from("carries"))
+        {
+            for x in l.iter().filter_map(|x| x.as_str()) {
+                if x.starts_with("connection:") || x.starts_with("server:") {
+                    self.state.flow.add(x.to_string());
+                }
+            }
+        }
     }
 }
 
@@ -846,10 +946,8 @@ fn dataset_note(
         summary.push_str(c.lines().next().unwrap_or(c));
     } else {
         summary.push_str(&format!(
-            "{}{}{}.",
-            rows.map(|r| format!("{r} rows"))
-                .unwrap_or_else(|| "A table".into()),
-            geom.map(|g| format!(", {g}")).unwrap_or_default(),
+            "A table{}{}.",
+            geom.map(|g| format!(" of {g}")).unwrap_or_default(),
             crs.map(|c| format!(" in {c}")).unwrap_or_default(),
         ));
         summary.push_str(" What it is for is not written down yet.");
@@ -1024,8 +1122,8 @@ impl Gateway {
             "Write draft notes about {what} on {} to your notes folder ({}): field names and types, row counts, keys, relationships, indexes, the database's own comments{}. Fields your organization hides, and tables this connection refuses, are left out.",
             args.connection,
             folder.display(),
-            if self.state.policy().notes.values {
-                ", and up to 30 codes of each short field"
+            if self.access(&args.connection).ok().and_then(|(a, _)| self.codes_cap(&a)).is_some() {
+                ", and the codes of each short field"
             } else {
                 ""
             }
@@ -1148,6 +1246,18 @@ impl Gateway {
             ));
         };
         self.note_served(&raw);
+        // Only notes about a connection: what is written into one is that
+        // connection's, and its readers carry its label.
+        let Some(conn_id) = raw.str_field("connection") else {
+            return Err(self.deny(
+                &ctx,
+                rec,
+                format!(
+                    "{} is not about a connection; only the person changes it",
+                    args.id
+                ),
+            ));
+        };
         if raw.str_field("status").as_deref() != Some("draft") {
             return Err(self.deny(
                 &ctx,
@@ -1172,6 +1282,46 @@ impl Gateway {
                 .map(|b| format!("{b:02x}"))
                 .collect::<String>()
         };
+        // The note is the file as it is now, not as it was when the notes
+        // were loaded: a change since then is not overwritten.
+        let now_card = {
+            let text = String::from_utf8_lossy(&before).to_string();
+            let yaml = if raw.file.extension().and_then(|x| x.to_str()) == Some("md") {
+                crate::context::front_matter(&text).map(|(y, _)| y.to_string())
+            } else {
+                Some(text.clone())
+            };
+            yaml.and_then(|y| serde_yaml::from_str::<serde_yaml::Mapping>(&y).ok())
+        };
+        if now_card.as_ref() != Some(&raw.card) {
+            return Err(self.deny(
+                &ctx,
+                rec,
+                format!(
+                    "{} changed just now; read it again and propose the change again",
+                    args.id
+                ),
+            ));
+        }
+        // What this session has read goes into the note with the words: a
+        // flow rule that keeps that data from this connection applies, and
+        // later readers of the note carry its labels.
+        let own = columbus_flow::connection_label(&conn_id);
+        let mut labels: BTreeSet<String> = self.state.flow.session_labels();
+        labels.remove(&own);
+        let dest = format!("connection:{conn_id}");
+        let decision = columbus_flow::evaluate_to(&self.state.policy().flows, &labels, &dest);
+        if let columbus_flow::FlowDecision::Deny { labels, rule } = &decision {
+            return Err(self.deny(
+                &ctx,
+                rec,
+                format!(
+                    "organization flow rule {} forbids writing data from {} into notes about {conn_id}",
+                    rule + 1,
+                    labels.join(", ")
+                ),
+            ));
+        }
         let mut request = asked.clone();
         request["file_sha256"] = json!(file_sha);
         // The changes are checked on the note as the rules let it be seen
@@ -1208,7 +1358,31 @@ impl Gateway {
         );
         card.remove(k("draft_sha256"));
         card.remove(k("drafted_by"));
-        let summary = format!("Change your note {}:\n{}", args.id, lines.join("\n"));
+        if !labels.is_empty() {
+            let mut carries: BTreeSet<String> = match card.get(k("carries")) {
+                Some(serde_yaml::Value::Sequence(l)) => l
+                    .iter()
+                    .filter_map(|x| x.as_str().map(String::from))
+                    .collect(),
+                _ => BTreeSet::new(),
+            };
+            carries.extend(labels.iter().cloned());
+            card.insert(
+                k("carries"),
+                serde_yaml::Value::Sequence(carries.into_iter().map(|x| k(&x)).collect()),
+            );
+        }
+        let mut summary = format!("Change your note {}:\n{}", args.id, lines.join("\n"));
+        if !labels.is_empty() {
+            summary.push_str(&format!(
+                "\n\nThis session has read data from {}; the note will be treated as holding it.",
+                labels
+                    .iter()
+                    .map(|l| l.trim_start_matches("connection:"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
         let ask = Ask {
             tool: "update_notes",
             label: "a change to your notes",
