@@ -503,6 +503,51 @@ def read_rows(path: str, offset: int = 0, limit: int = 50, fields: list[str] | N
             "offset": offset, "summary": layer_summary(df)}
 
 
+def display_geojson(path: str, max_features: int = 20000, max_coordinates: int = 1_500_000) -> dict[str, Any]:
+    """A workspace layer as GeoJSON in EPSG:4326 for the person's map (the
+    companion window), cut off at ``max_features`` features or
+    ``max_coordinates`` coordinates, whichever comes first. Attributes are
+    plain JSON values. A layer without a CRS cannot be placed and says so."""
+    import shapely
+    from shapely.geometry import mapping
+
+    df = read_layer(path)
+    total = int(len(df))
+    if not isinstance(df, gpd.GeoDataFrame):
+        return {"type": "FeatureCollection", "features": [], "total": total, "shown": 0,
+                "truncated": False, "geometry": False}
+    if df.crs is None:
+        raise GISError("crs.present", "the layer has no coordinate reference system, so it cannot be placed on the map")
+    gname = df.geometry.name
+    sub = df.iloc[:max_features]
+    counts = shapely.get_num_coordinates(sub.geometry.values)
+    budget = 0
+    keep = 0
+    for c in counts:
+        if keep and budget + int(c) > max_coordinates:
+            break
+        budget += int(c)
+        keep += 1
+    sub = sub.iloc[:keep]
+    if not (df.crs.to_epsg() == 4326):
+        sub = sub.to_crs(4326)
+    cols = [c for c in sub.columns if c != gname]
+    feats = []
+    for i, (_, r) in enumerate(sub.iterrows()):
+        g = r[gname]
+        feats.append({
+            "type": "Feature", "id": i,
+            "geometry": None if g is None or g.is_empty else mapping(g),
+            "properties": {c: _row_value(r[c]) for c in cols},
+        })
+    present = sub.geometry[~sub.geometry.isna() & ~sub.geometry.is_empty]
+    bbox = [float(v) for v in present.total_bounds] if len(present) else None
+    return {"type": "FeatureCollection", "features": feats, "total": total, "shown": len(feats),
+            "truncated": len(feats) < total, "geometry": True,
+            "geometry_type": layer_summary(df).get("geometry_type"), "bbox": bbox,
+            "source_crs": df.crs.to_string()}
+
+
 def geojson_pages_to_layer(pages: list[str], out_stem: str, max_features: int) -> dict[str, Any]:
     """Build a layer from downloaded GeoJSON pages, parsed as JSON (never
     handed to GDAL, which picks drivers by content). Coordinates are

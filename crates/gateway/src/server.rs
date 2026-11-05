@@ -502,6 +502,8 @@ impl State {
             user.clone(),
             session.clone(),
             opener,
+            crate::config::ui_dir(),
+            Some(crate::config::live_dir(&paths)),
         );
         let worker = Worker::new(crate::worker::Launch::core(
             paths.python.clone(),
@@ -631,6 +633,21 @@ impl Gateway {
                 + Self::fetch_router()
                 + Self::raster_router()
                 + Self::script_router(),
+        }
+    }
+
+    /// Give the local page the session's data and start it, so the
+    /// person's Columbus app can show this session. A failure here only
+    /// means no companion window; the server works without it.
+    pub async fn start_companion(&self) {
+        self.state
+            .page
+            .attach(Arc::new(crate::companion::Companion::new(&self.state)));
+        if std::env::var("COLUMBUS_COMPANION").as_deref() == Ok("off") {
+            return;
+        }
+        if let Err(e) = self.state.page.start_live().await {
+            tracing::warn!("companion window unavailable: {e}");
         }
     }
 

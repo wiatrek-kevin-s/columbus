@@ -20,6 +20,7 @@
 
 mod approval_flow;
 mod approvals_page;
+mod companion;
 mod config;
 mod context;
 mod export_tools;
@@ -137,7 +138,9 @@ async fn serve() -> Result<()> {
     let paths = config::Paths::from_env();
     let state = server::State::load(paths)?;
     tracing::info!(session = %state.session, workspace = %state.sandbox.root().display(), "starting");
-    let service = server::Gateway::new(state).serve(stdio()).await?;
+    let gateway = server::Gateway::new(state);
+    gateway.start_companion().await;
+    let service = gateway.serve(stdio()).await?;
     service.waiting().await?;
     Ok(())
 }

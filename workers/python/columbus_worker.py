@@ -1534,6 +1534,23 @@ def verify_layer(params: dict[str, Any]) -> dict[str, Any]:
         raise _refused(e) from None
 
 
+def display_geojson(params: dict[str, Any]) -> dict[str, Any]:
+    """A workspace layer as EPSG:4326 GeoJSON for the companion map. The
+    gateway resolves and checks the path; this only reads it."""
+    g = _gis()
+    path = params.get("path")
+    if not isinstance(path, str):
+        raise WorkerError(INVALID_PARAMS, "path is required")
+    try:
+        max_features = max(1, min(100_000, int(params.get("max_features") or 20000)))
+    except (TypeError, ValueError):
+        raise WorkerError(INVALID_PARAMS, "max_features must be a whole number") from None
+    try:
+        return g.display_geojson(path, max_features)
+    except g.GISError as e:
+        raise _refused(e) from None
+
+
 def read_rows(params: dict[str, Any]) -> dict[str, Any]:
     g = _gis()
     path = params.get("path")
@@ -1744,6 +1761,7 @@ for _name, _fn in (
     ("vector_op", vector_op),
     ("verify_layer", verify_layer),
     ("read_rows", read_rows),
+    ("display_geojson", display_geojson),
     ("export_layer", export_layer),
     ("geojson_layer", geojson_layer),
     ("describe_raster", describe_raster),

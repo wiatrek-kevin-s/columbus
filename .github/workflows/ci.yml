@@ -3,7 +3,7 @@ name: CI
 on:
   push:
     # engines-* branches (database engine work) run on push too.
-    branches: [main, "engines-*", "macos-*"]
+    branches: [main, "engines-*", "macos-*", "app-*"]
   pull_request:
   workflow_dispatch:
 
@@ -56,6 +56,38 @@ jobs:
       - run: python -m unittest discover -s workers/python/tests -v
       - name: Skills library
         run: python skills/check_skills.py
+
+  companion:
+    name: Companion window
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: app/ui/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: python -m pip install -r workers/python/requirements-gis.txt playwright
+      - run: python -m playwright install --with-deps chromium
+      - name: Build the window
+        working-directory: app/ui
+        run: |
+          npm ci
+          npm audit --omit=dev
+          npm run build
+      - run: cargo build -p columbus-mcp --locked
+      - name: The window in a browser, against a real session
+        run: python app/ui/e2e/companion.py target/debug/columbus-mcp
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: companion-screenshots
+          path: app/ui/e2e/out/
 
   postgis:
     name: PostGIS engine

@@ -135,6 +135,29 @@ fn bundled_engine() -> Option<PathBuf> {
         .find(|p| p.is_file())
 }
 
+/// The companion window's files: `COLUMBUS_UI_DIR`, else `ui/` beside the
+/// executable (where releases put it), when it holds an `index.html`.
+pub fn ui_dir() -> Option<PathBuf> {
+    if let Some(d) = env_path("COLUMBUS_UI_DIR") {
+        return Some(d);
+    }
+    let exe = std::env::current_exe().ok()?;
+    let d = exe.parent()?.join("ui");
+    d.join("index.html").is_file().then_some(d)
+}
+
+/// Where running sessions announce themselves to the Columbus app:
+/// `COLUMBUS_LIVE_DIR`, else `live/` beside the session workspaces.
+pub fn live_dir(paths: &Paths) -> PathBuf {
+    env_path("COLUMBUS_LIVE_DIR").unwrap_or_else(|| {
+        paths
+            .workspaces
+            .parent()
+            .unwrap_or(&paths.workspaces)
+            .join("live")
+    })
+}
+
 /// The worker script ships beside the executable in releases
 /// (`workers/python/columbus_worker.py`) and in the source tree.
 fn default_worker_script() -> PathBuf {

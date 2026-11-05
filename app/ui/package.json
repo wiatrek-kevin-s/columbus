@@ -1,0 +1,27 @@
+{
+  "name": "columbus-ui",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "The Columbus companion window: the session's outputs on a map and in a table, and approvals. Served by columbus-mcp on 127.0.0.1.",
+  "license": "Apache-2.0",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "test:e2e": "python ../../app/ui/e2e/companion.py ../../target/debug/columbus-mcp"
+  },
+  "dependencies": {
+    "@fontsource/public-sans": "5.2.7",
+    "maplibre-gl": "6.16.0",
+    "react": "19.2.0",
+    "react-dom": "19.2.0"
+  },
+  "devDependencies": {
+    "@types/geojson": "7946.0.16",
+    "@types/react": "19.2.2",
+    "@types/react-dom": "19.2.2",
+    "@vitejs/plugin-react": "6.2.1",
+    "typescript": "5.9.3",
+    "vite": "8.3.5"
+  }
+}

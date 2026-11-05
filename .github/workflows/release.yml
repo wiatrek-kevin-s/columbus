@@ -26,6 +26,14 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Build the companion window
+        working-directory: app/ui
+        run: |
+          npm ci
+          npm run build
       - uses: dtolnay/rust-toolchain@stable
       - name: Build
         run: cargo build --release --locked -p columbus-mcp
@@ -43,6 +51,7 @@ jobs:
           Get-ChildItem -Recurse -Directory -Filter __pycache__ $out | Remove-Item -Recurse -Force
           New-Item -ItemType Directory -Force "$out\engine" | Out-Null
           Copy-Item packaging\engine\setup-engine.ps1, packaging\engine\pixi.toml "$out\engine"
+          Copy-Item -Recurse app\ui\dist "$out\ui"
           Copy-Item -Recurse skills, docs, examples $out
           Copy-Item README.md, LICENSE $out
           python packaging\mcpb\make_manifest.py windows $version "$out\manifest.json"
@@ -69,6 +78,14 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Build the companion window
+        working-directory: app/ui
+        run: |
+          npm ci
+          npm run build
       - uses: dtolnay/rust-toolchain@stable
       - name: Build
         run: cargo build --release --locked -p columbus-mcp
@@ -84,6 +101,7 @@ jobs:
           find "$out" -type d -name __pycache__ -prune -exec rm -rf {} +
           cp packaging/engine/setup-engine.sh packaging/engine/pixi.toml "$out/engine/"
           chmod +x "$out/engine/setup-engine.sh"
+          cp -R app/ui/dist "$out/ui"
           cp -R skills docs examples README.md LICENSE "$out/"
           python3 packaging/mcpb/make_manifest.py macos "$version" "$out/manifest.json"
           (cd "$out" && zip -qry "../columbus-$version-macos-arm64.zip" .)

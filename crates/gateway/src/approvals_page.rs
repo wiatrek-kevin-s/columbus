@@ -25,6 +25,18 @@
 //! * Every decision is written to the audit log.
 //! * Opening tabs is rate-limited and capped per session.
 //!
+//! The same page is the companion window (design section 8): with the UI
+//! files installed beside the program (`ui/`), `/` serves the window that
+//! shows the session's outputs on a map and in a table, and the approvals.
+//! Its data calls (`/api/overview`, `/api/outputs`, `/api/layer`,
+//! `/api/rows`, `/api/provenance/<id>`, `/api/state`) need the same session
+//! token and are read-only. So that the person's Columbus app can find the
+//! session, the server writes `live/<session>.json` (the port only, no
+//! secret) under the person's Columbus folder, and `POST /api/open`, which
+//! needs a custom header no other website can send, opens a fresh window
+//! with a new launch token: in the Columbus app when it is running
+//! (`live/app.json` has a recent heartbeat), else in the browser.
+//!
 //! Honest limits, documented for IT: an agent that can run programs as the
 //! person could read the browser's command line in the moment it starts
 //! (the launch token is single-use, so the person would then see "already
@@ -33,13 +45,12 @@
 //! read-only login remains the guarantee nothing bypasses.
 
 use std::collections::HashMap;
-#[cfg(debug_assertions)]
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use axum::body::Body;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, Response, StatusCode};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -56,11 +67,17 @@ const SESSION_IDLE: Duration = Duration::from_secs(15 * 60);
 const SEEN_WINDOW: Duration = Duration::from_secs(6);
 /// Do not open more than one new tab in this period.
 const RELAUNCH_GAP: Duration = Duration::from_secs(30);
-/// Most tabs Columbus opens in one session.
+/// Most tabs Columbus opens in one session for approvals.
 const MAX_LAUNCHES: u32 = 10;
+/// The person asked for the window (from the Columbus app): a short gap
+/// against double clicks, and a cap of its own.
+const ASKED_GAP: Duration = Duration::from_secs(3);
+const MAX_ASKED: u32 = 50;
+/// The Columbus app counts as running while its heartbeat is this fresh.
+const APP_HEARTBEAT: Duration = Duration::from_secs(20);
 
 /// How the page is put in front of the person.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Opener {
     /// The default browser.
     Browser,
@@ -105,6 +122,14 @@ pub enum Shown {
 
 struct Shared {
     port: u16,
+    opener: Opener,
+    /// The companion window's files (`index.html`, `assets/`), if installed.
+    ui_dir: Option<PathBuf>,
+    /// Where `live/<session>.json` and the app's heartbeat live.
+    live_dir: Option<PathBuf>,
+    companion: Option<Arc<crate::companion::Companion>>,
+    /// When the person last asked for a window, and how many times.
+    asked: Mutex<(Option<Instant>, u32)>,
     store: Arc<ApprovalStore>,
     audit: Arc<AuditLog>,
     user: String,
@@ -139,6 +164,74 @@ impl Shared {
         Some(key)
     }
 
+    /// Open a window on a fresh launch token. `asked`: the person asked
+    /// for it (from the app), rather than an approval waiting.
+    fn launch(&self, asked: bool) -> Result<Shown, String> {
+        if asked {
+            let mut a = self.asked.lock().expect("asked");
+            if a.0.is_some_and(|t| t.elapsed() < ASKED_GAP) {
+                return Ok(Shown::Opened);
+            }
+            if a.1 >= MAX_ASKED {
+                return Err("Columbus will not open more windows for this session".into());
+            }
+            *a = (Some(Instant::now()), a.1 + 1);
+        } else {
+            if self.seen_within(SEEN_WINDOW) {
+                return Ok(Shown::AlreadyOpen);
+            }
+            let mut l = self.launches.lock().expect("launches");
+            if l.0.is_some_and(|t| t.elapsed() < RELAUNCH_GAP) {
+                return Ok(Shown::Opened);
+            }
+            if l.1 >= MAX_LAUNCHES {
+                return Err(format!(
+                    "Columbus has opened its approvals page {MAX_LAUNCHES} times without a decision and will not open more tabs"
+                ));
+            }
+            *l = (Some(Instant::now()), l.1 + 1);
+        }
+        let t = token();
+        {
+            let mut launch = self.launch.lock().expect("launch");
+            launch.retain(|_, at| at.elapsed() < LAUNCH_TTL);
+            launch.insert(t.clone(), Instant::now());
+        }
+        let page = format!("http://127.0.0.1:{}/#t={t}", self.port);
+        let url = if self.app_running() {
+            format!("columbus://open?port={}#t={t}", self.port)
+        } else {
+            page.clone()
+        };
+        match &self.opener {
+            Opener::Browser => {
+                open_browser(&url).map_err(|e| format!("could not open the window ({e})"))?
+            }
+            Opener::Disabled => {
+                return Err(
+                    "opening the approvals page is turned off (COLUMBUS_APPROVALS_BROWSER=none)"
+                        .into(),
+                )
+            }
+            #[cfg(debug_assertions)]
+            Opener::File(p) => std::fs::write(p, &page)
+                .map_err(|e| format!("could not hand off the approvals page ({e})"))?,
+        }
+        Ok(Shown::Opened)
+    }
+
+    /// The Columbus app is running: it refreshes `live/app.json` every few
+    /// seconds while it is.
+    fn app_running(&self) -> bool {
+        self.live_dir.as_ref().is_some_and(|d| {
+            std::fs::metadata(d.join("app.json"))
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.elapsed().ok())
+                .is_some_and(|age| age < APP_HEARTBEAT)
+        })
+    }
+
     /// Spend a launch token; true if it was valid.
     fn spend_launch(&self, t: &str, now: Instant) -> bool {
         let mut launch = self.launch.lock().expect("launch");
@@ -158,7 +251,20 @@ pub struct ApprovalsPage {
     user: String,
     session: String,
     opener: Opener,
+    ui_dir: Option<PathBuf>,
+    live_dir: Option<PathBuf>,
+    companion: std::sync::OnceLock<Arc<crate::companion::Companion>>,
+    /// The `live/<session>.json` this server wrote, removed when it stops.
+    live_file: Mutex<Option<PathBuf>>,
     running: OnceCell<Result<Arc<Shared>, String>>,
+}
+
+impl Drop for ApprovalsPage {
+    fn drop(&mut self) {
+        if let Some(p) = self.live_file.lock().ok().and_then(|mut f| f.take()) {
+            let _ = std::fs::remove_file(p);
+        }
+    }
 }
 
 fn token() -> String {
@@ -184,6 +290,8 @@ impl ApprovalsPage {
         user: String,
         session: String,
         opener: Opener,
+        ui_dir: Option<PathBuf>,
+        live_dir: Option<PathBuf>,
     ) -> Self {
         ApprovalsPage {
             store,
@@ -191,8 +299,42 @@ impl ApprovalsPage {
             user,
             session,
             opener,
+            ui_dir,
+            live_dir,
+            companion: std::sync::OnceLock::new(),
+            live_file: Mutex::new(None),
             running: OnceCell::new(),
         }
+    }
+
+    /// Give the page the session's data, for the companion window. Before
+    /// the server starts.
+    pub fn attach(&self, c: Arc<crate::companion::Companion>) {
+        let _ = self.companion.set(c);
+    }
+
+    /// Start the server now, not at the first approval, and say where it is
+    /// in `live/<session>.json`, so the person's Columbus app can open it.
+    pub async fn start_live(&self) -> Result<PathBuf, String> {
+        let shared = self.start().await?;
+        let dir = self
+            .live_dir
+            .clone()
+            .ok_or_else(|| "no folder for live sessions".to_string())?;
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let file = dir.join(format!("{}.json", self.session));
+        let body = json!({
+            "session": self.session,
+            "port": shared.port,
+            "pid": std::process::id(),
+            "user": self.user,
+            "started": chrono::Local::now().to_rfc3339(),
+            "server": format!("columbus-mcp {}", env!("CARGO_PKG_VERSION")),
+        });
+        std::fs::write(&file, serde_json::to_vec_pretty(&body).unwrap_or_default())
+            .map_err(|e| e.to_string())?;
+        *self.live_file.lock().expect("live file") = Some(file.clone());
+        Ok(file)
     }
 
     async fn start(&self) -> Result<Arc<Shared>, String> {
@@ -204,6 +346,11 @@ impl ApprovalsPage {
                 let port = listener.local_addr().map_err(|e| e.to_string())?.port();
                 let shared = Arc::new(Shared {
                     port,
+                    opener: self.opener.clone(),
+                    ui_dir: self.ui_dir.clone(),
+                    live_dir: self.live_dir.clone(),
+                    companion: self.companion.get().cloned(),
+                    asked: Mutex::new((None, 0)),
                     store: self.store.clone(),
                     audit: self.audit.clone(),
                     user: self.user.clone(),
@@ -217,6 +364,14 @@ impl ApprovalsPage {
                     .route("/api/session", post(exchange))
                     .route("/api/approvals", get(list))
                     .route("/api/approvals/{id}", post(decide))
+                    .route("/api/open", post(open_window))
+                    .route("/api/state", get(state))
+                    .route("/api/overview", get(overview))
+                    .route("/api/outputs", get(outputs))
+                    .route("/api/layer", get(layer))
+                    .route("/api/rows", get(rows))
+                    .route("/api/provenance/{id}", get(provenance))
+                    .route("/assets/{file}", get(asset))
                     .fallback(not_found)
                     .layer(axum::extract::DefaultBodyLimit::max(4096))
                     .with_state(shared.clone());
@@ -234,44 +389,7 @@ impl ApprovalsPage {
     /// Put the approvals page in front of the person. Never returns or
     /// logs the launch link.
     pub async fn show(&self) -> Result<Shown, String> {
-        let shared = self.start().await?;
-        if shared.seen_within(SEEN_WINDOW) {
-            return Ok(Shown::AlreadyOpen);
-        }
-        {
-            let mut l = shared.launches.lock().expect("launches");
-            if l.0.is_some_and(|t| t.elapsed() < RELAUNCH_GAP) {
-                return Ok(Shown::Opened);
-            }
-            if l.1 >= MAX_LAUNCHES {
-                return Err(format!(
-                    "Columbus has opened its approvals page {MAX_LAUNCHES} times without a decision and will not open more tabs"
-                ));
-            }
-            *l = (Some(Instant::now()), l.1 + 1);
-        }
-        let t = token();
-        {
-            let mut launch = shared.launch.lock().expect("launch");
-            launch.retain(|_, at| at.elapsed() < LAUNCH_TTL);
-            launch.insert(t.clone(), Instant::now());
-        }
-        let url = format!("http://127.0.0.1:{}/#t={t}", shared.port);
-        match &self.opener {
-            Opener::Browser => {
-                open_browser(&url).map_err(|e| format!("could not start the browser ({e})"))?
-            }
-            Opener::Disabled => {
-                return Err(
-                    "opening the approvals page is turned off (COLUMBUS_APPROVALS_BROWSER=none)"
-                        .into(),
-                )
-            }
-            #[cfg(debug_assertions)]
-            Opener::File(p) => std::fs::write(p, &url)
-                .map_err(|e| format!("could not hand off the approvals page ({e})"))?,
-        }
-        Ok(Shown::Opened)
+        self.start().await?.launch(false)
     }
 
     /// Whether a page tab is open right now.
@@ -404,6 +522,19 @@ async fn not_found() -> Response<Body> {
 async fn page(State(s): State<Arc<Shared>>, h: HeaderMap) -> Response<Body> {
     if !host_ok(&h, &s) {
         return status(StatusCode::FORBIDDEN, "wrong host");
+    }
+    if let Some(index) = s
+        .ui_dir
+        .as_ref()
+        .filter(|_| s.companion.is_some())
+        .and_then(|d| std::fs::read_to_string(d.join("index.html")).ok())
+    {
+        let mut r = Response::new(Body::from(index));
+        r.headers_mut().insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("text/html; charset=utf-8"),
+        );
+        return harden(r, Some(UI_CSP.into()));
     }
     let nonce = uuid::Uuid::new_v4().simple().to_string();
     let html = PAGE.replace("{{NONCE}}", &nonce);
@@ -539,6 +670,191 @@ fn shared_reset_launches(s: &Shared) {
 
 const PAGE: &str = include_str!("approvals_page.html");
 
+/// The companion window's policy: its own scripts and styles only, data
+/// from this server, and basemap tiles, glyphs and sprites from one public
+/// host (OpenFreeMap; the window works without them). MapLibre runs its
+/// worker from a blob.
+pub(crate) const UI_CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; \
+     connect-src 'self' https://tiles.openfreemap.org; img-src 'self' data: blob: https://tiles.openfreemap.org; \
+     font-src 'self'; worker-src 'self' blob:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+
+/// `POST /api/open`: a new window on a fresh launch token, for the
+/// person's Columbus app. Needs `X-Columbus-Open: 1`, which a website
+/// cannot send without a preflight this server never answers; it returns
+/// nothing but whether a window was opened.
+async fn open_window(State(s): State<Arc<Shared>>, h: HeaderMap) -> Response<Body> {
+    if !host_ok(&h, &s) {
+        return status(StatusCode::FORBIDDEN, "wrong host");
+    }
+    if h.get("x-columbus-open").and_then(|v| v.to_str().ok()) != Some("1")
+        || h.contains_key(header::ORIGIN)
+    {
+        return status(StatusCode::FORBIDDEN, "refused");
+    }
+    match s.launch(true) {
+        Ok(_) => json_response(StatusCode::OK, json!({"opened": true})),
+        Err(e) => status(StatusCode::TOO_MANY_REQUESTS, &e),
+    }
+}
+
+fn companion(s: &Shared) -> Result<&crate::companion::Companion, Box<Response<Body>>> {
+    s.companion
+        .as_deref()
+        .ok_or_else(|| Box::new(status(StatusCode::NOT_FOUND, "no companion data here")))
+}
+
+fn answer(r: Result<serde_json::Value, String>) -> Response<Body> {
+    match r {
+        Ok(v) => json_response(StatusCode::OK, v),
+        Err(e) => status(StatusCode::UNPROCESSABLE_ENTITY, &e),
+    }
+}
+
+/// `GET /api/state`: what changed, for the window's polling.
+async fn state(State(s): State<Arc<Shared>>, h: HeaderMap) -> Response<Body> {
+    if let Err(r) = guard(&h, &s) {
+        return *r;
+    }
+    let now = Utc::now();
+    json_response(
+        StatusCode::OK,
+        json!({
+            "session": s.session,
+            "version": s.companion.as_ref().map(|c| c.version()).unwrap_or(0),
+            "pending": s.store.pending(now).len(),
+        }),
+    )
+}
+
+async fn overview(State(s): State<Arc<Shared>>, h: HeaderMap) -> Response<Body> {
+    if let Err(r) = guard(&h, &s) {
+        return *r;
+    }
+    match companion(&s) {
+        Ok(c) => answer(c.overview()),
+        Err(r) => *r,
+    }
+}
+
+async fn outputs(State(s): State<Arc<Shared>>, h: HeaderMap) -> Response<Body> {
+    if let Err(r) = guard(&h, &s) {
+        return *r;
+    }
+    match companion(&s) {
+        Ok(c) => answer(c.outputs()),
+        Err(r) => *r,
+    }
+}
+
+#[derive(Deserialize)]
+struct LayerQuery {
+    handle: String,
+    #[serde(default)]
+    offset: Option<u64>,
+    #[serde(default)]
+    limit: Option<u64>,
+}
+
+async fn layer(
+    State(s): State<Arc<Shared>>,
+    h: HeaderMap,
+    q: Result<Query<LayerQuery>, axum::extract::rejection::QueryRejection>,
+) -> Response<Body> {
+    if let Err(r) = guard(&h, &s) {
+        return *r;
+    }
+    let Ok(Query(q)) = q else {
+        return status(StatusCode::BAD_REQUEST, "expected ?handle=ws://…");
+    };
+    match companion(&s) {
+        Ok(c) => answer(c.layer(&q.handle).await),
+        Err(r) => *r,
+    }
+}
+
+async fn rows(
+    State(s): State<Arc<Shared>>,
+    h: HeaderMap,
+    q: Result<Query<LayerQuery>, axum::extract::rejection::QueryRejection>,
+) -> Response<Body> {
+    if let Err(r) = guard(&h, &s) {
+        return *r;
+    }
+    let Ok(Query(q)) = q else {
+        return status(
+            StatusCode::BAD_REQUEST,
+            "expected ?handle=ws://…&offset=0&limit=100",
+        );
+    };
+    match companion(&s) {
+        Ok(c) => answer(
+            c.rows(&q.handle, q.offset.unwrap_or(0), q.limit.unwrap_or(100))
+                .await,
+        ),
+        Err(r) => *r,
+    }
+}
+
+async fn provenance(
+    State(s): State<Arc<Shared>>,
+    Path(id): Path<String>,
+    h: HeaderMap,
+) -> Response<Body> {
+    if let Err(r) = guard(&h, &s) {
+        return *r;
+    }
+    match companion(&s) {
+        Ok(c) => answer(c.provenance(&id)),
+        Err(r) => *r,
+    }
+}
+
+/// `GET /assets/<file>`: the companion window's scripts, styles and
+/// images, by plain file name only, from the installed `ui/assets`.
+async fn asset(
+    State(s): State<Arc<Shared>>,
+    Path(file): Path<String>,
+    h: HeaderMap,
+) -> Response<Body> {
+    if !host_ok(&h, &s) {
+        return status(StatusCode::FORBIDDEN, "wrong host");
+    }
+    let plain = !file.is_empty()
+        && file.len() <= 128
+        && !file.starts_with('.')
+        && file
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'));
+    let Some(dir) = s.ui_dir.as_ref().filter(|_| plain) else {
+        return status(StatusCode::NOT_FOUND, "not found");
+    };
+    let path = dir.join("assets").join(&file);
+    let is_file = std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_file());
+    let Some(bytes) = is_file.then(|| std::fs::read(&path).ok()).flatten() else {
+        return status(StatusCode::NOT_FOUND, "not found");
+    };
+    let kind = match file.rsplit('.').next().unwrap_or("") {
+        "js" | "mjs" => "text/javascript; charset=utf-8",
+        "css" => "text/css; charset=utf-8",
+        "svg" => "image/svg+xml",
+        "png" => "image/png",
+        "woff2" => "font/woff2",
+        "woff" => "font/woff",
+        "json" => "application/json",
+        _ => "application/octet-stream",
+    };
+    let mut r = Response::new(Body::from(bytes));
+    r.headers_mut()
+        .insert(header::CONTENT_TYPE, HeaderValue::from_static(kind));
+    let mut r = harden(r, None);
+    // Built file names carry a content hash; they never change.
+    r.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, max-age=86400"),
+    );
+    r
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -547,6 +863,11 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let s = Shared {
             port: 1,
+            opener: Opener::Disabled,
+            ui_dir: None,
+            live_dir: None,
+            companion: None,
+            asked: Mutex::new((None, 0)),
             store: Arc::new(ApprovalStore::new()),
             audit: Arc::new(AuditLog::new(d.path()).unwrap()),
             user: "u".into(),

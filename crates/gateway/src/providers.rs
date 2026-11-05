@@ -216,6 +216,11 @@ impl Outputs {
         out
     }
 
+    /// How many files are recorded (the companion window's change counter).
+    pub fn len(&self) -> usize {
+        self.inner.lock().expect("outputs poisoned").len()
+    }
+
     pub fn get(&self, path: &Path) -> Option<OutputMeta> {
         self.inner
             .lock()
