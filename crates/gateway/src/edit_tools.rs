@@ -47,6 +47,10 @@ const EDITABLE: &[&str] = &["gpkg", "geopackage", "postgis", "postgres", "postgr
 /// At most this many changes in one change set.
 const MAX_CHANGES: usize = 1000;
 
+/// A write to the source shows the person every change: at most this many
+/// lines, or the change set must be split.
+const MAX_REVIEW_LINES: u64 = 200;
+
 /// A change set made in this session.
 #[derive(Clone)]
 pub(crate) struct ChangeSet {
@@ -101,26 +105,46 @@ pub struct ApplyArgs {
 fn literal(v: &Value) -> Option<String> {
     match v {
         Value::Number(n) if n.is_i64() || n.is_u64() => Some(n.to_string()),
-        Value::String(s) if s.len() <= 200 && !s.contains('\0') => {
+        // No backslash: whatever a database makes of one in a literal.
+        Value::String(s) if s.len() <= 200 && !s.contains('\0') && !s.contains('\\') => {
             Some(format!("'{}'", s.replace('\'', "''")))
         }
         _ => None,
     }
 }
 
-/// A value as the person reads it: quoted, on one line, cut short.
+/// A value as the person reads it, whole (values are at most 500
+/// characters): text JSON-quoted, so a quote, a line break or an arrow in it
+/// cannot pass for the card's own layout, and invisible or direction
+/// characters written as escapes.
 fn shown(v: &Value) -> String {
     let s = match v {
         Value::Null => return "(empty)".into(),
-        Value::String(s) => format!("\"{}\"", s.split_whitespace().collect::<Vec<_>>().join(" ")),
-        Value::Object(_) => "(a new row)".into(),
+        Value::Object(o) => {
+            return o
+                .iter()
+                .map(|(k, v)| format!("{} {}", visible(k), shown(v)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        }
         other => other.to_string(),
     };
-    if s.chars().count() > 60 {
-        format!("{}…", s.chars().take(60).collect::<String>())
-    } else {
-        s
-    }
+    visible(&s)
+}
+
+/// Characters that do not show, or that reorder text, as `\u{…}`.
+fn visible(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            let hidden = c.is_control()
+                || matches!(c as u32, 0xAD | 0x061C | 0x180E | 0x200B..=0x200F | 0x2028..=0x202E | 0x2060..=0x206F | 0xFE00..=0xFE0F | 0xFEFF | 0xFFF9..=0xFFFB);
+            if hidden {
+                format!("\\u{{{:04X}}}", c as u32)
+            } else {
+                c.to_string()
+            }
+        })
+        .collect()
 }
 
 fn plural(n: u64, one: &str, many: &str) -> String {
@@ -162,26 +186,18 @@ fn diff_lines(diff: &Value, key: &str, max: usize) -> Vec<String> {
                         "update" => format!(
                             "{key} {}: {} {} → {}",
                             shown(&d["key"]),
-                            d["field"].as_str().unwrap_or("?"),
+                            visible(d["field"].as_str().unwrap_or("?")),
                             shown(&d["before"]),
                             shown(&d["after"])
                         ),
                         "insert" => {
-                            let fields: Vec<String> = d["after"]
-                                .as_object()
-                                .map(|o| {
-                                    o.iter()
-                                        .take(6)
-                                        .map(|(k, v)| format!("{k} {}", shown(v)))
-                                        .collect()
-                                })
-                                .unwrap_or_default();
+                            let fields = shown(&d["after"]);
                             format!(
                                 "New row: {}",
                                 if fields.is_empty() {
-                                    "(geometry only)".into()
+                                    "(no values)".into()
                                 } else {
-                                    fields.join(", ")
+                                    fields
                                 }
                             )
                         }
@@ -269,7 +285,7 @@ impl Gateway {
             .map(|a| {
                 a.iter()
                     .filter_map(|f| f.get("name").and_then(Value::as_str).map(String::from))
-                    .filter(|n| Some(n.as_str()) != geom)
+                    .filter(|n| !geom.is_some_and(|g| g.eq_ignore_ascii_case(n)))
                     .collect()
             })
             .unwrap_or_default()
@@ -401,6 +417,7 @@ impl Gateway {
                         "select_sql": select, "key": key, "key_type": key_type,
                         "fields": fields, "geometry_column": info.get("geometry_column"),
                         "geometry_type": info.get("geometry_type"),
+                        "dimensions": info.get("dimensions"),
                         "crs_spec": info.get("crs").and_then(|c| c.get("code")).map(|c| json!({"code": c}))
                             .or_else(|| info.get("crs_spec").cloned()),
                         "input_crs": args.crs.as_ref().map(|c| json!({"code": c})),
@@ -640,12 +657,38 @@ impl Gateway {
                 ),
             ));
         }
-        let from: Vec<String> = cs
-            .labels
+        if cs.diff_total > MAX_REVIEW_LINES {
+            return Err(self.deny(&ctx, rec, format!(
+                "this change set has {} lines of changes; the person reviews every one before a write, so split it into change sets of at most {MAX_REVIEW_LINES} (or apply to a copy)",
+                cs.diff_total
+            )));
+        }
+        // The organization's flow rules: data read in this session, written
+        // into this connection. Its own data going back is not a flow.
+        let own = columbus_flow::connection_label(&conn.id);
+        let mut labels: std::collections::BTreeSet<String> = cs.labels.iter().cloned().collect();
+        labels.extend(self.labels());
+        labels.remove(&own);
+        let dest = format!("connection:{}", conn.id);
+        let decision = columbus_flow::evaluate_to(&self.state.policy.flows, &labels, &dest);
+        rec.flow_decision = Some(decision.label().into());
+        if let columbus_flow::FlowDecision::Deny { labels, rule } = &decision {
+            return Err(self.deny(
+                &ctx,
+                rec,
+                format!(
+                    "organization flow rule {} forbids writing data from {} into {}",
+                    rule + 1,
+                    labels.join(", "),
+                    conn.id
+                ),
+            ));
+        }
+        let from: Vec<String> = labels
             .iter()
             .map(|l| l.trim_start_matches("connection:").to_string())
             .collect();
-        let lines = diff_lines(&cs.diff, &cs.key, 30);
+        let lines = diff_lines(&cs.diff, &cs.key, MAX_REVIEW_LINES as usize);
         let more = cs.diff_total.saturating_sub(lines.len() as u64);
         let mut summary = format!(
             "Write {} to {} on {} ({}), in one transaction. Rows changed since the edit was proposed, or changes outside the connection's row filter, roll it all back.",
@@ -704,12 +747,13 @@ impl Gateway {
             }
             Err(e) => return Err(self.deny(&ctx, rec, e)),
         }
-        // The change set is still the one approved.
-        if self.changes().get(&path).map(|c| c.sha256.clone()) != Some(cs.sha256.clone()) {
+        // Used up now, before the write: whatever happens next (a timeout
+        // after the database committed, say), it cannot be applied twice.
+        if self.changes().remove(&path).map(|c| c.sha256) != Some(cs.sha256.clone()) {
             return Err(self.deny(
                 &ctx,
                 rec,
-                "the change set changed after it was approved".to_string(),
+                "the change set is no longer available; propose it again".to_string(),
             ));
         }
         let r = async {
@@ -762,7 +806,6 @@ impl Gateway {
             .lock()
             .expect("datasets")
             .remove(&(conn.id.clone(), cs.dataset.clone()));
-        self.changes().remove(&path);
         let written = reply["written"].clone();
         let checks = vec![Check {
             id: "edits.written".into(),
@@ -828,9 +871,17 @@ mod tests {
     }
 
     #[test]
-    fn values_the_ai_chose_are_quoted_and_cut() {
-        assert_eq!(shown(&json!("a\nb")), "\"a b\"");
-        assert!(shown(&json!("x".repeat(100))).ends_with('…'));
+    fn values_the_ai_chose_cannot_pass_for_the_card() {
+        // Quotes and line breaks escaped: no fake "→" or extra lines.
+        assert_eq!(shown(&json!("x\" → \"y")), r#""x\" → \"y""#);
+        assert_eq!(shown(&json!("a\nb")), r#""a\nb""#);
+        // Direction and invisible characters as escapes.
+        assert_eq!(
+            shown(&json!("ab\u{202E}cd\u{200B}")),
+            r#""ab\u{202E}cd\u{200B}""#
+        );
         assert_eq!(shown(&Value::Null), "(empty)");
+        // Whole values: never cut.
+        assert_eq!(shown(&json!("x".repeat(400))).len(), 402);
     }
 }

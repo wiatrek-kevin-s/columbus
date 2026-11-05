@@ -31,6 +31,7 @@ import os
 import sqlite3
 import struct
 import time
+import re
 from typing import Any
 
 from columbus_plugin import ToolError, readonly_uri
@@ -42,6 +43,9 @@ ENGINE_ERROR = -32002
 REFUSED = -32002
 
 MAX_CHANGES = 1000
+# Every value must fit on the person's approval card whole.
+MAX_VALUE_CHARS = 500
+MAX_VERTICES = 100_000
 SQLITE_KINDS = {"gpkg", "geopackage"}
 PG_KINDS = {"postgis", "postgres", "postgresql"}
 
@@ -79,19 +83,30 @@ def fingerprint(values: list[Any]) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
 
 
+_GEOMETRY_TYPES = re.compile(
+    r"^(geometry|geography|point|linestring|polygon|multipoint|multilinestring|multipolygon|"
+    r"geometrycollection|circularstring|compoundcurve|curvepolygon|multicurve|multisurface|curve|surface|"
+    r"polyhedralsurface|tin|triangle)\b"
+)
+
+
 def _family(t: str) -> str:
-    t = (t or "").lower()
-    if t in ("boolean", "bool"):
+    """A column type's family, by its leading word (not a substring:
+    "interval" is not an int, "POINT" is a geometry)."""
+    t = (t or "").strip().lower()
+    if _GEOMETRY_TYPES.match(t) or t.startswith(("geometry(", "geography(")):
+        return "geometry"
+    if re.match(r"^(boolean|bool)\b", t):
         return "bool"
-    if any(k in t for k in ("int", "serial")):
+    if re.match(r"^(tiny|small|medium|big)?int(eger)?\d*\b|^(small|big)?serial\d*\b", t):
         return "int"
-    if any(k in t for k in ("real", "float", "double", "numeric", "decimal")):
+    if re.match(r"^(real|float\d*|double( precision)?|numeric|decimal)\b", t):
         return "float"
-    if "timestamp" in t or "datetime" in t:
+    if re.match(r"^(timestamp|datetime)\b", t):
         return "datetime"
-    if t == "date":
+    if re.match(r"^date\b", t):
         return "date"
-    if any(k in t for k in ("char", "text", "clob", "string", "uuid")):
+    if re.match(r"^(text|varchar|nvarchar|character( varying)?|char|nchar|clob|string|uuid|citext)\b", t):
         return "text"
     return "other"
 
@@ -101,6 +116,10 @@ def coerce(field: str, ftype: str, v: Any) -> Any:
     if v is None:
         return None
     fam = _family(ftype)
+    if fam == "geometry":
+        raise _refuse(f"{field} is a geometry column; set it with \"geometry\", which is checked")
+    if isinstance(v, str) and len(v) > MAX_VALUE_CHARS:
+        raise _refuse(f"{field}: at most {MAX_VALUE_CHARS} characters, so the person can read the whole value before approving")
     if fam == "bool":
         if isinstance(v, bool):
             return v
@@ -197,6 +216,14 @@ def _geometry(change: dict, i: int, src_crs, dst_crs, layer_type: str | None):
         raise _refuse(f"change {i + 1}: not a valid GeoJSON geometry: {e}") from None
     if geom.is_empty:
         raise _refuse(f"change {i + 1}: the geometry is empty")
+    import shapely
+
+    if shapely.get_num_coordinates(geom) > MAX_VERTICES:
+        raise _refuse(f"change {i + 1}: at most {MAX_VERTICES} vertices in one geometry")
+    if shapely.has_z(geom):
+        raise _refuse(f"change {i + 1}: 3D geometries cannot be edited yet (the heights would be lost)")
+    if dst_crs is None:
+        raise _refuse("the dataset's coordinate system is not known, so a geometry cannot be placed in it")
     if src_crs is not None and dst_crs is not None and not src_crs.equals(dst_crs):
         t = Transformer.from_crs(src_crs, dst_crs, always_xy=True)
         geom = transform(t.transform, geom)
@@ -214,6 +241,23 @@ def _geometry(change: dict, i: int, src_crs, dst_crs, layer_type: str | None):
     if want and want not in ("GEOMETRY", "GEOMETRYCOLLECTION") and want.replace("MULTI", "") != have.replace("MULTI", ""):
         raise _refuse(f"change {i + 1}: a {geom.geom_type} cannot go in a {layer_type} layer")
     return geom
+
+
+def _describe(g) -> str:
+    """A geometry as the person can check it: type, vertices, extent."""
+    if g is None:
+        return "(no geometry)"
+    import shapely
+
+    if g.is_empty:
+        return f"empty {g.geom_type}"
+    x0, y0, x1, y1 = g.bounds
+    n = shapely.get_num_coordinates(g)
+
+    def f(v):
+        return f"{v:.6f}".rstrip("0").rstrip(".") if abs(v) < 1000 else f"{v:.1f}"
+
+    return f"{g.geom_type}, {n} vertices, from ({f(x0)}, {f(y0)}) to ({f(x1)}, {f(y1)})"
 
 
 # ---------- connections ----------
@@ -363,7 +407,14 @@ def edit_prepare(params: dict[str, Any]) -> dict[str, Any]:
         raise _refuse(f"at most {MAX_CHANGES} changes at a time; split the edit")
     timeout_s = float(params.get("timeout_s", 120))
     dst = cg.crs_from_spec(params.get("crs_spec"))
-    src = cg.crs_from_spec(params.get("input_crs")) or cg.crs_from_spec({"epsg": 4326})
+    if params.get("input_crs"):
+        src = cg.crs_from_spec(params.get("input_crs"))
+        if src is None:
+            raise _refuse(f"unknown coordinate system {json.dumps(params.get('input_crs'))[:80]}; give an EPSG code such as EPSG:4326")
+    else:
+        src = cg.crs_from_spec({"code": "EPSG:4326"})
+    if (params.get("dimensions") or 2) > 2 and any(isinstance(c, dict) and "geometry" in c for c in changes):
+        raise _refuse("this dataset holds 3D geometries, which cannot be edited yet (the heights would be lost)")
     layer_type = params.get("geometry_type")
     key_type = params.get("key_type") or ""
 
@@ -416,13 +467,15 @@ def edit_prepare(params: dict[str, Any]) -> dict[str, Any]:
             rec["before"] = {col: canonical(v) for col, v in zip(columns, b["row"]) if col != geom_col}
         elif "key" in c:
             raise _refuse(f"change {i + 1}: an insertion gets its key from the database; leave \"key\" out")
+        elif kind in SQLITE_KINDS and _family(key_type) != "int":
+            raise _refuse(f"change {i + 1}: rows can be inserted only where the key is a whole number the database assigns")
         if op == "update" and not values and "geometry" not in c:
             raise _refuse(f"change {i + 1}: an update needs values or a geometry")
         if op == "insert" and not values and not geom_col:
             raise _refuse(f"change {i + 1}: an insertion needs values")
         setv = {}
         for f, v in values.items():
-            if f not in fields or f == geom_col:
+            if f not in fields or (geom_col and f.lower() == geom_col.lower()):
                 raise _refuse(f"change {i + 1}: no field {f!r} you may edit (see describe_dataset)")
             if f == key:
                 raise _refuse(f"change {i + 1}: the key {key} cannot be changed")
@@ -444,9 +497,13 @@ def edit_prepare(params: dict[str, Any]) -> dict[str, Any]:
                 if rec["before"].get(f) != v:
                     diff.append({"op": op, "key": rec["key"], "field": f, "before": rec["before"].get(f), "after": v})
             if geom is not None:
-                diff.append({"op": op, "key": rec["key"], "field": geom_col, "before": "(geometry)", "after": "(new geometry)"})
+                old = _geom_from_db(before[canonical(rec["key"])]["row"][columns.index(geom_col)], kind)
+                diff.append({"op": op, "key": rec["key"], "field": geom_col, "before": _describe(old), "after": _describe(geom)})
         elif op == "insert":
-            diff.append({"op": op, "key": None, "field": None, "before": None, "after": setv})
+            after = dict(setv)
+            if geom is not None:
+                after[geom_col] = _describe(geom)
+            diff.append({"op": op, "key": None, "field": None, "before": None, "after": after})
         else:
             diff.append({"op": op, "key": rec["key"], "field": None, "before": rec["before"], "after": None})
         # The preview layer: each row as it will be, deletions as they were.
@@ -470,10 +527,11 @@ def edit_prepare(params: dict[str, Any]) -> dict[str, Any]:
         "changes": out_changes,
     }
     os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
-    with open(out, "w", encoding="utf-8") as f:
-        json.dump(change_set, f, ensure_ascii=False, indent=1)
-    with open(out, "rb") as f:
-        digest = hashlib.sha256(f.read()).hexdigest()
+    # The hash of exactly the bytes written, not of a re-read.
+    data = json.dumps(change_set, ensure_ascii=False, indent=1).encode("utf-8")
+    digest = hashlib.sha256(data).hexdigest()
+    with open(out, "wb") as f:
+        f.write(data)
 
     preview_path = None
     summary = None
@@ -633,7 +691,7 @@ def _apply_source(params: dict, cs: dict) -> dict:
                 continue
             sets, args = [], []
             for f, v in c["values"].items():
-                if f not in qcols or f == cs.get("geometry_column"):
+                if f not in qcols or f.lower() == (cs.get("geometry_column") or "").lower():
                     raise _refuse(f"field {f!r} may not be edited")
                 sets.append((qcols[f], m))
                 args.append(v)

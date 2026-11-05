@@ -608,3 +608,162 @@ async fn postgis_edits_follow_the_same_rules() {
     );
     c.cancel().await.unwrap();
 }
+
+/// From the security review: flow rules apply to writes, every change is
+/// shown in full or the write is refused, values the card could not show
+/// whole are refused, a tampered change set is refused, and an insertion
+/// outside the row filter rolls back.
+#[tokio::test]
+async fn edits_respect_flow_rules_and_review_limits() {
+    let Some(py) = python() else { return };
+    let (_dir, root) = setup(&py, true);
+    std::fs::write(
+        root.join("policy.yaml"),
+        "connection_types: [gpkg]\nallow_edits: true\n\
+         flows:\n  - { from: [\"connection:tiger_ro\"], to: [\"connection:tiger\"], action: deny }\n",
+    )
+    .unwrap();
+    let gpkg = root.join("t.gpkg");
+    let p = person();
+    let c = start(&root, &py, p.clone()).await;
+    let propose = |changes: Value| json!({"connection": "tiger", "dataset": "tracts", "changes": changes, "crs": "EPSG:3081"});
+
+    // Values the card could not show whole, a geometry column by another
+    // case, backslashes in keys and an unknown CRS are refused.
+    for (bad, want) in [
+        (
+            json!([{"op": "update", "key": 1, "values": {"NAME": "x".repeat(501)}}]),
+            "at most 500 characters",
+        ),
+        (
+            json!([{"op": "update", "key": 1, "values": {"GEOM": "00"}}]),
+            "no field 'GEOM'",
+        ),
+        (
+            json!([{"op": "update", "key": "a\\b", "values": {"NAME": "x"}}]),
+            "each key must be",
+        ),
+    ] {
+        let e = err(&call(&c, "propose_edits", propose(bad)).await);
+        assert!(e.contains(want), "{want}: {e}");
+    }
+    let e = err(&call(
+        &c,
+        "propose_edits",
+        json!({"connection": "tiger", "dataset": "tracts", "crs": "EPSG:999999",
+        "changes": [{"op": "update", "key": 1, "geometry": square(0.0)}]}),
+    )
+    .await);
+    assert!(e.contains("unknown coordinate system"), "{e}");
+
+    // A tampered change set is refused.
+    let r = ok(&call(
+        &c,
+        "propose_edits",
+        propose(json!([{"op": "update", "key": 1, "values": {"NAME": "One"}}])),
+    )
+    .await);
+    let change = r["result"]["change"].as_str().unwrap().to_string();
+    let file = glob_one(&root.join("workspaces"), "edits");
+    let text = std::fs::read_to_string(&file)
+        .unwrap()
+        .replace("\"One\"", "\"Evil\"");
+    std::fs::write(&file, text).unwrap();
+    let e = err(&call(
+        &c,
+        "apply_edits",
+        json!({"change": change, "target": "copy"}),
+    )
+    .await);
+    assert!(e.contains("changed after it was proposed"), "{e}");
+
+    // An insertion outside the row filter rolls back.
+    let r = ok(&call(&c, "propose_edits", propose(json!([
+        {"op": "insert", "values": {"NAME": "Outside", "district": 12}, "geometry": square(20000.0)}]))).await);
+    let outside = r["result"]["change"].as_str().unwrap().to_string();
+    let before = std::fs::read(&gpkg).unwrap();
+    let e = err(&call(
+        &c,
+        "apply_edits",
+        json!({"change": outside, "target": "source"}),
+    )
+    .await);
+    assert!(e.contains("outside the connection's row filter"), "{e}");
+    assert!(read_back(&py, &gpkg)["rows"]
+        .as_object()
+        .unwrap()
+        .values()
+        .all(|v| v[0] != "Outside"));
+    let _ = before;
+
+    // More changes than the person can review on one card: refused for the
+    // source, fine for a copy.
+    let many: Vec<Value> = (0..201)
+        .map(|i| json!({"op": "insert", "values": {"NAME": format!("N{i}"), "district": 14}, "geometry": square(30000.0 + i as f64 * 1000.0)}))
+        .collect();
+    let r = ok(&call(&c, "propose_edits", propose(json!(many))).await);
+    let big = r["result"]["change"].as_str().unwrap().to_string();
+    let e = err(&call(
+        &c,
+        "apply_edits",
+        json!({"change": big, "target": "source"}),
+    )
+    .await);
+    assert!(e.contains("split it"), "{e}");
+    ok(&call(&c, "apply_edits", json!({"change": big, "target": "copy"})).await);
+
+    // Data read from another connection may not be written into this one
+    // where a flow rule forbids it, whatever the person would say.
+    ok(&call(
+        &c,
+        "query_features",
+        json!({"connection": "tiger_ro", "dataset": "tracts", "limit": 1}),
+    )
+    .await);
+    let r = ok(&call(
+        &c,
+        "propose_edits",
+        propose(json!([{"op": "update", "key": 2, "values": {"NAME": "Copied"}}])),
+    )
+    .await);
+    let flow = r["result"]["change"].as_str().unwrap().to_string();
+    let asked = p.asked.load(Ordering::SeqCst);
+    let e = err(&call(
+        &c,
+        "apply_edits",
+        json!({"change": flow, "target": "source"}),
+    )
+    .await);
+    assert!(
+        e.contains("forbids writing data from connection:tiger_ro into tiger"),
+        "{e}"
+    );
+    assert_eq!(
+        p.asked.load(Ordering::SeqCst),
+        asked,
+        "refused before asking"
+    );
+    c.cancel().await.unwrap();
+}
+
+/// The one file under `dir` whose parent folder is `parent`.
+fn glob_one(dir: &Path, parent: &str) -> PathBuf {
+    let mut found = vec![];
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).unwrap().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p
+                .parent()
+                .and_then(|x| x.file_name())
+                .is_some_and(|n| n == parent)
+            {
+                found.push(p);
+            }
+        }
+    }
+    assert_eq!(found.len(), 1, "{found:?}");
+    found.remove(0)
+}

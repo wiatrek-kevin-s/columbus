@@ -266,8 +266,11 @@ def _pg_connect(conn: dict[str, Any], timeout_s: float, write: bool = False):
     # the edit tool's application of an approved change set opens one that
     # may write (columbus_edits).
     ro = "off" if write else "on"
+    # Backslashes in string literals are plain characters, whatever the
+    # server's or role's default; a write waits at most 10 s for a lock.
+    lock = " -c lock_timeout=10000" if write else ""
     options = (
-        f"-c default_transaction_read_only={ro} -c statement_timeout={ms} "
+        f"-c default_transaction_read_only={ro} -c statement_timeout={ms} -c standard_conforming_strings=on{lock} "
         f"-c idle_in_transaction_session_timeout=60000 -c search_path={search_path}"
     )
     kwargs = {
