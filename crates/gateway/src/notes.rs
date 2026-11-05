@@ -811,10 +811,8 @@ impl Gateway {
         if let Some(ix) = cat["indexes"].as_array_mut() {
             ix.retain(|i| !i["columns"].as_array().into_iter().flatten().any(hidden));
         }
-        for key in ["columns"] {
-            if let Some(m) = cat["comments"][key].as_object_mut() {
-                m.retain(|k, _| !access.field_hidden(k));
-            }
+        if let Some(m) = cat["comments"]["columns"].as_object_mut() {
+            m.retain(|k, _| !access.field_hidden(k));
         }
         for key in ["domains", "values"] {
             if let Some(m) = cat[key].as_object_mut() {
