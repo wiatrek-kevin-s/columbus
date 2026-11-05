@@ -235,7 +235,11 @@ async fn edits_are_proposed_reviewed_and_written_within_the_rules() {
     assert_eq!(res["key"], "fid");
     let lines = res["changes"].to_string();
     assert!(lines.contains("NAME \\\"A\\\" → \\\"One\\\""), "{lines}");
-    assert!(lines.contains("Delete fid 3"), "{lines}");
+    // A deletion shows the row it deletes.
+    assert!(
+        lines.contains("Delete fid 3: NAME \\\"C\\\", district 14"),
+        "{lines}"
+    );
     assert!(
         res["preview"].as_str().unwrap().starts_with("ws://"),
         "{res}"

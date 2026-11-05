@@ -77,7 +77,7 @@ def main():
             text = card.inner_text()
             assert "Write 1 update, 1 insertion and 1 deletion to tracts on tiger" in text, text
             assert 'NAME "A" → "Riverside"' in text, text
-            assert "Delete fid 3" in text, text
+            assert 'Delete fid 3: NAME "C", district 14' in text, text
             assert 'New row: NAME "New tract", district 14' in text, text
             expect(card.get_by_role("button", name="Allow for this session")).to_have_count(0)
             expect(card).to_contain_text("one change set at a time")

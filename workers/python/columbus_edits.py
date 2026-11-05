@@ -94,7 +94,9 @@ def _family(t: str) -> str:
     """A column type's family, by its leading word (not a substring:
     "interval" is not an int, "POINT" is a geometry)."""
     t = (t or "").strip().lower()
-    if _GEOMETRY_TYPES.match(t) or t.startswith(("geometry(", "geography(")):
+    # Schema-qualified too (public.geometry, when PostGIS lives elsewhere).
+    bare = t.rsplit(".", 1)[-1] if re.match(r"^[a-z_][a-z0-9_]*\.", t) else t
+    if _GEOMETRY_TYPES.match(bare) or bare.startswith(("geometry(", "geography(")):
         return "geometry"
     if re.match(r"^(boolean|bool)\b", t):
         return "bool"
@@ -467,7 +469,8 @@ def edit_prepare(params: dict[str, Any]) -> dict[str, Any]:
             rec["before"] = {col: canonical(v) for col, v in zip(columns, b["row"]) if col != geom_col}
         elif "key" in c:
             raise _refuse(f"change {i + 1}: an insertion gets its key from the database; leave \"key\" out")
-        elif kind in SQLITE_KINDS and _family(key_type) != "int":
+        elif kind in SQLITE_KINDS and key_type.strip().upper() != "INTEGER":
+            # Only an INTEGER PRIMARY KEY is the rowid SQLite assigns.
             raise _refuse(f"change {i + 1}: rows can be inserted only where the key is a whole number the database assigns")
         if op == "update" and not values and "geometry" not in c:
             raise _refuse(f"change {i + 1}: an update needs values or a geometry")
@@ -493,9 +496,10 @@ def edit_prepare(params: dict[str, Any]) -> dict[str, Any]:
         out_changes.append(rec)
         # What the person reviews: every field that changes.
         if op == "update":
+            # Every field set, even one that looks unchanged: a value can read
+            # the same as text and still differ in the database.
             for f, v in setv.items():
-                if rec["before"].get(f) != v:
-                    diff.append({"op": op, "key": rec["key"], "field": f, "before": rec["before"].get(f), "after": v})
+                diff.append({"op": op, "key": rec["key"], "field": f, "before": rec["before"].get(f), "after": v})
             if geom is not None:
                 old = _geom_from_db(before[canonical(rec["key"])]["row"][columns.index(geom_col)], kind)
                 diff.append({"op": op, "key": rec["key"], "field": geom_col, "before": _describe(old), "after": _describe(geom)})

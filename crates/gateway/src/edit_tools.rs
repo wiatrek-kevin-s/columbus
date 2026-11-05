@@ -137,7 +137,7 @@ fn visible(s: &str) -> String {
     s.chars()
         .map(|c| {
             let hidden = c.is_control()
-                || matches!(c as u32, 0xAD | 0x061C | 0x180E | 0x200B..=0x200F | 0x2028..=0x202E | 0x2060..=0x206F | 0xFE00..=0xFE0F | 0xFEFF | 0xFFF9..=0xFFFB);
+                || matches!(c as u32, 0xAD | 0x034F | 0x061C | 0x115F | 0x1160 | 0x17B4 | 0x17B5 | 0x180B..=0x180E | 0x200B..=0x200F | 0x2028..=0x202E | 0x2060..=0x206F | 0x3164 | 0xFE00..=0xFE0F | 0xFEFF | 0xFFA0 | 0xFFF9..=0xFFFB | 0xE0000..=0xE0FFF);
             if hidden {
                 format!("\\u{{{:04X}}}", c as u32)
             } else {
@@ -201,7 +201,15 @@ fn diff_lines(diff: &Value, key: &str, max: usize) -> Vec<String> {
                                 }
                             )
                         }
-                        _ => format!("Delete {key} {}", shown(&d["key"])),
+                        // What is deleted, not only its key: a deletion is
+                        // the one change that cannot be undone.
+                        _ => {
+                            let mut row = d["before"].clone();
+                            if let Some(o) = row.as_object_mut() {
+                                o.remove(key);
+                            }
+                            format!("Delete {key} {}: {}", shown(&d["key"]), shown(&row))
+                        }
                     }
                 })
                 .collect()
