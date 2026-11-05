@@ -951,7 +951,12 @@ async fn asset(
     let mut r = Response::new(Body::from(bytes));
     r.headers_mut()
         .insert(header::CONTENT_TYPE, HeaderValue::from_static(kind));
-    let mut r = harden(r, None);
+    // A script may run as a worker, which follows the policy it was served
+    // with, not the page's: the map's worker fetches the basemap tiles.
+    let csp = kind
+        .starts_with("text/javascript")
+        .then(|| ui_csp(s.companion.as_ref().is_some_and(|c| c.basemap_allowed())));
+    let mut r = harden(r, csp);
     // Built file names carry a content hash; they never change.
     r.headers_mut().insert(
         header::CACHE_CONTROL,

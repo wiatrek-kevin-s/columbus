@@ -218,6 +218,17 @@ async fn companion_window_shows_the_sessions_outputs() {
         .await
         .unwrap();
     assert_eq!(r.status(), StatusCode::OK);
+    // Scripts carry the window's policy: the map's worker, which fetches
+    // the basemap tiles, follows the policy its script came with.
+    let worker_csp = r.headers()["content-security-policy"]
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(worker_csp, csp, "a script has the window's policy");
+    assert!(
+        csp.contains("connect-src 'self' https://tiles.openfreemap.org"),
+        "{csp}"
+    );
     for bad in ["..%2Fsecret.txt", "%2E%2E%2F..%2Fsecret.txt", ".hidden"] {
         let r = http
             .get(format!("{base}/assets/{bad}"))

@@ -1,6 +1,6 @@
 Columbus {{VERSION}}, a test release. Click a link to download that file.
 
-**New in this version:** on a Mac, engine plugins, `run_python` scripts and local MCP servers now run inside the macOS sandbox instead of being refused (see "Confinement levels" in the README for what it limits, and its known limits on a Mac). Before the first one starts, Columbus checks that the sandbox works on this Mac and refuses them if not.
+**New in this version:** the basemap in the Columbus app's map loads again (0.3.0 showed "could not be loaded"). Also since 0.3.0: on a Mac, engine plugins, `run_python` scripts and local MCP servers run inside the macOS sandbox instead of being refused.
 
 ## Mac (Apple Silicon: M1 or later)
 

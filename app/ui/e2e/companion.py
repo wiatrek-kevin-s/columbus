@@ -82,7 +82,29 @@ def main():
 
         with sync_playwright() as pw:
             browser = pw.chromium.launch()
-            page = browser.new_page(viewport={"width": 1360, "height": 860})
+            ctx = browser.new_context(viewport={"width": 1360, "height": 860})
+            # OpenFreeMap, played by the test: the browser applies the page's
+            # policy before a request is made, so a refused tile never
+            # reaches this route.
+            tiles = []
+            ofm = "https://tiles.openfreemap.org"
+            # Vector tiles, as OpenFreeMap's: the map's worker fetches them.
+            style = {"version": 8, "sources": {"t": {"type": "vector",
+                     "tiles": [ofm + "/test/{z}/{x}/{y}.pbf"]}},
+                     "layers": [{"id": "t", "type": "fill", "source": "t", "source-layer": "water"}]}
+
+            def fake_ofm(route):
+                url = route.request.url
+                if "/styles/" in url:
+                    route.fulfill(status=200, content_type="application/json", body=json.dumps(style),
+                                  headers={"access-control-allow-origin": "*"})
+                else:
+                    tiles.append(url)
+                    # An empty tile: valid, with nothing in it.
+                    route.fulfill(status=200, content_type="application/x-protobuf", body=b"",
+                                  headers={"access-control-allow-origin": "*"})
+            ctx.route(ofm + "/**", fake_ofm)
+            page = ctx.new_page()
             problems = []
             page.on("console", lambda m: m.type in ("error",) and problems.append(m.text))
             page.on("pageerror", lambda e: problems.append(str(e)))
@@ -95,6 +117,15 @@ def main():
             expect(page.locator("table")).to_contain_text("Tract 3")
             page.wait_for_timeout(1500)
             page.screenshot(path=str(OUT / "1-layer.png"))
+
+            # The basemap: its tiles load (through the map's worker).
+            page.get_by_role("checkbox", name="Basemap").check()
+            deadline = time.time() + 20
+            while not tiles and time.time() < deadline:
+                page.wait_for_timeout(250)
+            assert tiles, "no basemap tile was requested"
+            expect(page.get_by_text("could not be loaded")).to_have_count(0)
+            expect(page.get_by_role("checkbox", name="Basemap")).to_be_checked()
 
             # Click a row: it is selected.
             page.locator("table tbody tr").nth(2).click()
@@ -117,7 +148,7 @@ def main():
                 page.get_by_role("button", name="Review in your browser").click()
             approve_link = wait_file(root / "launch.txt")
             assert approve_link.startswith("http://127.0.0.1:"), approve_link
-            page2 = browser.new_page(viewport={"width": 1360, "height": 860})
+            page2 = ctx.new_page()
             page2.on("pageerror", lambda e: problems.append(str(e)))
             page2.goto(approve_link)
             card2 = page2.locator("article.approval")
