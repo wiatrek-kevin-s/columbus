@@ -441,6 +441,9 @@ pub struct State {
     live: std::sync::Mutex<Live>,
     /// `startup_only` of the policy this session started with.
     fixed: Value,
+    /// The session started with a policy file: its going missing is a
+    /// problem, never a fall back to the defaults (which hide nothing).
+    policy_required: bool,
     pub scope: ProjectScope,
     pub sandbox: Sandbox,
     pub audit: Arc<AuditLog>,
@@ -451,15 +454,20 @@ pub struct State {
     pub broker: columbus_broker::registry::Broker,
     pub plugins: crate::plugins::Plugins,
     /// `describe_dataset` answers, per (connection, dataset), for this session.
-    pub datasets: std::sync::Mutex<std::collections::HashMap<(String, String), Value>>,
+    /// Keyed by (settings version, connection, dataset).
+    pub datasets: std::sync::Mutex<std::collections::HashMap<(u64, String, String), Value>>,
     /// The organization's context pack, if one is installed.
     pub context: Option<crate::context::Pack>,
     /// Every column of every table, per connection, for keeping hidden
     /// fields out of queries (see sqlcheck::ApplyFilters). Loaded once.
     /// Provenance records as written this session, by id.
     pub provs: std::sync::Mutex<std::collections::HashMap<String, Value>>,
+    /// Keyed by (settings version, connection).
     pub columns: std::sync::Mutex<
-        std::collections::HashMap<String, (std::time::Instant, columbus_shared::sqlcheck::Catalog)>,
+        std::collections::HashMap<
+            (u64, String),
+            (std::time::Instant, columbus_shared::sqlcheck::Catalog),
+        >,
     >,
     pub flow: columbus_flow::FlowState,
     pub outputs: crate::providers::Outputs,
@@ -627,6 +635,7 @@ impl State {
             edits: Default::default(),
             paths,
             fixed: startup_only(&policy),
+            policy_required: settings.source.found,
             live: std::sync::Mutex::new(Live {
                 settings: Arc::new(settings),
                 digest,
@@ -649,8 +658,93 @@ impl State {
 
 /// What a settings reload did, for the audit log.
 pub enum Reload {
-    Applied(u64),
+    Applied {
+        generation: u64,
+        /// Approvals and "allow for this session" withdrawn.
+        revoked: usize,
+        /// Workspace files removed because their data is no longer allowed.
+        removed: Vec<PathBuf>,
+    },
     Refused(String),
+}
+
+/// How long a changed settings file must be still before it is used.
+const SETTLE: Duration = Duration::from_secs(1);
+
+/// What a change of settings takes away from data already read: everything
+/// (a field newly hidden) and the connections whose access narrowed or went
+/// (removed, a type no longer allowed, or any change but description and
+/// mode, which do not decide what is read).
+fn tightened(
+    old: &crate::config::Settings,
+    new: &crate::config::Settings,
+) -> (bool, std::collections::BTreeSet<String>) {
+    let everything = new
+        .policy
+        .hide_fields
+        .iter()
+        .any(|f| !old.policy.hide_fields.contains(f));
+    let reach = |c: &Connection| {
+        let mut v = serde_json::to_value(c).unwrap_or(Value::Null);
+        if let Some(o) = v.as_object_mut() {
+            o.remove("description");
+            o.remove("mode");
+        }
+        v
+    };
+    let mut out = std::collections::BTreeSet::new();
+    for c in &old.connections {
+        let still = new.connections.iter().find(|n| n.id == c.id);
+        let type_ok = new
+            .policy
+            .connection_types
+            .iter()
+            .any(|t| t.eq_ignore_ascii_case(&c.kind));
+        match still {
+            Some(n) if type_ok && reach(n) == reach(c) => {}
+            _ => {
+                out.insert(columbus_flow::connection_label(&c.id));
+            }
+        }
+    }
+    (everything, out)
+}
+
+impl State {
+    /// Remove workspace files holding data from the given connections (all
+    /// governed data when `everything`), and stop trusting them.
+    fn withdraw(
+        &self,
+        everything: bool,
+        labels: &std::collections::BTreeSet<String>,
+    ) -> Vec<PathBuf> {
+        if !everything && labels.is_empty() {
+            return vec![];
+        }
+        let gone: Vec<PathBuf> = self
+            .outputs
+            .paths()
+            .into_iter()
+            .filter(|p| {
+                let theirs = self.flow.file_labels(p);
+                if everything {
+                    theirs.iter().any(|l| l.starts_with("connection:"))
+                } else {
+                    theirs.iter().any(|l| labels.contains(l))
+                }
+            })
+            .collect();
+        self.outputs.withdraw(&gone);
+        for p in &gone {
+            let _ = std::fs::remove_file(p);
+            for side in ["-wal", "-shm"] {
+                let mut s = p.clone().into_os_string();
+                s.push(side);
+                let _ = std::fs::remove_file(PathBuf::from(s));
+            }
+        }
+        gone
+    }
 }
 
 impl State {
@@ -686,9 +780,19 @@ impl State {
     /// they are fixed: never half old, half new.
     pub fn refresh(&self) -> Option<Reload> {
         let mut live = self.live();
-        let (digest, read) = crate::config::read_settings(&self.paths);
+        let (digest, newest, read) = crate::config::read_settings_at(&self.paths);
         if digest == live.digest {
             return None;
+        }
+        // A file still being written (by an editor that saves in place, say)
+        // is not used until it has been still for a moment.
+        if let Some(t) = newest {
+            if std::time::SystemTime::now()
+                .duration_since(t)
+                .is_ok_and(|age| age < SETTLE)
+            {
+                return None;
+            }
         }
         live.digest = digest;
         let outcome = match read {
@@ -699,12 +803,21 @@ impl State {
                 live.problem = Some(why.clone());
                 Reload::Refused(why)
             }
+            Ok(new) if self.policy_required && !new.source.found => {
+                let why = format!(
+                    "The organization policy file ({}) is gone, so Columbus refuses every request until it is back (it never falls back to the defaults while running).",
+                    new.source.path
+                );
+                live.problem = Some(why.clone());
+                Reload::Refused(why)
+            }
             Ok(new) if startup_only(&new.policy) != self.fixed => {
                 let why = "The organization's settings for connected servers, engine plugins or allowed hosts changed. Those apply only when Columbus starts, so it refuses every request until Claude desktop is restarted (or the change is undone).".to_string();
                 live.problem = Some(why.clone());
                 Reload::Refused(why)
             }
             Ok(new) => {
+                let (everything, narrowed) = tightened(&live.settings, &new);
                 live.settings = Arc::new(new);
                 live.generation += 1;
                 live.problem = None;
@@ -717,15 +830,43 @@ impl State {
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .clear();
-                Reload::Applied(live.generation)
+                // The person agreed to things under the old settings: they are
+                // asked again under the new ones.
+                let revoked = self.approvals.revoke_all();
+                // Files made from data the new settings no longer allow go.
+                let removed = self.withdraw(everything, &narrowed);
+                Reload::Applied {
+                    generation: live.generation,
+                    revoked,
+                    removed,
+                }
             }
         };
         drop(live);
         let rec = match &outcome {
-            Reload::Applied(g) => AuditRecord {
+            Reload::Applied {
+                generation,
+                revoked,
+                removed,
+            } => AuditRecord {
                 tool: "settings.reload".into(),
                 decision: "allowed".into(),
-                reason: Some(format!("new settings in force (version {g})")),
+                reason: Some(format!(
+                    "new settings in force (version {generation}); {revoked} approval(s) withdrawn; {} workspace file(s) removed{}",
+                    removed.len(),
+                    if removed.is_empty() {
+                        String::new()
+                    } else {
+                        format!(
+                            " because the new settings no longer allow their data: {}",
+                            removed
+                                .iter()
+                                .map(|p| p.display().to_string())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        )
+                    }
+                )),
                 ..Default::default()
             },
             Reload::Refused(why) => AuditRecord {
@@ -925,7 +1066,8 @@ impl Gateway {
         if !Self::engine_ready(&conn.kind) {
             return Ok(Catalog::default());
         }
-        if let Some((at, cat)) = self.state.columns.lock().expect("columns").get(&conn.id) {
+        let key = (self.state.generation(), conn.id.clone());
+        if let Some((at, cat)) = self.state.columns.lock().expect("columns").get(&key) {
             if at.elapsed() < COLUMNS_TTL {
                 return Ok(cat.clone());
             }
@@ -980,7 +1122,7 @@ impl Gateway {
             .columns
             .lock()
             .expect("columns")
-            .insert(conn.id.clone(), (std::time::Instant::now(), cat.clone()));
+            .insert(key, (std::time::Instant::now(), cat.clone()));
         Ok(cat)
     }
 
@@ -1267,14 +1409,20 @@ impl Gateway {
                 .map(|p| p.info.rules.clone())
                 .unwrap_or_default(),
             engines,
-            providers: self.provider_cards().await,
+            // While the settings are refused, nothing is started or
+            // connected: not even to say how it is doing.
+            providers: if self.state.problem().is_some() {
+                vec![]
+            } else {
+                self.provider_cards().await
+            },
             labels: self.labels(),
             notes: {
                 let mut notes = self.state.notes.clone();
                 if let Some(why) = self.state.problem() {
                     notes.insert(0, why);
                 }
-                notes.push("Changes the person makes in the Columbus app's Settings (connections, edits, scripts) apply to this session from its next call: no restart is needed. Call whoami again to see them.".into());
+                notes.push("Changes the person makes in the Columbus app's Settings (connections, edits, scripts) apply to this session within a second, from the next call: no restart is needed. Call whoami again to see them. When a change narrows what a connection allows, workspace files made from its data are removed, and every approval not yet used is withdrawn.".into());
                 notes
             },
         };
@@ -2396,7 +2544,8 @@ impl ServerHandler for Gateway {
         self.state.page.touch_live();
         // Settings changed in the Columbus app (or the files) apply from the
         // next call on, without a restart.
-        self.state.refresh();
+        let st = self.state.clone();
+        let _ = tokio::task::spawn_blocking(move || st.refresh()).await;
         if let Some(why) = self.state.problem() {
             if request.name != "whoami" {
                 let _ = self.state.audit.append(&AuditRecord {

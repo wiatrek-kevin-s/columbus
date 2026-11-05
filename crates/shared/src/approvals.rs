@@ -168,6 +168,22 @@ impl ApprovalStore {
         Ok(approval)
     }
 
+    /// Forget every "allow for this session" and every approval not yet
+    /// used (they expire): the settings they were given under changed, so
+    /// the person is asked again. Returns how many were withdrawn.
+    pub fn revoke_all(&self) -> usize {
+        let mut inner = self.inner.lock().expect("approval store poisoned");
+        let mut n = inner.standing.len();
+        inner.standing.clear();
+        for a in inner.approvals.values_mut() {
+            if matches!(a.state, State::Pending | State::Approved) {
+                a.state = State::Expired;
+                n += 1;
+            }
+        }
+        n
+    }
+
     /// True when the person already said "always for this session" to this exact request.
     pub fn standing_allows(&self, tool: &str, args: &Value) -> bool {
         let hash = request_hash(tool, args);

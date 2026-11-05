@@ -182,7 +182,9 @@ struct Shared {
     /// in `live/<session>.key`, readable by this account only.
     test_key: String,
     /// One connection test at a time.
-    testing: tokio::sync::Mutex<()>,
+    testing: Arc<tokio::sync::Mutex<()>>,
+    /// Challenges this server gave the app for a test, unused, with when.
+    challenges: Mutex<Vec<(String, Instant)>>,
 }
 
 impl Shared {
@@ -415,8 +417,11 @@ impl ApprovalsPage {
         });
         // The key first: the app looks for it once the session is listed.
         write_private(&file.with_extension("key"), &shared.test_key).map_err(|e| e.to_string())?;
-        std::fs::write(&file, serde_json::to_vec_pretty(&body).unwrap_or_default())
-            .map_err(|e| e.to_string())?;
+        write_private(
+            &file,
+            &String::from_utf8_lossy(&serde_json::to_vec_pretty(&body).unwrap_or_default()),
+        )
+        .map_err(|e| e.to_string())?;
         *self.live_file.lock().expect("live file") = Some(file.clone());
         *self.live_body.lock().expect("live body") = Some((body, None));
         Ok(file)
@@ -445,7 +450,7 @@ impl ApprovalsPage {
         let bytes = serde_json::to_vec_pretty(body).unwrap_or_default();
         // Written whole, then moved in place: the app never reads half a file.
         let tmp = file.with_extension("json.tmp");
-        if std::fs::write(&tmp, bytes).is_ok() {
+        if write_private(&tmp, &String::from_utf8_lossy(&bytes)).is_ok() {
             let _ = std::fs::rename(&tmp, &file);
         }
     }
@@ -472,7 +477,8 @@ impl ApprovalsPage {
                     sessions: Mutex::new(HashMap::new()),
                     launches: Mutex::new((None, 0)),
                     test_key: token(),
-                    testing: tokio::sync::Mutex::new(()),
+                    testing: Arc::new(tokio::sync::Mutex::new(())),
+                    challenges: Mutex::new(Vec::new()),
                 });
                 let app = Router::new()
                     .route("/", get(page))
@@ -480,6 +486,7 @@ impl ApprovalsPage {
                     .route("/api/approvals", get(list))
                     .route("/api/approvals/{id}", post(decide))
                     .route("/api/open", post(open_window))
+                    .route("/api/test-hello", post(test_hello))
                     .route("/api/test-connection", post(test_connection))
                     .route("/api/review", post(review))
                     .route("/api/state", get(state))
@@ -842,23 +849,90 @@ struct TestRequest {
     password: Option<String>,
 }
 
+/// How long a test challenge stays good.
+const CHALLENGE_TTL: Duration = Duration::from_secs(60);
+
+/// Refuse what no Columbus app sends: another host name (DNS rebinding) or
+/// any `Origin` (every web page, this server's own included).
+fn from_app(h: &HeaderMap, s: &Shared) -> Result<(), Box<Response<Body>>> {
+    if !host_ok(h, s) {
+        return Err(Box::new(status(StatusCode::FORBIDDEN, "wrong host")));
+    }
+    if h.contains_key(header::ORIGIN) {
+        return Err(Box::new(status(StatusCode::FORBIDDEN, "refused")));
+    }
+    Ok(())
+}
+
+/// `POST /api/test-hello`: the first half of a test. The app sends a fresh
+/// challenge (`X-Columbus-Test-Hello`, 64 hex digits) and gets back this
+/// server's proof that it holds the key in `live/<session>.key`, so the app
+/// knows it talks to its own Columbus before it sends a password; and a
+/// challenge of the server's own for the request that follows. The key
+/// itself is never sent, either way.
+async fn test_hello(State(s): State<Arc<Shared>>, h: HeaderMap) -> Response<Body> {
+    if let Err(r) = from_app(&h, &s) {
+        return *r;
+    }
+    let Some(theirs) = h
+        .get("x-columbus-test-hello")
+        .and_then(|v| v.to_str().ok())
+        .filter(|c| c.len() == 64 && c.bytes().all(|b| b.is_ascii_hexdigit()))
+    else {
+        return status(StatusCode::BAD_REQUEST, "expected a challenge");
+    };
+    let ours = token();
+    {
+        let mut c = s.challenges.lock().expect("challenges");
+        c.retain(|(_, at)| at.elapsed() < CHALLENGE_TTL);
+        if c.len() >= 8 {
+            return status(StatusCode::TOO_MANY_REQUESTS, "too many tests at once");
+        }
+        c.push((ours.clone(), Instant::now()));
+    }
+    let proof = columbus_shared::proof::prove(
+        &s.test_key,
+        columbus_shared::proof::SERVER,
+        &[theirs.as_bytes()],
+    );
+    json_response(StatusCode::OK, json!({"challenge": ours, "proof": proof}))
+}
+
 /// `POST /api/test-connection`: the Settings window's Test button, from the
-/// person's Columbus app. Needs `X-Columbus-Test: <key>`, the key in
-/// `live/<session>.key` (readable by this account only), and no `Origin`:
-/// no web page, not even this server's own, can send it. Saves nothing.
+/// person's Columbus app. `X-Columbus-Test: <challenge>.<proof>`: one of
+/// this server's unused challenges from `/api/test-hello`, and the app's
+/// proof over it and the body, with the key only this account can read.
+/// Saves nothing.
 async fn test_connection(
     State(s): State<Arc<Shared>>,
     h: HeaderMap,
     body: axum::body::Bytes,
 ) -> Response<Body> {
-    if !host_ok(&h, &s) {
-        return status(StatusCode::FORBIDDEN, "wrong host");
+    use columbus_shared::proof;
+    if let Err(r) = from_app(&h, &s) {
+        return *r;
     }
-    let key_ok = h
+    let Some((challenge, given)) = h
         .get("x-columbus-test")
         .and_then(|v| v.to_str().ok())
-        .is_some_and(|k| same(k, &s.test_key));
-    if !key_ok || h.contains_key(header::ORIGIN) {
+        .and_then(|v| v.split_once('.'))
+    else {
+        return status(StatusCode::FORBIDDEN, "refused");
+    };
+    // Spent whether or not the proof holds: one try per challenge.
+    let fresh = {
+        let mut c = s.challenges.lock().expect("challenges");
+        let found = c
+            .iter()
+            .position(|(k, at)| proof::same(k, challenge) && at.elapsed() < CHALLENGE_TTL);
+        found.map(|i| c.swap_remove(i)).is_some()
+    };
+    let want = proof::prove(
+        &s.test_key,
+        proof::APP,
+        &[challenge.as_bytes(), proof::body_hash(&body).as_bytes()],
+    );
+    if !fresh || !proof::same(given, &want) {
         return status(StatusCode::FORBIDDEN, "refused");
     }
     let Some(companion) = s.companion.clone() else {
@@ -870,15 +944,17 @@ async fn test_connection(
     let Ok(req) = serde_json::from_slice::<TestRequest>(&body) else {
         return status(StatusCode::BAD_REQUEST, "expected {connection, password}");
     };
-    let Ok(_one) = s.testing.try_lock() else {
+    let Ok(one) = s.testing.clone().try_lock_owned() else {
         return status(StatusCode::TOO_MANY_REQUESTS, "a test is already running");
     };
-    // Run to the end even if the app stops waiting: the engine is not left
-    // half way through a request.
+    // Runs to the end, holding the one-at-a-time guard, even if the app
+    // stops waiting: the engine is never left half way through a request.
     let job = tokio::spawn(async move {
-        companion
+        let v = companion
             .test_connection(req.connection, req.password)
-            .await
+            .await;
+        drop(one);
+        v
     });
     match job.await {
         Ok(v) => json_response(StatusCode::OK, v),
@@ -1106,7 +1182,8 @@ mod tests {
             sessions: Mutex::new(HashMap::new()),
             launches: Mutex::new((None, 0)),
             test_key: token(),
-            testing: tokio::sync::Mutex::new(()),
+            testing: Arc::new(tokio::sync::Mutex::new(())),
+            challenges: Mutex::new(Vec::new()),
         };
         (d, s)
     }

@@ -298,6 +298,7 @@ pub async fn settings_test_connection(form: ConnForm) -> Result<Value, String> {
 }
 
 fn test_connection(form: ConnForm) -> Result<Value, String> {
+    use columbus_shared::proof;
     let dir = paths::connections_dir();
     let found = scan(&dir);
     let old = found
@@ -306,40 +307,76 @@ fn test_connection(form: ConnForm) -> Result<Value, String> {
         .find(|c| form.existing && c.id.eq_ignore_ascii_case(&form.id));
     let conn = build(&form, old)?;
     let sessions = sessions_here(&dir);
-    let Some((port, key)) = sessions
-        .iter()
-        .find_map(|s| s.key.as_ref().map(|k| (s.port, k.clone())))
-    else {
-        return Err(if sessions.is_empty() {
-            "No Columbus session is running to test with. Open Claude desktop (it starts Columbus), then try again. You can still save it now.".into()
-        } else {
-            "The Columbus running now is too old to test connections. Update the Columbus extension in Claude desktop, then try again.".into()
-        });
-    };
+    if sessions.is_empty() {
+        return Err("No Columbus session is running to test with. Open Claude desktop (it starts Columbus), then try again. You can still save it now.".into());
+    }
     let body = serde_json::to_vec(&json!({
         "connection": conn,
         "password": form.password.as_deref().filter(|p| !p.is_empty()),
     }))
     .map_err(|e| e.to_string())?;
-    let (code, reply) = post_local(
-        port,
-        "/api/test-connection",
-        &[("X-Columbus-Test", &key)],
-        &body,
-    )?;
-    match code {
-        200 => Ok(reply),
-        429 => Err("A test is already running; wait for it to finish.".into()),
-        413 => Err("The form is too long to test (shorten the description or filter).".into()),
-        _ => Err(format!(
-            "The Columbus session could not run the test ({code}: {}).",
-            reply["error"].as_str().unwrap_or("no reason given")
-        )),
+    let mut last = "The Columbus running now is too old to test connections. Update the Columbus extension in Claude desktop, then try again.".to_string();
+    for s in &sessions {
+        let Some(key) = &s.key else { continue };
+        // First the session proves it holds the key (a program that merely
+        // took over a port it used gets nothing); the key is never sent.
+        let mut n = [0u8; 32];
+        getrandom_bytes(&mut n);
+        let mine = proof::hex(&n);
+        let (code, hello) = match post_local(
+            s.port,
+            "/api/test-hello",
+            &[("X-Columbus-Test-Hello", &mine)],
+            b"",
+        ) {
+            Ok(v) => v,
+            Err(e) => {
+                last = e;
+                continue;
+            }
+        };
+        let (Some(challenge), Some(theirs)) =
+            (hello["challenge"].as_str(), hello["proof"].as_str())
+        else {
+            last = format!("The Columbus session did not answer the test ({code}).");
+            continue;
+        };
+        if code != 200
+            || !proof::same(
+                theirs,
+                &proof::prove(key, proof::SERVER, &[mine.as_bytes()]),
+            )
+        {
+            last = "A program on this computer answered for Columbus but could not prove it is your Columbus session, so nothing was sent to it.".into();
+            continue;
+        }
+        let sig = proof::prove(
+            key,
+            proof::APP,
+            &[challenge.as_bytes(), proof::body_hash(&body).as_bytes()],
+        );
+        let header = format!("{challenge}.{sig}");
+        let (code, reply) = post_local(
+            s.port,
+            "/api/test-connection",
+            &[("X-Columbus-Test", &header)],
+            &body,
+        )?;
+        return match code {
+            200 => Ok(reply),
+            429 => Err("A test is already running; wait for it to finish.".into()),
+            413 => Err("The form is too long to test (shorten the description or filter).".into()),
+            _ => Err(format!(
+                "The Columbus session could not run the test ({code}: {}).",
+                reply["error"].as_str().unwrap_or("no reason given")
+            )),
+        };
     }
+    Err(last)
 }
 
-/// A small HTTP/1.1 POST to a session's page on this computer, waiting up
-/// to a minute for its answer (a database can be slow to answer).
+/// A small HTTP/1.1 POST to a session's page on this computer, waiting at
+/// most a minute in all for its answer (a database can be slow to answer).
 fn post_local(
     port: u16,
     path: &str,
@@ -348,11 +385,12 @@ fn post_local(
 ) -> Result<(u16, Value), String> {
     use std::io::{Read, Write};
     use std::net::{SocketAddr, TcpStream};
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
+    const MAX: usize = 64 * 1024;
+    let deadline = Instant::now() + Duration::from_secs(60);
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
     let mut s = TcpStream::connect_timeout(&addr, Duration::from_millis(800))
         .map_err(|e| format!("could not reach the Columbus session: {e}"))?;
-    let _ = s.set_read_timeout(Some(Duration::from_secs(60)));
     let _ = s.set_write_timeout(Some(Duration::from_secs(5)));
     let mut req = format!(
         "POST {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n",
@@ -366,14 +404,31 @@ fn post_local(
         .and_then(|_| s.write_all(body))
         .map_err(|e| format!("could not reach the Columbus session: {e}"))?;
     let mut buf = Vec::new();
-    // At most 64 KB of answer.
-    s.take(64 * 1024)
-        .read_to_end(&mut buf)
-        .map_err(|e| format!("the Columbus session did not answer in time: {e}"))?;
-    let text = String::from_utf8_lossy(&buf);
-    let (head, rest) = text
-        .split_once("\r\n\r\n")
+    let mut chunk = [0u8; 8192];
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err("the Columbus session did not answer in time".into());
+        }
+        let _ = s.set_read_timeout(Some(left));
+        match s.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => {
+                buf.extend_from_slice(&chunk[..n]);
+                if buf.len() > MAX {
+                    return Err("the Columbus session's answer was too long".into());
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => return Err("the Columbus session did not answer in time".into()),
+        }
+    }
+    let split = buf
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
         .ok_or("the Columbus session gave no answer")?;
+    let head = String::from_utf8_lossy(&buf[..split]).to_string();
+    let rest = &buf[split + 4..];
     let code = head
         .lines()
         .next()
@@ -386,24 +441,27 @@ fn post_local(
     let body = if chunked {
         dechunk(rest)
     } else {
-        rest.to_string()
+        rest.to_vec()
     };
-    let v = serde_json::from_str(&body).unwrap_or(Value::Null);
-    Ok((code, v))
+    Ok((code, serde_json::from_slice(&body).unwrap_or(Value::Null)))
 }
 
-/// The body of a chunked HTTP answer.
-fn dechunk(mut s: &str) -> String {
-    let mut out = String::new();
-    while let Some((size, rest)) = s.split_once("\r\n") {
-        let Ok(n) = usize::from_str_radix(size.trim(), 16) else {
+/// The body of a chunked HTTP answer, as bytes.
+fn dechunk(mut s: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    while let Some(eol) = s.windows(2).position(|w| w == b"\r\n") {
+        let size = std::str::from_utf8(&s[..eol])
+            .ok()
+            .map(|t| t.split(';').next().unwrap_or("").trim());
+        let Some(n) = size.and_then(|t| usize::from_str_radix(t, 16).ok()) else {
             break;
         };
+        let rest = &s[eol + 2..];
         if n == 0 || rest.len() < n {
             break;
         }
-        out.push_str(&rest[..n]);
-        s = rest[n..].trim_start_matches("\r\n");
+        out.extend_from_slice(&rest[..n]);
+        s = rest[n..].strip_prefix(b"\r\n").unwrap_or(&rest[n..]);
     }
     out
 }

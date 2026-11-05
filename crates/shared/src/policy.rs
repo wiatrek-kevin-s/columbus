@@ -562,7 +562,13 @@ impl EffectiveAccess {
             return Err(Denied::ConnectionType(conn.kind.clone()));
         }
         if let Some(host) = &conn.host {
-            if !org.host_allowed(host) {
+            // One host name or address only: a list (`a,b`), a path or an
+            // option string could reach a host the patterns never saw.
+            let plain = !host.is_empty()
+                && !host
+                    .chars()
+                    .any(|c| c.is_whitespace() || c.is_control() || ",;/\\?#@=()'\"".contains(c));
+            if !plain || !org.host_allowed(host) {
                 return Err(Denied::Host(host.clone()));
             }
         }

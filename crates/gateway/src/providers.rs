@@ -221,6 +221,25 @@ impl Outputs {
         self.inner.lock().expect("outputs poisoned").len()
     }
 
+    /// Every recorded file.
+    pub fn paths(&self) -> Vec<PathBuf> {
+        self.inner
+            .lock()
+            .expect("outputs poisoned")
+            .keys()
+            .cloned()
+            .collect()
+    }
+
+    /// Stop trusting these files: every tool refuses a file Columbus has no
+    /// record of.
+    pub fn withdraw(&self, paths: &[PathBuf]) {
+        let mut map = self.inner.lock().expect("outputs poisoned");
+        for p in paths {
+            map.remove(p);
+        }
+    }
+
     pub fn get(&self, path: &Path) -> Option<OutputMeta> {
         self.inner
             .lock()

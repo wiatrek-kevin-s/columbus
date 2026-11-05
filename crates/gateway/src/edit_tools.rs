@@ -827,7 +827,7 @@ impl Gateway {
             .datasets
             .lock()
             .expect("datasets")
-            .remove(&(conn.id.clone(), cs.dataset.clone()));
+            .retain(|(_, c, d), _| !(c == &conn.id && d == &cs.dataset));
         let written = reply["written"].clone();
         let checks = vec![Check {
             id: "edits.written".into(),

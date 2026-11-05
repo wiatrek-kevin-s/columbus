@@ -577,9 +577,11 @@ impl Gateway {
                 "labels": from,
             });
             // Bound to the request, the exact source content, the fails the
-            // person saw and the exact files that would be replaced.
+            // person saw, the exact files that would be replaced and the
+            // folder itself (where the folder id points now).
             let bound = json!({"request": request, "source_sha256": meta.sha256,
-                "fails": fails.iter().map(|c| &c.id).collect::<Vec<_>>(), "replaces": existing});
+                "fails": fails.iter().map(|c| &c.id).collect::<Vec<_>>(), "replaces": existing,
+                "destination": dest_dir});
             let ask = Ask {
                 tool: "export_output",
                 label: &format!("export to {}", folder.id),

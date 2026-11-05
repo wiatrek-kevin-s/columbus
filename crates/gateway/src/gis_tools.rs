@@ -312,7 +312,13 @@ impl Gateway {
         refresh: bool,
     ) -> Result<Value, String> {
         let from = dataset_sql(dataset, SqlDialect::for_connection_type(&conn.kind))?;
-        let key = (conn.id.clone(), dataset.to_string());
+        // Keyed by the settings version it was made under: an answer from
+        // older settings is never served under newer ones.
+        let key = (
+            self.state.generation(),
+            conn.id.clone(),
+            dataset.to_string(),
+        );
         if !refresh {
             if let Some(v) = self.state.datasets.lock().expect("datasets").get(&key) {
                 return Ok(v.clone());

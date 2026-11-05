@@ -82,10 +82,11 @@ impl Companion {
             Ok(s) => s,
             Err(e) => return json!({"ok": false, "message": e}),
         };
-        let r = test_connection(&s, spec, password).await;
+        let mut how = String::new();
+        let r = test_connection(&s, spec, password, &mut how).await;
         let (decision, reason, conn) = match &r {
-            Ok((id, _)) => ("allowed", None, Some(id.clone())),
-            Err((id, msg)) => ("error", Some(msg.clone()), id.clone()),
+            Ok((id, _)) => ("allowed", Some(how), Some(id.clone())),
+            Err((id, msg)) => ("error", Some(format!("{how}; {msg}")), id.clone()),
         };
         let _ = s.audit.append(&columbus_shared::audit::AuditRecord {
             user: s.user.clone(),
@@ -266,7 +267,14 @@ const TEST_SECONDS: u64 = 20;
 
 type Tested = Result<(String, Value), (Option<String>, String)>;
 
-async fn test_connection(s: &Arc<State>, spec: Value, password: Option<String>) -> Tested {
+/// `how` gets what the audit line says about the test: where it pointed
+/// and which password it used (never the password).
+async fn test_connection(
+    s: &Arc<State>,
+    spec: Value,
+    password: Option<String>,
+    how: &mut String,
+) -> Tested {
     use columbus_shared::policy::{Connection, EffectiveAccess};
     let conn: Connection = serde_json::from_value(spec).map_err(|e| {
         (
@@ -275,6 +283,7 @@ async fn test_connection(s: &Arc<State>, spec: Value, password: Option<String>) 
         )
     })?;
     let id = Some(conn.id.clone());
+    *how = format!("target {}", conn.location());
     let fail = |m: String| (id.clone(), m);
     conn.validate(std::path::Path::new("the form"))
         .map_err(|e| fail(e.to_string()))?;
@@ -300,20 +309,42 @@ async fn test_connection(s: &Arc<State>, spec: Value, password: Option<String>) 
         (names, total)
     } else {
         let typed = password.filter(|p| !p.is_empty());
+        // With the stored password, the saved connection's own rules also
+        // apply: a test cannot see past them.
+        let mut saved_rules = None;
         let secret = match typed {
-            Some(p) => Some(p),
+            Some(p) => {
+                how.push_str("; password typed in the form");
+                Some(p)
+            }
             None if conn.path.is_none() => {
                 // A stored password goes only where it already goes.
-                let same_place = settings
+                let saved = settings
                     .connections
                     .iter()
-                    .any(|c| c.id == conn.id && c.location() == conn.location());
-                if same_place {
-                    s.secrets
-                        .get(&conn.id)
-                        .map_err(|e| fail(format!("the stored password could not be read: {e}")))?
-                } else {
-                    None
+                    .find(|c| c.id == conn.id && c.location() == conn.location());
+                match saved {
+                    Some(c) => {
+                        saved_rules = Some(
+                            EffectiveAccess::resolve(
+                                &settings.policy,
+                                c,
+                                &s.scope,
+                                chrono::Utc::now(),
+                            )
+                            .map_err(|e| {
+                                fail(format!("Columbus would refuse the saved connection: {e}"))
+                            })?,
+                        );
+                        how.push_str("; the stored password");
+                        s.secrets.get(&conn.id).map_err(|e| {
+                            fail(format!("the stored password could not be read: {e}"))
+                        })?
+                    }
+                    None => {
+                        how.push_str("; no password");
+                        None
+                    }
                 }
             }
             None => None,
@@ -329,11 +360,20 @@ async fn test_connection(s: &Arc<State>, spec: Value, password: Option<String>) 
             )
             .await
             .map_err(|e| fail(format!("Columbus could not open it: {e}")))?;
-        let all = reply
+        let all: Vec<Value> = reply
             .get("datasets")
             .and_then(Value::as_array)
             .cloned()
-            .unwrap_or_default();
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|d| {
+                saved_rules.as_ref().is_none_or(|r| {
+                    d.get("name")
+                        .and_then(Value::as_str)
+                        .is_some_and(|n| r.dataset_allowed(n))
+                })
+            })
+            .collect();
         let total = all.len();
         let names = all
             .iter()

@@ -27,7 +27,7 @@ function showError(target, err) {
 function saved() {
   $("restart").textContent = state && state.restart_needed
     ? "Saved. The Columbus running in your AI app is an older version: quit your AI app (in Claude desktop: Cmd+Q or Quit) and open it again for your assistant to use the change."
-    : "Saved. Your assistant uses the change from its next request; there is no need to restart anything.";
+    : "Saved. Your assistant uses the change from its next request; there is no need to restart anything. If you narrowed what a connection allows, files your assistant already made from it are removed, and anything waiting for your approval is asked again.";
   $("restart").hidden = false;
   showError("error", null);
 }

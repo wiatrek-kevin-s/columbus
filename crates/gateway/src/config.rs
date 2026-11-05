@@ -171,7 +171,35 @@ pub struct Settings {
 /// hash covers every connection file's name and contents and the policy
 /// file's, so any change, or a read that fails, shows as a new hash.
 pub fn read_settings(paths: &Paths) -> ([u8; 32], Result<Settings>) {
+    let (digest, _, settings) = read_settings_at(paths);
+    (digest, settings)
+}
+
+/// A regular file's bytes; anything else (a pipe, a device, a folder) is
+/// refused without being opened, so it can never stall the server.
+fn read_regular(path: &Path) -> std::io::Result<Vec<u8>> {
+    let md = std::fs::metadata(path)?;
+    if !md.is_file() {
+        return Err(std::io::Error::other("not a regular file"));
+    }
+    std::fs::read(path)
+}
+
+/// As [`read_settings`], with the newest modification time among the files
+/// (and the connections folder), so a caller can wait until a change has
+/// settled before using it.
+pub fn read_settings_at(
+    paths: &Paths,
+) -> ([u8; 32], Option<std::time::SystemTime>, Result<Settings>) {
     use sha2::{Digest, Sha256};
+    let mut newest: Option<std::time::SystemTime> = None;
+    let mut seen = |p: &Path| {
+        if let Ok(t) = std::fs::metadata(p).and_then(|m| m.modified()) {
+            newest = Some(newest.map_or(t, |n| n.max(t)));
+        }
+    };
+    seen(&paths.policy);
+    seen(&paths.connections);
     let mut h = Sha256::new();
     let mut feed = |tag: &[u8], bytes: &[u8]| {
         h.update((tag.len() as u64).to_le_bytes());
@@ -179,7 +207,7 @@ pub fn read_settings(paths: &Paths) -> ([u8; 32], Result<Settings>) {
         h.update((bytes.len() as u64).to_le_bytes());
         h.update(bytes);
     };
-    let policy_bytes = match std::fs::read(&paths.policy) {
+    let policy_bytes = match read_regular(&paths.policy) {
         Ok(b) => Ok(Some(b)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e),
@@ -198,7 +226,8 @@ pub fn read_settings(paths: &Paths) -> ([u8; 32], Result<Settings>) {
                         let path = e.path();
                         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
                         if ext == "yaml" || ext == "yml" {
-                            let bytes = std::fs::read(&path);
+                            seen(&path);
+                            let bytes = read_regular(&path);
                             files.push((path, bytes));
                         }
                     }
@@ -271,7 +300,7 @@ pub fn read_settings(paths: &Paths) -> ([u8; 32], Result<Settings>) {
             connections,
         })
     })();
-    (digest, parsed)
+    (digest, newest, parsed)
 }
 
 #[cfg(test)]

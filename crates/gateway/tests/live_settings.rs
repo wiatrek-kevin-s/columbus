@@ -138,11 +138,17 @@ fn conn_yaml(id: &str, path: &Path, extra: &str) -> String {
     format!("id: {id}\ntype: gpkg\npath: {p}\ndatasets:\n  allow: [\"*\"]\n{extra}")
 }
 
-/// Write a file whole and move it into place, as the Columbus app does.
+/// Write a file whole and move it into place, as the Columbus app does,
+/// then wait out the moment a session lets a changed file settle.
 fn put(path: &Path, text: &str) {
     let tmp = path.with_extension("tmp-write");
     std::fs::write(&tmp, text).unwrap();
     std::fs::rename(&tmp, path).unwrap();
+    settle();
+}
+
+fn settle() {
+    std::thread::sleep(std::time::Duration::from_millis(1200));
 }
 
 fn ids(r: &CallToolResult) -> Vec<String> {
@@ -192,6 +198,7 @@ async fn settings_apply_without_a_restart() {
 
     // One removed is gone at once, for every tool.
     std::fs::remove_file(root.join("connections/a.yaml")).unwrap();
+    settle();
     assert_eq!(ids(&call(&c, "list_connections", json!({})).await), ["b"]);
     let e = err(&call(&c, "describe_connection", json!({"connection": "a"})).await);
     assert!(
@@ -233,6 +240,7 @@ async fn settings_apply_without_a_restart() {
     let e = err(&call(&c, "list_connections", json!({})).await);
     assert!(e.contains("duplicate"), "{e}");
     std::fs::remove_file(root.join("connections/c.yaml")).unwrap();
+    settle();
     assert_eq!(ids(&call(&c, "list_connections", json!({})).await), ["b"]);
 
     // What only a start applies (connected servers here): refused until
@@ -245,6 +253,27 @@ async fn settings_apply_without_a_restart() {
     assert!(e.contains("restarted"), "{e}");
     put(&policy, "connection_types: [gpkg]\n");
     assert_eq!(ids(&call(&c, "list_connections", json!({})).await), ["b"]);
+
+    // A policy file that goes missing is a problem, never the defaults
+    // (which hide nothing).
+    std::fs::remove_file(&policy).unwrap();
+    settle();
+    let e = err(&call(&c, "list_connections", json!({})).await);
+    assert!(e.contains("is gone"), "{e}");
+    put(&policy, "connection_types: [gpkg]\n");
+    assert_eq!(ids(&call(&c, "list_connections", json!({})).await), ["b"]);
+
+    // A change is not used until the file has been still for a moment.
+    std::fs::write(&policy, "connection_types: [gpkg]\nallow_edits: true\n").unwrap();
+    let w = ok(&call(&c, "whoami", json!({})).await);
+    assert_eq!(
+        w["result"]["policy"]["edits_allowed"],
+        json!(false),
+        "used before it settled"
+    );
+    settle();
+    let w = ok(&call(&c, "whoami", json!({})).await);
+    assert_eq!(w["result"]["policy"]["edits_allowed"], json!(true));
 
     // Every reload is in the audit log.
     let audit = audit_text(&root);
@@ -405,15 +434,45 @@ async fn announced(root: &Path) -> (u16, String) {
     panic!("the session did not announce itself");
 }
 
-async fn send(url: &str, body: &Value, key: Option<&str>, origin: Option<&str>) -> (u16, Value) {
-    let mut r = reqwest::Client::new().post(url).json(body);
+/// Ask for a challenge, check the session's proof, then send `body` with
+/// the app's proof, as the Columbus app does. `key` None sends no proof.
+async fn send(port: u16, body: &Value, key: Option<&str>, origin: Option<&str>) -> (u16, Value) {
+    use columbus_shared::proof;
+    let http = reqwest::Client::new();
+    let base = format!("http://127.0.0.1:{port}");
+    let mine = "ab".repeat(32);
+    let mut hello = http
+        .post(format!("{base}/api/test-hello"))
+        .header("X-Columbus-Test-Hello", &mine);
+    if let Some(o) = origin {
+        hello = hello.header("Origin", o);
+    }
+    let r = hello.send().await.unwrap();
+    if r.status() != 200 {
+        return (r.status().as_u16(), Value::Null);
+    }
+    let h: Value = r.json().await.unwrap();
+    let challenge = h["challenge"].as_str().unwrap().to_string();
+    let bytes = serde_json::to_vec(body).unwrap();
+    let mut req = http
+        .post(format!("{base}/api/test-connection"))
+        .header("Content-Type", "application/json")
+        .body(bytes.clone());
     if let Some(k) = key {
-        r = r.header("X-Columbus-Test", k);
+        // The session proves it holds the key before anything is sent.
+        let want = proof::prove(k, proof::SERVER, &[mine.as_bytes()]);
+        assert!(proof::same(h["proof"].as_str().unwrap(), &want));
+        let sig = proof::prove(
+            k,
+            proof::APP,
+            &[challenge.as_bytes(), proof::body_hash(&bytes).as_bytes()],
+        );
+        req = req.header("X-Columbus-Test", format!("{challenge}.{sig}"));
     }
     if let Some(o) = origin {
-        r = r.header("Origin", o);
+        req = req.header("Origin", o);
     }
-    let r = r.send().await.unwrap();
+    let r = req.send().await.unwrap();
     let code = r.status().as_u16();
     (code, r.json::<Value>().await.unwrap_or(Value::Null))
 }
@@ -439,12 +498,11 @@ async fn the_settings_window_can_test_a_connection_before_saving_it() {
     let c = start_with(&root, &py, Person::default(), true).await;
     let _ = call(&c, "list_connections", json!({})).await;
     let (port, key) = announced(&root).await;
-    let url = format!("http://127.0.0.1:{port}/api/test-connection");
     let k = Some(key.as_str());
 
     // A GeoPackage that is not saved anywhere yet.
     let (code, v) = send(
-        &url,
+        port,
         &json!({"connection": spec("new", &gpkg, "*")}),
         k,
         None,
@@ -457,7 +515,7 @@ async fn the_settings_window_can_test_a_connection_before_saving_it() {
 
     // Its dataset lists are applied as the session would.
     let (_, v) = send(
-        &url,
+        port,
         &json!({"connection": spec("new", &gpkg, "roads*")}),
         k,
         None,
@@ -469,7 +527,7 @@ async fn the_settings_window_can_test_a_connection_before_saving_it() {
     // What the organization's policy refuses is refused here too.
     let pg = json!({"connection": {"id": "pg", "type": "postgis", "host": "db.example.org",
         "database": "gis", "mode": "read", "datasets": {"allow": ["*"]}}});
-    let (_, v) = send(&url, &pg, k, None).await;
+    let (_, v) = send(port, &pg, k, None).await;
     assert_eq!(v["ok"], json!(false), "{v}");
     assert!(
         v["message"].as_str().unwrap().contains("would refuse"),
@@ -478,23 +536,70 @@ async fn the_settings_window_can_test_a_connection_before_saving_it() {
 
     // A file that does not open says so.
     let missing = json!({"connection": spec("bad", &root.join("missing.gpkg"), "*")});
-    let (_, v) = send(&url, &missing, k, None).await;
+    let (_, v) = send(port, &missing, k, None).await;
     assert_eq!(v["ok"], json!(false), "{v}");
     assert!(
         v["message"].as_str().unwrap().contains("could not open"),
         "{v}"
     );
 
-    // Without the key, with a wrong one, or from any web page: refused.
+    // Without the key's proof, or from any web page: refused.
     let good = json!({"connection": spec("new", &gpkg, "*")});
-    assert_eq!(send(&url, &good, None, None).await.0, 403);
-    assert_eq!(send(&url, &good, Some(&"0".repeat(64)), None).await.0, 403);
+    assert_eq!(send(port, &good, None, None).await.0, 403);
     let own = format!("http://127.0.0.1:{port}");
-    assert_eq!(send(&url, &good, k, Some(&own)).await.0, 403);
+    assert_eq!(send(port, &good, k, Some(&own)).await.0, 403);
     assert_eq!(
-        send(&url, &good, k, Some("https://example.org")).await.0,
+        send(port, &good, k, Some("https://example.org")).await.0,
         403
     );
+    // A proof for one body does not cover another, and a challenge is
+    // good once.
+    {
+        use columbus_shared::proof;
+        let http = reqwest::Client::new();
+        let h: Value = http
+            .post(format!("{own}/api/test-hello"))
+            .header("X-Columbus-Test-Hello", "cd".repeat(32))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let ch = h["challenge"].as_str().unwrap();
+        let signed = serde_json::to_vec(&good).unwrap();
+        let sig = proof::prove(
+            &key,
+            proof::APP,
+            &[ch.as_bytes(), proof::body_hash(&signed).as_bytes()],
+        );
+        let other =
+            serde_json::to_vec(&json!({"connection": spec("new", &gpkg, "roads*")})).unwrap();
+        let post = |body: Vec<u8>| {
+            http.post(format!("{own}/api/test-connection"))
+                .header("X-Columbus-Test", format!("{ch}.{sig}"))
+                .body(body)
+                .send()
+        };
+        assert_eq!(post(other).await.unwrap().status(), 403);
+        assert_eq!(
+            post(signed).await.unwrap().status(),
+            403,
+            "a challenge is spent by its first use"
+        );
+    }
+    // The live files are this account's alone.
+    #[cfg(unix)]
+    for e in std::fs::read_dir(root.join("live")).unwrap().flatten() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = e.metadata().unwrap().permissions().mode();
+        assert_eq!(
+            mode & 0o077,
+            0,
+            "{} is readable by others: {mode:o}",
+            e.path().display()
+        );
+    }
 
     // Every test is in the audit log, from the app, never as the AI's call.
     let audit = audit_text(&root);
@@ -521,4 +626,66 @@ async fn the_settings_window_can_test_a_connection_before_saving_it() {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
     assert!(gone, "the key file outlived its session");
+}
+
+#[tokio::test]
+async fn narrowing_a_connection_removes_what_was_read_from_it() {
+    let Some(py) = python() else {
+        eprintln!("skipped: needs Python with geopandas, pyogrio and shapely");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let root: PathBuf = dir.path().to_path_buf();
+    std::fs::create_dir_all(root.join("connections")).unwrap();
+    let gpkg = tracts(&py, &root);
+    let policy = root.join("policy.yaml");
+    put(&policy, "connection_types: [gpkg]\n");
+    put(&root.join("connections/t.yaml"), &conn_yaml("t", &gpkg, ""));
+    put(&root.join("connections/u.yaml"), &conn_yaml("u", &gpkg, ""));
+    let c = start(&root, &py, Person::default()).await;
+    let query = |conn: &'static str| {
+        call(
+            &c,
+            "query_features",
+            json!({"connection": conn, "dataset": "tracts"}),
+        )
+    };
+    let layer = |r: CallToolResult| ok(&r)["result"]["layer"]["handle"].as_str().unwrap().to_string();
+    let read = |h: String| call(&c, "read_output", json!({"handle": h}));
+    // Read from u first: a file carries every label the session had when it
+    // was made, so one made after reading t counts as t's data too.
+    let from_u = layer(query("u").await);
+    let from_t = layer(query("t").await);
+    ok(&read(from_t.clone()).await);
+
+    // The person narrows t (a dataset refused) in Settings: what was read
+    // from t is gone; what came from u is not.
+    let narrowed = conn_yaml("t", &gpkg, "").replace(
+        "datasets:\n  allow: [\"*\"]\n",
+        "datasets:\n  allow: [\"*\"]\n  deny: [tracts]\n",
+    );
+    put(&root.join("connections/t.yaml"), &narrowed);
+    err(&read(from_t).await);
+    ok(&read(from_u.clone()).await);
+    assert!(audit_text(&root).contains("no longer allow their data"));
+
+    // A newly hidden field takes away everything read from any connection.
+    put(
+        &policy,
+        "connection_types: [gpkg]\nhide_fields: [\"*secret*\"]\n",
+    );
+    err(&read(from_u).await);
+
+    // A description change or a switch turned takes nothing away.
+    let fresh = layer(query("u").await);
+    put(
+        &root.join("connections/u.yaml"),
+        &conn_yaml("u", &gpkg, "description: the same data\n"),
+    );
+    put(
+        &policy,
+        "connection_types: [gpkg]\nallow_scripts: true\nhide_fields: [\"*secret*\"]\n",
+    );
+    ok(&read(fresh).await);
+    c.cancel().await.unwrap();
 }

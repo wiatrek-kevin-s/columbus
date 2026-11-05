@@ -130,6 +130,7 @@ fn live_sessions() -> Vec<Session> {
             continue;
         }
         if !answers(port) {
+            let _ = std::fs::remove_file(p.with_extension("key"));
             let _ = std::fs::remove_file(&p);
             continue;
         }
