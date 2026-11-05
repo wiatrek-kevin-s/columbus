@@ -327,6 +327,8 @@ pub struct PolicySummary {
     pub connection_types: Vec<String>,
     pub scripts_allowed: bool,
     pub edits_allowed: bool,
+    /// Personal tools (propose_tool, and tools the person installed) are on.
+    pub personal_tools_allowed: bool,
     pub rows_returned_per_call: u64,
     pub rows_read_per_query: Option<u64>,
     pub query_seconds: Option<u64>,
@@ -467,7 +469,9 @@ pub struct State {
     pub worker: Worker,
     pub secrets: Arc<crate::secrets::SecretStore>,
     pub broker: columbus_broker::registry::Broker,
-    pub plugins: crate::plugins::Plugins,
+    pub plugins: Arc<crate::plugins::Plugins>,
+    /// The person's own tools, read again whenever their folder changes.
+    pub tools: crate::personal_tools::PersonalTools,
     /// `describe_dataset` answers, per (connection, dataset), for this session.
     /// Keyed by (settings version, connection, dataset).
     pub datasets: std::sync::Mutex<std::collections::HashMap<(u64, String, String), Value>>,
@@ -618,11 +622,21 @@ impl State {
             &paths.plugins,
             &paths.personal_plugins,
             paths.python.clone(),
-            host_script,
+            host_script.clone(),
             sandbox.root().to_path_buf(),
             &server_ids,
         );
         notes.extend(plugins.notes.iter().cloned());
+        let mut taken = server_ids.clone();
+        taken.extend(plugins.all().iter().map(|p| p.id().to_string()));
+        let tools = crate::personal_tools::PersonalTools::new(
+            paths.tools.clone(),
+            paths.python.clone(),
+            host_script,
+            sandbox.root().to_path_buf(),
+            taken,
+        );
+        tools.refresh(&policy);
         let context = if paths.context.join("pack.yaml").is_file() {
             match crate::context::Pack::load(&paths.context) {
                 Ok(p) => {
@@ -645,7 +659,8 @@ impl State {
         };
         Ok(State {
             broker,
-            plugins,
+            plugins: Arc::new(plugins),
+            tools,
             context,
             datasets: Default::default(),
             columns: Default::default(),
@@ -1076,7 +1091,13 @@ impl Gateway {
     /// could not finish refuses every tool until the next one does.
     pub(crate) async fn reload(&self) {
         let st = self.state.clone();
-        if let Err(e) = tokio::task::spawn_blocking(move || st.refresh()).await {
+        if let Err(e) = tokio::task::spawn_blocking(move || {
+            st.refresh();
+            // Tools the person installed or removed in the app, from this call on.
+            st.tools.refresh(&st.policy());
+        })
+        .await
+        {
             self.state.fail_closed(format!(
                 "Columbus could not finish re-reading its settings ({e}), so it refuses every request until it can."
             ));
@@ -1154,7 +1175,8 @@ impl Gateway {
                 + Self::raster_router()
                 + Self::script_router()
                 + Self::edit_router()
-                + Self::notes_router(),
+                + Self::notes_router()
+                + Self::tools_router(),
         }
     }
 
@@ -1459,17 +1481,45 @@ fn shown_args(
 
 /// Connected-provider helpers (design change 1).
 impl Gateway {
+    /// Every engine plugin in force now, the organization's and the
+    /// person's own tools, each with the set it belongs to.
+    pub(crate) fn all_plugins(
+        &self,
+    ) -> Vec<(Arc<crate::plugins::Plugins>, Arc<crate::plugins::Plugin>)> {
+        let org = self.state.plugins.clone();
+        let mine = self.state.tools.current();
+        org.all()
+            .iter()
+            .map(|p| (org.clone(), p.clone()))
+            .chain(mine.all().iter().map(|p| (mine.clone(), p.clone())))
+            .collect()
+    }
+
+    /// One engine plugin by id, with its set.
+    pub(crate) fn find_plugin(
+        &self,
+        id: &str,
+    ) -> Option<(Arc<crate::plugins::Plugins>, Arc<crate::plugins::Plugin>)> {
+        self.all_plugins().into_iter().find(|(_, p)| p.id() == id)
+    }
+
     async fn provider_cards(&self) -> Vec<ProviderCard> {
         let mut out = Vec::new();
-        for p in self.state.plugins.all() {
+        for (host, p) in self.all_plugins() {
+            let p = &p;
             // Start approved plugins so a describe mismatch shows up here.
-            let _ = self.state.plugins.worker(p).await;
-            let status = self.state.plugins.status(p);
+            let _ = host.worker(p).await;
+            let status = host.status(p);
             let ready = matches!(status, crate::plugins::PluginStatus::Ready);
             out.push(ProviderCard {
                 id: p.id().to_string(),
                 name: p.manifest.display_name(),
-                kind: "native".into(),
+                kind: if p.personal_tool {
+                    "personal"
+                } else {
+                    "native"
+                }
+                .into(),
                 trust: None,
                 confinement: Some(p.confinement()),
                 status: serde_json::to_value(&status).unwrap_or(Value::Null),
@@ -1597,6 +1647,7 @@ impl Gateway {
                 connection_types: p.connection_types.clone(),
                 scripts_allowed: p.allow_scripts,
                 edits_allowed: p.allow_edits,
+                personal_tools_allowed: p.allow_personal_tools,
                 rows_returned_per_call: p.return_rows.unwrap_or(500).min(500),
                 rows_read_per_query: limits.rows,
                 query_seconds: limits.seconds,
@@ -1694,13 +1745,11 @@ impl Gateway {
                 ));
             }
         }
-        for p in self.state.plugins.all() {
+        for (host, p) in self.all_plugins() {
+            let p = &p;
             if args.provider.as_deref().is_some_and(|want| want != p.id())
-                || !matches!(
-                    self.state.plugins.status(p),
-                    crate::plugins::PluginStatus::Ready
-                )
-                || self.state.plugins.worker(p).await.is_err()
+                || !matches!(host.status(p), crate::plugins::PluginStatus::Ready)
+                || host.worker(p).await.is_err()
             {
                 continue;
             }
@@ -1711,11 +1760,13 @@ impl Gateway {
                 }
                 candidates.push((
                     format!(
-                        "{} {} {} {}",
-                        p.id(),
+                        "{} {} {} {} {} {}",
+                        p.id().replace(['.', '-'], " "),
                         p.manifest.display_name(),
                         name.replace('_', " "),
-                        t.summary
+                        t.summary,
+                        t.title.as_deref().unwrap_or(""),
+                        t.description.as_deref().unwrap_or(""),
                     ),
                     ToolCard {
                         name: full,
@@ -1790,11 +1841,11 @@ impl Gateway {
     ) -> Result<Json<Output<ToolDetail>>, String> {
         let rec = self.gate(&ctx, "describe_tool", &json!({"name": args.name}))?;
         if let Some((ns, tool_name)) = args.name.rsplit_once('.') {
-            if let Some(pl) = self.state.plugins.get(ns).cloned() {
+            if let Some((host, pl)) = self.find_plugin(ns) {
                 if !self.state.policy().tool_allowed(&args.name) {
                     return Err(self.deny(&ctx, rec, Denied::Tool(args.name.clone())));
                 }
-                if let Err(e) = self.state.plugins.worker(&pl).await {
+                if let Err(e) = host.worker(&pl).await {
                     return Err(self.deny(&ctx, rec, e));
                 }
                 let Some(t) = pl.manifest.tools.get(tool_name) else {
@@ -1804,17 +1855,9 @@ impl Gateway {
                         format!("{ns} has no tool named {tool_name:?}"),
                     ));
                 };
-                let mut description = t.summary.clone();
-                if !t.outputs.is_empty() {
-                    let outs: Vec<String> = t
-                        .outputs
-                        .iter()
-                        .map(|(n, o)| format!("{n} ({})", o.kind()))
-                        .collect();
-                    description.push_str(&format!(
-                        " Outputs, saved to the workspace: {}.",
-                        outs.join(", ")
-                    ));
+                let mut description = crate::plugins::describe_text(t);
+                if pl.personal_tool {
+                    description.push_str("\n\nThis is one of the person's own tools: proposed by an assistant with propose_tool and installed by the person. It runs confined (no network; it reads only the inputs it is given) and needs no approval to run.");
                 }
                 let detail = ToolDetail {
                     name: args.name.clone(),
@@ -1836,6 +1879,17 @@ impl Gateway {
                     },
                 )?;
                 return Ok(out(detail));
+            }
+            if ns.starts_with(columbus_shared::tools::ID_PREFIX) {
+                return Err(self.deny(
+                    &ctx,
+                    rec,
+                    if self.state.policy().allow_personal_tools {
+                        format!("{ns} is not installed; the person installs personal tools from Settings, Tools, in the Columbus app")
+                    } else {
+                        "organization policy turns personal tools off (allow_personal_tools)".to_string()
+                    },
+                ));
             }
             let Some(p) = self.state.broker.get(ns).cloned() else {
                 return Err(self.deny(
@@ -2119,18 +2173,28 @@ impl Gateway {
         if !self.state.policy().tool_allowed(&args.name) {
             return Err(self.deny(&ctx, rec, Denied::Tool(args.name.clone())));
         }
-        if let Some(pl) = self.state.plugins.get(ns).cloned() {
+        if let Some((host, pl)) = self.find_plugin(ns) {
             return self
                 .run_plugin_tool(
                     &ctx,
                     rec,
+                    &host,
                     pl,
                     tool,
                     args.args.clone(),
                     args.approval_id.clone(),
                     &request,
+                    false,
                 )
                 .await;
+        }
+        if ns.starts_with(columbus_shared::tools::ID_PREFIX) {
+            let why = if self.state.policy().allow_personal_tools {
+                format!("{ns} is not installed. A personal tool runs once the person installs it from Settings, Tools, in the Columbus app (propose one with propose_tool)")
+            } else {
+                "organization policy turns personal tools off (allow_personal_tools), so none can run here".to_string()
+            };
+            return Err(self.deny(&ctx, rec, why));
         }
         let Some(p) = self.state.broker.get(ns).cloned() else {
             return Err(self.deny(
