@@ -324,35 +324,29 @@ impl Tag {
             .collect()
     }
 
-    /// Stop every process in the sandbox. Each is first suspended (a
-    /// suspended process cannot fork), again until a look finds no member
-    /// that is not yet suspended; then all are killed, and the whole is
-    /// repeated until none is left. Returns whether none is left.
+    /// Stop every process in the sandbox, round after round until none is
+    /// left (a process may fork while it is being stopped; the per-user
+    /// process limit set at launch bounds how many it can make). Returns
+    /// whether none is left.
+    ///
+    /// Not SIGSTOP first: on macOS 26, suspending sandboxed processes in
+    /// the middle of a fork burst froze the whole machine.
     fn stop_all(&self) -> bool {
         let deadline = Instant::now() + Duration::from_secs(20);
-        while Instant::now() < deadline {
-            let mut held: std::collections::HashSet<libc::pid_t> = Default::default();
-            loop {
-                let m = self.members();
-                if m.is_empty() && held.is_empty() {
-                    return true;
-                }
-                let fresh: Vec<_> = m.into_iter().filter(|p| !held.contains(p)).collect();
-                if fresh.is_empty() || Instant::now() >= deadline {
-                    break;
-                }
-                for p in fresh {
-                    debug_stop(p);
-                    unsafe { libc::kill(p, libc::SIGSTOP) };
-                    held.insert(p);
-                }
+        loop {
+            let m = self.members();
+            if m.is_empty() {
+                return true;
             }
-            for &p in &held {
+            if Instant::now() >= deadline {
+                return false;
+            }
+            for p in m {
+                debug_stop(p);
                 unsafe { libc::kill(p, libc::SIGKILL) };
             }
-            std::thread::sleep(Duration::from_millis(10));
+            std::thread::sleep(Duration::from_millis(5));
         }
-        self.members().is_empty()
     }
 
     fn remove(&self) {
