@@ -986,7 +986,10 @@ pub async fn settings_set_switch(name: String, on: bool) -> Result<(), String> {
 }
 
 fn set_switch(name: &str, on: bool) -> Result<(), String> {
-    if !matches!(name, "allow_edits" | "allow_scripts" | "allow_personal_tools") {
+    if !matches!(
+        name,
+        "allow_edits" | "allow_scripts" | "allow_personal_tools"
+    ) {
         return Err(format!("unknown setting {name:?}"));
     }
     let path = paths::policy_file();
@@ -1119,7 +1122,9 @@ fn install_tool(id: &str, hash: &str) -> Result<(), String> {
     let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
     let p = tools::read_proposal(&root, id)?;
     if p.hash != hash {
-        return Err("the tool changed after you looked at it; nothing was installed. Look again".into());
+        return Err(
+            "the tool changed after you looked at it; nothing was installed. Look again".into(),
+        );
     }
     confirm(&format!(
         "add the tool \"{}\" ({}), which your assistant may then run on your data without asking",
@@ -1160,7 +1165,8 @@ pub async fn settings_tool_files(id: String) -> Result<Value, String> {
         }
         let dir = tools::tools_dir().join(&id);
         let read = |f: &str| {
-            std::fs::read_to_string(dir.join(f)).map_err(|e| format!("{}: {e}", dir.join(f).display()))
+            std::fs::read_to_string(dir.join(f))
+                .map_err(|e| format!("{}: {e}", dir.join(f).display()))
         };
         Ok(json!({"manifest_text": read(tools::MANIFEST)?, "code": read(tools::ENTRY)?}))
     })

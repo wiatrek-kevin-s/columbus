@@ -144,6 +144,15 @@ button:disabled { opacity: .5; cursor: default; }
       }
       c.appendChild(pre);
     }
+    if (typeof d.manifest === "string") {
+      // A proposed tool: what other assistants will read about it.
+      c.appendChild(el("p", "sub", "The tool's manifest (how other assistants will see it):"));
+      const man = el("pre", "code", "");
+      for (const line of d.manifest.split("\n")) {
+        man.appendChild(el("span", "ln", line === "" ? " " : line));
+      }
+      c.appendChild(man);
+    }
     var det = el("details");
     det.appendChild(el("summary", null, "Show the exact request"));
     det.appendChild(el("pre", null, JSON.stringify(a.request, null, 2)));

@@ -120,6 +120,8 @@ function describe(name, input) {
     case "registry_fetch": return "Downloading open data";
     case "context_search": return "Searching your organization's notes";
     case "run_python": return "Running a Python script";
+    case "propose_tool": return `Testing a tool to save${i.title ? `: ${q(i.title)}` : ""}`;
+    case "run_tool": return `Running ${i.name ? q(i.name) : "a tool"}`;
     default: return `Running ${q(name)}`;
   }
 }
