@@ -967,8 +967,9 @@ enum DsnHost<'a> {
     Other,
 }
 
-/// Strictly `[tcp://|tcps://][//]host[:port][/service[:server][/instance]]`
-/// (EZConnect, one address), or a bare alias; anything else, a second
+/// Strictly `[tcp://|tcps://][//]host[:port]/service[:server][/instance]`
+/// (EZConnect, one address); a name with no `/service` is looked up in
+/// tnsnames.ora by the driver, so it is an alias; anything else, a second
 /// address after `;` included, is `Other`.
 fn dsn_host(dsn: &str) -> DsnHost<'_> {
     let word = |t: &str| {
@@ -1016,7 +1017,12 @@ fn dsn_host(dsn: &str) -> DsnHost<'_> {
     if port.is_some_and(|p| p.is_empty() || p.len() > 5 || !p.chars().all(|c| c.is_ascii_digit())) {
         return DsnHost::Other;
     }
-    if !path.is_empty() {
+    // With no service it is not EZConnect: the driver looks the whole
+    // string up in tnsnames.ora, like a bare alias.
+    if path.is_empty() {
+        return DsnHost::Alias;
+    }
+    {
         let Some(p) = path.strip_prefix('/') else {
             return DsnHost::Other;
         };
@@ -1092,17 +1098,16 @@ mod host_tests {
             "db.corp.example:15x1/svc",
             "db.corp.example/svc?x=1",
             "db.corp.example/svc/inst/more",
-            "db.corp.example:1521/svc:dedicated/inst",
         ] {
-            let ok = matches!(dsn_host(bad), DsnHost::Other)
-                || (bad.ends_with("dedicated/inst")
-                    && matches!(dsn_host(bad), DsnHost::Host("db.corp.example")));
-            assert!(ok, "{bad}");
+            assert!(matches!(dsn_host(bad), DsnHost::Other), "{bad}");
         }
-        // A dotted name is a host, not an alias.
         assert!(matches!(
-            dsn_host("evil.example"),
-            DsnHost::Host("evil.example")
+            dsn_host("db.corp.example:1521/svc:dedicated/inst"),
+            DsnHost::Host("db.corp.example")
         ));
+        // With no service the driver reads it as a tnsnames alias, dotted
+        // or not.
+        assert!(matches!(dsn_host("PROD.WORLD"), DsnHost::Alias));
+        assert!(matches!(dsn_host("db.corp:1521"), DsnHost::Alias));
     }
 }

@@ -428,7 +428,8 @@ pub struct Live {
     policy_required: bool,
     /// What each applied change took away (generation, everything, labels),
     /// for calls that were already running when it applied.
-    tightenings: Vec<(u64, bool, std::collections::BTreeSet<String>)>,
+    /// (generation, everything, labels, limits shrank)
+    tightenings: Vec<(u64, bool, std::collections::BTreeSet<String>, bool)>,
     /// Files a reload could not delete, tried again at the next one.
     leftovers: Vec<PathBuf>,
     /// Entries before this generation were dropped from `tightenings`: a
@@ -701,6 +702,22 @@ const SETTLE: Duration = Duration::from_secs(1);
 /// How long files may keep changing before every request is refused.
 const STALL: Duration = Duration::from_secs(10);
 
+/// Whether fewer rows or seconds are allowed now, by the values the tools
+/// actually use (the defaults where the policy sets none). Files already
+/// made stay (they were read within the limits of their time), but a call
+/// running across the change has its answer withheld.
+fn limits_shrank(old: &OrgPolicy, new: &OrgPolicy) -> bool {
+    let eff = |p: &OrgPolicy| {
+        (
+            p.limits.rows.unwrap_or(200_000),
+            p.limits.seconds.unwrap_or(120),
+            p.return_rows.unwrap_or(500).min(500),
+        )
+    };
+    let (a, b) = (eff(old), eff(new));
+    b.0 < a.0 || b.1 < a.1 || b.2 < a.2
+}
+
 /// What a change of settings takes away from data already read: everything
 /// (a field newly hidden) and the connections whose access narrowed or went
 /// (removed, a type no longer allowed, or any change but description and
@@ -709,21 +726,12 @@ fn tightened(
     old: &crate::config::Settings,
     new: &crate::config::Settings,
 ) -> (bool, std::collections::BTreeSet<String>) {
-    // A newly hidden field, or fewer rows or seconds allowed, takes away
-    // from every connection.
-    let less = |a: Option<u64>, b: Option<u64>| match (a, b) {
-        (_, None) => false,
-        (None, Some(_)) => true,
-        (Some(a), Some(b)) => b < a,
-    };
+    // A newly hidden field takes away from every connection.
     let everything = new
         .policy
         .hide_fields
         .iter()
-        .any(|f| !old.policy.hide_fields.contains(f))
-        || less(old.policy.return_rows, new.policy.return_rows)
-        || less(old.policy.limits.rows, new.policy.limits.rows)
-        || less(old.policy.limits.seconds, new.policy.limits.seconds);
+        .any(|f| !old.policy.hide_fields.contains(f));
     let reach = |c: &Connection| {
         let mut v = serde_json::to_value(c).unwrap_or(Value::Null);
         if let Some(o) = v.as_object_mut() {
@@ -758,6 +766,16 @@ impl State {
         everything: bool,
         labels: &std::collections::BTreeSet<String>,
     ) -> (Vec<PathBuf>, Vec<PathBuf>) {
+        self.withdraw_among(everything, labels, None)
+    }
+
+    /// As `withdraw`, among `only` (when given) of the recorded files.
+    fn withdraw_among(
+        &self,
+        everything: bool,
+        labels: &std::collections::BTreeSet<String>,
+        only: Option<&std::collections::BTreeSet<PathBuf>>,
+    ) -> (Vec<PathBuf>, Vec<PathBuf>) {
         if !everything && labels.is_empty() {
             return (vec![], vec![]);
         }
@@ -765,6 +783,7 @@ impl State {
             .outputs
             .paths()
             .into_iter()
+            .filter(|p| only.is_none_or(|o| o.contains(p)))
             .filter(|p| {
                 let theirs = self.flow.file_labels(p);
                 if everything {
@@ -787,24 +806,31 @@ impl State {
         &self,
         everything: bool,
         labels: &std::collections::BTreeSet<String>,
+        only: &std::collections::BTreeSet<PathBuf>,
     ) -> (Vec<PathBuf>, Vec<PathBuf>) {
-        let (gone, failed) = self.withdraw(everything, labels);
+        let (gone, failed) = self.withdraw_among(everything, labels, Some(only));
         self.live().leftovers.extend(failed.iter().cloned());
         (gone, failed)
     }
 
     /// What the changes applied after `generation` took away.
-    pub fn tightened_since(&self, generation: u64) -> (bool, std::collections::BTreeSet<String>) {
+    /// (everything, labels, limits shrank)
+    pub fn tightened_since(
+        &self,
+        generation: u64,
+    ) -> (bool, std::collections::BTreeSet<String>, bool) {
         let live = self.live();
         let mut everything = generation < live.tightenings_from;
+        let mut shrank = everything;
         let mut labels = std::collections::BTreeSet::new();
-        for (g, all, l) in &live.tightenings {
+        for (g, all, l, less) in &live.tightenings {
             if *g > generation {
                 everything |= *all;
+                shrank |= *less;
                 labels.extend(l.iter().cloned());
             }
         }
-        (everything, labels)
+        (everything, labels, shrank)
     }
 
     /// Refuse every tool but whoami, for a reason outside the files (a
@@ -946,15 +972,17 @@ impl State {
             }
             Ok(new) => {
                 let (everything, narrowed) = tightened(&live.settings, &new);
+                let shrank = limits_shrank(&live.settings.policy, &new.policy);
                 live.policy_required |= new.source.found;
                 live.settings = Arc::new(new);
                 live.generation += 1;
                 live.problem = None;
-                if everything || !narrowed.is_empty() {
+                if everything || !narrowed.is_empty() || shrank {
                     let g = live.generation;
-                    live.tightenings.push((g, everything, narrowed.clone()));
+                    live.tightenings
+                        .push((g, everything, narrowed.clone(), shrank));
                     if live.tightenings.len() > 256 {
-                        let (dropped, _, _) = live.tightenings.remove(0);
+                        let (dropped, _, _, _) = live.tightenings.remove(0);
                         live.tightenings_from = dropped;
                     }
                 }
@@ -2733,15 +2761,26 @@ impl ServerHandler for Gateway {
         let tool = request.name.to_string();
         let client = client_name(&context);
         let started = self.state.generation();
+        let before: std::collections::BTreeSet<PathBuf> =
+            self.state.outputs.paths().into_iter().collect();
         let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
         let result = self.tool_router.call(tcc).await;
         // Narrowed while it ran: what it made from that data goes too, and
         // its answer (which may hold rows) is not returned.
         self.reload().await;
-        let (everything, labels) = self.state.tightened_since(started);
-        let (gone, _) = self.state.withdraw_now(everything, &labels);
+        let (everything, labels, shrank) = self.state.tightened_since(started);
+        // Only what this call made: earlier files were dealt with by the
+        // reload itself, and later ones were made under the new settings.
+        let made: std::collections::BTreeSet<PathBuf> = self
+            .state
+            .outputs
+            .paths()
+            .into_iter()
+            .filter(|p| !before.contains(p))
+            .collect();
+        let (gone, _) = self.state.withdraw_now(everything, &labels, &made);
         let touched = self.state.flow.session_labels().iter().any(|l| {
-            if everything {
+            if everything || shrank {
                 l.starts_with("connection:")
             } else {
                 labels.contains(l)
