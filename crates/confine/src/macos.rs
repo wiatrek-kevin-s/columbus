@@ -11,8 +11,10 @@
 //!   everywhere, as the loader and Python need to resolve paths; contents
 //!   stay closed.
 //! * Network: level A makes no sockets but Unix socket pairs. Level B may
-//!   open internet connections and look up names, but not reach this
-//!   computer (localhost). Level C may use the network as it likes.
+//!   open IPv4 internet connections and look up names, but not reach this
+//!   computer (localhost). IPv6 sockets stay closed at B: Seatbelt's rules
+//!   name `localhost` but not an address, and an IPv4-mapped IPv6 address
+//!   (`::ffff:127.0.0.1`) would reach this computer past them. Level C may use the network as it likes.
 //! * System services: Apple's base rules (`system.sb`) let any sandboxed
 //!   program reach a few services (preferences, logging, notifications,
 //!   user and group names). On top, every level is refused the services
@@ -173,7 +175,7 @@ pub(crate) fn profile(level: Level, n_ro: usize, n_rw: usize) -> String {
               (global-name \"com.apple.system.opendirectoryd.membership\"))\n",
         ),
         Level::B => p.push_str(
-            "(allow system-socket (socket-domain AF_INET) (socket-domain AF_INET6))\n\
+            "(allow system-socket (socket-domain AF_INET))\n\
              (allow network-outbound (remote ip))\n\
              (deny network-outbound (remote ip \"localhost:*\"))\n\
              (allow network-outbound (literal \"/private/var/run/mDNSResponder\"))\n\

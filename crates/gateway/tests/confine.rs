@@ -662,6 +662,10 @@ fn on_macos_level_b_reaches_the_internet_side_only() {
             &format!("socket.create_connection(('::1', {port6}), timeout=3)"),
         ),
         attempt(
+            "any",
+            &format!("socket.create_connection(('0.0.0.0', {port}), timeout=3)"),
+        ),
+        attempt(
             "mapped",
             &format!("socket.create_connection(('::ffff:127.0.0.1', {port}), timeout=3)"),
         ),
@@ -685,6 +689,7 @@ fn on_macos_level_b_reaches_the_internet_side_only() {
         "localhost: refused",
         "loopback6: refused",
         "mapped: refused",
+        "any: refused",
         "udp: refused",
     ] {
         assert!(
