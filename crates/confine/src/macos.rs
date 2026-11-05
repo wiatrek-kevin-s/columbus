@@ -342,6 +342,7 @@ impl Tag {
                     break;
                 }
                 for p in fresh {
+                    debug_stop(p);
                     unsafe { libc::kill(p, libc::SIGSTOP) };
                     held.insert(p);
                 }
@@ -382,6 +383,18 @@ fn user_temp_dir() -> Result<PathBuf, Error> {
     let s = String::from_utf8(buf)
         .map_err(|_| Error::Setup("this user's temporary folder has an unreadable name".into()))?;
     Ok(PathBuf::from(s))
+}
+
+/// With `COLUMBUS_CONFINE_DEBUG` set (development only), say which
+/// processes the launcher stops.
+fn debug_stop(pid: libc::pid_t) {
+    if std::env::var_os("COLUMBUS_CONFINE_DEBUG").is_none() {
+        return;
+    }
+    let mut name = [0u8; 256];
+    let n = unsafe { libc::proc_name(pid, name.as_mut_ptr() as *mut libc::c_void, 256) };
+    let name = String::from_utf8_lossy(&name[..n.max(0) as usize]);
+    eprintln!("columbus-confine: stopping {pid} ({name})");
 }
 
 /// How many processes this user runs now.
