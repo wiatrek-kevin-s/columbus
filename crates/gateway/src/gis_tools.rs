@@ -908,8 +908,9 @@ impl Gateway {
             let mut personal = false;
             let mut mine = || {
                 let n = self.notes_pack()?;
-                let e = n.dataset_entry(&conn.id, &args.dataset)?;
-                let e = self.visible_note(e)?;
+                let raw = n.dataset_entry(&conn.id, &args.dataset)?;
+                let e = self.visible_note(raw)?;
+                self.note_served(raw);
                 personal = true;
                 Some(json!({
                     "card": e.card_json(n.info.review_interval_months, today),

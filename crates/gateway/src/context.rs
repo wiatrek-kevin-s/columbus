@@ -758,7 +758,10 @@ impl Gateway {
                 }
                 // Reading a note about a connection is reading its data:
                 // the session carries its label, so flow rules apply.
-                self.note_served(e);
+                // The note as filed (with what it carries), not the copy shown.
+                if let Some(raw) = n.get(&e.id) {
+                    self.note_served(raw);
+                }
                 let mut c = e.card_json(n.info.review_interval_months, today);
                 c["pack"] = json!("the person's own notes");
                 cards.push(c);
@@ -821,7 +824,9 @@ impl Gateway {
         let today = chrono::Local::now().date_naive();
         let mut card = e.card_json(interval, today);
         if personal {
-            self.note_served(&e);
+            if let Some(raw) = notes.as_ref().and_then(|n| n.get(&args.id)) {
+                self.note_served(raw);
+            }
             card["pack"] = json!("the person's own notes");
         }
         let mut checks: Vec<Check> = stale_check(std::slice::from_ref(&card))

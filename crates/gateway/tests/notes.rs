@@ -278,6 +278,17 @@ async fn notes_are_drafted_read_and_filled_in_under_the_rules() {
     );
     std::fs::remove_file(root.join("connections/other.yaml")).unwrap();
     settle();
+    // A later session reading that note takes on what it carries.
+    let c2 = start(&root, &py, Person::default()).await;
+    ok(&call(&c2, "context_get", json!({"id": "roads--segments"})).await);
+    let w = ok(&call(&c2, "whoami", json!({})).await);
+    assert!(
+        w["result"]["labels"]
+            .to_string()
+            .contains("connection:other"),
+        "{w}"
+    );
+    c2.cancel().await.unwrap();
 
     // Text from the database never changes a note's structure.
     let all: String = walk(&notes)
