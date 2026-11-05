@@ -275,8 +275,8 @@ impl Tag {
     /// Whether `pid` runs in this launch's sandbox.
     fn holds(&self, pid: libc::pid_t) -> bool {
         // Most processes are not sandboxed: one check rules them out.
-        unsafe { sandbox_check(pid, std::ptr::null(), 0) == 1 }
-        &&Tag::may_write(pid, &self.tag) == 0 && Tag::may_write(pid, &self.probe) == 1
+        let sandboxed = unsafe { sandbox_check(pid, std::ptr::null(), 0) } == 1;
+        sandboxed && Tag::may_write(pid, &self.tag) == 0 && Tag::may_write(pid, &self.probe) == 1
     }
 
     /// Every process in this launch's sandbox.
