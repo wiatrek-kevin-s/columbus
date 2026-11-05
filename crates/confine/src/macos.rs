@@ -20,8 +20,10 @@
 //!   Apple Events (`osascript`), the pasteboard and the keychain. Level A
 //!   is also refused the certificate service (it fetches from the network)
 //!   and group membership lookups.
-//! * Other processes: a confined program cannot read other processes'
-//!   arguments or environment, nor list them.
+//! * Other processes: a confined program cannot list other processes. It
+//!   can read the arguments and environment other processes of the same
+//!   user started with (`kern.procargs2`): no sandbox rule covers that, so
+//!   secrets in a local server's environment are not hidden from it.
 //! * Processes and memory: macOS offers no job object or cgroup, so the
 //!   launcher tags each launch's sandbox with a path only it allows and
 //!   finds every process in that sandbox, even one that left the process

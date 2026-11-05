@@ -439,7 +439,9 @@ fn level_a_on_macos_reaches_no_socket_service_or_home_folder() {
         "svc com.apple.coreservices.appleevents: refused",
         "svc com.apple.pasteboard.1: refused",
         "svc com.apple.SecurityServer: refused",
-        "procargs parent: refused",
+        // Not "procargs parent": macOS's sandbox does not cover reading
+        // the arguments and environment other processes of the same user
+        // started with (a known limit, in the README).
         "proc list: refused",
     ] {
         assert!(
