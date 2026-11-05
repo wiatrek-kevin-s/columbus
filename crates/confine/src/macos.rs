@@ -41,7 +41,7 @@ use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::{Error, Level, Spec};
@@ -85,8 +85,19 @@ const DENIED_SERVICES: &str = "(deny mach-lookup \
      (global-name \"com.apple.SecurityServer\") \
      (global-name \"com.apple.securityd.xpc\") \
      (global-name \"com.apple.security.agent\") \
+     (global-name \"com.apple.securityd\") \
      (global-name \"com.apple.tccd\") \
-     (global-name \"com.apple.tccd.system\"))\n";
+     (global-name \"com.apple.tccd.system\") \
+     (global-name-prefix \"com.apple.windowserver\") \
+     (global-name-prefix \"com.apple.dock\") \
+     (global-name-prefix \"com.apple.sharedfilelist\") \
+     (global-name-prefix \"com.apple.coreservices.sharedfilelistd\") \
+     (global-name-prefix \"com.apple.backgroundtaskmanagement\") \
+     (global-name-prefix \"com.apple.FileProvider\") \
+     (global-name \"com.apple.CoreServices.coreservicesd\") \
+     (global-name-prefix \"com.apple.screencapture\") \
+     (global-name-prefix \"com.apple.ScreenCapture\") \
+     (global-name \"com.apple.xpc.smd\"))\n";
 
 extern "C" {
     fn sandbox_check(
@@ -105,10 +116,14 @@ pub fn available(_level: Level) -> Result<(), Error> {
             "this Mac has no /usr/bin/sandbox-exec".into(),
         ));
     }
-    static TEST: OnceLock<Result<(), String>> = OnceLock::new();
-    TEST.get_or_init(self_test)
-        .clone()
-        .map_err(Error::Unsupported)
+    // Only a success is kept: a failed check is tried again next time.
+    static PASSED: AtomicBool = AtomicBool::new(false);
+    if PASSED.load(Ordering::SeqCst) {
+        return Ok(());
+    }
+    self_test().map_err(Error::Unsupported)?;
+    PASSED.store(true, Ordering::SeqCst);
+    Ok(())
 }
 
 /// The profile for a level, with `n_ro` and `n_rw` path parameters (`RO0`…,
@@ -201,37 +216,54 @@ impl Tag {
         }
         let hex: String = b.iter().map(|x| format!("{x:02x}")).collect();
         let dir = canonical(&user_temp_dir()?).join("columbus-confine");
+        let tag = dir.join(format!("{hex}.tag"));
+        let probe = dir.join(format!("{hex}.probe"));
+        let t = Tag::from_paths(&tag.display().to_string(), &probe.display().to_string())?;
+        t.ensure()?;
+        Ok(t)
+    }
+
+    /// Make sure the folder and both files exist (macOS clears old files in
+    /// temporary folders; a missing file would hide the sandbox). The files
+    /// are immutable: the policy check still answers for them, but nothing
+    /// can write into them.
+    fn ensure(&self) -> Result<(), Error> {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let tag = Path::new(self.tag_path());
+        let dir = tag.parent().unwrap_or(Path::new("/"));
         let setup =
             |e: std::io::Error| Error::Setup(format!("the sandbox tag in {}: {e}", dir.display()));
-        match std::fs::create_dir(&dir) {
+        match std::fs::create_dir(dir) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
             Err(e) => return Err(setup(e)),
         }
-        {
-            use std::os::unix::fs::{MetadataExt, PermissionsExt};
-            // Ours alone: another user must not be able to remove the files
-            // (the launcher would then lose sight of the sandbox).
-            let m = std::fs::symlink_metadata(&dir).map_err(setup)?;
-            if !m.is_dir() || m.uid() != unsafe { libc::getuid() } {
-                return Err(Error::Setup(format!(
-                    "{} is not a folder of this user's",
-                    dir.display()
-                )));
-            }
-            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
-                .map_err(setup)?;
+        // Ours alone: another user must not be able to remove the files.
+        let m = std::fs::symlink_metadata(dir).map_err(setup)?;
+        if !m.is_dir() || m.uid() != unsafe { libc::getuid() } {
+            return Err(Error::Setup(format!(
+                "{} is not a folder of this user's",
+                dir.display()
+            )));
         }
-        let tag = dir.join(format!("{hex}.tag"));
-        let probe = dir.join(format!("{hex}.probe"));
-        for f in [&tag, &probe] {
+        if m.mode() & 0o777 != 0o700 {
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).map_err(setup)?;
+        }
+        for f in [&self.tag, &self.probe] {
+            let path = Path::new(f.to_str().expect("tag"));
+            if std::fs::symlink_metadata(path).is_ok() {
+                continue;
+            }
             std::fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
-                .open(f)
+                .open(path)
                 .map_err(setup)?;
+            if unsafe { libc::chflags(f.as_ptr(), libc::UF_IMMUTABLE) } != 0 {
+                return Err(setup(std::io::Error::last_os_error()));
+            }
         }
-        Tag::from_paths(&tag.display().to_string(), &probe.display().to_string())
+        Ok(())
     }
 
     /// As passed to the guard: two files beside each other, named alike.
@@ -283,6 +315,8 @@ impl Tag {
 
     /// Every process in this launch's sandbox.
     fn members(&self) -> Vec<libc::pid_t> {
+        // Put back a file something removed, before it is looked for.
+        let _ = self.ensure();
         let me = std::process::id() as libc::pid_t;
         all_pids()
             .into_iter()
@@ -290,24 +324,41 @@ impl Tag {
             .collect()
     }
 
-    /// Stop every process in the sandbox, again until none is left (a
-    /// process may fork while it is being stopped).
-    fn stop_all(&self) {
-        for _ in 0..200 {
-            let m = self.members();
-            if m.is_empty() {
-                return;
+    /// Stop every process in the sandbox. Each is first suspended (a
+    /// suspended process cannot fork), again until a look finds no member
+    /// that is not yet suspended; then all are killed, and the whole is
+    /// repeated until none is left. Returns whether none is left.
+    fn stop_all(&self) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while Instant::now() < deadline {
+            let mut held: std::collections::HashSet<libc::pid_t> = Default::default();
+            loop {
+                let m = self.members();
+                if m.is_empty() && held.is_empty() {
+                    return true;
+                }
+                let fresh: Vec<_> = m.into_iter().filter(|p| !held.contains(p)).collect();
+                if fresh.is_empty() || Instant::now() >= deadline {
+                    break;
+                }
+                for p in fresh {
+                    unsafe { libc::kill(p, libc::SIGSTOP) };
+                    held.insert(p);
+                }
             }
-            for p in m {
+            for &p in &held {
                 unsafe { libc::kill(p, libc::SIGKILL) };
             }
             std::thread::sleep(Duration::from_millis(10));
         }
+        self.members().is_empty()
     }
 
     fn remove(&self) {
-        let _ = std::fs::remove_file(self.tag_path());
-        let _ = std::fs::remove_file(self.probe_path());
+        for f in [&self.tag, &self.probe] {
+            unsafe { libc::chflags(f.as_ptr(), 0) };
+            let _ = std::fs::remove_file(f.to_str().expect("tag"));
+        }
     }
 }
 
@@ -331,6 +382,25 @@ fn user_temp_dir() -> Result<PathBuf, Error> {
     let s = String::from_utf8(buf)
         .map_err(|_| Error::Setup("this user's temporary folder has an unreadable name".into()))?;
     Ok(PathBuf::from(s))
+}
+
+/// How many processes this user runs now.
+fn user_processes() -> u64 {
+    const PROC_UID_ONLY: u32 = 4;
+    let uid = unsafe { libc::getuid() };
+    let mut buf: Vec<libc::pid_t> = vec![0; 8192];
+    let size = (buf.len() * std::mem::size_of::<libc::pid_t>()) as libc::c_int;
+    let bytes = unsafe {
+        libc::proc_listpids(
+            PROC_UID_ONLY,
+            uid,
+            buf.as_mut_ptr() as *mut libc::c_void,
+            size,
+        )
+    };
+    let n = (bytes.max(0) as usize) / std::mem::size_of::<libc::pid_t>();
+    buf.truncate(n);
+    buf.iter().filter(|&&p| p > 0).count() as u64
 }
 
 fn all_pids() -> Vec<libc::pid_t> {
@@ -456,11 +526,25 @@ pub fn launch(spec: &Spec, program: &str, args: &[String]) -> Result<i32, Error>
         }
     };
 
-    let child = sandbox_command(spec.level, &ro, &rw, &tag)
-        .arg("--")
-        .arg(program)
-        .args(args)
-        .spawn();
+    let mut cmd = sandbox_command(spec.level, &ro, &rw, &tag);
+    cmd.arg("--").arg(program).args(args);
+    if let Some(n) = spec.processes {
+        // A backstop the kernel enforces at once, before the watchdog's
+        // next look: macOS counts processes per user, so the limit is what
+        // the user runs now plus the program's share.
+        let cap = (user_processes() + n as u64 + 16) as libc::rlim_t;
+        unsafe {
+            cmd.pre_exec(move || {
+                let mut r: libc::rlimit = std::mem::zeroed();
+                if libc::getrlimit(libc::RLIMIT_NPROC, &mut r) == 0 && cap < r.rlim_cur {
+                    r.rlim_cur = cap;
+                    libc::setrlimit(libc::RLIMIT_NPROC, &r);
+                }
+                Ok(())
+            });
+        }
+    }
+    let child = cmd.spawn();
     let mut child = match child {
         Ok(c) => c,
         Err(e) => {
@@ -505,11 +589,14 @@ pub fn launch(spec: &Spec, program: &str, args: &[String]) -> Result<i32, Error>
     let status = child.wait();
     done.store(true, Ordering::SeqCst);
     // Whatever the program left behind in its sandbox ends with it.
-    tag.stop_all();
+    let empty = tag.stop_all();
     let _ = watch.join();
-    let _ = guard.kill();
-    let _ = guard.wait();
-    tag.remove();
+    if empty {
+        let _ = guard.kill();
+        let _ = guard.wait();
+        tag.remove();
+    }
+    // Otherwise the guard, which outlives this launcher, keeps at it.
     let status = status.map_err(|e| Error::Setup(format!("waiting for the program: {e}")))?;
     match over.load(Ordering::SeqCst) {
         1 => {
@@ -549,9 +636,14 @@ pub fn guard(args: &[String]) -> i32 {
     while unsafe { libc::getppid() } == launcher {
         std::thread::sleep(Duration::from_millis(200));
     }
-    tag.stop_all();
-    tag.remove();
-    0
+    // The tag goes only once nothing is left to find with it.
+    for _ in 0..30 {
+        if tag.stop_all() {
+            tag.remove();
+            return 0;
+        }
+    }
+    crate::EXIT_CONFINE_FAILED
 }
 
 #[cfg(test)]

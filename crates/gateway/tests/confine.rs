@@ -504,7 +504,8 @@ import ctypes, os
 _lib = ctypes.CDLL("/usr/lib/libSystem.B.dylib")
 _bp = ctypes.c_uint.in_dll(_lib, "bootstrap_port")
 for _n in ["com.apple.trustd", "com.apple.coreservices.launchservicesd", "com.apple.coreservices.appleevents",
-           "com.apple.pasteboard.1", "com.apple.SecurityServer"]:
+           "com.apple.pasteboard.1", "com.apple.SecurityServer", "com.apple.windowserver.active",
+           "com.apple.dock.server", "com.apple.backgroundtaskmanagement.agent", "com.apple.securityd"]:
     _port = ctypes.c_uint(0)
     _kr = _lib.bootstrap_look_up(_bp, _n.encode(), ctypes.byref(_port))
     print(f"svc {_n}:", "ok" if _kr == 0 else "refused")
@@ -652,8 +653,18 @@ fn on_macos_level_b_reaches_the_internet_side_only() {
     let d = dirs();
     let tcp = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = tcp.local_addr().unwrap().port();
+    let tcp6 = std::net::TcpListener::bind("[::1]:0").unwrap();
+    let port6 = tcp6.local_addr().unwrap().port();
     let s = [
         "import socket\n".to_string(),
+        attempt(
+            "loopback6",
+            &format!("socket.create_connection(('::1', {port6}), timeout=3)"),
+        ),
+        attempt(
+            "mapped",
+            &format!("socket.create_connection(('::ffff:127.0.0.1', {port}), timeout=3)"),
+        ),
         attempt(
             "loopback",
             &format!("socket.create_connection(('127.0.0.1', {port}), timeout=3)"),
@@ -669,7 +680,13 @@ fn on_macos_level_b_reaches_the_internet_side_only() {
     ]
     .concat();
     let out = run("B", &d.ws, &[], &py, &s);
-    for l in ["loopback: refused", "localhost: refused", "udp: refused"] {
+    for l in [
+        "loopback: refused",
+        "localhost: refused",
+        "loopback6: refused",
+        "mapped: refused",
+        "udp: refused",
+    ] {
         assert!(
             has(&out, l),
             "expected {l:?}:\n{}{}",
@@ -689,7 +706,7 @@ fn on_macos_level_c_cannot_act_through_other_programs() {
     let d = dirs();
     let marker = d.outside.join("launchd-wrote-this");
     let s = format!(
-        "{MAC_PROBES}\nimport subprocess, time\nr = subprocess.run(['/bin/launchctl', 'submit', '-l', 'io.columbus.test-escape', '--', '/usr/bin/touch', {m:?}], capture_output=True)\nprint('launchctl rc', r.returncode)\ntime.sleep(2)\nsubprocess.run(['/bin/launchctl', 'remove', 'io.columbus.test-escape'], capture_output=True)\n",
+        "{MAC_PROBES}\n{TAG_WRITE}\nimport subprocess, time\nr = subprocess.run(['/bin/launchctl', 'submit', '-l', 'io.columbus.test-escape', '--', '/usr/bin/touch', {m:?}], capture_output=True)\nprint('launchctl rc', r.returncode)\ntime.sleep(2)\nsubprocess.run(['/bin/launchctl', 'remove', 'io.columbus.test-escape'], capture_output=True)\n",
         m = marker.display().to_string()
     );
     let out = run("C", &d.ws, &[], &py, &s);
@@ -698,6 +715,13 @@ fn on_macos_level_c_cannot_act_through_other_programs() {
         "svc com.apple.coreservices.appleevents: refused",
         "svc com.apple.pasteboard.1: refused",
         "svc com.apple.SecurityServer: refused",
+        "svc com.apple.windowserver.active: refused",
+        "svc com.apple.dock.server: refused",
+        "svc com.apple.backgroundtaskmanagement.agent: refused",
+        "svc com.apple.securityd: refused",
+        // Level C reads everything, so it can find its own tag; it still
+        // cannot write into it.
+        "tag write: refused",
     ] {
         assert!(
             has(&out, l),
@@ -714,5 +738,51 @@ fn on_macos_level_c_cannot_act_through_other_programs() {
         "launchd ran a job for the confined program outside its sandbox:\n{}{}",
         out.stdout,
         out.stderr
+    );
+}
+
+/// Level C finds the launch's tag files and tries to write into one.
+#[cfg(target_os = "macos")]
+const TAG_WRITE: &str = r#"
+import ctypes, glob, os
+_buf = ctypes.create_string_buffer(1024)
+_lib.confstr(65537, _buf, 1024)
+_tags = glob.glob(os.path.join(os.path.realpath(_buf.value.decode()), "columbus-confine", "*.tag"))
+try:
+    with open(_tags[0], "a") as _f:
+        _f.write("x")
+    print("tag write: ok")
+except Exception as e:
+    print("tag write: refused", type(e).__name__, len(_tags))
+"#;
+
+#[cfg(target_os = "macos")]
+#[test]
+fn on_macos_a_fork_bomb_leaves_nothing_behind() {
+    let Some(py) = python() else { return };
+    if !can_confine() {
+        return;
+    }
+    let d = dirs();
+    let marker = format!("columbus-fork-bomb-{}", std::process::id());
+    let s = format!(
+        "# {marker}\nimport os\nfor _ in range(400):\n    try:\n        os.fork()\n    except OSError:\n        pass\nimport time\ntime.sleep(30)\n"
+    );
+    let start = std::time::Instant::now();
+    let out = run("A", &d.ws, &["--processes", "20"], &py, &s);
+    assert_eq!(out.code, 137, "{}{}", out.stdout, out.stderr);
+    assert!(
+        start.elapsed().as_secs() < 25,
+        "stopped well before its sleep ended"
+    );
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let left = Command::new("/usr/bin/pgrep")
+        .args(["-f", &marker])
+        .output()
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&left.stdout).trim().is_empty(),
+        "processes left: {}",
+        String::from_utf8_lossy(&left.stdout)
     );
 }
