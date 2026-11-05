@@ -53,6 +53,7 @@ every check id is in [references/check-ids.md](references/check-ids.md).
 Call `whoami` once, first, with no arguments. Read and keep:
 
 - `policy.edits_allowed`, `policy.scripts_allowed`: phase 1 is read-only by default.
+  `policy.personal_tools_allowed`: whether the person's own tools (section 12) are on.
 - `policy.rows_returned_per_call` (at most 500), `policy.rows_read_per_query` (default
   200,000), `policy.query_seconds`.
 - `connections[]`: each `id`, `type`, `mode` (`read` or `read-write`), `status` (`ok` or why
@@ -303,6 +304,24 @@ Columbus edits in two steps, and only GeoPackage and PostGIS datasets so far.
 
 Never describe edits as made until `apply_edits` returns `"status": "written"` (source) or
 `"applied_to_copy"` (copy), and say which.
+
+### 12. Personal tools
+
+The person can keep scripts as their own tools. `search_tools` lists installed ones as
+`personal.<name>.run` (provider kind `personal` in `list_providers`); call them with
+`run_tool` like any plugin tool. They need no approval per run, run confined like scripts,
+and their outputs carry the inputs' labels and checks. Prefer an installed tool that fits
+over writing a new script, and read its `describe_tool` (inputs' geometry, CRS and fields,
+units, `not_for`) before calling it.
+
+When the person asks to save a script as a tool ("add the script we just made as a tool"),
+or the same script keeps being written, use `propose_tool`. Read
+[references/designing-tools.md](references/designing-tools.md) first: the code is a
+`run(ctx)` function, the manifest is written for other assistants, and Columbus refuses
+network use, credentials, environment variables, absolute paths and undeclared names. The
+person approves a test run, then installs the tool in the Columbus app (Settings, Tools);
+you cannot install it, and it is usable from the next call after they do. A changed tool is
+a new proposal and a new install.
 
 ### Worked session (illustrative values)
 

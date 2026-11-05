@@ -15,6 +15,11 @@
 //! columbus-mcp pack lint [DIR]      check a context pack
 //! columbus-mcp plugins list         engine plugins, their versions, hashes and state
 //! columbus-mcp plugins approve ID   approve a plugin's exact contents
+//! columbus-mcp tools list           the person's own tools, installed and waiting
+//! columbus-mcp tools show ID        a waiting tool's manifest and code
+//! columbus-mcp tools install ID     install a waiting tool (confirmed on the terminal)
+//! columbus-mcp tools decline ID     delete a waiting tool
+//! columbus-mcp tools remove ID      remove an installed tool
 //! columbus-mcp --version
 //! ```
 
@@ -77,6 +82,11 @@ async fn main() -> Result<()> {
         ["secret", "set", id] => secret_set(id),
         ["plugins", "list"] => review_cli::plugins_list().await,
         ["plugins", "approve", id] => review_cli::plugins_approve(id).await,
+        ["tools", "list"] => review_cli::tools_list(),
+        ["tools", "show", id] => review_cli::tools_show(id),
+        ["tools", "install", id] => review_cli::tools_install(id),
+        ["tools", "decline", id] => review_cli::tools_decline(id),
+        ["tools", "remove", id] => review_cli::tools_remove(id),
         ["servers", "list"] => review_cli::list().await,
         ["servers", "review", id] => review_cli::review(id).await.map(|_| ()),
         ["servers", "approve", id] => review_cli::approve(id, false).await,
@@ -101,7 +111,7 @@ async fn main() -> Result<()> {
             Ok(())
         }
         _ => bail!(
-            "usage: columbus-mcp [serve] | audit verify FILE | secret set|delete ID | servers list|review|approve|signin|signout ID | registry update [--from DIR|URL] | plugins list|approve ID | --version"
+            "usage: columbus-mcp [serve] | audit verify FILE | secret set|delete ID | servers list|review|approve|signin|signout ID | registry update [--from DIR|URL] | plugins list|approve ID | tools list|show|install|decline|remove ID | --version"
         ),
     }
 }

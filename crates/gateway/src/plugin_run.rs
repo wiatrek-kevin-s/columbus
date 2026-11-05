@@ -665,7 +665,7 @@ impl Gateway {
                 .filter(|(_, _, path)| path.exists())
                 .map(|(n, _, _)| n.as_str())
                 .collect();
-            for (name, _) in &spec.outputs {
+            for name in spec.outputs.keys() {
                 if !written.contains(name.as_str()) {
                     checks.push(Check {
                         id: "plugin.output_missing".into(),
