@@ -257,7 +257,7 @@ dependencies = [
 
 [[package]]
 name = "columbus-broker"
-version = "0.1.6"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "columbus-confine",
@@ -278,7 +278,7 @@ dependencies = [
 
 [[package]]
 name = "columbus-confine"
-version = "0.1.6"
+version = "0.2.0"
 dependencies = [
  "landlock",
  "libc",
@@ -290,7 +290,7 @@ dependencies = [
 
 [[package]]
 name = "columbus-flow"
-version = "0.1.6"
+version = "0.2.0"
 dependencies = [
  "columbus-shared",
  "serde",
@@ -299,7 +299,7 @@ dependencies = [
 
 [[package]]
 name = "columbus-mcp"
-version = "0.1.6"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "apple-native-keyring-store",
@@ -330,7 +330,7 @@ dependencies = [
 
 [[package]]
 name = "columbus-plugin"
-version = "0.1.6"
+version = "0.2.0"
 dependencies = [
  "rusqlite",
  "serde",
@@ -342,7 +342,7 @@ dependencies = [
 
 [[package]]
 name = "columbus-shared"
-version = "0.1.6"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "globset",

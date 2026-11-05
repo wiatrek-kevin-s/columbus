@@ -151,6 +151,24 @@ pub struct OrgPolicy {
     /// (`*.arcgis.com`, `hazards.fema.gov`). Any other host needs approval.
     #[serde(default)]
     pub fetch_hosts: Vec<String>,
+    /// The companion window (the Columbus app and the local page).
+    #[serde(default)]
+    pub companion: CompanionPolicy,
+}
+
+/// What the companion window may do.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompanionPolicy {
+    /// Whether the person may turn on a basemap from OpenFreeMap. It is off
+    /// until they do: tile requests tell that host which area is in view.
+    #[serde(default = "yes")]
+    pub basemap: bool,
+}
+
+impl Default for CompanionPolicy {
+    fn default() -> Self {
+        CompanionPolicy { basemap: true }
+    }
 }
 
 /// A folder `export_output` may write to, named by `id`.
@@ -312,6 +330,7 @@ impl Default for OrgPolicy {
             approvals: ApprovalPolicy::default(),
             exports: vec![],
             fetch_hosts: vec![],
+            companion: CompanionPolicy::default(),
         }
     }
 }

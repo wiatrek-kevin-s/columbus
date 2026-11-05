@@ -49,7 +49,13 @@ Columbus reads the organization's settings from `%ProgramData%\Columbus` and you
 
 Then ask the agent to call `whoami`. It shows what Columbus allows in this session, where approvals will appear, and the organization's always-on rules.
 
-## 5. Skills
+## 5. The Columbus app (optional)
+
+The app shows each Columbus session running on your computer: its layers on a map, its tables, the checks and where each result came from, and requests waiting for your decision. Install `columbus-app-<version>-windows-x64-setup.exe` (per user, no administrator rights) or the `.msi` from the release. It is not code-signed yet, so Windows SmartScreen asks first: **More info**, then **Run anyway**.
+
+Open Columbus while your assistant is working and press **Open** beside the session. Requests that need your decision show in the window, with **Review in your browser**: you decide them on the page Columbus opens in your browser, never in the app. The basemap is off until you turn it on (map tiles come from OpenFreeMap, which then sees the area in view).
+
+## 6. Skills
 
 The `skills` folder holds GIS skills: CRS choice, joins, QA, spatial SQL, rasters, lidar, imagery, deliverables, SOP conversion and more. Copy them where your agent loads skills, for example `%USERPROFILE%\.claude\skills` for Claude Code.
 

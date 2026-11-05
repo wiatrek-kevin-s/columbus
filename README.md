@@ -144,6 +144,12 @@ An organization describes its GIS world in a **context pack**: a folder of Markd
 
 [`skills/`](skills) holds the GIS skills library (design section 7): fifteen Agent Skills, from `working-with-columbus` and `crs-and-datums` to `lidar-with-pdal` and `sop-conversion`, each giving general practice first and then the exact Columbus tools and checks to use. They work in any agent that reads the open Agent Skills format. `python skills/check_skills.py`, run in CI, keeps every tool name they mention in step with the server.
 
+## Companion window and desktop app
+
+While any AI client works with Columbus, the person can watch the session in the companion window (design section 8): every layer and table it makes, with check results and provenance, on a MapLibre map and in an attribute table linked to the map, and the requests waiting for a decision. The window is the local Columbus page (127.0.0.1, the same server and protections as the approvals page) with its built UI installed beside the program in `ui/` ([app/ui](app/ui)). Its data calls are read-only, behind the page's session token, and audited; it opens only files Columbus's own tools wrote, unchanged since.
+
+The Columbus desktop app ([app/desktop](app/desktop), Tauri) lists the sessions running on the computer (each server announces its port in `live/<session>.json`) and opens each one's window. Links handed to an app through a custom URL scheme can be intercepted by any program the person runs, so windows opened for the app are view-only: their approval cards have the server open the browser page that can decide. Approvals are decided only in that browser page or in the AI client's own prompt. A basemap (OpenFreeMap) is off until the person turns it on, since tile requests reveal the area in view; policy `companion: { basemap: false }` removes the choice.
+
 ## Connections and secrets
 
 Each connection is one YAML file the person adds (see [`examples/connections`](examples/connections)); the agent has no tool to add or change one. Database passwords are never in those files: store them once in Windows Credential Manager with
@@ -174,6 +180,8 @@ crates/broker     connected MCP servers: manifests, client sessions, tool pinnin
 crates/flow       data labels and organization flow rules
 crates/confine    confinement levels A-C (AppContainer, restricted token, job objects; Landlock on Linux)
 crates/gateway    columbus-mcp: MCP server (rmcp), tools, worker supervision, plugins, run_tool
+app/ui            the companion window (React, MapLibre), served by columbus-mcp
+app/desktop       the Columbus desktop app (Tauri)
 workers/python    the core engine and the Python plugin SDK (columbus_plugin)
 workers/sdk-rust  the Rust plugin SDK (columbus-plugin)
 docs              worker protocol v2 and plugin.yaml
@@ -279,7 +287,8 @@ Phase 1 (this repository, in progress):
 - [x] `run_python`: confined at level A, full code shown and approved every run, outputs labelled and checked
 - [ ] `propose_edits`/`apply_edits`; STAC and EPT fetching; domains enforced in verification; export as a runnable script
 - [ ] Bounding boxes pushed into the database's spatial index in `query_features`
-- [ ] Desktop app (Tauri)
+- [x] Desktop app, first part: companion window (map, table, checks, provenance, waiting requests) and a Tauri app that opens it for each running session
+- [ ] Desktop app: in-app chat (API key, then work accounts), documents and context pack editing, connections page
 - [ ] ArcPy worker for enterprise geodatabases; signed `.mcpb` bundle and MSI
 
 Companion repository: [`geo-registry`](https://github.com/wiatrek-kevin-s/geo-registry) (open catalogue of GIS tools and data sources). The context pack format ([docs/context-pack.md](docs/context-pack.md)) and the [skills library](skills) live in this repository.

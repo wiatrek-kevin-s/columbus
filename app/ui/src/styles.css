@@ -96,7 +96,15 @@ button.link { border: 0; background: none; padding: 2px 0; color: var(--hydro); 
 .table { border-top: 1px solid var(--rule); background: var(--panel); min-height: 0; }
 
 /* Approvals: the one loud thing on the screen. */
-.approvals { display: grid; gap: 10px; padding: 12px 16px; background: var(--warn-bg); border-bottom: 1px solid var(--rule); max-height: 60vh; overflow: auto; flex: none; }
+/* Over the map, so nothing the person was about to click moves. */
+.work { position: relative; }
+.approvals {
+  position: absolute; top: 0; left: 0; right: 0; z-index: 5;
+  display: grid; gap: 10px; padding: 12px 16px; max-height: 70%; overflow: auto;
+  background: color-mix(in srgb, var(--warn-bg) 94%, transparent); border-bottom: 1px solid var(--rule);
+}
+.review { display: flex; align-items: center; gap: 14px; max-width: 980px; }
+.review p { margin: 0; font-weight: 600; max-width: 70ch; }
 .approval {
   display: grid; grid-template-columns: 92px 1fr;
   background: var(--panel); border: 1px solid var(--rule); border-radius: 8px; overflow: hidden;

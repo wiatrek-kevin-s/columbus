@@ -1,0 +1,13 @@
+{
+  "name": "columbus-desktop",
+  "private": true,
+  "version": "0.0.0",
+  "description": "The Columbus desktop app: finds the Columbus sessions running on this computer and shows each one's companion window.",
+  "license": "Apache-2.0",
+  "scripts": {
+    "tauri": "tauri"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.12.4"
+  }
+}

@@ -29,13 +29,23 @@
 //! files installed beside the program (`ui/`), `/` serves the window that
 //! shows the session's outputs on a map and in a table, and the approvals.
 //! Its data calls (`/api/overview`, `/api/outputs`, `/api/layer`,
-//! `/api/rows`, `/api/provenance/<id>`, `/api/state`) need the same session
-//! token and are read-only. So that the person's Columbus app can find the
-//! session, the server writes `live/<session>.json` (the port only, no
-//! secret) under the person's Columbus folder, and `POST /api/open`, which
-//! needs a custom header no other website can send, opens a fresh window
-//! with a new launch token: in the Columbus app when it is running
-//! (`live/app.json` has a recent heartbeat), else in the browser.
+//! `/api/rows`, `/api/provenance/<id>`, `/api/state`) need a session token,
+//! are read-only, and are written to the audit log.
+//!
+//! Two kinds of launch token, and of the session each becomes:
+//! * **Approve:** only ever in an `http://127.0.0.1` link opened in the
+//!   default browser, for a request waiting for the person (or when the
+//!   person asks to review one). Only these sessions can decide.
+//! * **View:** for the Columbus app. So that the app can find the session,
+//!   the server writes `live/<session>.json` (the port only, no secret)
+//!   under the person's Columbus folder; `POST /api/open`, which needs a
+//!   custom header no website can send, opens a window on a view token, in
+//!   the app through a `columbus://` link when the app is running
+//!   (`live/app.json` has a recent heartbeat), else in the browser. Any
+//!   program the person runs can register a handler for a custom URL
+//!   scheme and so receive that link, so a view session can see what the
+//!   session made but never approve anything: its approval cards ask the
+//!   server to open the browser page instead (`POST /api/review`).
 //!
 //! Honest limits, documented for IT: an agent that can run programs as the
 //! person could read the browser's command line in the moment it starts
@@ -69,10 +79,10 @@ const SEEN_WINDOW: Duration = Duration::from_secs(6);
 const RELAUNCH_GAP: Duration = Duration::from_secs(30);
 /// Most tabs Columbus opens in one session for approvals.
 const MAX_LAUNCHES: u32 = 10;
-/// The person asked for the window (from the Columbus app): a short gap
-/// against double clicks, and a cap of its own.
+/// A window asked for (from the Columbus app, or "review in the browser"):
+/// a short gap against double clicks, and a cap.
 const ASKED_GAP: Duration = Duration::from_secs(3);
-const MAX_ASKED: u32 = 50;
+const MAX_ASKED: u32 = 20;
 /// The Columbus app counts as running while its heartbeat is this fresh.
 const APP_HEARTBEAT: Duration = Duration::from_secs(20);
 
@@ -112,6 +122,35 @@ impl Opener {
     }
 }
 
+/// What a launch token, and the session it becomes, may do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scope {
+    /// See the session and decide approvals: browser `http` links only.
+    Approve,
+    /// See the session only.
+    View,
+}
+
+impl Scope {
+    fn as_str(self) -> &'static str {
+        match self {
+            Scope::Approve => "approve",
+            Scope::View => "view",
+        }
+    }
+}
+
+/// Why a window is being opened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Launch {
+    /// A request is waiting and no approvals page is open.
+    Approval,
+    /// The person asked to review waiting requests in the browser.
+    Review,
+    /// The person asked the Columbus app for the session's window.
+    View,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Shown {
     /// A new tab was opened (or the link handed off).
@@ -134,9 +173,9 @@ struct Shared {
     audit: Arc<AuditLog>,
     user: String,
     session: String,
-    launch: Mutex<HashMap<String, Instant>>,
-    /// Session token → when that tab last used it.
-    sessions: Mutex<HashMap<String, Instant>>,
+    launch: Mutex<HashMap<String, (Instant, Scope)>>,
+    /// Session token → when that tab last used it, and what it may do.
+    sessions: Mutex<HashMap<String, (Instant, Scope)>>,
     /// When a tab was last opened, and how many since the person last decided.
     launches: Mutex<(Option<Instant>, u32)>,
 }
@@ -146,59 +185,70 @@ impl Shared {
         format!("http://127.0.0.1:{}", self.port)
     }
 
+    /// A page that can decide approvals asked for updates this recently.
     fn seen_within(&self, d: Duration) -> bool {
         self.sessions
             .lock()
             .expect("sessions")
             .values()
-            .any(|t| t.elapsed() < d)
+            .any(|(t, scope)| *scope == Scope::Approve && t.elapsed() < d)
     }
 
     /// The session behind a bearer token, refreshed on use. Expired
     /// sessions are dropped.
-    fn session_for(&self, token: &str, now: Instant) -> Option<String> {
+    fn session_for(&self, token: &str, now: Instant) -> Option<Scope> {
         let mut sessions = self.sessions.lock().expect("sessions");
-        sessions.retain(|_, last| now.saturating_duration_since(*last) < SESSION_IDLE);
+        sessions.retain(|_, (last, _)| now.saturating_duration_since(*last) < SESSION_IDLE);
         let key = sessions.keys().find(|k| same(k, token)).cloned()?;
-        sessions.insert(key.clone(), now);
-        Some(key)
+        let scope = sessions.get(&key).map(|(_, s)| *s)?;
+        sessions.insert(key, (now, scope));
+        Some(scope)
     }
 
-    /// Open a window on a fresh launch token. `asked`: the person asked
-    /// for it (from the app), rather than an approval waiting.
-    fn launch(&self, asked: bool) -> Result<Shown, String> {
-        if asked {
-            let mut a = self.asked.lock().expect("asked");
-            if a.0.is_some_and(|t| t.elapsed() < ASKED_GAP) {
-                return Ok(Shown::Opened);
+    /// Open a window on a fresh launch token. Approval and review windows
+    /// always open in the browser on an `http` link, with an approve token;
+    /// the app's windows get a view token.
+    fn launch(&self, why: Launch) -> Result<Shown, String> {
+        match why {
+            Launch::Approval => {
+                if self.seen_within(SEEN_WINDOW) {
+                    return Ok(Shown::AlreadyOpen);
+                }
+                let mut l = self.launches.lock().expect("launches");
+                if l.0.is_some_and(|t| t.elapsed() < RELAUNCH_GAP) {
+                    return Ok(Shown::Opened);
+                }
+                if l.1 >= MAX_LAUNCHES {
+                    return Err(format!(
+                        "Columbus has opened its approvals page {MAX_LAUNCHES} times without a decision and will not open more tabs"
+                    ));
+                }
+                *l = (Some(Instant::now()), l.1 + 1);
             }
-            if a.1 >= MAX_ASKED {
-                return Err("Columbus will not open more windows for this session".into());
+            Launch::Review | Launch::View => {
+                let mut a = self.asked.lock().expect("asked");
+                if a.0.is_some_and(|t| t.elapsed() < ASKED_GAP) {
+                    return Ok(Shown::Opened);
+                }
+                if a.1 >= MAX_ASKED {
+                    return Err("Columbus will not open more windows for this session".into());
+                }
+                *a = (Some(Instant::now()), a.1 + 1);
             }
-            *a = (Some(Instant::now()), a.1 + 1);
-        } else {
-            if self.seen_within(SEEN_WINDOW) {
-                return Ok(Shown::AlreadyOpen);
-            }
-            let mut l = self.launches.lock().expect("launches");
-            if l.0.is_some_and(|t| t.elapsed() < RELAUNCH_GAP) {
-                return Ok(Shown::Opened);
-            }
-            if l.1 >= MAX_LAUNCHES {
-                return Err(format!(
-                    "Columbus has opened its approvals page {MAX_LAUNCHES} times without a decision and will not open more tabs"
-                ));
-            }
-            *l = (Some(Instant::now()), l.1 + 1);
         }
+        let scope = if why == Launch::View {
+            Scope::View
+        } else {
+            Scope::Approve
+        };
         let t = token();
         {
             let mut launch = self.launch.lock().expect("launch");
-            launch.retain(|_, at| at.elapsed() < LAUNCH_TTL);
-            launch.insert(t.clone(), Instant::now());
+            launch.retain(|_, (at, _)| at.elapsed() < LAUNCH_TTL);
+            launch.insert(t.clone(), (Instant::now(), scope));
         }
         let page = format!("http://127.0.0.1:{}/#t={t}", self.port);
-        let url = if self.app_running() {
+        let url = if scope == Scope::View && self.app_running() {
             format!("columbus://open?port={}#t={t}", self.port)
         } else {
             page.clone()
@@ -214,7 +264,7 @@ impl Shared {
                 )
             }
             #[cfg(debug_assertions)]
-            Opener::File(p) => std::fs::write(p, &page)
+            Opener::File(p) => std::fs::write(p, &url)
                 .map_err(|e| format!("could not hand off the approvals page ({e})"))?,
         }
         Ok(Shown::Opened)
@@ -232,16 +282,14 @@ impl Shared {
         })
     }
 
-    /// Spend a launch token; true if it was valid.
-    fn spend_launch(&self, t: &str, now: Instant) -> bool {
+    /// Spend a launch token: what its session may do, if it was valid.
+    fn spend_launch(&self, t: &str, now: Instant) -> Option<Scope> {
         let mut launch = self.launch.lock().expect("launch");
-        let found = launch.keys().find(|k| same(k, t)).cloned();
-        match found {
-            Some(k) => launch
-                .remove(&k)
-                .is_some_and(|at| now.saturating_duration_since(at) < LAUNCH_TTL),
-            None => false,
-        }
+        let found = launch.keys().find(|k| same(k, t)).cloned()?;
+        launch
+            .remove(&found)
+            .filter(|(at, _)| now.saturating_duration_since(*at) < LAUNCH_TTL)
+            .map(|(_, scope)| scope)
     }
 }
 
@@ -365,6 +413,7 @@ impl ApprovalsPage {
                     .route("/api/approvals", get(list))
                     .route("/api/approvals/{id}", post(decide))
                     .route("/api/open", post(open_window))
+                    .route("/api/review", post(review))
                     .route("/api/state", get(state))
                     .route("/api/overview", get(overview))
                     .route("/api/outputs", get(outputs))
@@ -389,7 +438,7 @@ impl ApprovalsPage {
     /// Put the approvals page in front of the person. Never returns or
     /// logs the launch link.
     pub async fn show(&self) -> Result<Shown, String> {
-        self.start().await?.launch(false)
+        self.start().await?.launch(Launch::Approval)
     }
 
     /// Whether a page tab is open right now.
@@ -504,7 +553,7 @@ fn bearer(h: &HeaderMap) -> Option<&str> {
 }
 
 /// Host and session checks for API requests.
-fn guard(h: &HeaderMap, s: &Shared) -> Result<String, Box<Response<Body>>> {
+fn guard(h: &HeaderMap, s: &Shared) -> Result<Scope, Box<Response<Body>>> {
     if !host_ok(h, s) {
         return Err(Box::new(status(StatusCode::FORBIDDEN, "wrong host")));
     }
@@ -534,7 +583,8 @@ async fn page(State(s): State<Arc<Shared>>, h: HeaderMap) -> Response<Body> {
             header::CONTENT_TYPE,
             HeaderValue::from_static("text/html; charset=utf-8"),
         );
-        return harden(r, Some(UI_CSP.into()));
+        let basemap = s.companion.as_ref().is_some_and(|c| c.basemap_allowed());
+        return harden(r, Some(ui_csp(basemap)));
     }
     let nonce = uuid::Uuid::new_v4().simple().to_string();
     let html = PAGE.replace("{{NONCE}}", &nonce);
@@ -570,20 +620,20 @@ async fn exchange(
         return status(StatusCode::BAD_REQUEST, "expected {\"launch\": \"…\"}");
     };
     let now = Instant::now();
-    if !s.spend_launch(&body.launch, now) {
+    let Some(scope) = s.spend_launch(&body.launch, now) else {
         return status(
             StatusCode::FORBIDDEN,
             "this link has already been used or has expired",
         );
-    }
+    };
     let sid = token();
     s.sessions
         .lock()
         .expect("sessions")
-        .insert(sid.clone(), now);
+        .insert(sid.clone(), (now, scope));
     json_response(
         StatusCode::OK,
-        json!({"token": sid, "idle_minutes": SESSION_IDLE.as_secs() / 60}),
+        json!({"token": sid, "idle_minutes": SESSION_IDLE.as_secs() / 60, "scope": scope.as_str()}),
     )
 }
 
@@ -613,8 +663,15 @@ async fn decide(
     h: HeaderMap,
     body: Result<Json<DecideBody>, axum::extract::rejection::JsonRejection>,
 ) -> Response<Body> {
-    if let Err(r) = guard(&h, &s) {
-        return *r;
+    match guard(&h, &s) {
+        Err(r) => return *r,
+        Ok(Scope::View) => {
+            return status(
+                StatusCode::FORBIDDEN,
+                "this window can show requests but not decide them; decide in the browser page Columbus opens",
+            )
+        }
+        Ok(Scope::Approve) => {}
     }
     if !same_origin(&h, &s) {
         return status(StatusCode::FORBIDDEN, "cross-origin request refused");
@@ -671,12 +728,21 @@ fn shared_reset_launches(s: &Shared) {
 const PAGE: &str = include_str!("approvals_page.html");
 
 /// The companion window's policy: its own scripts and styles only, data
-/// from this server, and basemap tiles, glyphs and sprites from one public
-/// host (OpenFreeMap; the window works without them). MapLibre runs its
-/// worker from a blob.
-pub(crate) const UI_CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; \
-     connect-src 'self' https://tiles.openfreemap.org; img-src 'self' data: blob: https://tiles.openfreemap.org; \
-     font-src 'self'; worker-src 'self' blob:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+/// from this server, and, when organization policy allows the basemap,
+/// tiles, glyphs and sprites from one public host (OpenFreeMap; the window
+/// works without them). MapLibre's worker is its own file or a blob.
+pub(crate) fn ui_csp(basemap: bool) -> String {
+    let tiles = if basemap {
+        " https://tiles.openfreemap.org"
+    } else {
+        ""
+    };
+    format!(
+        "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'{tiles}; \
+         img-src 'self' data: blob:{tiles}; font-src 'self'; worker-src 'self' blob:; \
+         base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+    )
+}
 
 /// `POST /api/open`: a new window on a fresh launch token, for the
 /// person's Columbus app. Needs `X-Columbus-Open: 1`, which a website
@@ -691,10 +757,40 @@ async fn open_window(State(s): State<Arc<Shared>>, h: HeaderMap) -> Response<Bod
     {
         return status(StatusCode::FORBIDDEN, "refused");
     }
-    match s.launch(true) {
+    match s.launch(Launch::View) {
         Ok(_) => json_response(StatusCode::OK, json!({"opened": true})),
         Err(e) => status(StatusCode::TOO_MANY_REQUESTS, &e),
     }
+}
+
+/// `POST /api/review`: from a window that may not decide, open the
+/// browser page that can, for requests waiting now.
+async fn review(State(s): State<Arc<Shared>>, h: HeaderMap) -> Response<Body> {
+    if let Err(r) = guard(&h, &s) {
+        return *r;
+    }
+    if !same_origin(&h, &s) {
+        return status(StatusCode::FORBIDDEN, "cross-origin request refused");
+    }
+    if s.store.pending(Utc::now()).is_empty() {
+        return status(StatusCode::CONFLICT, "nothing is waiting for a decision");
+    }
+    match s.launch(Launch::Review) {
+        Ok(_) => json_response(StatusCode::OK, json!({"opened": true})),
+        Err(e) => status(StatusCode::TOO_MANY_REQUESTS, &e),
+    }
+}
+
+/// A window read, in the audit log beside the agent's own calls.
+fn audit_view(s: &Shared, scope: Scope, tool: &str, handle: &str) {
+    let _ = s.audit.append(&AuditRecord {
+        user: s.user.clone(),
+        client: format!("companion-window ({})", scope.as_str()),
+        tool: tool.into(),
+        decision: "allowed".into(),
+        reason: Some(handle.to_string()),
+        ..Default::default()
+    });
 }
 
 fn companion(s: &Shared) -> Result<&crate::companion::Companion, Box<Response<Body>>> {
@@ -712,9 +808,10 @@ fn answer(r: Result<serde_json::Value, String>) -> Response<Body> {
 
 /// `GET /api/state`: what changed, for the window's polling.
 async fn state(State(s): State<Arc<Shared>>, h: HeaderMap) -> Response<Body> {
-    if let Err(r) = guard(&h, &s) {
-        return *r;
-    }
+    let scope = match guard(&h, &s) {
+        Ok(scope) => scope,
+        Err(r) => return *r,
+    };
     let now = Utc::now();
     json_response(
         StatusCode::OK,
@@ -722,6 +819,7 @@ async fn state(State(s): State<Arc<Shared>>, h: HeaderMap) -> Response<Body> {
             "session": s.session,
             "version": s.companion.as_ref().map(|c| c.version()).unwrap_or(0),
             "pending": s.store.pending(now).len(),
+            "scope": scope.as_str(),
         }),
     )
 }
@@ -760,12 +858,14 @@ async fn layer(
     h: HeaderMap,
     q: Result<Query<LayerQuery>, axum::extract::rejection::QueryRejection>,
 ) -> Response<Body> {
-    if let Err(r) = guard(&h, &s) {
-        return *r;
-    }
+    let scope = match guard(&h, &s) {
+        Ok(scope) => scope,
+        Err(r) => return *r,
+    };
     let Ok(Query(q)) = q else {
         return status(StatusCode::BAD_REQUEST, "expected ?handle=ws://…");
     };
+    audit_view(&s, scope, "window_layer", &q.handle);
     match companion(&s) {
         Ok(c) => answer(c.layer(&q.handle).await),
         Err(r) => *r,
@@ -777,15 +877,17 @@ async fn rows(
     h: HeaderMap,
     q: Result<Query<LayerQuery>, axum::extract::rejection::QueryRejection>,
 ) -> Response<Body> {
-    if let Err(r) = guard(&h, &s) {
-        return *r;
-    }
+    let scope = match guard(&h, &s) {
+        Ok(scope) => scope,
+        Err(r) => return *r,
+    };
     let Ok(Query(q)) = q else {
         return status(
             StatusCode::BAD_REQUEST,
             "expected ?handle=ws://…&offset=0&limit=100",
         );
     };
+    audit_view(&s, scope, "window_rows", &q.handle);
     match companion(&s) {
         Ok(c) => answer(
             c.rows(&q.handle, q.offset.unwrap_or(0), q.limit.unwrap_or(100))
@@ -890,11 +992,17 @@ mod tests {
     fn sessions_expire_when_idle() {
         let (_d, s) = shared();
         let now = Instant::now();
-        s.sessions.lock().unwrap().insert("fresh".into(), now);
+        s.sessions
+            .lock()
+            .unwrap()
+            .insert("fresh".into(), (now, Scope::Approve));
         let old = now
             .checked_sub(SESSION_IDLE + Duration::from_secs(1))
             .unwrap_or(now);
-        s.sessions.lock().unwrap().insert("stale".into(), old);
+        s.sessions
+            .lock()
+            .unwrap()
+            .insert("stale".into(), (old, Scope::Approve));
         assert!(s.session_for("fresh", now).is_some());
         if old < now {
             assert!(s.session_for("stale", now).is_none());
@@ -910,12 +1018,22 @@ mod tests {
     fn launch_tokens_are_single_use_and_expire() {
         let (_d, s) = shared();
         let now = Instant::now();
-        s.launch.lock().unwrap().insert("a".into(), now);
-        assert!(s.spend_launch("a", now));
-        assert!(!s.spend_launch("a", now), "single use");
+        s.launch
+            .lock()
+            .unwrap()
+            .insert("a".into(), (now, Scope::View));
+        assert_eq!(
+            s.spend_launch("a", now),
+            Some(Scope::View),
+            "the scope comes back"
+        );
+        assert_eq!(s.spend_launch("a", now), None, "single use");
         if let Some(old) = now.checked_sub(LAUNCH_TTL + Duration::from_secs(1)) {
-            s.launch.lock().unwrap().insert("b".into(), old);
-            assert!(!s.spend_launch("b", now), "expired");
+            s.launch
+                .lock()
+                .unwrap()
+                .insert("b".into(), (old, Scope::Approve));
+            assert_eq!(s.spend_launch("b", now), None, "expired");
         }
     }
 

@@ -77,7 +77,17 @@ SQL Server connections also need unixODBC and Microsoft ODBC Driver 18 (`brew in
 
 Restart Claude desktop, then ask it to call `whoami`. It shows what Columbus allows in this session, where approvals will appear, and that the engines are ready.
 
-## 5. Skills
+## 5. The Columbus app (optional)
+
+The app shows each Columbus session running on your Mac: its layers on a map, its tables, the checks and where each result came from, and requests waiting for your decision. Download `columbus-app-<version>-macos-arm64.dmg` from the release, open it and drag Columbus to Applications. It is not signed with an Apple Developer ID yet, so clear the download mark once before opening it:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/Columbus.app
+```
+
+Open Columbus while your assistant is working (ask it to call `whoami` if no session is listed), and press **Open** beside the session. Requests that need your decision show in the window, with **Review in your browser**: you decide them on the page Columbus opens in your browser, never in the app, so no other program can approve them for you. The basemap is off until you turn it on (map tiles come from OpenFreeMap, which then sees the area in view).
+
+## 6. Skills
 
 The `skills` folder holds GIS skills. Copy them where your agent loads skills, for example `~/.claude/skills` for Claude Code.
 

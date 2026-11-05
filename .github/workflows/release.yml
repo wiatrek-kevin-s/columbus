@@ -120,8 +120,50 @@ jobs:
             dist/*.zip
             dist/*.mcpb
 
+  app:
+    # The Columbus desktop app (app/desktop): a .dmg for Apple Silicon and
+    # an installer for Windows. Not code-signed yet.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            name: macos-arm64
+          - os: windows-latest
+            name: windows-x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build
+        working-directory: app/desktop
+        run: |
+          npm ci
+          npx tauri build
+      - name: Collect
+        shell: bash
+        run: |
+          set -eu
+          version=$(python3 -c 'import json; print(json.load(open("app/desktop/src-tauri/tauri.conf.json"))["version"])')
+          mkdir -p dist
+          b=app/desktop/src-tauri/target/release/bundle
+          if [ "${{ matrix.name }}" = macos-arm64 ]; then
+            cp "$b"/dmg/*.dmg "dist/columbus-app-$version-macos-arm64.dmg"
+          else
+            cp "$b"/msi/*.msi "dist/columbus-app-$version-windows-x64.msi"
+            cp "$b"/nsis/*-setup.exe "dist/columbus-app-$version-windows-x64-setup.exe"
+          fi
+          ls -l dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: columbus-app-${{ matrix.name }}
+          path: dist/*
+
   publish:
-    needs: [windows, macos]
+    needs: [windows, macos, app]
     if: startsWith(github.ref, 'refs/tags/') || inputs.tag != ''
     runs-on: ubuntu-latest
     steps:
@@ -143,6 +185,11 @@ jobs:
             echo "Tag $TAG does not match the built version $version: change the version in Cargo.toml first." >&2
             exit 1
           fi
+          app=$(python3 -c 'import json; print(json.load(open("app/desktop/src-tauri/tauri.conf.json"))["version"])')
+          if [ "$app" != "$version" ]; then
+            echo "The desktop app is version $app, the server $version: change app/desktop/src-tauri/tauri.conf.json and Cargo.toml too." >&2
+            exit 1
+          fi
           # Only a commit whose CI passed is released.
           passed=$(gh run list --workflow ci.yml --commit "$GITHUB_SHA" --json conclusion -q '[.[] | select(.conclusion == "success")] | length')
           if [ "$passed" -lt 1 ]; then
@@ -153,4 +200,4 @@ jobs:
           if ! gh release view "$TAG" >/dev/null 2>&1; then
             gh release create "$TAG" --target "$GITHUB_SHA" --title "Columbus $version (test release)" --notes-file packaging/release-notes.md --prerelease
           fi
-          gh release upload "$TAG" dist/*.zip dist/*.mcpb --clobber
+          gh release upload "$TAG" dist/* --clobber

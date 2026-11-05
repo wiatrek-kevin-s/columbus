@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Columbus</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Columbus</h1>
+      <p>Sessions running on this computer. Open one to see its layers, tables and approvals.</p>
+    </header>
+    <main>
+      <ul id="sessions" aria-live="polite"></ul>
+      <p id="empty" hidden>
+        No Columbus session is running. Start one by asking your AI assistant (for example Claude desktop with the
+        Columbus extension) to call <code>whoami</code>, and it will appear here.
+      </p>
+      <p id="error" role="alert" hidden></p>
+    </main>
+    <script src="main.js"></script>
+  </body>
+</html>

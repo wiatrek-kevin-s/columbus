@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, signIn, SignedOut, type Approval, type Check, type FeatureCollection, type OutputCard, type Overview } from "./api";
+import { api, currentScope, signIn, SignedOut, type Approval, type Check, type FeatureCollection, type OutputCard, type Overview } from "./api";
 import { ApprovalCard } from "./ApprovalCard";
 import { MapView, type MapLayer } from "./MapView";
 import { Table } from "./Table";
@@ -88,7 +88,22 @@ export function App() {
   const [active, setActive] = useState<string | null>(null);
   const [fitTo, setFitTo] = useState<string | null>(null);
   const [selected, setSelected] = useState<{ handle: string; feature: number } | null>(null);
-  const [basemap, setBasemap] = useState(true);
+  const [basemap, setBasemapState] = useState(() => {
+    try {
+      return localStorage.getItem("columbus.basemap") === "on";
+    } catch {
+      return false;
+    }
+  });
+  const setBasemap = (on: boolean) => {
+    setBasemapState(on);
+    try {
+      localStorage.setItem("columbus.basemap", on ? "on" : "off");
+    } catch {
+      /* the choice is not remembered */
+    }
+  };
+  const [reviewing, setReviewing] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const seen = useRef(new Set<string>());
   const colors = useRef(new Map<string, string>());
@@ -208,6 +223,18 @@ export function App() {
     }
   };
 
+  const review = async () => {
+    setReviewing(true);
+    try {
+      await api.review();
+      setNotice("Columbus opened the request in your browser. Decide there.");
+    } catch (e) {
+      signedOut(e);
+    } finally {
+      window.setTimeout(() => setReviewing(false), 3000);
+    }
+  };
+
   const toggle = (h: string) => setOnMap((m) => (m.includes(h) ? m.filter((x) => x !== h) : [...m, h]));
   const activeCard = outputs.find((o) => o.handle === active) || null;
 
@@ -256,19 +283,13 @@ export function App() {
             </span>
           ))}
         </div>
-        <label className="switch">
-          <input type="checkbox" checked={basemap} onChange={(e) => setBasemap(e.target.checked)} />
-          Basemap
-        </label>
+        {overview?.basemap_allowed && (
+          <label className="switch" title="Street basemap from OpenFreeMap. When on, the area in view is sent to that site to fetch map tiles.">
+            <input type="checkbox" checked={basemap} onChange={(e) => setBasemap(e.target.checked)} />
+            Basemap
+          </label>
+        )}
       </header>
-
-      {pending.length > 0 && (
-        <section className="approvals" aria-live="assertive" aria-label="Requests waiting for your decision">
-          {pending.map((a) => (
-            <ApprovalCard key={a.id} a={a} busy={!!busy[a.id]} onDecide={(d) => decide(a.id, d)} />
-          ))}
-        </section>
-      )}
 
       <div className="body">
         <aside className="outputs" aria-label="Outputs from this session">
@@ -329,9 +350,32 @@ export function App() {
         </aside>
 
         <main className="work">
+          {pending.length > 0 && (
+            <section className="approvals" aria-live="assertive" aria-label="Requests waiting for your decision">
+              {currentScope() === "view" && (
+                <div className="review">
+                  <p>
+                    {pending.length === 1 ? "A request is" : `${pending.length} requests are`} waiting for your decision.
+                    For your safety, requests are decided in the browser page Columbus opens, not in this window.
+                  </p>
+                  <button type="button" className="primary" disabled={reviewing} onClick={review}>
+                    Review in your browser
+                  </button>
+                </div>
+              )}
+              {pending.map((a) => (
+                <ApprovalCard
+                  key={a.id}
+                  a={a}
+                  busy={!!busy[a.id]}
+                  onDecide={currentScope() === "approve" ? (d) => decide(a.id, d) : undefined}
+                />
+              ))}
+            </section>
+          )}
           <MapView
             layers={mapLayers}
-            basemap={basemap}
+            basemap={basemap && !!overview?.basemap_allowed}
             fitTo={fitTo}
             selected={selected}
             onBasemapFailed={() => {

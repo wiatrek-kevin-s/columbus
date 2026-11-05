@@ -407,17 +407,20 @@ def _is_geopackage(path: str) -> bool:
     )
 
 
-def read_layer(path: str):
+def read_layer(path: str, check_only: bool = False):
     """Open a workspace layer: a GeoPackage (checked by its header, not its
     name) or a CSV (read as text by pandas, never by GDAL). Anything else is
     refused, so a file whose content is really a VRT, a GDAL "CSV:" or
     "/vsicurl/" path, or another format that can point at other files or
-    URLs is never handed to GDAL."""
+    URLs is never handed to GDAL. ``check_only``: make the checks for a
+    GeoPackage and return None, for callers that read it themselves."""
     if not isinstance(path, str) or path.startswith(("/vsi", "\\vsi")) or ":" in os.path.basename(path):
         raise GISError("input.format", "input must be a file in the workspace")
     if path.lower().endswith(".gpkg"):
         if not _is_geopackage(path):
             raise GISError("input.format", f"{os.path.basename(path)} is not a GeoPackage")
+        if check_only:
+            return None
         return gpd.read_file(path, engine="pyogrio")
     if path.lower().endswith((".tif", ".tiff")):
         raise GISError("input.format", f"{os.path.basename(path)} is a raster; vector tools take GeoPackage or CSV layers (use raster_op for rasters)")
@@ -503,7 +506,7 @@ def read_rows(path: str, offset: int = 0, limit: int = 50, fields: list[str] | N
             "offset": offset, "summary": layer_summary(df)}
 
 
-def display_geojson(path: str, max_features: int = 20000, max_coordinates: int = 1_500_000) -> dict[str, Any]:
+def display_geojson(path: str, max_features: int = 20000, max_coordinates: int = 750_000) -> dict[str, Any]:
     """A workspace layer as GeoJSON in EPSG:4326 for the person's map (the
     companion window), cut off at ``max_features`` features or
     ``max_coordinates`` coordinates, whichever comes first. Attributes are
@@ -511,8 +514,16 @@ def display_geojson(path: str, max_features: int = 20000, max_coordinates: int =
     import shapely
     from shapely.geometry import mapping
 
-    df = read_layer(path)
-    total = int(len(df))
+    if isinstance(path, str) and path.lower().endswith(".gpkg"):
+        # Read only what is shown: a large layer is never loaded whole.
+        import pyogrio
+
+        read_layer(path, check_only=True)
+        total = int(pyogrio.read_info(path).get("features") or 0)
+        df = gpd.read_file(path, engine="pyogrio", max_features=max_features)
+    else:
+        df = read_layer(path)
+        total = int(len(df))
     if not isinstance(df, gpd.GeoDataFrame):
         return {"type": "FeatureCollection", "features": [], "total": total, "shown": 0,
                 "truncated": False, "geometry": False}

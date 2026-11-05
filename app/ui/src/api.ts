@@ -45,6 +45,7 @@ export interface Overview {
   connections: { id: string; type: string; description: string | null }[];
   export_folders: { id: string; path: string; granted: boolean }[];
   context_pack: string | null;
+  basemap_allowed: boolean;
   notes: string[];
 }
 
@@ -88,7 +89,14 @@ export interface Rows {
 
 export class SignedOut extends Error {}
 
+/** What this window may do: a window the Columbus app opened can only
+ * look; deciding happens in the browser page Columbus opens for it. */
+export type Scope = "approve" | "view";
+
 let token: string | null = null;
+let scope: Scope = "view";
+
+export const currentScope = () => scope;
 
 /** Trade the launch token in the URL for a session, if there is one. */
 export async function signIn(): Promise<"signed-in" | "no-link" | "used"> {
@@ -102,7 +110,9 @@ export async function signIn(): Promise<"signed-in" | "no-link" | "used"> {
     cache: "no-store",
   });
   if (!r.ok) return "used";
-  token = (await r.json()).token;
+  const body = await r.json();
+  token = body.token;
+  scope = body.scope === "approve" ? "approve" : "view";
   return "signed-in";
 }
 
@@ -125,7 +135,8 @@ async function call<T>(path: string, init: RequestInit = {}): Promise<T> {
 const q = (handle: string) => encodeURIComponent(handle);
 
 export const api = {
-  state: () => call<{ session: string; version: number; pending: number }>("/api/state"),
+  state: () => call<{ session: string; version: number; pending: number; scope: Scope }>("/api/state"),
+  review: () => call<{ opened: boolean }>("/api/review", { method: "POST" }),
   overview: () => call<Overview>("/api/overview"),
   outputs: () => call<{ outputs: OutputCard[]; version: number }>("/api/outputs"),
   layer: (handle: string) => call<FeatureCollection>(`/api/layer?handle=${q(handle)}`),

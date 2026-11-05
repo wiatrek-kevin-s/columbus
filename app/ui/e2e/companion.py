@@ -4,7 +4,9 @@ Starts columbus-mcp (a debug build: launch links are handed off to a file
 instead of opening a browser) with the built UI, speaks MCP to it over stdio
 as an AI client would, and drives the window with Playwright: the layer the
 agent queried appears in the list, on the map and in the table; an export
-that needs approval shows a card; allowing it in the window lets the export
+that needs approval shows a card. The window the app opens may only look:
+its card offers "Review in your browser", which opens the page that can
+decide (a second browser page here); allowing it there lets the export
 finish. Screenshots go to e2e/out/.
 
     python app/ui/e2e/companion.py [path/to/columbus-mcp]
@@ -153,7 +155,9 @@ def main():
             page.locator("table tbody tr").nth(2).click()
             expect(page.locator("table tbody tr.selected")).to_have_count(1)
 
-            # The agent exports; the window shows the request; the person allows it.
+            # The agent exports; the window shows the request, but this
+            # window (opened for the app) cannot decide it.
+            (root / "launch.txt").unlink()
             result = {}
             t = threading.Thread(target=lambda: result.update(
                 r=mcp.tool("export_output", {"handle": handle, "folder": "outbox", "name": "tracts"}, timeout=90)))
@@ -161,13 +165,28 @@ def main():
             card = page.locator("article.approval")
             expect(card).to_be_visible(timeout=20000)
             expect(card).to_contain_text("tracts")
-            page.screenshot(path=str(OUT / "2-approval.png"))
-            card.get_by_role("button", name="Allow once").click()
+            expect(card.get_by_role("button", name="Allow once")).to_have_count(0)
+            page.screenshot(path=str(OUT / "2-approval-view.png"))
+            # The approval page opened for the waiting request (or on review).
+            if not (root / "launch.txt").exists():
+                page.get_by_role("button", name="Review in your browser").click()
+            approve_link = wait_file(root / "launch.txt")
+            assert approve_link.startswith("http://127.0.0.1:"), approve_link
+            page2 = browser.new_page(viewport={"width": 1360, "height": 860})
+            page2.on("pageerror", lambda e: problems.append(str(e)))
+            page2.goto(approve_link)
+            card2 = page2.locator("article.approval")
+            expect(card2).to_be_visible(timeout=20000)
+            allow = card2.get_by_role("button", name="Allow once")
+            expect(allow).to_be_disabled()
+            expect(allow).to_be_enabled(timeout=3000)
+            page2.screenshot(path=str(OUT / "2-approval-browser.png"))
+            allow.click()
             t.join(60)
             assert result.get("r", {}).get("result", {}).get("status") == "exported", result
             assert (root / "outbox" / "tracts.gpkg").exists()
             expect(card).to_have_count(0, timeout=10000)
-            expect(page.get_by_role("status")).to_contain_text("Allowed")
+            expect(page2.get_by_role("status")).to_contain_text("Allowed")
             page.screenshot(path=str(OUT / "3-done.png"))
 
             # The rendered page held to its policy: no CSP violations.

@@ -63,8 +63,14 @@ impl Companion {
                 "id": e.id, "path": e.path, "granted": e.granted,
             })).collect::<Vec<_>>(),
             "context_pack": s.context.as_ref().map(|c| c.info.name.clone()),
+            "basemap_allowed": p.companion.basemap,
             "notes": s.notes,
         }))
+    }
+
+    /// Whether organization policy lets the person turn on the basemap.
+    pub fn basemap_allowed(&self) -> bool {
+        self.st().is_ok_and(|s| s.policy.companion.basemap)
     }
 
     /// A number that changes whenever the outputs or provenance do, so the
@@ -178,7 +184,7 @@ impl Companion {
             .core(
                 "display_geojson",
                 json!({"path": path, "max_features": MAP_FEATURES}),
-                Duration::from_secs(120),
+                Duration::from_secs(60),
             )
             .await
             .map_err(|e| e.to_string())

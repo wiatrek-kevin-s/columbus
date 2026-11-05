@@ -25,7 +25,17 @@ const BLANK: StyleSpecification = {
   layers: [{ id: "background", type: "background", paint: { "background-color": "#eef2f4" } }],
 };
 
-const id = (handle: string) => `l-${handle.replace(/[^A-Za-z0-9]/g, "_")}`;
+// Map ids by order of appearance: handles can differ only in characters
+// an id cannot hold.
+const ids = new Map<string, string>();
+const id = (handle: string) => {
+  let v = ids.get(handle);
+  if (!v) {
+    v = `l-${ids.size + 1}`;
+    ids.set(handle, v);
+  }
+  return v;
+};
 
 /** The session's layers on a MapLibre map, with identify on click and the
  * table's selected row highlighted. */

@@ -208,7 +208,7 @@ async fn companion_window_shows_the_sessions_outputs() {
         .unwrap()
         .to_string();
     assert!(
-        csp.contains("script-src 'self'") && csp.contains("worker-src blob:"),
+        csp.contains("script-src 'self'") && csp.contains("worker-src 'self' blob:"),
         "{csp}"
     );
     assert!(r.text().await.unwrap().contains("/assets/app.js"));
@@ -315,6 +315,41 @@ async fn companion_window_shows_the_sessions_outputs() {
     ))
     .await;
     assert_eq!(code, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // A window opened for the app may look but not decide.
+    let r = http
+        .post(format!("{base}/api/approvals/x"))
+        .bearer_auth(&tok)
+        .header("origin", &origin)
+        .json(&json!({"decision": "allow_once"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        r.status(),
+        StatusCode::FORBIDDEN,
+        "view windows cannot decide"
+    );
+    let (_, st) = get(format!("{base}/api/state")).await;
+    assert_eq!(st["scope"], "view");
+
+    // While the app runs, its windows go to the app by a columbus:// link
+    // (carrying a view token only).
+    std::fs::write(env.root.join("live").join("app.json"), "{}").unwrap();
+    std::fs::remove_file(env.root.join("launch.txt")).unwrap();
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    let r = http
+        .post(format!("{base}/api/open"))
+        .header("x-columbus-open", "1")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::OK);
+    let deep = wait_for(&env.root.join("launch.txt"));
+    assert!(
+        deep.starts_with(&format!("columbus://open?port={port}#t=")),
+        "{deep}"
+    );
 
     // The announcement goes when the session ends.
     let live_file = env.root.join("live").join(format!("{session}.json"));

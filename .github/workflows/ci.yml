@@ -89,6 +89,44 @@ jobs:
           name: companion-screenshots
           path: app/ui/e2e/out/
 
+  desktop:
+    name: Desktop app (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            app/desktop/src-tauri
+      - name: Linux build libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libsoup-3.0-dev libayatana-appindicator3-dev librsvg2-dev xvfb
+      - name: Build and lint
+        working-directory: app/desktop/src-tauri
+        run: |
+          cargo build --locked
+          cargo clippy --locked -- -D warnings
+      - name: Links reach the running app (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          python -m pip install -r workers/python/requirements-gis.txt
+          ( cd app/ui && npm ci && npm run build )
+          cargo build -p columbus-mcp --locked
+          dbus-run-session -- xvfb-run -a python app/desktop/e2e/deeplink.py target/debug/columbus-mcp app/desktop/src-tauri/target/debug/columbus-desktop
+
   postgis:
     name: PostGIS engine
     runs-on: ubuntu-latest

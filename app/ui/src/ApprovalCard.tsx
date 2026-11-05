@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { Approval } from "./api";
 
 const RISK: Record<string, string> = {
@@ -25,15 +25,23 @@ function time(iso: string): string {
 export function ApprovalCard(props: {
   a: Approval;
   busy: boolean;
-  onDecide: (d: "allow_once" | "always_this_session" | "decline") => void;
+  /** Absent in a window that may only look. */
+  onDecide?: (d: "allow_once" | "always_this_session" | "decline") => void;
 }) {
   const { a } = props;
   const d = a.detail || {};
   const once = a.risk === "script";
   const [open, setOpen] = useState(false);
+  // A card that has just appeared cannot be clicked by accident.
+  const [armed, setArmed] = useState(false);
+  useEffect(() => {
+    const t = window.setTimeout(() => setArmed(true), 1000);
+    return () => window.clearTimeout(t);
+  }, [a.id]);
+  const off = props.busy || !armed;
   const rows: [string, string][] = [];
   if (d.destination) rows.push(["Destination", d.destination]);
-  if (Array.isArray(d.files))
+  if (Array.isArray(d.files) && d.files.length)
     rows.push(["Files", d.files.map((f) => (f.rows != null ? `${f.name} (${f.rows} rows)` : f.name)).join(", ")]);
   if (Array.isArray(d.labels) && d.labels.length) rows.push(["Data from", d.labels.join(", ")]);
   if (d.flow_rule) rows.push(["Flow rule", d.flow_rule]);
@@ -76,24 +84,28 @@ export function ApprovalCard(props: {
           {open ? "Hide the exact request" : "Show the exact request"}
         </button>
         {open && <pre className="request">{JSON.stringify(a.request, null, 2)}</pre>}
-        <div className="approval-actions">
-          <button type="button" className="primary" disabled={props.busy} onClick={() => props.onDecide("allow_once")}>
-            Allow once
-          </button>
-          {!once && (
-            <button type="button" disabled={props.busy} onClick={() => props.onDecide("always_this_session")}>
-              Allow for this session
-            </button>
-          )}
-          <button type="button" className="danger" disabled={props.busy} onClick={() => props.onDecide("decline")}>
-            Decline
-          </button>
-        </div>
-        <p className="hint">
-          {once
-            ? "Scripts are approved one run at a time."
-            : "Allow for this session allows this exact request again until the assistant's session ends."}
-        </p>
+        {props.onDecide ? (
+          <>
+            <div className="approval-actions">
+              <button type="button" className="primary" disabled={off} onClick={() => props.onDecide?.("allow_once")}>
+                Allow once
+              </button>
+              {!once && (
+                <button type="button" disabled={off} onClick={() => props.onDecide?.("always_this_session")}>
+                  Allow for this session
+                </button>
+              )}
+              <button type="button" className="danger" disabled={off} onClick={() => props.onDecide?.("decline")}>
+                Decline
+              </button>
+            </div>
+            <p className="hint">
+              {once
+                ? "Scripts are approved one run at a time."
+                : "Allow for this session allows this exact request again until the assistant's session ends."}
+            </p>
+          </>
+        ) : null}
       </div>
     </article>
   );
