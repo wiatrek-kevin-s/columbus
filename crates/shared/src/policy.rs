@@ -154,6 +154,24 @@ pub struct OrgPolicy {
     /// The companion window (the Columbus app and the local page).
     #[serde(default)]
     pub companion: CompanionPolicy,
+    /// Notes Columbus drafts from a connection's database.
+    #[serde(default)]
+    pub notes: NotesPolicy,
+}
+
+/// What drafted notes may hold.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NotesPolicy {
+    /// List the codes short fields hold (up to 30 per field), as code lists
+    /// to label. Off: fields, types, keys and comments only.
+    #[serde(default = "yes")]
+    pub values: bool,
+}
+
+impl Default for NotesPolicy {
+    fn default() -> Self {
+        NotesPolicy { values: true }
+    }
 }
 
 /// What the companion window may do.
@@ -331,6 +349,7 @@ impl Default for OrgPolicy {
             exports: vec![],
             fetch_hosts: vec![],
             companion: CompanionPolicy::default(),
+            notes: NotesPolicy::default(),
         }
     }
 }

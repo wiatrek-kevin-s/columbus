@@ -496,6 +496,7 @@ impl ApprovalsPage {
                     .route("/api/open", post(open_window))
                     .route("/api/test-hello", post(test_hello))
                     .route("/api/test-connection", post(test_connection))
+                    .route("/api/draft-notes", post(draft_notes))
                     .route("/api/review", post(review))
                     .route("/api/state", get(state))
                     .route("/api/overview", get(overview))
@@ -918,27 +919,18 @@ async fn test_hello(State(s): State<Arc<Shared>>, h: HeaderMap) -> Response<Body
     json_response(StatusCode::OK, json!({"challenge": ours, "proof": proof}))
 }
 
-/// `POST /api/test-connection`: the Settings window's Test button, from the
-/// person's Columbus app. `X-Columbus-Test: <challenge>.<proof>`: one of
-/// this server's unused challenges from `/api/test-hello`, and the app's
-/// proof over it and the body, with the key only this account can read.
-/// Saves nothing.
-async fn test_connection(
-    State(s): State<Arc<Shared>>,
-    h: HeaderMap,
-    body: axum::body::Bytes,
-) -> Response<Body> {
+/// The request carries the app's proof (`X-Columbus-Test: <challenge>.<proof>`):
+/// one of this server's unused challenges from `/api/test-hello`, and an
+/// HMAC over it and the exact body with the key only this account can read.
+fn signed_by_app(h: &HeaderMap, s: &Shared, body: &[u8]) -> Result<(), Box<Response<Body>>> {
     use columbus_shared::proof;
-    if let Err(r) = from_app(&h, &s) {
-        return *r;
-    }
-    let Some((challenge, given)) = h
+    from_app(h, s)?;
+    let refused = || Box::new(status(StatusCode::FORBIDDEN, "refused"));
+    let (challenge, given) = h
         .get("x-columbus-test")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.split_once('.'))
-    else {
-        return status(StatusCode::FORBIDDEN, "refused");
-    };
+        .ok_or_else(refused)?;
     // Spent whether or not the proof holds: one try per challenge.
     let fresh = {
         let mut c = s.challenges.lock().expect("challenges");
@@ -950,10 +942,68 @@ async fn test_connection(
     let want = proof::prove(
         &s.test_key,
         proof::APP,
-        &[challenge.as_bytes(), proof::body_hash(&body).as_bytes()],
+        &[challenge.as_bytes(), proof::body_hash(body).as_bytes()],
     );
     if !fresh || !proof::same(given, &want) {
-        return status(StatusCode::FORBIDDEN, "refused");
+        return Err(refused());
+    }
+    Ok(())
+}
+
+#[derive(Deserialize)]
+struct DraftRequest {
+    connection: String,
+}
+
+/// `POST /api/draft-notes`: the Settings window's "Draft notes" button.
+/// Drafts the person's notes about one connection, as their own action;
+/// signed like a test.
+async fn draft_notes(
+    State(s): State<Arc<Shared>>,
+    h: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response<Body> {
+    if let Err(r) = signed_by_app(&h, &s, &body) {
+        return *r;
+    }
+    let Some(companion) = s.companion.clone() else {
+        return status(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "this session cannot draft notes",
+        );
+    };
+    let Ok(req) = serde_json::from_slice::<DraftRequest>(&body) else {
+        return status(StatusCode::BAD_REQUEST, "expected {connection}");
+    };
+    let Ok(one) = s.testing.clone().try_lock_owned() else {
+        return status(
+            StatusCode::TOO_MANY_REQUESTS,
+            "a test or draft is already running",
+        );
+    };
+    let job = tokio::spawn(async move {
+        let v = companion.draft_notes(req.connection).await;
+        drop(one);
+        v
+    });
+    match job.await {
+        Ok(v) => json_response(StatusCode::OK, v),
+        Err(e) => status(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+    }
+}
+
+/// `POST /api/test-connection`: the Settings window's Test button, from the
+/// person's Columbus app. `X-Columbus-Test: <challenge>.<proof>`: one of
+/// this server's unused challenges from `/api/test-hello`, and the app's
+/// proof over it and the body, with the key only this account can read.
+/// Saves nothing.
+async fn test_connection(
+    State(s): State<Arc<Shared>>,
+    h: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response<Body> {
+    if let Err(r) = signed_by_app(&h, &s, &body) {
+        return *r;
     }
     let Some(companion) = s.companion.clone() else {
         return status(

@@ -1124,8 +1124,13 @@ pub(crate) fn new_prov_id() -> String {
 
 impl Gateway {
     pub fn new(state: State) -> Self {
+        Self::with_state(Arc::new(state))
+    }
+
+    /// A gateway on a session's state (the app's requests use one).
+    pub fn with_state(state: Arc<State>) -> Self {
         Gateway {
-            state: Arc::new(state),
+            state,
             tool_router: Self::tool_router()
                 + Self::gis_router()
                 + Self::registry_router()
@@ -1134,7 +1139,8 @@ impl Gateway {
                 + Self::fetch_router()
                 + Self::raster_router()
                 + Self::script_router()
-                + Self::edit_router(),
+                + Self::edit_router()
+                + Self::notes_router(),
         }
     }
 
@@ -2763,8 +2769,34 @@ impl ServerHandler for Gateway {
         let started = self.state.generation();
         let before: std::collections::BTreeSet<PathBuf> =
             self.state.outputs.paths().into_iter().collect();
-        let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
-        let result = self.tool_router.call(tcc).await;
+        // Its own task: a tool that panics answers with an error instead of
+        // leaving the client waiting for an answer that never comes.
+        let gw = self.clone();
+        let result = match tokio::spawn(async move {
+            let tcc = rmcp::handler::server::tool::ToolCallContext::new(&gw, request, context);
+            gw.tool_router.call(tcc).await
+        })
+        .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::error!("tool {tool} failed: {e}");
+                let _ = self.state.audit.append(&AuditRecord {
+                    user: self.state.user.clone(),
+                    client: client.clone(),
+                    tool: tool.clone(),
+                    decision: "error".into(),
+                    reason: Some(
+                        "the tool failed inside Columbus (a bug); nothing more is known".into(),
+                    ),
+                    ..Default::default()
+                });
+                Ok(rmcp::model::CallToolResult::error(vec![rmcp::model::ContentBlock::text(
+                    "Columbus failed inside this tool (a bug, recorded in its log). Tell the person; trying again may not help.",
+                )])
+                .into())
+            }
+        };
         // Narrowed while it ran: what it made from that data goes too, and
         // its answer (which may hold rows) is not returned.
         self.reload().await;

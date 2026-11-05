@@ -103,6 +103,15 @@ impl Companion {
         }
     }
 
+    /// The Settings window's "Draft notes": the person's notes about one
+    /// connection, drafted from its database (see `notes`).
+    pub async fn draft_notes(&self, connection: String) -> Value {
+        match self.st() {
+            Ok(s) => crate::notes::draft_from_app(s, connection).await,
+            Err(e) => json!({"ok": false, "message": e}),
+        }
+    }
+
     /// Whether organization policy lets the person turn on the basemap.
     pub fn basemap_allowed(&self) -> bool {
         self.st().is_ok_and(|s| s.policy().companion.basemap)

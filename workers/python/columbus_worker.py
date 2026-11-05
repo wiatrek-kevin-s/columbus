@@ -1777,8 +1777,15 @@ for _name, _fn in (
     ("edit_schema", lambda p: _edits().edit_schema(p)),
     ("edit_prepare", lambda p: _edits().edit_prepare(p)),
     ("edit_apply", lambda p: _edits().edit_apply(p)),
+    ("catalog_details", lambda p: _catalog().catalog_details(p)),
 ):
     plugin.tool(_name)(lambda ctx, fn=_fn: fn(ctx.params))
+
+
+def _catalog():
+    import columbus_catalog
+
+    return columbus_catalog
 
 
 def _edits():
