@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-settings-delete-connection"
+description = "Enables the settings_delete_connection command without any pre-configured scope."
+commands.allow = ["settings_delete_connection"]
+
+[[permission]]
+identifier = "deny-settings-delete-connection"
+description = "Denies the settings_delete_connection command without any pre-configured scope."
+commands.deny = ["settings_delete_connection"]

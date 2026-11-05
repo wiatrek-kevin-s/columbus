@@ -39,6 +39,10 @@ This creates `engine/venv` with GDAL, PROJ, GeoPandas and rasterio (about 300 MB
 
 ## 3. Tell Columbus what it may use
 
+**The easy way: the Columbus app.** Install the app (step 5), open it and press **Settings**. There you add connections (Browse for a GeoPackage or a folder of rasters, or fill in a database's host, login and password, which goes into your Keychain), set each one to read only or read and write, and turn edits and scripts on or off. Anything that gives your assistant more access asks for Touch ID or your Mac password first; your assistant cannot change these settings itself. After a change, quit and reopen Claude desktop.
+
+**Or by hand,** as below.
+
 Columbus reads the organization's settings from `/Library/Application Support/Columbus` and your own from `~/Library/Application Support/Columbus`. On your own Mac you create the organization folder once, owned by you:
 
 ```sh

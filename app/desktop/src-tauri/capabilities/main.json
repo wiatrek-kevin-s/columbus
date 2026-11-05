@@ -2,6 +2,13 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main",
   "description": "The session list: the app's own window only. Session windows show the local Columbus page and have no capabilities.",
-  "windows": ["main"],
-  "permissions": ["allow-sessions", "allow-open-session", "allow-open-chat"]
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "allow-sessions",
+    "allow-open-session",
+    "allow-open-chat",
+    "allow-open-settings"
+  ]
 }

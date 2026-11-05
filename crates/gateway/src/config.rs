@@ -30,28 +30,16 @@ pub struct Paths {
     pub context: PathBuf,
 }
 
-/// A location from the environment. Empty counts as unset, and so does an
-/// unfilled `${...}` placeholder: Claude desktop passes an optional `.mcpb`
-/// setting the person left empty as the literal `${user_config.<name>}`.
-fn env_path(name: &str) -> Option<PathBuf> {
-    std::env::var_os(name)
-        .filter(|v| !v.is_empty() && !is_placeholder(v))
-        .map(PathBuf::from)
-}
-
-fn is_placeholder(v: &std::ffi::OsStr) -> bool {
-    v.to_str()
-        .map(str::trim)
-        .is_some_and(|s| s.starts_with("${") && s.ends_with('}'))
-}
+#[cfg(test)]
+use columbus_shared::paths::is_placeholder;
+use columbus_shared::paths::{env_path, platform_dirs};
 
 impl Paths {
     pub fn from_env() -> Self {
         let (program_data, roaming, local) = platform_dirs();
         Paths {
-            policy: env_path("COLUMBUS_POLICY").unwrap_or_else(|| program_data.join("policy.yaml")),
-            connections: env_path("COLUMBUS_CONNECTIONS")
-                .unwrap_or_else(|| roaming.join("connections")),
+            policy: columbus_shared::paths::policy_file(),
+            connections: columbus_shared::paths::connections_dir(),
             workspaces: env_path("COLUMBUS_WORKSPACES").unwrap_or_else(|| local.join("workspaces")),
             audit: env_path("COLUMBUS_AUDIT_DIR").unwrap_or_else(|| program_data.join("audit")),
             servers: env_path("COLUMBUS_SERVERS").unwrap_or_else(|| program_data.join("servers")),
@@ -74,41 +62,6 @@ impl Paths {
                     })
                 }),
         }
-    }
-}
-
-/// The organization's folder, the person's settings and the person's local
-/// data: ProgramData\Columbus, %APPDATA%\Columbus and %LOCALAPPDATA%\Columbus
-/// on Windows; /Library/Application Support/Columbus and
-/// ~/Library/Application Support/Columbus (for both) on macOS; /etc/columbus
-/// and the XDG folders elsewhere.
-fn platform_dirs() -> (PathBuf, PathBuf, PathBuf) {
-    if cfg!(target_os = "macos") {
-        let home = env_path("HOME").unwrap_or_else(|| PathBuf::from("."));
-        let user = home.join("Library/Application Support/Columbus");
-        (
-            PathBuf::from("/Library/Application Support/Columbus"),
-            user.clone(),
-            user,
-        )
-    } else if cfg!(windows) {
-        let pd = env_path("ProgramData").unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"));
-        let roaming = env_path("APPDATA").unwrap_or_else(|| pd.clone());
-        let local = env_path("LOCALAPPDATA").unwrap_or_else(|| roaming.clone());
-        (
-            pd.join("Columbus"),
-            roaming.join("Columbus"),
-            local.join("Columbus"),
-        )
-    } else {
-        let home = env_path("HOME").unwrap_or_else(|| PathBuf::from("."));
-        let config = env_path("XDG_CONFIG_HOME").unwrap_or_else(|| home.join(".config"));
-        let data = env_path("XDG_DATA_HOME").unwrap_or_else(|| home.join(".local/share"));
-        (
-            PathBuf::from("/etc/columbus"),
-            config.join("columbus"),
-            data.join("columbus"),
-        )
     }
 }
 

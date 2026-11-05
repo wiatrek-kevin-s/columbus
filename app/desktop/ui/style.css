@@ -29,4 +29,6 @@ button:focus-visible { outline: 2px solid var(--hydro); outline-offset: 2px; }
 code { font-size: 13px; }
 .head { display: flex; align-items: center; gap: 12px; margin-bottom: 4px; }
 .head h1 { margin: 0; }
-.head button { margin-left: auto; }
+.head button { margin-left: 8px; }
+.head button:first-of-type { margin-left: auto; }
+button.plain { background: transparent; color: inherit; border-color: currentColor; }

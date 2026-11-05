@@ -1,0 +1,37 @@
+section { background: var(--panel); border: 1px solid var(--rule); border-radius: 8px; padding: 14px 16px; margin-bottom: 16px; }
+h2 { font-size: 16px; margin: 0 0 10px; }
+.section-head { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
+.section-head h2 { margin: 0; }
+.section-head button { margin-left: auto; }
+.muted { color: var(--soft); }
+.small { font-size: 12.5px; margin: 10px 0 0; overflow-wrap: anywhere; }
+.notice { background: #e6f2e7; color: #1d4d24; border: 1px solid #b9dcbd; border-radius: 6px; padding: 10px 12px; }
+@media (prefers-color-scheme: dark) { .notice { background: #17301b; color: #cfe9d2; border-color: #2f5a35; } }
+.error-text, #error { color: var(--fail); white-space: pre-line; }
+.conn { display: flex; align-items: center; gap: 12px; border-top: 1px solid var(--rule); padding: 10px 0; }
+.conn:first-child { border-top: 0; }
+.conn .text { display: grid; flex: 1; min-width: 0; gap: 1px; }
+.conn .where { color: var(--soft); font-size: 12.5px; overflow-wrap: anywhere; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 3px; }
+.chip { font-size: 12px; border: 1px solid var(--rule); border-radius: 10px; padding: 1px 8px; color: var(--soft); }
+.chip.rw { border-color: #b26a00; color: #8a5200; }
+@media (prefers-color-scheme: dark) { .chip.rw { color: #f0b860; border-color: #8a5a10; } }
+.conn.bad .text { color: var(--fail); }
+.switch-row { display: flex; gap: 10px; align-items: flex-start; padding: 8px 0; }
+.switch-row input { margin-top: 3px; width: 18px; height: 18px; flex: none; }
+dialog { border: 1px solid var(--rule); border-radius: 10px; padding: 0; width: min(720px, calc(100vw - 32px)); background: var(--panel); color: var(--ink); }
+dialog::backdrop { background: rgba(10, 20, 30, .45); }
+form { padding: 18px; }
+.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 14px; }
+.grid label { display: grid; gap: 4px; font-weight: 600; font-size: 13px; }
+.grid label small { font-weight: 400; color: var(--soft); }
+.grid .wide { grid-column: 1 / -1; }
+.grid [hidden] { display: none; }
+input, select { font: inherit; padding: 6px 8px; border: 1px solid var(--rule); border-radius: 6px; background: var(--paper); color: var(--ink); min-width: 0; }
+input:focus-visible, select:focus-visible { outline: 2px solid var(--hydro); outline-offset: 1px; }
+.pick { display: flex; gap: 8px; }
+.pick input { flex: 1; }
+.actions { display: flex; gap: 8px; margin-top: 16px; align-items: center; }
+.actions .spacer { flex: 1; }
+button.danger { border-color: var(--fail); color: var(--fail); background: transparent; }
+@media (max-width: 600px) { .grid { grid-template-columns: 1fr; } }

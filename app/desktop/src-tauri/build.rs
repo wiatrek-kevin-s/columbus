@@ -17,6 +17,12 @@ fn main() {
             "chat_stop",
             "chat_answer",
             "chat_end",
+            "open_settings",
+            "settings_state",
+            "settings_save_connection",
+            "settings_delete_connection",
+            "settings_set_switch",
+            "settings_pick",
         ]),
     ))
     .expect("tauri build");

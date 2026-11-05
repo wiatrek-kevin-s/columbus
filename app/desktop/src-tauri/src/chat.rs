@@ -84,6 +84,11 @@ fn server(s: &Settings) -> Option<PathBuf> {
         .or_else(default_server)
 }
 
+/// The system credential store, for the settings window too.
+pub(crate) fn ensure_store() -> Result<(), String> {
+    store()
+}
+
 fn store() -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {

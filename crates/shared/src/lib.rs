@@ -6,6 +6,7 @@ pub mod approvals;
 pub mod audit;
 pub mod canon;
 pub mod error;
+pub mod paths;
 pub mod policy;
 pub mod sandbox;
 pub mod sqlcheck;

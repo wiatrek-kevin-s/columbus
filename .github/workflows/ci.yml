@@ -148,6 +148,8 @@ jobs:
           cargo install tauri-driver --locked
           python -m pip install selenium
           dbus-run-session -- xvfb-run -a -s "-screen 0 1400x900x24" python app/desktop/e2e/chat.py target/debug/columbus-mcp app/desktop/src-tauri/target/debug/columbus-desktop
+          python -m pip install pyyaml
+          dbus-run-session -- xvfb-run -a -s "-screen 0 1400x900x24" python app/desktop/e2e/settings.py app/desktop/src-tauri/target/debug/columbus-desktop
       - uses: actions/upload-artifact@v4
         if: always() && runner.os == 'Linux'
         with:

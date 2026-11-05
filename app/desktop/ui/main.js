@@ -74,6 +74,7 @@ async function refresh() {
 }
 
 document.getElementById("chat").addEventListener("click", () => invoke("open_chat"));
+document.getElementById("settings").addEventListener("click", () => invoke("open_settings"));
 
 refresh();
 setInterval(refresh, 3000);

@@ -33,6 +33,7 @@ use std::time::Duration;
 use serde::Serialize;
 
 mod chat;
+mod settings;
 use tauri::{AppHandle, Manager, Url, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_deep_link::DeepLinkExt;
 
@@ -205,6 +206,23 @@ async fn open_chat(app: AppHandle) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+/// Open the settings window: connections and the organization's switches.
+#[tauri::command]
+async fn open_settings(app: AppHandle) -> Result<(), String> {
+    if let Some(w) = app.get_webview_window("settings") {
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+        return Ok(());
+    }
+    WebviewWindowBuilder::new(&app, "settings", WebviewUrl::App("settings.html".into()))
+        .title("Columbus settings")
+        .inner_size(820.0, 860.0)
+        .min_inner_size(560.0, 560.0)
+        .build()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
 /// Open the map window for the chat's own session.
 #[tauri::command]
 async fn chat_open_map(st: tauri::State<'_, chat::ChatState>) -> Result<(), String> {
@@ -317,6 +335,7 @@ fn main() {
     }
     builder
         .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(chat::ChatState::default())
         .invoke_handler(tauri::generate_handler![
             sessions,
@@ -332,6 +351,12 @@ fn main() {
             chat::chat_stop,
             chat::chat_answer,
             chat::chat_end,
+            open_settings,
+            settings::settings_state,
+            settings::settings_save_connection,
+            settings::settings_delete_connection,
+            settings::settings_set_switch,
+            settings::settings_pick,
         ])
         .setup(|app| {
             heartbeat();

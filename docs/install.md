@@ -20,6 +20,10 @@ This creates `engine\venv` with GDAL, PROJ, GeoPandas and rasterio (about 300 MB
 
 ## 3. Tell Columbus what it may use
 
+**The easy way: the Columbus app.** Install the app (step 5), open it and press **Settings**. There you add connections (Browse for a GeoPackage or a folder of rasters, or fill in a database's host, login and password, which goes into your Credential Manager), set each one to read only or read and write, and turn edits and scripts on or off. Anything that gives your assistant more access asks for Windows Hello first; your assistant cannot change these settings itself. After a change, quit and reopen Claude desktop.
+
+**Or by hand,** as below.
+
 Columbus reads the organization's settings from `%ProgramData%\Columbus` and your connections from `%APPDATA%\Columbus\connections`. In an organization, IT manages these files. On your own machine you set them up yourself.
 
 - `policy.yaml` holds what is allowed at all: connection types, limits, hidden fields, export folders, download hosts. Start from `examples\policy.yaml`. With no file, Columbus allows only local GeoPackage and SQLite files, read-only, with no scripts and no edits.

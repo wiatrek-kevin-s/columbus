@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Columbus settings</title>
+    <link rel="stylesheet" href="style.css" />
+    <link rel="stylesheet" href="settings.css" />
+  </head>
+  <body>
+    <header>
+      <div class="head"><h1>Settings</h1></div>
+      <p>What your assistant may use through Columbus. <span id="confirm-note">Changes that give it more access ask you to confirm first.</span> Your assistant cannot change these.</p>
+    </header>
+    <main>
+      <p id="restart" class="notice" role="status" hidden>
+        Saved. Quit your AI app (in Claude desktop: <kbd>Cmd</kbd>+<kbd>Q</kbd> or <b>Quit</b>) and open it again for your assistant to use the change.
+      </p>
+      <p id="error" role="alert" hidden></p>
+
+      <section aria-labelledby="conn-h">
+        <div class="section-head">
+          <h2 id="conn-h">Connections</h2>
+          <button type="button" id="add" class="primary">Add connection</button>
+        </div>
+        <ul id="connections" aria-live="polite"></ul>
+        <p id="no-conn" class="muted" hidden>No connections yet. Add one: a GeoPackage, a folder of rasters or a database.</p>
+        <p class="muted small">Stored in <code id="conn-dir"></code></p>
+      </section>
+
+      <section aria-labelledby="org-h">
+        <h2 id="org-h">Organization settings</h2>
+        <p id="org-managed" class="muted" hidden>These are managed by your organization. Ask your IT team to change them.</p>
+        <label class="switch-row">
+          <input type="checkbox" id="allow_edits" />
+          <span><b>Allow edits.</b> Your assistant may write to connections set to <i>read-write</i>, and only after you approve each change set. When off, every connection is read-only.</span>
+        </label>
+        <label class="switch-row">
+          <input type="checkbox" id="allow_scripts" />
+          <span><b>Allow Python scripts.</b> Your assistant may run Python scripts it writes, after you read and approve each one. They run in a sandbox with no network.</span>
+        </label>
+        <p class="muted small">Stored in <code id="policy-path"></code></p>
+        <p id="policy-problem" class="error-text" hidden></p>
+      </section>
+    </main>
+
+    <dialog id="editor" aria-labelledby="editor-h">
+      <form id="form" method="dialog">
+        <h2 id="editor-h">Add connection</h2>
+        <div class="grid">
+          <label>Name <input name="conn_id" required maxlength="40" autocomplete="off" />
+            <small>How your assistant refers to it, e.g. <i>roads</i> or <i>parcels-pg</i>.</small></label>
+          <label>Type
+            <select name="kind">
+              <option value="gpkg">GeoPackage file</option>
+              <option value="sqlite">SQLite file</option>
+              <option value="rasters">Folder of rasters (GeoTIFF)</option>
+              <option value="postgis">PostgreSQL / PostGIS</option>
+              <option value="sqlserver">SQL Server</option>
+              <option value="oracle">Oracle</option>
+            </select></label>
+          <label class="wide" data-for="gpkg sqlite rasters">Location
+            <span class="pick"><input name="path" autocomplete="off" /><button type="button" id="browse">Browse…</button></span></label>
+          <label data-for="postgis sqlserver oracle">Host <input name="host" autocomplete="off" /></label>
+          <label data-for="postgis sqlserver oracle">Port <input name="port" type="number" min="1" max="65535" /></label>
+          <label data-for="postgis sqlserver">Database <input name="database" autocomplete="off" /></label>
+          <label data-for="oracle">Service name (DSN) <input name="dsn" autocomplete="off" /></label>
+          <label data-for="postgis sqlserver oracle">Login <input name="user" autocomplete="off" /></label>
+          <label data-for="postgis sqlserver oracle">Password <input name="password" type="password" autocomplete="new-password" />
+            <small id="pw-note">Kept in your computer's credential store, never in a file.</small></label>
+          <label data-for="postgis">SSL <select name="sslmode">
+              <option value="">Default (prefer)</option><option>disable</option><option>prefer</option><option>require</option><option>verify-full</option>
+            </select></label>
+          <label data-for="postgis">Schemas <input name="search_path" placeholder="public" autocomplete="off" /></label>
+          <label>Access <select name="mode">
+              <option value="read">Read only</option>
+              <option value="read-write">Read and write (needs edits allowed)</option>
+            </select></label>
+          <label class="wide">Datasets allowed <input name="allow" value="*" autocomplete="off" />
+            <small>Names or patterns, separated by commas. <code>*</code> means all.</small></label>
+          <label class="wide">Datasets refused <input name="deny" autocomplete="off" />
+            <small>Wins over allowed, e.g. <code>*audit*</code>.</small></label>
+          <label class="wide">Row filter <input name="row_filter" autocomplete="off" placeholder="e.g. district_nbr = 14" />
+            <small>Added to every query: your assistant sees only the rows it keeps.</small></label>
+          <label class="wide">Description <input name="description" autocomplete="off" /></label>
+        </div>
+        <p id="form-error" class="error-text" role="alert" hidden></p>
+        <div class="actions">
+          <button type="button" id="delete" class="danger" hidden>Remove</button>
+          <span class="spacer"></span>
+          <button type="button" id="cancel">Cancel</button>
+          <button type="submit" id="save" class="primary">Save</button>
+        </div>
+      </form>
+    </dialog>
+    <script src="settings.js"></script>
+  </body>
+</html>
