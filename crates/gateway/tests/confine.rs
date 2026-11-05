@@ -1,6 +1,6 @@
 //! The `columbus-confine` launcher at each level (design change 1, Rule 5),
-//! on whatever this machine is: Linux (Landlock, seccomp) or Windows
-//! (AppContainer, restricted token, job object). Uses Python as the
+//! on whatever this machine is: Linux (Landlock, seccomp), macOS
+//! (Seatbelt) or Windows (AppContainer, restricted token, job object). Uses Python as the
 //! confined program so the same checks run on both.
 
 use std::path::{Path, PathBuf};
@@ -266,6 +266,16 @@ fn memory_limit_applies() {
         return;
     }
     let d = dirs();
+    if cfg!(target_os = "macos") {
+        // macOS does not refuse the allocation; the launcher stops the
+        // program once it is using the memory.
+        let s = "b = bytearray(1024 * 1024 * 1024)\nfor i in range(0, len(b), 4096): b[i] = 1\nprint('big: ok')\n";
+        let out = run("A", &d.ws, &["--memory-mb", "256"], &py, s);
+        assert!(!has(&out, "big: ok"), "{}{}", out.stdout, out.stderr);
+        assert_eq!(out.code, 137, "{}", out.stderr);
+        assert!(out.stderr.contains("more than 256 MB"), "{}", out.stderr);
+        return;
+    }
     let s = attempt("big", "bytearray(1024 * 1024 * 1024)");
     let out = run("A", &d.ws, &["--memory-mb", "256"], &py, &s);
     assert!(has(&out, "big: refused"), "{}{}", out.stdout, out.stderr);
@@ -368,6 +378,61 @@ fn level_a_starts_with_the_small_environment_plugins_get() {
         o.status.code(),
         String::from_utf8_lossy(&o.stderr)
     );
+}
+
+/// Level A on macOS: no Unix socket outside, no system services, no
+/// reading the person's home folder outside the grant.
+#[cfg(target_os = "macos")]
+#[test]
+fn level_a_on_macos_reaches_no_socket_service_or_home_folder() {
+    let Some(py) = python() else { return };
+    if !can_confine() {
+        return;
+    }
+    let d = dirs();
+    let sock = d.outside.join("bus.sock");
+    let _listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+    let home = std::env::var("HOME").unwrap();
+    let s = [
+        format!(
+            "import socket, os, subprocess\n{}",
+            attempt(
+                "unix",
+                &format!(
+                    "socket.socket(socket.AF_UNIX).connect({:?})",
+                    sock.display().to_string()
+                )
+            )
+        ),
+        attempt("pair", "socket.socketpair()"),
+        attempt("home", &format!("os.listdir({home:?})")),
+        attempt(
+            "keychains",
+            &format!("os.listdir({:?})", format!("{home}/Library/Keychains")),
+        ),
+        attempt("tcp", "socket.socket(socket.AF_INET)"),
+        attempt(
+            "exec_outside",
+            "subprocess.run(['/usr/bin/true'], check=True)",
+        ),
+    ]
+    .concat();
+    let out = run("A", &d.ws, &[], &py, &s);
+    for l in [
+        "unix: refused",
+        "pair: ok",
+        "home: refused",
+        "keychains: refused",
+        "tcp: refused",
+        "exec_outside: ok",
+    ] {
+        assert!(
+            has(&out, l),
+            "expected {l:?}:\n{}{}",
+            out.stdout,
+            out.stderr
+        );
+    }
 }
 
 #[cfg(target_os = "linux")]

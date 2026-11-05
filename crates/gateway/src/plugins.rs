@@ -811,10 +811,6 @@ tools:
     }
 
     #[test]
-    #[cfg_attr(
-        target_os = "macos",
-        ignore = "no sandbox on macOS yet, so every plugin is blocked before approval is looked at"
-    )]
     fn approval_and_change_detection() {
         let d = tempfile::tempdir().unwrap();
         let pd = d.path().join("lrs");

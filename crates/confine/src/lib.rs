@@ -4,11 +4,11 @@
 //! `columbus-confine` launcher, which confines itself or the child and then
 //! runs the real program with the gateway's pipes:
 //!
-//! | Level | Windows | Linux (development and CI) | Files | Network |
-//! | --- | --- | --- | --- | --- |
-//! | A | AppContainer, no capabilities, job object | Landlock, seccomp | granted folders only | none |
-//! | B | AppContainer with internetClient, job object | Landlock | granted folders only | internet |
-//! | C | restricted token at low integrity, job object | Landlock (writes only) | read anywhere, write granted folders only | as the program likes (loopback to a desktop app) |
+//! | Level | Windows | macOS | Linux (development and CI) | Files | Network |
+//! | --- | --- | --- | --- | --- | --- |
+//! | A | AppContainer, no capabilities, job object | Seatbelt | Landlock, seccomp | granted folders only | none |
+//! | B | AppContainer with internetClient, job object | Seatbelt | Landlock | granted folders only | internet |
+//! | C | not yet (refused) | Seatbelt | Landlock (writes only) | read anywhere, write granted folders only | as the program likes (loopback to a desktop app) |
 //!
 //! "Granted folders" are the session workspace and the folders the manifest
 //! declares, read-write, plus read-only folders the program needs to run
@@ -22,6 +22,8 @@ use serde::{Deserialize, Serialize};
 
 #[cfg(target_os = "linux")]
 mod linux;
+#[cfg(target_os = "macos")]
+mod macos;
 #[cfg(windows)]
 mod windows;
 
@@ -245,10 +247,7 @@ pub fn available(level: Level) -> Result<(), Error> {
     }
     #[cfg(target_os = "macos")]
     {
-        Err(Error::Unsupported(format!(
-            "level {} is not available on macOS yet: Columbus has no sandbox there, so local servers, plugins and scripts are refused rather than run unconfined",
-            level.as_str()
-        )))
+        macos::available(level)
     }
     #[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
     {
@@ -334,7 +333,11 @@ pub fn launch(spec: &Spec, program: &str, args: &[String]) -> Result<i32, Error>
     {
         windows::launch(spec, program, args)
     }
-    #[cfg(not(any(target_os = "linux", windows)))]
+    #[cfg(target_os = "macos")]
+    {
+        macos::launch(spec, program, args)
+    }
+    #[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
     {
         let _ = (program, args);
         Err(Error::Unsupported(format!(
