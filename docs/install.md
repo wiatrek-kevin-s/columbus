@@ -55,6 +55,11 @@ The app shows each Columbus session running on your computer: its layers on a ma
 
 Open Columbus while your assistant is working and press **Open** beside the session. Requests that need your decision show in the window, with **Review in your browser**: you decide them on the page Columbus opens in your browser, never in the app. The basemap is off until you turn it on (map tiles come from OpenFreeMap, which then sees the area in view).
 
+
+### Chat in the app
+
+The app can also chat with Claude itself, using an Anthropic API key (billed by Anthropic per use, separate from a Claude subscription; create one at console.anthropic.com). Press **Chat**, open **Settings**, paste the key and press **Save key**: it goes into your computer's credential store. The chat starts its own Columbus session from the server in `C:\\Columbus` (change it in Settings if yours is elsewhere), so the same policy, connections and checks apply. When something needs your approval, the chat shows the request with **Allow once**, **Allow for this session** and **Decline**. For a Python script, the request shows the code the AI wrote in its own box, apart from what Columbus says about the run: read it before allowing. Closing the chat window ends its session. **Show map** opens the session's window with its layers.
+
 ## 6. Skills
 
 The `skills` folder holds GIS skills: CRS choice, joins, QA, spatial SQL, rasters, lidar, imagery, deliverables, SOP conversion and more. Copy them where your agent loads skills, for example `%USERPROFILE%\.claude\skills` for Claude Code.

@@ -1,0 +1,28 @@
+[package]
+name = "columbus-chat"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "The Columbus app's chat: an AI model driving a columbus-mcp session as its only tools"
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+rmcp = { workspace = true, features = ["client", "transport-child-process", "elicitation"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "http2", "system-proxy"] }
+
+# The operating system's certificate store on Windows (TLS inspection,
+# corporate roots); rustls elsewhere.
+[target.'cfg(windows)'.dependencies]
+reqwest = { version = "0.13", default-features = false, features = ["native-tls"] }
+[target.'cfg(not(windows))'.dependencies]
+reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
+
+[dev-dependencies]
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json"] }
+tempfile.workspace = true

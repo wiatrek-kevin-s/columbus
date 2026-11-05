@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Columbus chat</title>
+    <link rel="stylesheet" href="style.css" />
+    <link rel="stylesheet" href="chat.css" />
+  </head>
+  <body class="chat">
+    <header class="bar">
+      <h1>Columbus chat</h1>
+      <div class="actions">
+        <button type="button" id="map" disabled>Show map</button>
+        <button type="button" id="new">New chat</button>
+        <button type="button" id="settings-toggle" aria-expanded="false" aria-controls="settings">Settings</button>
+      </div>
+    </header>
+
+    <section id="settings" hidden aria-label="Settings">
+      <h2>Settings</h2>
+      <p class="note">
+        The chat uses an Anthropic API key, billed by Anthropic per use, separately from a Claude subscription.
+        Create one at console.anthropic.com. It is kept in your computer's credential store, never in a file.
+      </p>
+      <form id="key-form">
+        <label for="key">API key</label>
+        <div class="row">
+          <input id="key" type="password" autocomplete="off" spellcheck="false" placeholder="sk-ant-…" />
+          <button type="submit" class="primary">Save key</button>
+          <button type="button" id="key-clear">Remove key</button>
+        </div>
+        <p id="key-state" class="note"></p>
+      </form>
+      <form id="prefs-form">
+        <label for="model">Model</label>
+        <select id="model"></select>
+        <label for="server">Columbus server</label>
+        <input id="server" type="text" spellcheck="false" placeholder="/Users/you/Columbus/columbus-mcp" />
+        <p id="server-state" class="note"></p>
+        <div class="row"><button type="submit" class="primary">Save settings</button></div>
+      </form>
+    </section>
+
+    <main id="log" aria-live="polite" aria-label="Conversation"></main>
+
+    <form id="composer">
+      <label for="text" class="visually-hidden">Message</label>
+      <textarea id="text" rows="3" placeholder="Ask about your data, for example: Which datasets can I use, and what CRS are they in?"></textarea>
+      <div class="row">
+        <span id="status" class="note"></span>
+        <button type="button" id="stop" hidden>Stop</button>
+        <button type="submit" id="send" class="primary">Send</button>
+      </div>
+    </form>
+    <script src="chat.js"></script>
+  </body>
+</html>

@@ -1,5 +1,7 @@
 Columbus {{VERSION}}, a test release. Click a link to download that file.
 
+**New in this version:** the app's chat shows code the AI wrote for a Python script in its own box, apart from what Columbus says about the run; requests you no longer need to answer are marked as withdrawn; closing the chat window ends its session.
+
 ## Mac (Apple Silicon: M1 or later)
 
 **Already set up Columbus before? Update with these two files:**
@@ -23,7 +25,7 @@ Columbus {{VERSION}}, a test release. Click a link to download that file.
 | File | What it is |
 | --- | --- |
 | `.mcpb` | The Columbus server as a Claude desktop extension: Claude starts it for you |
-| `columbus-app-…` | The Columbus app: each running session's layers on a map, its tables, checks, and the requests waiting for your decision (you decide them in your browser) |
+| `columbus-app-…` | The Columbus app: each running session's layers on a map, its tables, checks, and the requests waiting for your decision; and a chat with Claude using your own Anthropic API key |
 | `.zip` | The server as a folder, with the GIS engine setup script, examples, skills and guides |
 
 Nothing is code-signed yet, which is why macOS and Windows warn; the steps above say what to do.

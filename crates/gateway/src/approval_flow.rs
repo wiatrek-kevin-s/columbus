@@ -17,7 +17,7 @@ use rmcp::service::RequestContext;
 use rmcp::RoleServer;
 use serde_json::Value;
 
-use crate::providers::{ask_person, Asked};
+use crate::providers::Asked;
 use crate::server::{ApprovalNeeded, Gateway};
 
 pub(crate) enum Sought {
@@ -42,9 +42,10 @@ pub(crate) struct Ask<'a> {
     /// Ask on every call: no standing "allow for this session" covers it,
     /// and the person is only offered "allow once" (scripts).
     pub every_time: bool,
-    /// Text the person must see before deciding (a script's full code),
-    /// added to the in-client prompt; the page shows it from `detail`.
-    pub shown: Option<String>,
+    /// Code written by the AI that the person must read before deciding (a
+    /// script), sent to the client as its own part; the page shows it from
+    /// `detail`.
+    pub code: Option<&'a str>,
 }
 
 impl Gateway {
@@ -89,14 +90,11 @@ impl Gateway {
         )?;
         let declined = || format!("the person declined: {}", ask.summary);
 
-        let message = match &ask.shown {
-            Some(extra) => format!("{}\n\n{extra}", ask.summary),
-            None => ask.summary.clone(),
-        };
-        match ask_person(
+        match crate::providers::ask_person_with(
             ctx,
             &format!("Columbus: allow {}?", ask.label),
-            &message,
+            &ask.summary,
+            ask.code,
             !ask.every_time,
             Duration::from_secs(600),
         )

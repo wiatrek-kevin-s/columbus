@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-chat-end"
+description = "Enables the chat_end command without any pre-configured scope."
+commands.allow = ["chat_end"]
+
+[[permission]]
+identifier = "deny-chat-end"
+description = "Denies the chat_end command without any pre-configured scope."
+commands.deny = ["chat_end"]

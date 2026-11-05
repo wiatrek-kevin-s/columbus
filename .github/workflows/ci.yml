@@ -133,6 +133,20 @@ jobs:
           ( cd app/ui && npm ci && npm run build )
           cargo build -p columbus-mcp --locked
           dbus-run-session -- xvfb-run -a python app/desktop/e2e/deeplink.py target/debug/columbus-mcp app/desktop/src-tauri/target/debug/columbus-desktop
+      - name: The chat window, driven through WebDriver (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          # The package was renamed in newer Ubuntu releases.
+          sudo apt-get install -y webkitgtk-webdriver || sudo apt-get install -y webkit2gtk-driver
+          command -v WebKitWebDriver || ls /usr/lib/*/webkit*gtk*/ 2>/dev/null
+          cargo install tauri-driver --locked
+          python -m pip install selenium
+          dbus-run-session -- xvfb-run -a -s "-screen 0 1400x900x24" python app/desktop/e2e/chat.py target/debug/columbus-mcp app/desktop/src-tauri/target/debug/columbus-desktop
+      - uses: actions/upload-artifact@v4
+        if: always() && runner.os == 'Linux'
+        with:
+          name: desktop-screenshots
+          path: app/desktop/e2e/out/
 
   postgis:
     name: PostGIS engine
