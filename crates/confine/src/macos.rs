@@ -666,7 +666,7 @@ mod tests {
         assert!(!p.contains("network-outbound"), "level A has no network");
         assert!(p.contains("(param \"TAG\")"));
         let b = profile(Level::B, 0, 1);
-        assert!(b.contains("(remote ip)") && b.contains("localhost:*"));
+        assert!(b.contains("(remote ip4)") && b.contains("localhost:*"));
         let c = profile(Level::C, 0, 1);
         assert!(c.contains("(allow file-read*)\n"));
         assert!(c.contains("(allow file-write* (subpath (param \"RW0\")))"));
