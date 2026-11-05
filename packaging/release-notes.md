@@ -1,5 +1,7 @@
 Columbus {{VERSION}}, a test release. Click a link to download that file.
 
+**New in this version:** the app's chat shows code the AI wrote for a Python script in its own box, apart from what Columbus says about the run; requests you no longer need to answer are marked as withdrawn; closing the chat window ends its session.
+
 ## Mac (Apple Silicon: M1 or later)
 
 **Already set up Columbus before? Update with these two files:**
