@@ -18,6 +18,15 @@ tauri = { version = "=2.12.5", features = [] }
 tauri-plugin-deep-link = "=2.6.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+columbus-chat = { path = "../../../crates/chat" }
+tokio = { version = "1", features = ["sync", "time"] }
+keyring-core = "1"
+
+# The API key lives in the operating system's credential store.
+[target.'cfg(target_os = "macos")'.dependencies]
+apple-native-keyring-store = { version = "1", features = ["keychain"] }
+[target.'cfg(windows)'.dependencies]
+windows-native-keyring-store = "1"
 
 [target.'cfg(any(windows, target_os = "linux"))'.dependencies]
 tauri-plugin-single-instance = { version = "=2.5.5", features = ["deep-link"] }

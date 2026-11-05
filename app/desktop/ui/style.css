@@ -25,3 +25,6 @@ button:focus-visible { outline: 2px solid var(--hydro); outline-offset: 2px; }
 #empty { color: var(--soft); max-width: 60ch; }
 #error { color: var(--fail); }
 code { font-size: 13px; }
+.head { display: flex; align-items: center; gap: 12px; margin-bottom: 4px; }
+.head h1 { margin: 0; }
+.head button { margin-left: auto; }

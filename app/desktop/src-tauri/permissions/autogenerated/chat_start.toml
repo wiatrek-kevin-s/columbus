@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-chat-start"
+description = "Enables the chat_start command without any pre-configured scope."
+commands.allow = ["chat_start"]
+
+[[permission]]
+identifier = "deny-chat-start"
+description = "Denies the chat_start command without any pre-configured scope."
+commands.deny = ["chat_start"]

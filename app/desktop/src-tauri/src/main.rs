@@ -31,6 +31,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use serde::Serialize;
+
+mod chat;
 use tauri::{AppHandle, Manager, Url, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_deep_link::DeepLinkExt;
 
@@ -40,7 +42,11 @@ fn live_dir() -> PathBuf {
     if let Some(d) = std::env::var_os("COLUMBUS_LIVE_DIR").filter(|v| !v.is_empty()) {
         return PathBuf::from(d);
     }
-    let env = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from);
+    let env = |k: &str| {
+        std::env::var_os(k)
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+    };
     let base = if cfg!(windows) {
         env("LOCALAPPDATA")
             .or_else(|| env("APPDATA"))
@@ -76,7 +82,8 @@ fn answers(port: u16) -> bool {
         return false;
     };
     let _ = s.set_read_timeout(Some(Duration::from_millis(800)));
-    let req = format!("GET /api/state HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n");
+    let req =
+        format!("GET /api/state HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n");
     if s.write_all(req.as_bytes()).is_err() {
         return false;
     }
@@ -150,7 +157,8 @@ fn ask_for_window(port: u16) -> Result<(), String> {
         return Err("that session is no longer running".into());
     }
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
-    let mut s = TcpStream::connect_timeout(&addr, Duration::from_millis(500)).map_err(|e| e.to_string())?;
+    let mut s =
+        TcpStream::connect_timeout(&addr, Duration::from_millis(500)).map_err(|e| e.to_string())?;
     let _ = s.set_read_timeout(Some(Duration::from_secs(3)));
     let req = format!(
         "POST /api/open HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nX-Columbus-Open: 1\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
@@ -167,6 +175,44 @@ fn ask_for_window(port: u16) -> Result<(), String> {
             head.lines().next().unwrap_or("no answer")
         ))
     }
+}
+
+/// Open (or bring forward) the chat window.
+#[tauri::command]
+async fn open_chat(app: AppHandle) -> Result<(), String> {
+    if let Some(w) = app.get_webview_window("chat") {
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+        return Ok(());
+    }
+    WebviewWindowBuilder::new(&app, "chat", WebviewUrl::App("chat.html".into()))
+        .title("Columbus chat")
+        .inner_size(760.0, 860.0)
+        .min_inner_size(480.0, 520.0)
+        .build()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+/// Open the map window for the chat's own session.
+#[tauri::command]
+async fn chat_open_map(st: tauri::State<'_, chat::ChatState>) -> Result<(), String> {
+    let session = st
+        .session
+        .lock()
+        .expect("session")
+        .clone()
+        .ok_or("the chat has not started")?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let port = live_sessions()
+            .into_iter()
+            .find(|s| s.session == session)
+            .map(|s| s.port)
+            .ok_or("the chat's session is not running")?;
+        ask_for_window(port)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// `columbus://open?port=<p>#t=<64 hex>` for a running session, as the
@@ -260,11 +306,27 @@ fn main() {
     }
     builder
         .plugin(tauri_plugin_deep_link::init())
-        .invoke_handler(tauri::generate_handler![sessions, open_session])
+        .manage(chat::ChatState::default())
+        .invoke_handler(tauri::generate_handler![
+            sessions,
+            open_session,
+            open_chat,
+            chat_open_map,
+            chat::chat_settings,
+            chat::chat_save_settings,
+            chat::chat_set_key,
+            chat::chat_clear_key,
+            chat::chat_start,
+            chat::chat_send,
+            chat::chat_stop,
+            chat::chat_answer,
+            chat::chat_end,
+        ])
         .setup(|app| {
             heartbeat();
             let handle = app.handle().clone();
-            app.deep_link().on_open_url(move |event| handle_links(&handle, event.urls()));
+            app.deep_link()
+                .on_open_url(move |event| handle_links(&handle, event.urls()));
             if let Ok(Some(urls)) = app.deep_link().get_current() {
                 handle_links(app.handle(), urls);
             }

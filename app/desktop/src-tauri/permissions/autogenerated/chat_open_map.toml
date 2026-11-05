@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-chat-open-map"
+description = "Enables the chat_open_map command without any pre-configured scope."
+commands.allow = ["chat_open_map"]
+
+[[permission]]
+identifier = "deny-chat-open-map"
+description = "Denies the chat_open_map command without any pre-configured scope."
+commands.deny = ["chat_open_map"]

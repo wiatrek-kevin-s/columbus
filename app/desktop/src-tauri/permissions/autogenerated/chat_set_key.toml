@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-chat-set-key"
+description = "Enables the chat_set_key command without any pre-configured scope."
+commands.allow = ["chat_set_key"]
+
+[[permission]]
+identifier = "deny-chat-set-key"
+description = "Denies the chat_set_key command without any pre-configured scope."
+commands.deny = ["chat_set_key"]

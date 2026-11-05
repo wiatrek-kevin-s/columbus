@@ -87,6 +87,11 @@ xattr -dr com.apple.quarantine /Applications/Columbus.app
 
 Open Columbus while your assistant is working (ask it to call `whoami` if no session is listed), and press **Open** beside the session. Requests that need your decision show in the window, with **Review in your browser**: you decide them on the page Columbus opens in your browser, never in the app, so no other program can approve them for you. The basemap is off until you turn it on (map tiles come from OpenFreeMap, which then sees the area in view).
 
+
+### Chat in the app
+
+The app can also chat with Claude itself, using an Anthropic API key (billed by Anthropic per use, separate from a Claude subscription; create one at console.anthropic.com). Press **Chat**, open **Settings**, paste the key and press **Save key**: it goes into your computer's credential store. The chat starts its own Columbus session from the server in `~/Columbus` (change it in Settings if yours is elsewhere), so the same policy, connections and checks apply. When something needs your approval, the chat shows the request with **Allow once**, **Allow for this session** and **Decline**. **Show map** opens the session's window with its layers.
+
 ## 6. Skills
 
 The `skills` folder holds GIS skills. Copy them where your agent loads skills, for example `~/.claude/skills` for Claude Code.

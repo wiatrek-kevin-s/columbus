@@ -57,5 +57,7 @@ async function refresh() {
   }
 }
 
+document.getElementById("chat").addEventListener("click", () => invoke("open_chat"));
+
 refresh();
 setInterval(refresh, 3000);
