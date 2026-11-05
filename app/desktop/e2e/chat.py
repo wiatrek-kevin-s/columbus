@@ -174,6 +174,10 @@ def main():
         d.find_element(By.ID, "stop").click()
         WebDriverWait(d, 20).until(lambda drv: "No longer waiting" in card.text)
         assert not card.find_elements(By.TAG_NAME, "button"), "no live buttons after Stop"
+        # The chat's own session is in the app's list, marked as in use.
+        d.switch_to.window(main)
+        WebDriverWait(d, 20).until(lambda drv: "Used just now" in drv.find_element(By.ID, "sessions").text)
+        d.save_screenshot(str(OUT / "sessions.png"))
         print("desktop chat e2e: ok")
     finally:
         d.quit()

@@ -147,6 +147,14 @@ async fn companion_window_shows_the_sessions_outputs() {
     let port = live["port"].as_u64().unwrap();
     let text = live.to_string();
     assert!(!text.contains("#t=") && !text.contains("token"), "{text}");
+    // whoami was a tool call: the session says when it was last used, for
+    // the app's "used 2 minutes ago".
+    assert!(
+        live["last_used"]
+            .as_str()
+            .is_some_and(|t| chrono::DateTime::parse_from_rfc3339(t).is_ok()),
+        "{text}"
+    );
     let base = format!("http://127.0.0.1:{port}");
     let origin = base.clone();
     let http = reqwest::Client::new();
