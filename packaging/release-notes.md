@@ -1,6 +1,6 @@
 Columbus {{VERSION}}, a test release. Click a link to download that file.
 
-**New in this version:** the Columbus app shows when each session was last used ("Used 2 minutes ago", or "Not used yet") and lists the one in use first; update both the extension and the app. Claude desktop often starts a second, idle Columbus session: it is harmless. Since 0.3.0: on a Mac, engine plugins, `run_python` scripts and local MCP servers run inside the macOS sandbox instead of being refused.
+**New in this version: editing data** (GeoPackage and PostGIS). The assistant proposes changes with `propose_edits` (nothing is written); `apply_edits` writes them to a copy in the workspace, or to your data after you approve a card that lists every change. Writing to your data stays off until your settings file has `allow_edits: true` and the connection has `mode: read-write`. Update the extension; the app is unchanged since 0.3.3.
 
 ## Mac (Apple Silicon: M1 or later)
 
