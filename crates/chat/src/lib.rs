@@ -32,6 +32,11 @@ use tokio::sync::{oneshot, Notify};
 
 /// Steps (model calls) one message may take before the chat stops.
 pub const MAX_STEPS: usize = 60;
+/// Tool calls the model may ask for in one step.
+pub const MAX_CALLS_PER_STEP: usize = 10;
+/// Input tokens one message may use across its steps (cached tokens count
+/// a tenth), so a run cannot run up a large bill unnoticed.
+pub const MAX_INPUT_TOKENS: u64 = 1_500_000;
 /// Longest tool result passed to the model, in characters.
 pub const MAX_RESULT_CHARS: usize = 40_000;
 /// When the conversation grows past this (characters of JSON), the oldest
@@ -46,7 +51,7 @@ pub const MODELS: &[(&str, &str)] = &[
     ("claude-haiku-5-5", "Claude Haiku 5.5 (fastest)"),
 ];
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Config {
     /// `columbus-mcp`, started as `serve`.
     pub server: PathBuf,
@@ -56,6 +61,17 @@ pub struct Config {
     pub model: String,
     /// `https://api.anthropic.com`, or a stand-in in tests.
     pub api_base: String,
+}
+
+impl std::fmt::Debug for Config {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Config")
+            .field("server", &self.server)
+            .field("model", &self.model)
+            .field("api_base", &self.api_base)
+            .field("api_key", &"(hidden)")
+            .finish()
+    }
 }
 
 /// What the chat window shows as the conversation goes.
@@ -82,11 +98,19 @@ pub enum Event {
         warns: u32,
     },
     /// The session's server asks the person; answer with [`Answer`].
+    /// `summary` is the server's own description; `code`, when present, was
+    /// written by the AI and must be shown apart from it.
     Approval {
         id: u64,
         title: String,
-        message: String,
+        summary: String,
+        code: Option<String>,
         offer_always: bool,
+    },
+    /// A prompt that is no longer waiting (the call was cancelled or the
+    /// server stopped waiting): its card can no longer be answered.
+    ApprovalGone {
+        id: u64,
     },
     /// Something the person should know (the model is thinking, a limit).
     Status {
@@ -106,17 +130,25 @@ pub enum Answer {
     Decline,
 }
 
+/// An approval prompt from the session's server.
+#[derive(Debug, Clone)]
+pub struct Prompt {
+    pub title: String,
+    /// The server's own words.
+    pub summary: String,
+    /// Code written by the AI, to be shown apart from the server's words.
+    pub code: Option<String>,
+    pub offer_always: bool,
+}
+
 /// The chat window, as the chat sees it.
 pub trait Ui: Send + Sync + 'static {
     fn event(&self, e: Event);
-    /// Show an approval prompt; the answer comes back on the channel.
-    fn approve(
-        &self,
-        id: u64,
-        title: String,
-        message: String,
-        offer_always: bool,
-    ) -> oneshot::Receiver<Answer>;
+    /// Show an approval prompt; the answer comes back on the channel. The
+    /// window gives each prompt its id (unique across chats).
+    fn approve(&self, prompt: Prompt) -> (u64, oneshot::Receiver<Answer>);
+    /// The prompt is no longer waiting; forget it.
+    fn withdraw(&self, id: u64);
 }
 
 /// Stops a reply in progress.
@@ -134,7 +166,7 @@ impl Cancel {
     pub fn reset(&self) {
         self.flag.store(false, Ordering::SeqCst);
     }
-    fn is_cancelled(&self) -> bool {
+    pub fn is_cancelled(&self) -> bool {
         self.flag.load(Ordering::SeqCst)
     }
     async fn cancelled(&self) {
@@ -149,7 +181,7 @@ impl Cancel {
 /// the chat window.
 struct Handler {
     ui: Arc<dyn Ui>,
-    next: std::sync::atomic::AtomicU64,
+    cancel: Cancel,
 }
 
 impl ClientHandler for Handler {
@@ -167,16 +199,20 @@ impl ClientHandler for Handler {
     async fn create_elicitation(
         &self,
         request: ElicitRequestParams,
-        _context: RequestContext<RoleClient>,
+        context: RequestContext<RoleClient>,
     ) -> Result<ElicitResult, McpError> {
         let ElicitRequestParams::FormElicitationParams {
+            meta,
             message,
             requested_schema,
-            ..
         } = request
         else {
             return Ok(decline());
         };
+        // A prompt for a reply the person has stopped is declined unseen.
+        if self.cancel.is_cancelled() {
+            return Ok(decline());
+        }
         let schema = serde_json::to_value(&requested_schema).unwrap_or(Value::Null);
         let title = schema["title"]
             .as_str()
@@ -185,20 +221,53 @@ impl ClientHandler for Handler {
         let offer_always = schema["properties"]["decision"]["enum"]
             .as_array()
             .is_some_and(|a| a.iter().any(|v| v == "always_this_session"));
-        // The server's last line is for clients with a plain accept or
-        // decline; the window has its own buttons.
-        let message = message
-            .trim_end()
-            .trim_end_matches("Accept to allow it, decline to refuse.")
-            .trim_end()
-            .to_string();
-        let id = self.next.fetch_add(1, Ordering::SeqCst) + 1;
-        let rx = self.ui.approve(id, title, message, offer_always);
-        Ok(match rx.await {
-            Ok(Answer::AllowOnce) => accept("allow_once"),
-            Ok(Answer::AlwaysThisSession) if offer_always => accept("always_this_session"),
-            Ok(Answer::AlwaysThisSession) => accept("allow_once"),
-            Ok(Answer::Decline) | Err(_) => decline(),
+        // Columbus servers send their summary and any AI-written code apart;
+        // other servers only the message.
+        // The MCP library moves a request's `_meta` into the context; the
+        // params keep it only when built by hand.
+        let parts = context
+            .meta
+            .0
+             .0
+            .get("io.columbus/approval")
+            .or_else(|| {
+                meta.as_ref()
+                    .and_then(|m| m.0 .0.get("io.columbus/approval"))
+            })
+            .cloned()
+            .unwrap_or(Value::Null);
+        let (summary, code) = match parts["summary"].as_str() {
+            Some(sum) => (sum.to_string(), parts["code"].as_str().map(String::from)),
+            None => (
+                message
+                    .trim_end()
+                    .trim_end_matches("Accept to allow it, decline to refuse.")
+                    .trim_end()
+                    .to_string(),
+                None,
+            ),
+        };
+        let (id, rx) = self.ui.approve(Prompt {
+            title,
+            summary,
+            code,
+            offer_always,
+        });
+        let answer = tokio::select! {
+            a = rx => a.ok(),
+            // The server stopped waiting (or the call was cancelled).
+            _ = context.ct.cancelled() => None,
+            _ = self.cancel.cancelled() => None,
+        };
+        Ok(match answer {
+            Some(Answer::AllowOnce) => accept("allow_once"),
+            Some(Answer::AlwaysThisSession) if offer_always => accept("always_this_session"),
+            Some(Answer::AlwaysThisSession) => accept("allow_once"),
+            Some(Answer::Decline) => decline(),
+            None => {
+                self.ui.withdraw(id);
+                decline()
+            }
         })
     }
 }
@@ -233,8 +302,9 @@ itself; do not ask them to approve in your reply. Layers you make appear on the 
 Columbus window as you make them. Be concise and specific: dataset names, row counts, CRS codes and units.";
 
 impl Chat {
-    /// Start a session of `cfg.server` for this chat.
-    pub async fn start(cfg: Config, ui: Arc<dyn Ui>) -> Result<Chat> {
+    /// Start a session of `cfg.server` for this chat. `cancel` stops its
+    /// replies, and declines prompts that arrive after a stop.
+    pub async fn start(cfg: Config, ui: Arc<dyn Ui>, cancel: Cancel) -> Result<Chat> {
         if cfg.api_key.trim().is_empty() {
             bail!("no API key is set");
         }
@@ -242,6 +312,15 @@ impl Chat {
         let env = cfg.server_env.clone();
         let cmd = tokio::process::Command::new(&server).configure(move |c| {
             c.arg("serve");
+            // The key is the app's alone: never in the session's
+            // environment, and so never in its workers'.
+            for k in [
+                "COLUMBUS_APP_API_KEY",
+                "ANTHROPIC_API_KEY",
+                "COLUMBUS_APP_API_BASE",
+            ] {
+                c.env_remove(k);
+            }
             for (k, v) in &env {
                 c.env(k, v);
             }
@@ -250,7 +329,7 @@ impl Chat {
             .with_context(|| format!("starting the Columbus server at {}", server.display()))?;
         let handler = Handler {
             ui: ui.clone(),
-            next: Default::default(),
+            cancel,
         };
         let client = handler
             .serve(transport)
@@ -282,8 +361,10 @@ impl Chat {
             system.push_str("\n\nHow to work with Columbus (the working-with-columbus skill):\n\n");
             system.push_str(&skill);
         }
+        // No redirects: the key header would follow them to another host.
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(300))
+            .redirect(reqwest::redirect::Policy::none())
             .build()?;
         Ok(Chat {
             client,
@@ -327,7 +408,17 @@ impl Chat {
     }
 
     async fn run(&mut self, cancel: &Cancel) -> Result<()> {
+        let mut used: u64 = 0;
         for _ in 0..MAX_STEPS {
+            if used > MAX_INPUT_TOKENS {
+                self.ui.event(Event::Status {
+                    text: format!(
+                        "Stopped: this message has used about {} thousand input tokens. Ask to continue if it should go on.",
+                        used / 1000
+                    ),
+                });
+                return Ok(());
+            }
             self.trim_history();
             let reply = tokio::select! {
                 r = self.ask_model() => r?,
@@ -336,6 +427,10 @@ impl Chat {
                     bail!("stopped")
                 }
             };
+            let u = &reply["usage"];
+            used += u["input_tokens"].as_u64().unwrap_or(0)
+                + u["cache_creation_input_tokens"].as_u64().unwrap_or(0)
+                + u["cache_read_input_tokens"].as_u64().unwrap_or(0) / 10;
             let content = reply["content"].as_array().cloned().unwrap_or_default();
             self.history
                 .push(json!({"role": "assistant", "content": content.clone()}));
@@ -358,7 +453,16 @@ impl Chat {
                 return Ok(());
             }
             let mut results = Vec::new();
-            for call in calls {
+            for (n, call) in calls.into_iter().enumerate() {
+                if n >= MAX_CALLS_PER_STEP {
+                    let id = call["id"].as_str().unwrap_or_default();
+                    results.push(tool_result(
+                        id,
+                        &format!("Not run: at most {MAX_CALLS_PER_STEP} tool calls per step."),
+                        true,
+                    ));
+                    continue;
+                }
                 let id = call["id"].as_str().unwrap_or_default().to_string();
                 let name = call["name"].as_str().unwrap_or_default().to_string();
                 let input = call["input"].clone();
@@ -413,11 +517,16 @@ impl Chat {
     }
 
     async fn ask_model(&self) -> Result<Value> {
+        // The system text and tools are the same every step: cache them.
+        let mut tools = self.tools.clone();
+        if let Some(last) = tools.last_mut() {
+            last["cache_control"] = json!({"type": "ephemeral"});
+        }
         let body = json!({
             "model": self.cfg.model,
             "max_tokens": 8192,
-            "system": self.system,
-            "tools": self.tools,
+            "system": [{"type": "text", "text": self.system, "cache_control": {"type": "ephemeral"}}],
+            "tools": tools,
             "messages": self.history,
         });
         let url = format!("{}/v1/messages", self.cfg.api_base.trim_end_matches('/'));

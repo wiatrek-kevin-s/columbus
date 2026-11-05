@@ -583,11 +583,15 @@ pub enum Asked {
 /// Ask the person, through their MCP client's own interface, whether to
 /// allow a call. The agent cannot answer this: elicitation is shown to the
 /// person by the client, outside the model's turn. Without `offer_always`
-/// the only choice is to allow this one call.
-pub async fn ask_person(
+/// the only choice is to allow this one call. Keeps apart the
+/// parts a client that draws its own prompt should show separately: the server's summary, and code written by the AI that the
+/// person must read (`_meta` key `io.columbus/approval`). `message` carries
+/// both for clients that show only text.
+pub async fn ask_person_with(
     ctx: &RequestContext<RoleServer>,
     title: &str,
     summary: &str,
+    code: Option<&str>,
     offer_always: bool,
     timeout: Duration,
 ) -> Asked {
@@ -618,9 +622,25 @@ pub async fn ask_person(
         Ok(s) => s,
         Err(_) => return Asked::Unsupported,
     };
+    let mut parts = serde_json::Map::new();
+    parts.insert("summary".into(), Value::String(summary.to_string()));
+    if let Some(c) = code {
+        parts.insert("code".into(), Value::String(c.to_string()));
+    }
+    let mut meta = serde_json::Map::new();
+    meta.insert("io.columbus/approval".into(), Value::Object(parts));
+    let message = match code {
+        Some(c) => format!(
+            "{summary}\n\nThe code ({} lines):\n\n{c}\n\nAccept to allow it, decline to refuse.",
+            c.lines().count()
+        ),
+        None => format!("{summary}\n\nAccept to allow it, decline to refuse."),
+    };
     let params = ElicitRequestParams::FormElicitationParams {
-        meta: None,
-        message: format!("{summary}\n\nAccept to allow it, decline to refuse."),
+        meta: Some(rmcp::model::RequestMetaObject(rmcp::model::MetaObject(
+            meta,
+        ))),
+        message,
         requested_schema: schema,
     };
     match tokio::time::timeout(timeout, ctx.peer.create_elicitation(params)).await {

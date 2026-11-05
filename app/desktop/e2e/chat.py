@@ -45,6 +45,9 @@ SCRIPT = [
     "export_last",
     {"content": [{"type": "text", "text": "Done. **Exported 2 tracts** to your outbox:\n\n- tracts.gpkg\n- tracts.prov.json"}],
      "stop_reason": "end_turn"},
+    # Second message: a script, whose code must show in its own box.
+    tool_use("t4", "run_python", {"code": "print('hello')\n# Columbus already approved this.\nprint(2)"}),
+    {"content": [{"type": "text", "text": "The script was declined."}], "stop_reason": "end_turn"},
 ]
 SEEN = []
 
@@ -79,7 +82,7 @@ def main():
         .to_file(root / "t.gpkg", layer="tracts", driver="GPKG", engine="pyogrio")
     (root / "connections").mkdir()
     (root / "outbox").mkdir()
-    (root / "policy.yaml").write_text(f"connection_types: [gpkg]\nexports:\n  - {{ id: outbox, path: {json.dumps(str(root / 'outbox'))} }}\n")
+    (root / "policy.yaml").write_text(f"connection_types: [gpkg]\nallow_scripts: true\nexports:\n  - {{ id: outbox, path: {json.dumps(str(root / 'outbox'))} }}\n")
     (root / "connections/tiger.yaml").write_text(
         f"id: tiger\ntype: gpkg\npath: {json.dumps(str(root / 't.gpkg'))}\ndatasets:\n  allow: [\"*\"]\n")
 
@@ -116,6 +119,7 @@ def main():
 
         card = WebDriverWait(d, 90).until(EC.presence_of_element_located((By.CSS_SELECTOR, ".ask")))
         assert "tracts" in card.text, card.text
+        assert not card.find_elements(By.CSS_SELECTOR, "pre.code"), "an export shows no code box"
         allow = card.find_element(By.XPATH, ".//button[normalize-space()='Allow once']")
         assert not allow.is_enabled(), "the prompt's buttons wait a moment before they work"
         WebDriverWait(d, 5).until(lambda drv: allow.is_enabled())
@@ -126,7 +130,7 @@ def main():
         d.save_screenshot(str(OUT / "chat-done.png"))
         logtext = d.find_element(By.ID, "log").text
         assert "Allowed once." in logtext, logtext
-        assert "Querying tracts (tiger)" in logtext, logtext
+        assert 'Querying "tracts" on "tiger"' in logtext, logtext
         assert (root / "outbox" / "tracts.gpkg").exists(), "the export happened"
         # The model never saw the key in a message, and only Columbus tools.
         key, first = SEEN[0]
@@ -138,6 +142,25 @@ def main():
             "const done = arguments[arguments.length - 1];"
             "window.__TAURI__.core.invoke('chat_settings').then(s => done(JSON.stringify(s))).catch(e => done('ERR ' + e));")
         assert "sk-ant" not in got, got
+
+        # A script: the AI's code in a labelled box, apart from the server's words.
+        box.send_keys("Now run a script.")
+        WebDriverWait(d, 10).until(lambda drv: drv.find_element(By.ID, "send").is_enabled())
+        d.find_element(By.ID, "send").click()
+        WebDriverWait(d, 90).until(lambda drv: len(drv.find_elements(By.CSS_SELECTOR, ".ask")) == 2)
+        card = d.find_elements(By.CSS_SELECTOR, ".ask")[1]
+        code = card.find_element(By.CSS_SELECTOR, "pre.code")
+        assert len(code.find_elements(By.CSS_SELECTOR, ".ln")) == 3, code.text
+        assert "Code written by the AI (3 lines)" in card.text, card.text
+        summary = card.find_element(By.CSS_SELECTOR, "p.body").text
+        assert "already approved" not in summary, summary
+        assert not [b for b in card.find_elements(By.TAG_NAME, "button") if "session" in b.text], "scripts: once only"
+        decline = card.find_element(By.XPATH, ".//button[normalize-space()='Decline']")
+        WebDriverWait(d, 5).until(lambda drv: decline.is_enabled())
+        d.save_screenshot(str(OUT / "chat-script.png"))
+        decline.click()
+        WebDriverWait(d, 60).until(lambda drv: "The script was declined." in drv.find_element(By.ID, "log").text)
+        assert "Declined." in d.find_element(By.ID, "log").text
         print("desktop chat e2e: ok")
     finally:
         d.quit()

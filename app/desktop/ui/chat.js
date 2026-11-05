@@ -91,11 +91,18 @@ function render(box, md) {
   flush();
 }
 
+// The model chose these values: quoted and cut, so they read as names,
+// not as the app speaking.
+function q(v) {
+  const t = String(v).replace(/\s+/g, " ");
+  return `"${t.length > 60 ? `${t.slice(0, 60)}…` : t}"`;
+}
+
 // What a tool call is doing, in plain words.
 function describe(name, input) {
   const i = input || {};
-  const ds = i.dataset ? ` ${i.dataset}` : "";
-  const conn = i.connection ? ` (${i.connection})` : "";
+  const ds = i.dataset ? ` ${q(i.dataset)}` : "";
+  const conn = i.connection ? ` on ${q(i.connection)}` : "";
   switch (name) {
     case "whoami": return "Checking what this session may use";
     case "list_connections": return "Listing connections";
@@ -104,16 +111,16 @@ function describe(name, input) {
     case "sample_rows": return `Sampling rows of${ds}`;
     case "query_features": return `Querying${ds}${conn}`;
     case "sql_select": return "Running a checked SQL query";
-    case "vector_op": return `Processing: ${i.op || "vector operation"}`;
-    case "raster_op": return `Processing: ${i.op || "raster operation"}`;
+    case "vector_op": return `Processing: ${i.op ? q(i.op) : "vector operation"}`;
+    case "raster_op": return `Processing: ${i.op ? q(i.op) : "raster operation"}`;
     case "verify": return "Running checks";
     case "read_output": return "Reading a result";
-    case "export_output": return `Exporting${i.folder ? ` to ${i.folder}` : ""}`;
-    case "registry_search": return `Searching open data${i.query ? ` for "${i.query}"` : ""}`;
+    case "export_output": return `Exporting${i.folder ? ` to ${q(i.folder)}` : ""}`;
+    case "registry_search": return `Searching open data${i.query ? ` for ${q(i.query)}` : ""}`;
     case "registry_fetch": return "Downloading open data";
     case "context_search": return "Searching your organization's notes";
     case "run_python": return "Running a Python script";
-    default: return name.replace(/_/g, " ");
+    default: return `Running ${q(name)}`;
   }
 }
 
@@ -132,12 +139,24 @@ function setBusy(b) {
   status.textContent = b ? "Working…" : "";
 }
 
+const cards = new Map();
+
 function approval(e) {
   current = null;
   const card = el("div", "ask");
   card.setAttribute("role", "alertdialog");
+  card.setAttribute("aria-label", e.title);
   card.append(el("h3", null, e.title));
-  card.append(el("p", "body", e.message));
+  // The server's own words.
+  card.append(el("p", "body", e.summary));
+  if (e.code != null) {
+    // Written by the AI: in its own box, never mixed with the server's words.
+    const n = e.code.split("\n").length;
+    card.append(el("p", "code-label", `Code written by the AI (${n} line${n === 1 ? "" : "s"}). Read it before allowing:`));
+    const pre = el("pre", "code");
+    e.code.split("\n").forEach((line) => pre.append(el("span", "ln", line === "" ? " " : line)));
+    card.append(pre);
+  }
   const row = el("div", "row");
   const answer = async (decision, label) => {
     for (const b of row.querySelectorAll("button")) b.disabled = true;
@@ -165,7 +184,15 @@ function approval(e) {
   }
   card.append(row);
   log.append(card);
-  scroll();
+  cards.set(e.id, row);
+  // Show the card from its title, not its end.
+  card.scrollIntoView({ block: "start" });
+}
+
+function gone(id) {
+  const row = cards.get(id);
+  cards.delete(id);
+  if (row && row.isConnected) row.replaceWith(el("p", "done", "No longer waiting: the request was withdrawn or timed out."));
 }
 
 listen("chat-event", ({ payload: e }) => {
@@ -192,6 +219,9 @@ listen("chat-event", ({ payload: e }) => {
     }
     case "approval":
       approval(e);
+      return;
+    case "approval_gone":
+      gone(e.id);
       break;
     case "status":
       current = null;
@@ -268,6 +298,7 @@ $("new").addEventListener("click", async () => {
   current = null;
   steps.clear();
   log.replaceChildren();
+  cards.clear();
   $("map").disabled = true;
   setBusy(false);
   text.focus();

@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use columbus_chat::{Answer, Cancel, Chat, Config, Event, Ui, MODELS};
+use columbus_chat::{Answer, Cancel, Chat, Config, Event, Prompt, Ui, MODELS};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::{oneshot, Mutex};
@@ -27,6 +27,8 @@ pub struct ChatState {
     /// a reply holds the chat.
     pub session: std::sync::Mutex<Option<String>>,
     pending: std::sync::Mutex<HashMap<u64, oneshot::Sender<Answer>>>,
+    /// Prompt ids, never reused while the app runs.
+    next_prompt: std::sync::atomic::AtomicU64,
 }
 
 #[derive(Serialize, Deserialize, Clone, Default)]
@@ -209,32 +211,44 @@ impl Ui for WindowUi {
     fn event(&self, e: Event) {
         let _ = self.app.emit_to("chat", "chat-event", e);
     }
-    fn approve(
-        &self,
-        id: u64,
-        title: String,
-        message: String,
-        offer_always: bool,
-    ) -> oneshot::Receiver<Answer> {
+    fn approve(&self, p: Prompt) -> (u64, oneshot::Receiver<Answer>) {
         let (tx, rx) = oneshot::channel();
-        if let Some(st) = self.app.try_state::<ChatState>() {
-            st.pending.lock().expect("pending").insert(id, tx);
-        }
+        let Some(st) = self.app.try_state::<ChatState>() else {
+            let _ = tx.send(Answer::Decline);
+            return (0, rx);
+        };
+        let id = st
+            .next_prompt
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            + 1;
+        // No window to ask in: decline rather than wait unseen.
+        let Some(w) = self.app.get_webview_window("chat") else {
+            let _ = tx.send(Answer::Decline);
+            return (id, rx);
+        };
+        st.pending.lock().expect("pending").insert(id, tx);
         let _ = self.app.emit_to(
             "chat",
             "chat-event",
             Event::Approval {
                 id,
-                title,
-                message,
-                offer_always,
+                title: p.title,
+                summary: p.summary,
+                code: p.code,
+                offer_always: p.offer_always,
             },
         );
-        if let Some(w) = self.app.get_webview_window("chat") {
-            let _ = w.unminimize();
-            let _ = w.set_focus();
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+        (id, rx)
+    }
+    fn withdraw(&self, id: u64) {
+        if let Some(st) = self.app.try_state::<ChatState>() {
+            st.pending.lock().expect("pending").remove(&id);
         }
-        rx
+        let _ = self
+            .app
+            .emit_to("chat", "chat-event", Event::ApprovalGone { id });
     }
 }
 
@@ -248,11 +262,12 @@ pub struct Started {
 #[tauri::command]
 pub async fn chat_start(app: AppHandle, st: State<'_, ChatState>) -> Result<Started, String> {
     let mut slot = st.chat.lock().await;
-    if let Some(c) = slot.as_ref() {
-        let c = c.lock().await;
+    if slot.is_some() {
+        // Already running (a reply may be holding it): answer without
+        // waiting for the reply.
         return Ok(Started {
-            session: c.session().map(String::from),
-            tools: c.tool_count(),
+            session: st.session.lock().expect("session").clone(),
+            tools: 0,
         });
     }
     let s = load(&app);
@@ -278,7 +293,8 @@ pub async fn chat_start(app: AppHandle, st: State<'_, ChatState>) -> Result<Star
         model: s.model.unwrap_or_else(|| MODELS[0].0.to_string()),
         api_base,
     };
-    let chat = Chat::start(cfg, Arc::new(WindowUi { app: app.clone() }))
+    st.cancel.reset();
+    let chat = Chat::start(cfg, Arc::new(WindowUi { app: app.clone() }), st.cancel.clone())
         .await
         .map_err(|e| e.to_string())?;
     let started = Started {
@@ -358,6 +374,21 @@ pub async fn chat_answer(
 /// End the chat and its session.
 #[tauri::command]
 pub async fn chat_end(st: State<'_, ChatState>) -> Result<(), String> {
+    end(&st).await;
+    Ok(())
+}
+
+/// End the chat when its window closes: nothing runs unseen.
+pub fn on_chat_window_closed(app: &AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Some(st) = app.try_state::<ChatState>() {
+            end(&st).await;
+        }
+    });
+}
+
+async fn end(st: &ChatState) {
     st.cancel.cancel();
     for (_, tx) in st.pending.lock().expect("pending").drain() {
         let _ = tx.send(Answer::Decline);
@@ -365,9 +396,12 @@ pub async fn chat_end(st: State<'_, ChatState>) -> Result<(), String> {
     let chat = st.chat.lock().await.take();
     *st.session.lock().expect("session") = None;
     if let Some(c) = chat {
+        // A reply still holding the chat stops at the cancel; close the
+        // session once it lets go.
+        let m = c.lock().await;
+        drop(m);
         if let Ok(m) = Arc::try_unwrap(c) {
             m.into_inner().close().await;
         }
     }
-    Ok(())
 }

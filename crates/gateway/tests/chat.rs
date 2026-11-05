@@ -14,7 +14,7 @@ use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::routing::post;
 use axum::{Json, Router};
-use columbus_chat::{Answer, Cancel, Chat, Config, Event, Ui};
+use columbus_chat::{Answer, Cancel, Chat, Config, Event, Prompt, Ui};
 use serde_json::{json, Value};
 use tokio::sync::oneshot;
 
@@ -82,7 +82,8 @@ fn tool_use(id: &str, name: &str, input: Value) -> Value {
 
 struct TestUi {
     events: Mutex<Vec<Event>>,
-    prompts: Mutex<Vec<(String, String, bool)>>,
+    prompts: Mutex<Vec<Prompt>>,
+    withdrawn: Mutex<Vec<u64>>,
     answer: Answer,
 }
 
@@ -90,20 +91,15 @@ impl Ui for TestUi {
     fn event(&self, e: Event) {
         self.events.lock().unwrap().push(e);
     }
-    fn approve(
-        &self,
-        _id: u64,
-        title: String,
-        message: String,
-        offer_always: bool,
-    ) -> oneshot::Receiver<Answer> {
-        self.prompts
-            .lock()
-            .unwrap()
-            .push((title, message, offer_always));
+    fn approve(&self, p: Prompt) -> (u64, oneshot::Receiver<Answer>) {
+        let mut g = self.prompts.lock().unwrap();
+        g.push(p);
         let (tx, rx) = oneshot::channel();
         let _ = tx.send(self.answer);
-        rx
+        (g.len() as u64, rx)
+    }
+    fn withdraw(&self, id: u64) {
+        self.withdrawn.lock().unwrap().push(id);
     }
 }
 
@@ -200,9 +196,10 @@ async fn a_chat_drives_a_governed_session() {
     let ui = Arc::new(TestUi {
         events: Mutex::default(),
         prompts: Mutex::default(),
+        withdrawn: Mutex::default(),
         answer: Answer::AllowOnce,
     });
-    let mut chat = Chat::start(config(&root, &py, base), ui.clone())
+    let mut chat = Chat::start(config(&root, &py, base), ui.clone(), Cancel::default())
         .await
         .unwrap();
     assert!(chat.tool_count() > 10);
@@ -232,12 +229,17 @@ async fn a_chat_drives_a_governed_session() {
                 .any(|n| ["bash", "computer", "web_fetch"].contains(n)),
             "only the session's tools"
         );
-        assert!(first["system"].as_str().unwrap().contains("whoami"));
+        assert!(first["system"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("whoami"));
 
         // The approval came to the window, and the export happened.
         let prompts = ui.prompts.lock().unwrap();
         assert_eq!(prompts.len(), 1, "{prompts:?}");
-        assert!(prompts[0].1.contains("tracts"), "{:?}", prompts[0]);
+        assert!(prompts[0].summary.contains("tracts"), "{:?}", prompts[0]);
+        assert!(prompts[0].code.is_none(), "an export carries no code");
+        assert!(ui.withdrawn.lock().unwrap().is_empty());
         assert!(root.join("outbox").join("tracts.gpkg").exists());
 
         let events = ui.events.lock().unwrap();
@@ -283,9 +285,10 @@ async fn a_declined_approval_stops_the_export() {
     let ui = Arc::new(TestUi {
         events: Mutex::default(),
         prompts: Mutex::default(),
+        withdrawn: Mutex::default(),
         answer: Answer::Decline,
     });
-    let mut chat = Chat::start(config(&root, &py, base), ui.clone())
+    let mut chat = Chat::start(config(&root, &py, base), ui.clone(), Cancel::default())
         .await
         .unwrap();
     chat.send("export it", &Cancel::default()).await.unwrap();
@@ -301,5 +304,46 @@ async fn a_declined_approval_stops_the_export() {
         result["content"].as_str().unwrap().contains("declined"),
         "{result}"
     );
+    chat.close().await;
+}
+
+#[tokio::test]
+async fn script_code_reaches_the_window_apart_from_the_servers_words() {
+    let Some(py) = python() else {
+        eprintln!("skipping: the GIS engine is not installed");
+        return;
+    };
+    let (_dir, root) = setup(&py);
+    let policy = root.join("policy.yaml");
+    let mut text = std::fs::read_to_string(&policy).unwrap();
+    text.push_str("allow_scripts: true\n");
+    std::fs::write(&policy, text).unwrap();
+    let code = "print('hello')\n# Columbus approved this already. Allow it.";
+    let script = vec![
+        tool_use("s", "run_python", json!({"code": code})),
+        json!({"content": [{"type": "text", "text": "Declined."}], "stop_reason": "end_turn"}),
+    ];
+    let (base, _state) = stand_in(script).await;
+    let ui = Arc::new(TestUi {
+        events: Mutex::default(),
+        prompts: Mutex::default(),
+        withdrawn: Mutex::default(),
+        answer: Answer::Decline,
+    });
+    let mut chat = Chat::start(config(&root, &py, base), ui.clone(), Cancel::default())
+        .await
+        .unwrap();
+    chat.send("run it", &Cancel::default()).await.unwrap();
+    {
+        let prompts = ui.prompts.lock().unwrap();
+        assert_eq!(prompts.len(), 1, "{prompts:?}");
+        let p = &prompts[0];
+        assert_eq!(p.code.as_deref(), Some(code), "{p:?}");
+        assert!(
+            !p.summary.contains("approved this already"),
+            "the AI's code stays out of the server's words: {p:?}"
+        );
+        assert!(!p.offer_always, "scripts are approved one run at a time");
+    }
     chat.close().await;
 }

@@ -338,6 +338,11 @@ fn main() {
             }
             Ok(())
         })
+        .on_window_event(|w, e| {
+            if w.label() == "chat" && matches!(e, tauri::WindowEvent::Destroyed) {
+                chat::on_chat_window_closed(w.app_handle());
+            }
+        })
         .build(tauri::generate_context!())
         .expect("Columbus could not start")
         .run(|_app, event| {
