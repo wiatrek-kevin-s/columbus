@@ -263,6 +263,35 @@ async fn settings_apply_without_a_restart() {
     put(&policy, "connection_types: [gpkg]\n");
     assert_eq!(ids(&call(&c, "list_connections", json!({})).await), ["b"]);
 
+    // An emptied policy file is refused too.
+    put(&policy, "# nothing here any more\n");
+    let e = err(&call(&c, "list_connections", json!({})).await);
+    assert!(e.contains("is empty"), "{e}");
+    put(&policy, "connection_types: [gpkg]\n");
+    assert_eq!(ids(&call(&c, "list_connections", json!({})).await), ["b"]);
+
+    // A file dated in the future is used only once the same contents have
+    // been seen again a moment later.
+    std::fs::write(&policy, "connection_types: [gpkg]\nallow_edits: true\n").unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&policy)
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(3600))
+        .unwrap();
+    let w = ok(&call(&c, "whoami", json!({})).await);
+    assert_eq!(
+        w["result"]["policy"]["edits_allowed"],
+        json!(false),
+        "used at first sight"
+    );
+    settle();
+    let w = ok(&call(&c, "whoami", json!({})).await);
+    assert_eq!(w["result"]["policy"]["edits_allowed"], json!(true));
+    put(&policy, "connection_types: [gpkg]\n");
+    let w = ok(&call(&c, "whoami", json!({})).await);
+    assert_eq!(w["result"]["policy"]["edits_allowed"], json!(false));
+
     // A change is not used until the file has been still for a moment.
     std::fs::write(&policy, "connection_types: [gpkg]\nallow_edits: true\n").unwrap();
     let w = ok(&call(&c, "whoami", json!({})).await);
@@ -349,14 +378,15 @@ async fn edits_are_checked_against_the_settings_in_force() {
     .await);
     assert!(e.contains("propose the edits again"), "{e}");
 
-    // The settings change while the person is deciding: the yes is not used.
+    // The settings change while the person is deciding (scripts turned on,
+    // which narrows nothing): the yes is not used.
     let r = ok(&propose().await);
     let change = r["result"]["change"].as_str().unwrap().to_string();
     let p2 = policy.clone();
     *person.during.lock().unwrap() = Some(Box::new(move || {
         put(
             &p2,
-            "connection_types: [gpkg]\nallow_edits: true\nhide_fields: [\"*secret*\"]\n",
+            "connection_types: [gpkg]\nallow_edits: true\nallow_scripts: true\n",
         );
     }));
     let e = err(&call(
@@ -370,6 +400,26 @@ async fn edits_are_checked_against_the_settings_in_force() {
         "{e}"
     );
     assert_eq!(person.asked.load(Ordering::SeqCst), 1);
+
+    // The person narrows the connection while deciding: the call's answer
+    // is withheld, and nothing is written.
+    let r = ok(&propose().await);
+    let change = r["result"]["change"].as_str().unwrap().to_string();
+    let t = root.join("connections/t.yaml");
+    let narrowed = conn_yaml(
+        "t",
+        &gpkg,
+        "mode: read-write\nrow_filter: \"NAME <> 'Z'\"\n",
+    );
+    *person.during.lock().unwrap() = Some(Box::new(move || put(&t, &narrowed)));
+    let e = err(&call(
+        &c,
+        "apply_edits",
+        json!({"change": change, "target": "source"}),
+    )
+    .await);
+    assert!(e.contains("narrowed"), "{e}");
+    assert!(audit_text(&root).contains("narrowed while the call ran"));
 
     // Under unchanged settings it goes through.
     let r = ok(&propose().await);

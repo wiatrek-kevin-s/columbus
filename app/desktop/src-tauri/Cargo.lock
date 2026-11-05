@@ -589,6 +589,7 @@ dependencies = [
  "tauri-plugin-dialog",
  "tauri-plugin-single-instance",
  "tokio",
+ "uuid",
  "windows-native-keyring-store",
 ]
 

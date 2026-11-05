@@ -447,6 +447,14 @@ impl ApprovalsPage {
         }
         *last = Some(std::time::Instant::now());
         body["last_used"] = json!(chrono::Local::now().to_rfc3339());
+        // Put the key back if something removed it (the app tidies away
+        // files of sessions that did not answer in time).
+        let key = file.with_extension("key");
+        if std::fs::symlink_metadata(&key).is_err() {
+            if let Some(shared) = self.running.get().and_then(|r| r.as_ref().ok()) {
+                let _ = write_private(&key, &shared.test_key);
+            }
+        }
         let bytes = serde_json::to_vec_pretty(body).unwrap_or_default();
         // Written whole, then moved in place: the app never reads half a file.
         let tmp = file.with_extension("json.tmp");
@@ -885,8 +893,9 @@ async fn test_hello(State(s): State<Arc<Shared>>, h: HeaderMap) -> Response<Body
     {
         let mut c = s.challenges.lock().expect("challenges");
         c.retain(|(_, at)| at.elapsed() < CHALLENGE_TTL);
+        // The oldest gives way: no one can fill the table to block the app.
         if c.len() >= 8 {
-            return status(StatusCode::TOO_MANY_REQUESTS, "too many tests at once");
+            c.remove(0);
         }
         c.push((ours.clone(), Instant::now()));
     }

@@ -163,6 +163,8 @@ pub struct Settings {
     pub policy: OrgPolicy,
     pub source: PolicySource,
     pub connections: Vec<Connection>,
+    /// The policy file exists but sets nothing (empty, or comments only).
+    pub policy_empty: bool,
 }
 
 /// Read the settings files once: a hash of exactly the bytes read, and the
@@ -257,6 +259,13 @@ pub fn read_settings_at(
         }
     }
     let digest: [u8; 32] = h.finalize().into();
+    // Times again, after reading: a file written while it was read shows as
+    // just changed, so it is not taken as settled.
+    seen(&paths.policy);
+    seen(&paths.connections);
+    for (path, _) in &files {
+        seen(path);
+    }
 
     let parsed = (|| -> Result<Settings> {
         let found = match policy_bytes {
@@ -267,11 +276,17 @@ pub fn read_settings_at(
                     .context("loading organization policy")
             }
         };
+        let mut policy_empty = false;
         let policy = match &found {
             Some(b) => {
                 let text = std::str::from_utf8(b).map_err(|e| {
                     anyhow::anyhow!("{}: not UTF-8 text ({e})", paths.policy.display())
                 })?;
+                policy_empty = match serde_yaml::from_str::<serde_yaml::Value>(text) {
+                    Ok(serde_yaml::Value::Null) => true,
+                    Ok(serde_yaml::Value::Mapping(m)) => m.is_empty(),
+                    _ => false,
+                };
                 OrgPolicy::parse(text, &paths.policy).context("loading organization policy")?
             }
             None => OrgPolicy::default(),
@@ -298,6 +313,7 @@ pub fn read_settings_at(
                 found: found.is_some(),
             },
             connections,
+            policy_empty,
         })
     })();
     (digest, newest, parsed)

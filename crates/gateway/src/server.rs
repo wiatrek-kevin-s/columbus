@@ -417,6 +417,20 @@ pub struct Live {
     /// Set while the files cannot be used (they do not load, or they change
     /// what only a restart can apply): every tool but whoami is refused.
     problem: Option<String>,
+    /// New contents seen but not yet settled, and when first seen.
+    pending: Option<([u8; 32], std::time::Instant)>,
+    /// Since when the files have differed from the settings in force.
+    unsettled_since: Option<std::time::Instant>,
+    /// `problem` is set because the files would not keep still.
+    stalled: bool,
+    /// A policy file has been in force: its going missing or emptying is a
+    /// problem, never a fall back to the defaults (which hide nothing).
+    policy_required: bool,
+    /// What each applied change took away (generation, everything, labels),
+    /// for calls that were already running when it applied.
+    tightenings: Vec<(u64, bool, std::collections::BTreeSet<String>)>,
+    /// Files a reload could not delete, tried again at the next one.
+    leftovers: Vec<PathBuf>,
 }
 
 /// The organization policy in force when it was taken; it stays the same
@@ -441,9 +455,6 @@ pub struct State {
     live: std::sync::Mutex<Live>,
     /// `startup_only` of the policy this session started with.
     fixed: Value,
-    /// The session started with a policy file: its going missing is a
-    /// problem, never a fall back to the defaults (which hide nothing).
-    policy_required: bool,
     pub scope: ProjectScope,
     pub sandbox: Sandbox,
     pub audit: Arc<AuditLog>,
@@ -635,12 +646,17 @@ impl State {
             edits: Default::default(),
             paths,
             fixed: startup_only(&policy),
-            policy_required: settings.source.found,
             live: std::sync::Mutex::new(Live {
+                policy_required: settings.source.found,
                 settings: Arc::new(settings),
                 digest,
                 generation: 0,
                 problem: None,
+                pending: None,
+                unsettled_since: None,
+                stalled: false,
+                tightenings: Vec::new(),
+                leftovers: Vec::new(),
             }),
             scope: ProjectScope::default(),
             sandbox,
@@ -662,14 +678,18 @@ pub enum Reload {
         generation: u64,
         /// Approvals and "allow for this session" withdrawn.
         revoked: usize,
-        /// Workspace files removed because their data is no longer allowed.
+        /// Workspace files withdrawn because their data is no longer allowed.
         removed: Vec<PathBuf>,
+        /// Of those, files that could not be deleted yet.
+        failed: Vec<PathBuf>,
     },
     Refused(String),
 }
 
 /// How long a changed settings file must be still before it is used.
 const SETTLE: Duration = Duration::from_secs(1);
+/// How long files may keep changing before every request is refused.
+const STALL: Duration = Duration::from_secs(10);
 
 /// What a change of settings takes away from data already read: everything
 /// (a field newly hidden) and the connections whose access narrowed or went
@@ -717,9 +737,9 @@ impl State {
         &self,
         everything: bool,
         labels: &std::collections::BTreeSet<String>,
-    ) -> Vec<PathBuf> {
+    ) -> (Vec<PathBuf>, Vec<PathBuf>) {
         if !everything && labels.is_empty() {
-            return vec![];
+            return (vec![], vec![]);
         }
         let gone: Vec<PathBuf> = self
             .outputs
@@ -734,17 +754,65 @@ impl State {
                 }
             })
             .collect();
+        // No tool opens them from here on, whether or not they can be
+        // deleted right now (a file another program holds open on Windows).
         self.outputs.withdraw(&gone);
-        for p in &gone {
-            let _ = std::fs::remove_file(p);
-            for side in ["-wal", "-shm"] {
-                let mut s = p.clone().into_os_string();
-                s.push(side);
-                let _ = std::fs::remove_file(PathBuf::from(s));
+        let failed = remove_files(&gone);
+        (gone, failed)
+    }
+
+    /// Withdraw now (for a call that ran across a narrowing); files that
+    /// cannot be deleted yet are tried again at the next reload.
+    pub fn withdraw_now(
+        &self,
+        everything: bool,
+        labels: &std::collections::BTreeSet<String>,
+    ) -> (Vec<PathBuf>, Vec<PathBuf>) {
+        let (gone, failed) = self.withdraw(everything, labels);
+        self.live().leftovers.extend(failed.iter().cloned());
+        (gone, failed)
+    }
+
+    /// What the changes applied after `generation` took away.
+    pub fn tightened_since(&self, generation: u64) -> (bool, std::collections::BTreeSet<String>) {
+        let live = self.live();
+        let mut everything = false;
+        let mut labels = std::collections::BTreeSet::new();
+        for (g, all, l) in &live.tightenings {
+            if *g > generation {
+                everything |= *all;
+                labels.extend(l.iter().cloned());
             }
         }
-        gone
+        (everything, labels)
     }
+
+    /// Refuse every tool but whoami, for a reason outside the files (a
+    /// reload that could not finish, say).
+    pub fn fail_closed(&self, why: String) {
+        let mut live = self.live();
+        live.problem = Some(why);
+        // Read again, and apply, at the next call.
+        live.digest = [0; 32];
+    }
+}
+
+/// Delete files (and a GeoPackage's -wal and -shm); the ones still there.
+fn remove_files(paths: &[PathBuf]) -> Vec<PathBuf> {
+    let mut failed = Vec::new();
+    for p in paths {
+        if let Err(e) = std::fs::remove_file(p) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                failed.push(p.clone());
+            }
+        }
+        for side in ["-wal", "-shm"] {
+            let mut s = p.clone().into_os_string();
+            s.push(side);
+            let _ = std::fs::remove_file(PathBuf::from(s));
+        }
+    }
+    failed
 }
 
 impl State {
@@ -779,21 +847,54 @@ impl State {
     /// servers, plugins, allowed hosts), stop every tool but whoami until
     /// they are fixed: never half old, half new.
     pub fn refresh(&self) -> Option<Reload> {
-        let mut live = self.live();
+        // Read first, without the lock: a slow folder never holds up the
+        // calls that only need the settings in force.
         let (digest, newest, read) = crate::config::read_settings_at(&self.paths);
+        let mut live = self.live();
+        if !live.leftovers.is_empty() {
+            let again = std::mem::take(&mut live.leftovers);
+            live.leftovers = remove_files(&again);
+        }
         if digest == live.digest {
+            live.pending = None;
+            live.unsettled_since = None;
+            if live.stalled {
+                live.stalled = false;
+                live.problem = None;
+            }
             return None;
         }
-        // A file still being written (by an editor that saves in place, say)
-        // is not used until it has been still for a moment.
-        if let Some(t) = newest {
-            if std::time::SystemTime::now()
+        // A change is used once it has settled: every file untouched for a
+        // moment (by its times, which must be in the past), or the same
+        // contents seen again a moment later. A file being saved in place is
+        // never used half-written.
+        let now = std::time::Instant::now();
+        let since = *live.unsettled_since.get_or_insert(now);
+        let by_time = newest.is_some_and(|t| {
+            std::time::SystemTime::now()
                 .duration_since(t)
-                .is_ok_and(|age| age < SETTLE)
-            {
-                return None;
+                .is_ok_and(|age| age >= SETTLE)
+        });
+        let by_content = live
+            .pending
+            .is_some_and(|(d, at)| d == digest && at.elapsed() >= SETTLE);
+        if !by_time && !by_content {
+            if live.pending.map(|(d, _)| d) != Some(digest) {
+                live.pending = Some((digest, now));
             }
+            if since.elapsed() >= STALL && !live.stalled && live.problem.is_none() {
+                let why = "Columbus's settings files keep changing, so it refuses every request until they have been still for a moment.".to_string();
+                live.stalled = true;
+                live.problem = Some(why.clone());
+                drop(live);
+                self.audit_reload(&Reload::Refused(why.clone()));
+                return Some(Reload::Refused(why));
+            }
+            return None;
         }
+        live.pending = None;
+        live.unsettled_since = None;
+        live.stalled = false;
         live.digest = digest;
         let outcome = match read {
             Err(e) => {
@@ -803,10 +904,11 @@ impl State {
                 live.problem = Some(why.clone());
                 Reload::Refused(why)
             }
-            Ok(new) if self.policy_required && !new.source.found => {
+            Ok(new) if live.policy_required && (!new.source.found || new.policy_empty) => {
                 let why = format!(
-                    "The organization policy file ({}) is gone, so Columbus refuses every request until it is back (it never falls back to the defaults while running).",
-                    new.source.path
+                    "The organization policy file ({}) is {}, so Columbus refuses every request until it is back (it never falls back to the defaults while running).",
+                    new.source.path,
+                    if new.source.found { "empty" } else { "gone" }
                 );
                 live.problem = Some(why.clone());
                 Reload::Refused(why)
@@ -818,9 +920,17 @@ impl State {
             }
             Ok(new) => {
                 let (everything, narrowed) = tightened(&live.settings, &new);
+                live.policy_required |= new.source.found;
                 live.settings = Arc::new(new);
                 live.generation += 1;
                 live.problem = None;
+                if everything || !narrowed.is_empty() {
+                    let g = live.generation;
+                    live.tightenings.push((g, everything, narrowed.clone()));
+                    if live.tightenings.len() > 256 {
+                        live.tightenings.remove(0);
+                    }
+                }
                 // What was learned under the old settings is not reused.
                 self.datasets
                     .lock()
@@ -834,25 +944,33 @@ impl State {
                 // asked again under the new ones.
                 let revoked = self.approvals.revoke_all();
                 // Files made from data the new settings no longer allow go.
-                let removed = self.withdraw(everything, &narrowed);
+                let (removed, failed) = self.withdraw(everything, &narrowed);
+                live.leftovers.extend(failed.iter().cloned());
                 Reload::Applied {
                     generation: live.generation,
                     revoked,
                     removed,
+                    failed,
                 }
             }
         };
         drop(live);
-        let rec = match &outcome {
+        self.audit_reload(&outcome);
+        Some(outcome)
+    }
+
+    fn audit_reload(&self, outcome: &Reload) {
+        let rec = match outcome {
             Reload::Applied {
                 generation,
                 revoked,
                 removed,
+                failed,
             } => AuditRecord {
                 tool: "settings.reload".into(),
                 decision: "allowed".into(),
                 reason: Some(format!(
-                    "new settings in force (version {generation}); {revoked} approval(s) withdrawn; {} workspace file(s) removed{}",
+                    "new settings in force (version {generation}); {revoked} approval(s) withdrawn; {} workspace file(s) withdrawn{}{}",
                     removed.len(),
                     if removed.is_empty() {
                         String::new()
@@ -860,6 +978,18 @@ impl State {
                         format!(
                             " because the new settings no longer allow their data: {}",
                             removed
+                                .iter()
+                                .map(|p| p.display().to_string())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        )
+                    },
+                    if failed.is_empty() {
+                        String::new()
+                    } else {
+                        format!(
+                            "; not yet deleted (no tool opens them; tried again at the next reload): {}",
+                            failed
                                 .iter()
                                 .map(|p| p.display().to_string())
                                 .collect::<Vec<_>>()
@@ -881,12 +1011,24 @@ impl State {
             client: "columbus".into(),
             ..rec
         });
-        Some(outcome)
     }
 }
 
 /// What a worker gets to open a connection: where it is and, for a
 /// database login, its password.
+impl Gateway {
+    /// Re-read the settings files off the async threads. A reload that
+    /// could not finish refuses every tool until the next one does.
+    pub(crate) async fn reload(&self) {
+        let st = self.state.clone();
+        if let Err(e) = tokio::task::spawn_blocking(move || st.refresh()).await {
+            self.state.fail_closed(format!(
+                "Columbus could not finish re-reading its settings ({e}), so it refuses every request until it can."
+            ));
+        }
+    }
+}
+
 pub(crate) fn connection_handle(conn: &Connection, secret: Option<String>) -> Value {
     let mut h = json!({"kind": conn.kind});
     let m = h.as_object_mut().expect("object");
@@ -2544,8 +2686,7 @@ impl ServerHandler for Gateway {
         self.state.page.touch_live();
         // Settings changed in the Columbus app (or the files) apply from the
         // next call on, without a restart.
-        let st = self.state.clone();
-        let _ = tokio::task::spawn_blocking(move || st.refresh()).await;
+        self.reload().await;
         if let Some(why) = self.state.problem() {
             if request.name != "whoami" {
                 let _ = self.state.audit.append(&AuditRecord {
@@ -2562,8 +2703,43 @@ impl ServerHandler for Gateway {
                 .into());
             }
         }
+        let tool = request.name.to_string();
+        let client = client_name(&context);
+        let started = self.state.generation();
         let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
-        self.tool_router.call(tcc).await
+        let result = self.tool_router.call(tcc).await;
+        // Narrowed while it ran: what it made from that data goes too, and
+        // its answer (which may hold rows) is not returned.
+        self.reload().await;
+        let (everything, labels) = self.state.tightened_since(started);
+        let (gone, _) = self.state.withdraw_now(everything, &labels);
+        let touched = self.state.flow.session_labels().iter().any(|l| {
+            if everything {
+                l.starts_with("connection:")
+            } else {
+                labels.contains(l)
+            }
+        });
+        if !gone.is_empty() || touched {
+            let _ = self.state.audit.append(&AuditRecord {
+                user: self.state.user.clone(),
+                client,
+                tool,
+                decision: "denied".into(),
+                reason: Some(format!(
+                    "the settings narrowed while the call ran; its answer was withheld and {} file(s) withdrawn",
+                    gone.len()
+                )),
+                ..Default::default()
+            });
+            return Ok(rmcp::model::CallToolResult::error(vec![
+                rmcp::model::ContentBlock::text(
+                    "refused: the person narrowed Columbus's settings while this call ran, so its answer was withheld and what it made was removed. Call whoami to see the settings in force, then call again.",
+                ),
+            ])
+            .into());
+        }
+        result
     }
 
     fn get_info(&self) -> ServerConfig {

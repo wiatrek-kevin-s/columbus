@@ -320,9 +320,12 @@ fn test_connection(form: ConnForm) -> Result<Value, String> {
         let Some(key) = &s.key else { continue };
         // First the session proves it holds the key (a program that merely
         // took over a port it used gets nothing); the key is never sent.
-        let mut n = [0u8; 32];
-        getrandom_bytes(&mut n);
-        let mine = proof::hex(&n);
+        // From the operating system's secure random source.
+        let mine = format!(
+            "{}{}",
+            uuid::Uuid::new_v4().simple(),
+            uuid::Uuid::new_v4().simple()
+        );
         let (code, hello) = match post_local(
             s.port,
             "/api/test-hello",

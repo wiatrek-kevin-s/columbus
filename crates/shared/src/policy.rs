@@ -562,14 +562,29 @@ impl EffectiveAccess {
             return Err(Denied::ConnectionType(conn.kind.clone()));
         }
         if let Some(host) = &conn.host {
-            // One host name or address only: a list (`a,b`), a path or an
-            // option string could reach a host the patterns never saw.
-            let plain = !host.is_empty()
-                && !host
-                    .chars()
-                    .any(|c| c.is_whitespace() || c.is_control() || ",;/\\?#@=()'\"".contains(c));
-            if !plain || !org.host_allowed(host) {
-                return Err(Denied::Host(host.clone()));
+            let k = conn.kind.to_ascii_lowercase();
+            let sql_server = matches!(
+                k.as_str(),
+                "sqlserver" | "mssql" | "sde-sqlserver" | "azure-sql"
+            );
+            match plain_host(host, sql_server) {
+                Some(name) if org.host_allowed(name) => {}
+                _ => return Err(Denied::Host(host.clone())),
+            }
+        }
+        // An Oracle service named by `dsn` is checked like a host: an
+        // EZConnect string by the host in it, a descriptor not at all (it can
+        // name any address). A bare alias is resolved by the organization's
+        // own tnsnames.ora.
+        if let Some(dsn) = &conn.dsn {
+            let k = conn.kind.to_ascii_lowercase();
+            if matches!(k.as_str(), "oracle" | "sde-oracle") {
+                match dsn_host(dsn) {
+                    DsnHost::Alias => {}
+                    DsnHost::Host(h)
+                        if plain_host(h, false).is_some_and(|n| org.host_allowed(n)) => {}
+                    _ => return Err(Denied::Host(dsn.clone())),
+                }
             }
         }
         if let Some(exp) = conn.expires {
@@ -913,5 +928,127 @@ expires: 2027-06-30
         assert!(a.field_hidden("owner_name"));
         assert!(a.field_hidden("EMP_SSN_LAST4"));
         assert!(!a.field_hidden("ROUTE_ID"));
+    }
+}
+
+/// The host name a `host` setting reaches, if it is exactly one host: no
+/// list (`a,b`), path, option string or credentials, which could reach a
+/// host the allow-list never saw. SQL Server may add one named instance
+/// (`db01\\SQLEXPRESS`); the allow-list is checked against the host part.
+pub fn plain_host(host: &str, sql_server_instance: bool) -> Option<&str> {
+    let (name, instance) = match host.split_once('\\') {
+        Some((n, i)) if sql_server_instance => (n, Some(i)),
+        Some(_) => return None,
+        None => (host, None),
+    };
+    let bad = |c: char| c.is_whitespace() || c.is_control() || ",;/\\?#@=()'\"".contains(c);
+    if name.is_empty() || name.chars().any(bad) {
+        return None;
+    }
+    if let Some(i) = instance {
+        if i.is_empty()
+            || i.len() > 64
+            || !i
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
+        {
+            return None;
+        }
+    }
+    Some(name)
+}
+
+enum DsnHost<'a> {
+    /// A TNS alias (letters, digits, `_` and `-`, no dots).
+    Alias,
+    /// The host of an EZConnect string.
+    Host(&'a str),
+    /// Anything else (a connect descriptor, an empty or odd string).
+    Other,
+}
+
+fn dsn_host(dsn: &str) -> DsnHost<'_> {
+    let d = dsn.trim();
+    if !d.is_empty()
+        && d.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return DsnHost::Alias;
+    }
+    if d.contains(['(', ')', ',', ' ', '@', '?']) {
+        return DsnHost::Other;
+    }
+    let lower = d.to_ascii_lowercase();
+    let rest = ["tcps://", "tcp://"]
+        .iter()
+        .find_map(|p| lower.starts_with(p).then(|| &d[p.len()..]))
+        .unwrap_or(d);
+    let rest = rest.strip_prefix("//").unwrap_or(rest);
+    let host = if let Some(r) = rest.strip_prefix('[') {
+        match r.split_once(']') {
+            Some((h, _)) => h,
+            None => return DsnHost::Other,
+        }
+    } else {
+        rest.split([':', '/']).next().unwrap_or("")
+    };
+    if host.is_empty() {
+        DsnHost::Other
+    } else {
+        DsnHost::Host(host)
+    }
+}
+
+#[cfg(test)]
+mod host_tests {
+    use super::*;
+
+    #[test]
+    fn only_one_plain_host_is_a_host() {
+        assert_eq!(
+            plain_host("db.corp.example", false),
+            Some("db.corp.example")
+        );
+        assert_eq!(plain_host("::1", false), Some("::1"));
+        assert_eq!(plain_host("db01\\SQLEXPRESS", true), Some("db01"));
+        for bad in [
+            "evil.com,db.corp.example",
+            "db/x",
+            "a b",
+            "u@db",
+            "db01\\SQLEXPRESS",
+            "",
+        ] {
+            assert_eq!(plain_host(bad, false), None, "{bad}");
+        }
+        assert_eq!(plain_host("db01\\bad name", true), None);
+        assert_eq!(plain_host("db01\\a\\b", true), None);
+    }
+
+    #[test]
+    fn oracle_dsns_are_checked_by_their_host() {
+        assert!(matches!(dsn_host("PRODDB"), DsnHost::Alias));
+        assert!(matches!(
+            dsn_host("db.corp.example:1521/svc"),
+            DsnHost::Host("db.corp.example")
+        ));
+        assert!(matches!(
+            dsn_host("//db.corp.example/svc"),
+            DsnHost::Host("db.corp.example")
+        ));
+        assert!(matches!(
+            dsn_host("tcps://db.corp.example:2484/svc"),
+            DsnHost::Host("db.corp.example")
+        ));
+        assert!(matches!(dsn_host("[::1]:1521/svc"), DsnHost::Host("::1")));
+        assert!(matches!(
+            dsn_host("(DESCRIPTION=(ADDRESS=(HOST=evil)))"),
+            DsnHost::Other
+        ));
+        // A dotted name is a host, not an alias.
+        assert!(matches!(
+            dsn_host("evil.example"),
+            DsnHost::Host("evil.example")
+        ));
     }
 }
