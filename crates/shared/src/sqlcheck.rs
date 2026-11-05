@@ -1267,14 +1267,19 @@ impl VisitorMut for ApplyFilters<'_> {
                 return ControlFlow::Break(());
             }
         };
+        // The alias is the table's last name part exactly as written,
+        // quotes included, so `t.col` in the query still means this table.
+        // Unquoted, a name such as `Parcels CROSS JOIN Owners` would turn
+        // into SQL of its own.
         let last = name
             .0
             .last()
-            .map(|p| p.to_string())
-            .unwrap_or_else(|| "t".into());
+            .and_then(|p| p.as_ident())
+            .cloned()
+            .unwrap_or_else(|| Ident::new("t"));
         let alias = alias.clone().unwrap_or(TableAlias {
             explicit: self.dialect != SqlDialect::Oracle,
-            name: Ident::new(normalize_identifier(&last)),
+            name: last,
             columns: vec![],
             at: None,
         });
@@ -1511,6 +1516,89 @@ datasets:
                 columns: ["id", "county"].map(String::from).to_vec(),
             },
         ]
+    }
+
+    /// Table names that need quoting (GeoPackage layers such as "Tribal
+    /// Census Tract") keep their quotes when a row filter or hidden fields
+    /// wrap them in a derived table, so a name that reads as SQL cannot
+    /// become SQL in the alias.
+    #[test]
+    fn quoted_table_names_stay_quoted_when_filtered() {
+        let one_part = |name: &str| Relation {
+            parts: vec![name.into()],
+            columns: ["pid", "name", "owner_ssn"].map(String::from).to_vec(),
+        };
+        let catalog = Catalog {
+            resolve: true,
+            relations: vec![
+                one_part("Tribal Census Tract"),
+                one_part("Parcels CROSS JOIN Owners"),
+                one_part("Owners"),
+            ],
+            extension_functions: Default::default(),
+        };
+        for (kind, q) in [
+            ("gpkg", ('"', '"')),
+            ("postgis", ('"', '"')),
+            ("oracle", ('"', '"')),
+            ("sqlserver", ('[', ']')),
+        ] {
+            let mut conn: Connection = serde_yaml::from_str(
+                "id: t\ntype: gpkg\ndatasets:\n  allow: [\"Tribal Census Tract\", \"Parcels CROSS JOIN Owners\"]\n",
+            )
+            .unwrap();
+            conn.kind = kind.into();
+            conn.row_filter = Some("pid > 0".into());
+            let org = OrgPolicy {
+                connection_types: vec![kind.into()],
+                ..OrgPolicy::default()
+            };
+            let mut a = EffectiveAccess::resolve(&org, &conn, &ProjectScope::default(), Utc::now())
+                .unwrap();
+            let name = |n: &str| format!("{}{n}{}", q.0, q.1);
+            for hide in [false, true] {
+                a.hide_fields = if hide { vec!["*SSN*".into()] } else { vec![] };
+                let sql = format!("SELECT name FROM {}", name("Tribal Census Tract"));
+                let c = check_select(&sql, &a, 10, &catalog)
+                    .unwrap_or_else(|e| panic!("{kind} hide={hide}: {e:?}"));
+                assert!(c.sql.contains("pid > 0"), "{kind}: {}", c.sql);
+                assert!(
+                    c.sql
+                        .contains(&format!("{} WHERE", name("Tribal Census Tract")))
+                        || c.sql.ends_with(&name("Tribal Census Tract")),
+                    "{kind}: {}",
+                    c.sql
+                );
+
+                // The other table must not be read, filtered or not.
+                let sql = format!(
+                    "SELECT name FROM {} WHERE Owners.pid = 1",
+                    name("Parcels CROSS JOIN Owners")
+                );
+                match check_select(&sql, &a, 10, &catalog) {
+                    Err(_) => {}
+                    Ok(c) => {
+                        let reparsed = Parser::parse_sql(
+                            SqlDialect::for_connection_type(kind)
+                                .parser_dialect()
+                                .as_ref(),
+                            &c.sql,
+                        )
+                        .unwrap();
+                        let mut tables = Vec::new();
+                        let _ = visit_relations(&reparsed, |r| {
+                            tables.push(r.to_string());
+                            ControlFlow::<()>::Continue(())
+                        });
+                        assert!(
+                            tables.iter().all(|t| t.contains("CROSS JOIN")),
+                            "{kind} hide={hide}: reads {tables:?} in {}",
+                            c.sql
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]

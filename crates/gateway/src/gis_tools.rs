@@ -163,8 +163,23 @@ fn quotable(s: &str) -> bool {
     !s.is_empty()
         && s.chars().count() <= 128
         && s.trim() == s
-        && s.chars()
-            .all(|c| c.is_alphanumeric() || matches!(c, ' ' | '_' | '$' | '#' | '-'))
+        && s.chars().all(|c| {
+            (c.is_alphanumeric() && !looks_blank_or_combining(c))
+                || matches!(c, ' ' | '_' | '$' | '#' | '-')
+        })
+}
+
+/// Letters that show as blank (the Hangul fillers) and combining marks,
+/// which would let a name look like another in approvals and the audit log.
+fn looks_blank_or_combining(c: char) -> bool {
+    matches!(c,
+        '\u{115F}' | '\u{1160}' | '\u{3164}' | '\u{FFA0}'
+        | '\u{0300}'..='\u{036F}'
+        | '\u{0483}'..='\u{0489}'
+        | '\u{1AB0}'..='\u{1AFF}'
+        | '\u{1DC0}'..='\u{1DFF}'
+        | '\u{20D0}'..='\u{20FF}'
+        | '\u{FE20}'..='\u{FE2F}')
 }
 
 /// A field or dataset name part the GIS tools accept.
@@ -212,8 +227,9 @@ fn quote(name: &str, d: SqlDialect) -> String {
     }
 }
 
-/// A file name stem from a dataset name: lower case, and anything but
-/// letters, digits, `_` and `-` as `_`.
+/// A file name stem from a dataset name: lower case, anything but letters,
+/// digits, `_` and `-` as `_`, and never starting with `-` (which a command
+/// line would read as an option).
 fn file_stem(dataset: &str) -> String {
     let s: String = dataset
         .rsplit('.')
@@ -230,6 +246,8 @@ fn file_stem(dataset: &str) -> String {
         .collect();
     if s.is_empty() {
         "query".into()
+    } else if let Some(rest) = s.strip_prefix('-') {
+        format!("_{rest}")
     } else {
         s
     }
@@ -521,7 +539,7 @@ impl Gateway {
                     "max_rows": max_rows,
                     "return_rows": return_rows.min(access.return_rows),
                     "output_stem": output_stem,
-                    "layer_name": q.dataset.rsplit('.').next().unwrap_or("layer").to_lowercase(),
+                    "layer_name": file_stem(&q.dataset),
                     "hide_fields": self.state.policy.hide_fields,
                     "geometry_column": info.get("geometry_column"),
                     "crs_spec": info.get("crs").and_then(|c| c.get("code")).map(|c| json!({"code": c}))
@@ -1298,5 +1316,41 @@ impl<T: JsonSchema> MapChecks for Json<Output<T>> {
     fn map_checks(mut self, checks: Vec<Check>) -> Self {
         self.0.checks = checks;
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn names_that_need_quotes() {
+        assert!(dataset_ok("Tribal Census Tract").is_ok());
+        assert!(dataset_ok("roads.Land Parcels").is_ok());
+        assert!(dataset_ok("Área de estudio").is_ok());
+        for bad in [
+            "a\"b",
+            "a]b",
+            " a",
+            "a ",
+            "a;b",
+            "a\u{3164}",
+            "e\u{0301}x",
+            "a\u{200b}b",
+            "",
+            "a.b.c.d",
+        ] {
+            assert!(dataset_ok(bad).is_err(), "{bad:?}");
+        }
+        assert_eq!(
+            dataset_sql("roads.roadway", SqlDialect::Oracle).unwrap(),
+            "roads.roadway"
+        );
+        assert_eq!(
+            dataset_sql("Tribal Census Tract", SqlDialect::MsSql).unwrap(),
+            "[Tribal Census Tract]"
+        );
+        assert_eq!(file_stem("-rf"), "_rf");
+        assert_eq!(file_stem("Tribal Census Tract"), "tribal_census_tract");
     }
 }

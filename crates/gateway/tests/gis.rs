@@ -491,7 +491,7 @@ import sys, os
 import geopandas as gpd
 from shapely.geometry import box
 path = os.path.join(sys.argv[1], "tiger.gpkg")
-gpd.GeoDataFrame({"NAME": ["A", "B", "C"], "Land Area": [10.0, 20.0, 30.0]},
+gpd.GeoDataFrame({"NAME": ["A", "B", "C"], "Land Area": [10.0, 20.0, 30.0], "owner_ssn": ["1", "2", "3"]},
     geometry=[box(-97.8 + i * 0.1, 30.2, -97.75 + i * 0.1, 30.25) for i in range(3)],
     crs="EPSG:4269").to_file(path, layer="Tribal Census Tract", driver="GPKG", engine="pyogrio")
 "#;
@@ -503,11 +503,25 @@ gpd.GeoDataFrame({"NAME": ["A", "B", "C"], "Land Area": [10.0, 20.0, 30.0]},
         .unwrap()
         .success());
     std::fs::create_dir_all(root.join("connections")).unwrap();
-    std::fs::write(root.join("policy.yaml"), "connection_types: [gpkg]\n").unwrap();
+    std::fs::write(
+        root.join("policy.yaml"),
+        "connection_types: [gpkg]\nhide_fields: [\"*ssn*\"]\n",
+    )
+    .unwrap();
     let gpkg = serde_json::to_string(&root.join("tiger.gpkg").display().to_string()).unwrap();
     std::fs::write(
         root.join("connections").join("tiger.yaml"),
         format!("id: tiger\ntype: gpkg\npath: {gpkg}\ndatasets:\n  allow: [\"*\"]\n"),
+    )
+    .unwrap();
+    // The same layer with a row filter: the table is then read through a
+    // filtered derived table, whose alias must keep its quotes.
+    std::fs::write(
+        root.join("connections").join("tiger-gov.yaml"),
+        format!(
+            "id: tiger-gov\ntype: gpkg\npath: {gpkg}\ndatasets:\n  allow: [\"*\"]\n\
+             row_filter: '\"Land Area\" > 15'\n"
+        ),
     )
     .unwrap();
     let client = start(&root, &py, &[]).await;
@@ -558,6 +572,33 @@ gpd.GeoDataFrame({"NAME": ["A", "B", "C"], "Land Area": [10.0, 20.0, 30.0]},
         r["result"]["layer"]["summary"]["crs"]["code"], "EPSG:3081",
         "{r}"
     );
+
+    // Under a row filter and hidden fields too.
+    let g = ok(&call(
+        &client,
+        "query_features",
+        json!({"connection": "tiger-gov", "dataset": ds}),
+    )
+    .await);
+    assert_eq!(g["result"]["rows_read"], 2, "{g}");
+    assert!(
+        !g["result"]["columns"].to_string().contains("owner_ssn"),
+        "{g}"
+    );
+    let r = ok(&call(
+        &client,
+        "vector_op",
+        json!({"op": "reproject", "inputs": {"layer": format!("tiger-gov:{ds}")}, "params": {"crs": "EPSG:3081"}}),
+    )
+    .await);
+    assert_eq!(r["result"]["layer"]["summary"]["rows"], 2, "{r}");
+    let v = ok(&call(
+        &client,
+        "verify",
+        json!({"layer": format!("tiger-gov:{ds}")}),
+    )
+    .await);
+    assert!(v["checks"].is_array(), "{v}");
 
     // Still refused: anything that could close the quoting or add SQL.
     for bad in [
