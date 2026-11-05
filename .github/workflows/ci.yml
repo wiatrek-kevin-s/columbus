@@ -119,6 +119,13 @@ jobs:
         run: |
           cargo build --locked
           cargo clippy --locked -- -D warnings
+      - name: Links reach the running app (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          ( cd app/ui && npm ci && npm run build )
+          ( cd app/desktop && npm ci && npx tauri build --debug --bundles app )
+          cargo build -p columbus-mcp --locked
+          python app/desktop/e2e/deeplink_macos.py target/debug/columbus-mcp app/desktop/src-tauri/target/debug/bundle/macos/Columbus.app
       - name: Links reach the running app (Linux)
         if: runner.os == 'Linux'
         run: |

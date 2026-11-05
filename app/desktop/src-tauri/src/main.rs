@@ -87,8 +87,16 @@ fn answers(port: u16) -> bool {
 
 /// The sessions running now, newest first. Announcements from servers that
 /// have stopped are skipped (and removed when the server has gone).
+/// The list for the main window. Commands that wait on the network run off
+/// the main thread: a sync command runs on it, and the window would hang.
 #[tauri::command]
-fn sessions() -> Vec<Session> {
+async fn sessions() -> Vec<Session> {
+    tauri::async_runtime::spawn_blocking(live_sessions)
+        .await
+        .unwrap_or_default()
+}
+
+fn live_sessions() -> Vec<Session> {
     let Ok(entries) = std::fs::read_dir(live_dir()) else {
         return vec![];
     };
@@ -131,8 +139,14 @@ fn sessions() -> Vec<Session> {
 /// Ask a session's server for a window. It answers by opening a
 /// `columbus://` link to this app with a fresh launch token.
 #[tauri::command]
-fn open_session(port: u16) -> Result<(), String> {
-    if !sessions().iter().any(|s| s.port == port) {
+async fn open_session(port: u16) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || ask_for_window(port))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn ask_for_window(port: u16) -> Result<(), String> {
+    if !live_sessions().iter().any(|s| s.port == port) {
         return Err("that session is no longer running".into());
     }
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
@@ -169,7 +183,7 @@ fn page_for(link: &Url) -> Option<Url> {
     if token.len() != 64 || !token.bytes().all(|b| b.is_ascii_hexdigit()) {
         return None;
     }
-    if !sessions().iter().any(|s| s.port == port) {
+    if !live_sessions().iter().any(|s| s.port == port) {
         return None;
     }
     Url::parse(&format!("http://127.0.0.1:{port}/#t={token}")).ok()
@@ -198,12 +212,21 @@ fn show_page(app: &AppHandle, page: Url) {
     }
 }
 
+/// Open the windows for links the system handed over. On macOS links
+/// arrive on the main thread, where building a window (which waits for the
+/// event loop) would hang the app; so the work moves to a background task.
 fn handle_links(app: &AppHandle, urls: Vec<Url>) {
-    for u in urls {
-        if let Some(page) = page_for(&u) {
-            show_page(app, page);
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let pages = tauri::async_runtime::spawn_blocking(move || {
+            urls.iter().filter_map(page_for).collect::<Vec<_>>()
+        })
+        .await
+        .unwrap_or_default();
+        for page in pages {
+            show_page(&app, page);
         }
-    }
+    });
 }
 
 /// Keep `live/app.json` fresh while the app runs, so servers send their
