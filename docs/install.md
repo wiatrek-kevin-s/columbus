@@ -20,7 +20,7 @@ This creates `engine\venv` with GDAL, PROJ, GeoPandas and rasterio (about 300 MB
 
 ## 3. Tell Columbus what it may use
 
-**The easy way: the Columbus app.** Install the app (step 5), open it and press **Settings**. There you add connections (Browse for a GeoPackage or a folder of rasters, or fill in a database's host, login and password, which goes into your Credential Manager), set each one to read only or read and write, and turn edits and scripts on or off. Anything that gives your assistant more access asks for Windows Hello first; your assistant cannot change these settings itself. **Test** checks that Columbus can open a connection before you save it. Changes reach your assistant on its next request; there is no need to restart Claude desktop.
+**The easy way: the Columbus app.** Install the app (step 5), open it and press **Settings**. There you add connections (Browse for a GeoPackage or a folder of rasters, or fill in a database's host, login and password, which goes into your Credential Manager), set each one to read only or read and write, and turn edits and scripts on or off. Anything that gives your assistant more access asks for Windows Hello first; your assistant cannot change these settings itself. **Test** checks that Columbus can open a connection before you save it. **Draft notes** writes notes about a connection's tables from the database itself (fields, keys, relationships, codes) so your assistant knows your data; you or your assistant fill in what it means. Changes reach your assistant on its next request; there is no need to restart Claude desktop.
 
 **Or by hand,** as below.
 

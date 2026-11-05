@@ -63,3 +63,8 @@ exports:
 # Hosts registry_fetch may download open data from without asking. Any other
 # host (still public HTTPS only) needs the person's approval.
 fetch_hosts: ["tigerweb.geo.census.gov", "hazards.fema.gov", "*.arcgis.com"]
+
+# Notes Columbus drafts from a connection's database (draft_notes, or Draft
+# notes in the app): list the codes short fields hold, as code lists to label.
+# Off: fields, types, keys, relationships and comments only.
+notes: { values: true }

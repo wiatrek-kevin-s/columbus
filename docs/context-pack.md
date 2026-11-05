@@ -77,4 +77,8 @@ Front matter present and valid; required fields per kind; ids unique and well-fo
 
 ## Not yet
 
-Columbus does not yet enforce domains in verification, draft entries from a geodatabase (`draft_context_from_geodatabase`), or propose updates when a live schema drifts from its entry. Those come with the edit and export tools.
+Columbus does not yet enforce domains in verification, or propose updates when a live schema drifts from its entry.
+
+## The person's own notes
+
+`draft_notes` writes entries in this format into the person's own notes folder, drafted from a connection's database: a `dataset` entry per table (`connection`, `physical`, `geometry`, `crs`, `rows`, `keys`, `fields` with `type`, `domain`, `note` and `required`, plus `relationships` and `indexes`) and a `domain` entry per short code field (`connection`, `dataset`, `field`, `values`, and `rows_with` counts). Every entry is `status: draft` with `drafted_by` and a `draft_sha256` of itself, so a later draft leaves an edited one alone. The context tools read these notes beside the organization's pack.

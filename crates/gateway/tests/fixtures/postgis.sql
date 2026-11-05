@@ -38,6 +38,14 @@ INSERT INTO roads.roadway_audit (who) VALUES ('someone');
 CREATE TABLE hr.employees (id integer, ssn text);
 INSERT INTO hr.employees VALUES (1, '123-45-6789');
 
+-- Comments and a relationship, for notes drafted from the catalog.
+COMMENT ON TABLE roads.roadway_inventory IS 'Roadway segments on the county system';
+COMMENT ON COLUMN roads.roadway_inventory.route_id IS 'Route identifier';
+CREATE TABLE roads.districts (id integer PRIMARY KEY, name text);
+INSERT INTO roads.districts VALUES (9, 'Waco'), (14, 'Austin');
+CREATE TABLE roads.district_offices (id serial PRIMARY KEY, district_id integer REFERENCES roads.districts(id), city text);
+INSERT INTO roads.district_offices (district_id, city) VALUES (14, 'Austin');
+
 -- A function with a side effect: a plain SELECT that calls it writes. Only
 -- the read-only transaction stops this, which is what the tests check.
 CREATE FUNCTION roads.log_visit() RETURNS integer LANGUAGE sql VOLATILE AS

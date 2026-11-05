@@ -298,7 +298,6 @@ pub async fn settings_test_connection(form: ConnForm) -> Result<Value, String> {
 }
 
 fn test_connection(form: ConnForm) -> Result<Value, String> {
-    use columbus_shared::proof;
     let dir = paths::connections_dir();
     let found = scan(&dir);
     let old = found
@@ -306,36 +305,80 @@ fn test_connection(form: ConnForm) -> Result<Value, String> {
         .filter_map(|(_, c)| c.as_ref().ok())
         .find(|c| form.existing && c.id.eq_ignore_ascii_case(&form.id));
     let conn = build(&form, old)?;
-    let sessions = sessions_here(&dir);
-    if sessions.is_empty() {
-        return Err("No Columbus session is running to test with. Open Claude desktop (it starts Columbus), then try again. You can still save it now.".into());
-    }
     let body = serde_json::to_vec(&json!({
         "connection": conn,
         "password": form.password.as_deref().filter(|p| !p.is_empty()),
     }))
     .map_err(|e| e.to_string())?;
-    let mut last = "The Columbus running now is too old to test connections. Update the Columbus extension in Claude desktop, then try again.".to_string();
+    let (code, reply) = signed_post(&dir, "/api/test-connection", &body, "test connections")?;
+    match code {
+        200 => Ok(reply),
+        429 => Err("A test is already running; wait for it to finish.".into()),
+        413 => Err("The form is too long to test (shorten the description or filter).".into()),
+        _ => Err(format!(
+            "The Columbus session could not run the test ({code}: {}).",
+            reply["error"].as_str().unwrap_or("no reason given")
+        )),
+    }
+}
+
+/// Draft the person's notes about a saved connection, from its database,
+/// by a running session (the person's own action: no confirmation, since
+/// it gives the assistant no more access; it only writes notes).
+#[tauri::command]
+pub async fn settings_draft_notes(id: String) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let dir = paths::connections_dir();
+        if !scan(&dir)
+            .iter()
+            .any(|(_, c)| c.as_ref().is_ok_and(|c| c.id == id))
+        {
+            return Err(format!("there is no connection {id:?}"));
+        }
+        let body = serde_json::to_vec(&json!({"connection": id})).map_err(|e| e.to_string())?;
+        let (code, reply) = signed_post(&dir, "/api/draft-notes", &body, "draft notes")?;
+        match code {
+            200 => Ok(reply),
+            429 => Err("A test or a draft is already running; wait for it to finish.".into()),
+            404 => Err("The Columbus running now is too old to draft notes. Update the Columbus extension in Claude desktop, then try again.".into()),
+            _ => Err(format!(
+                "The Columbus session could not draft notes ({code}: {}).",
+                reply["error"].as_str().unwrap_or("no reason given")
+            )),
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// POST `body` to `path` on a running session that reads `dir`: first the
+/// session proves it holds the key in its `live/<session>.key` (so a
+/// program that merely took over a port it used gets nothing), then the
+/// request goes with the app's proof over the session's challenge and the
+/// exact body. The key is never sent.
+fn signed_post(dir: &Path, path: &str, body: &[u8], what: &str) -> Result<(u16, Value), String> {
+    use columbus_shared::proof;
+    let sessions = sessions_here(dir);
+    if sessions.is_empty() {
+        return Err(format!("No Columbus session is running to {what} with. Open Claude desktop (it starts Columbus), then try again."));
+    }
+    let mut last = format!("The Columbus running now is too old to {what}. Update the Columbus extension in Claude desktop, then try again.");
     for s in &sessions {
         let Some(key) = &s.key else { continue };
-        // First the session proves it holds the key (a program that merely
-        // took over a port it used gets nothing); the key is never sent.
         // From the operating system's secure random source.
         let mine = format!(
             "{}{}",
             uuid::Uuid::new_v4().simple(),
             uuid::Uuid::new_v4().simple()
         );
+        let hello_header = format!(
+            "{mine}.{}",
+            proof::prove(key, proof::HELLO, &[mine.as_bytes()])
+        );
         let (code, hello) = match post_local(
             s.port,
             "/api/test-hello",
-            &[(
-                "X-Columbus-Test-Hello",
-                &format!(
-                    "{mine}.{}",
-                    proof::prove(key, proof::HELLO, &[mine.as_bytes()])
-                ),
-            )],
+            &[("X-Columbus-Test-Hello", &hello_header)],
             b"",
         ) {
             Ok(v) => v,
@@ -347,7 +390,7 @@ fn test_connection(form: ConnForm) -> Result<Value, String> {
         let (Some(challenge), Some(theirs)) =
             (hello["challenge"].as_str(), hello["proof"].as_str())
         else {
-            last = format!("The Columbus session did not answer the test ({code}).");
+            last = format!("The Columbus session did not answer ({code}).");
             continue;
         };
         if code != 200
@@ -362,24 +405,10 @@ fn test_connection(form: ConnForm) -> Result<Value, String> {
         let sig = proof::prove(
             key,
             proof::APP,
-            &[challenge.as_bytes(), proof::body_hash(&body).as_bytes()],
+            &[challenge.as_bytes(), proof::body_hash(body).as_bytes()],
         );
         let header = format!("{challenge}.{sig}");
-        let (code, reply) = post_local(
-            s.port,
-            "/api/test-connection",
-            &[("X-Columbus-Test", &header)],
-            &body,
-        )?;
-        return match code {
-            200 => Ok(reply),
-            429 => Err("A test is already running; wait for it to finish.".into()),
-            413 => Err("The form is too long to test (shorten the description or filter).".into()),
-            _ => Err(format!(
-                "The Columbus session could not run the test ({code}: {}).",
-                reply["error"].as_str().unwrap_or("no reason given")
-            )),
-        };
+        return post_local(s.port, path, &[("X-Columbus-Test", &header)], body);
     }
     Err(last)
 }
@@ -396,7 +425,9 @@ fn post_local(
     use std::net::{SocketAddr, TcpStream};
     use std::time::{Duration, Instant};
     const MAX: usize = 64 * 1024;
-    let deadline = Instant::now() + Duration::from_secs(60);
+    // Drafting notes for a large database takes longer than a test.
+    let deadline =
+        Instant::now() + Duration::from_secs(if path == "/api/draft-notes" { 600 } else { 60 });
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
     let mut s = TcpStream::connect_timeout(&addr, Duration::from_millis(800))
         .map_err(|e| format!("could not reach the Columbus session: {e}"))?;

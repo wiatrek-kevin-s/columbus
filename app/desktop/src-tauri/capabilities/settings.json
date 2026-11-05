@@ -9,6 +9,7 @@
     "allow-settings-delete-connection",
     "allow-settings-set-switch",
     "allow-settings-pick",
-    "allow-settings-test-connection"
+    "allow-settings-test-connection",
+    "allow-settings-draft-notes"
   ]
 }

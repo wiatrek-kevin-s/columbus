@@ -233,7 +233,7 @@ jobs:
           # seconds (ORA-01466: the time-to-SCN mapping is coarse).
           sleep 15
       - name: Worker tests against Oracle
-        run: python -m unittest discover -s workers/python/tests -p "test_db_engines.py" -v
+        run: python -m unittest discover -s workers/python/tests -p "test_db_engines.py" -v && python -m unittest discover -s workers/python/tests -p "test_catalog.py" -v
       - name: Gateway end to end against Oracle
         if: success() || failure()
         run: cargo test -p columbus-mcp --test oracle --locked -- --nocapture
@@ -283,7 +283,7 @@ jobs:
           docker cp crates/gateway/tests/fixtures/mssql.sql "$ID":/tmp/mssql.sql
           docker exec "$ID" /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P Columbus_sa_test1 -C -b -i /tmp/mssql.sql
       - name: Worker tests against SQL Server
-        run: python -m unittest discover -s workers/python/tests -p "test_db_engines.py" -v
+        run: python -m unittest discover -s workers/python/tests -p "test_db_engines.py" -v && python -m unittest discover -s workers/python/tests -p "test_catalog.py" -v
       - name: Gateway end to end against SQL Server
         if: success() || failure()
         run: cargo test -p columbus-mcp --test mssql --locked -- --nocapture

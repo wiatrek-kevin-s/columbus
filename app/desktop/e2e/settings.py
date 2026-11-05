@@ -87,7 +87,7 @@ def main():
     subprocess.run([sys.executable, "-c", """
 import sys, geopandas as gpd
 from shapely.geometry import LineString
-gpd.GeoDataFrame({"RTE": ["IH0035", "US0183"]}, geometry=[LineString([(0, 0), (1000, 0)]), LineString([(0, 0), (0, 900)])],
+gpd.GeoDataFrame({"RTE": ["IH0035", "US0183"], "district": [14, 12]}, geometry=[LineString([(0, 0), (1000, 0)]), LineString([(0, 0), (0, 900)])],
     crs="EPSG:3081").to_file(sys.argv[1], layer="routes", driver="GPKG", engine="pyogrio")
 """, str(gpkg)], check=True)
     broken = root / "broken.gpkg"
@@ -126,6 +126,15 @@ gpd.GeoDataFrame({"RTE": ["IH0035", "US0183"]}, geometry=[LineString([(0, 0), (1
         assert c["mode"] == "read" and c["datasets"] == {"allow": ["*"], "deny": ["*audit*"]}, c
         assert c["row_filter"] == "district = 14", c
         wait.until(lambda drv: "roads" in drv.find_element(By.ID, "connections").text)
+
+        # Draft notes from the database: the running session writes them.
+        d.find_element(By.XPATH, "//ul[@id='connections']//button[normalize-space()='Draft notes']").click()
+        wait.until(lambda drv: "Drafted" in drv.find_element(By.CSS_SELECTOR, ".draft-status").text)
+        note = root / "notes" / "datasets" / "roads" / "routes.md"
+        assert note.exists(), list((root / "notes").rglob("*"))
+        text = note.read_text()
+        assert "status: draft" in text and "RTE" in text, text
+        d.save_screenshot(str(OUT / "settings-notes.png"))
 
         # Make it read-write, and turn edits on: the rest of the policy file stays.
         d.find_element(By.XPATH, "//ul[@id='connections']//button[normalize-space()='Edit']").click()

@@ -98,6 +98,20 @@ END;
 CREATE PUBLIC SYNONYM split_part FOR roads.split_part;
 GRANT EXECUTE ON split_part TO PUBLIC;
 
+-- Comments and a relationship, for notes drafted from the catalog.
+COMMENT ON TABLE roads IS 'Road segments on the county system';
+COMMENT ON COLUMN roads.district IS 'Maintenance district';
+CREATE TABLE districts (id NUMBER(4) PRIMARY KEY, name VARCHAR2(40));
+INSERT INTO districts VALUES (9, 'Waco');
+INSERT INTO districts VALUES (14, 'Austin');
+CREATE TABLE district_offices (id NUMBER PRIMARY KEY, district_id NUMBER(4) REFERENCES districts(id), city VARCHAR2(40));
+INSERT INTO district_offices VALUES (1, 14, 'Austin');
+COMMIT;
+GRANT SELECT ON districts TO columbus_ro;
+GRANT SELECT ON district_offices TO columbus_ro;
+GRANT SELECT ON districts TO columbus_rw;
+GRANT SELECT ON district_offices TO columbus_rw;
+
 GRANT SELECT ON roads TO columbus_ro;
 GRANT SELECT ON roads_audit TO columbus_ro;
 GRANT SELECT ON parcels TO columbus_ro;

@@ -24,6 +24,7 @@ fn main() {
             "settings_set_switch",
             "settings_pick",
             "settings_test_connection",
+            "settings_draft_notes",
         ]),
     ))
     .expect("tauri build");

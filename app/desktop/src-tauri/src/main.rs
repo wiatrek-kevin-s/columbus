@@ -368,6 +368,7 @@ fn main() {
             settings::settings_set_switch,
             settings::settings_pick,
             settings::settings_test_connection,
+            settings::settings_draft_notes,
         ])
         .setup(|app| {
             heartbeat();

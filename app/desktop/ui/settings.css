@@ -39,3 +39,6 @@ button.danger { border-color: var(--fail); color: var(--fail); background: trans
 #test-result.test-ok { background: #e6f2e7; color: #1d4d24; border: 1px solid #b9dcbd; }
 #test-result.test-bad { color: var(--fail); border: 1px solid var(--fail); }
 @media (prefers-color-scheme: dark) { #test-result.test-ok { background: #17301b; color: #cfe9d2; border-color: #2f5a35; } }
+.draft-status:empty { display: none; }
+.draft-status.bad { color: var(--fail); }
+.conn button + button { margin-left: 6px; }

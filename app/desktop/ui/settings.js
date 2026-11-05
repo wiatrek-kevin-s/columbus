@@ -84,10 +84,17 @@ function render() {
     if (c.has_password) chips.append(el("span", "chip", "Password stored"));
     text.append(chips);
     if (c.description) text.append(el("span", "where", c.description));
+    const status = el("span", "where draft-status");
+    status.setAttribute("role", "status");
+    text.append(status);
+    const d = el("button", null, "Draft notes");
+    d.type = "button";
+    d.title = "Write notes about this connection's datasets from the database itself (fields, keys, relationships, codes), for you to fill in";
+    d.addEventListener("click", () => draftNotes(c.id, d, status));
     const b = el("button", null, "Edit");
     b.type = "button";
     b.addEventListener("click", () => openEditor(c));
-    li.append(text, b);
+    li.append(text, d, b);
     list.append(li);
   }
   const p = state.policy;
@@ -199,6 +206,24 @@ async function save(ev) {
   } finally {
     btn.disabled = false;
     form.password.value = "";
+  }
+}
+
+async function draftNotes(id, btn, status) {
+  btn.disabled = true;
+  btn.textContent = "Drafting…";
+  status.textContent = "";
+  status.classList.remove("bad");
+  try {
+    const r = await invoke("settings_draft_notes", { id });
+    status.textContent = r.message;
+    status.classList.toggle("bad", !r.ok);
+  } catch (e) {
+    status.textContent = String(e);
+    status.classList.add("bad");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Draft notes";
   }
 }
 

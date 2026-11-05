@@ -50,6 +50,15 @@ CREATE TABLE roads.roads_audit (id INT IDENTITY PRIMARY KEY, who NVARCHAR(40));
 INSERT INTO roads.roads_audit (who) VALUES (N'someone');
 GO
 
+-- Comments and a relationship, for notes drafted from the catalog.
+EXEC sp_addextendedproperty 'MS_Description', N'Road segments on the county system', 'SCHEMA', 'roads', 'TABLE', 'roads';
+EXEC sp_addextendedproperty 'MS_Description', N'Maintenance district', 'SCHEMA', 'roads', 'TABLE', 'roads', 'COLUMN', 'district';
+CREATE TABLE roads.districts (id INT PRIMARY KEY, name NVARCHAR(40));
+INSERT INTO roads.districts VALUES (9, N'Waco'), (14, N'Austin');
+CREATE TABLE roads.district_offices (id INT PRIMARY KEY, district_id INT REFERENCES roads.districts(id), city NVARCHAR(40));
+INSERT INTO roads.district_offices VALUES (1, 14, N'Austin');
+GO
+
 -- A scalar function that reads a hidden field of every row. SQL Server
 -- calls such functions only by a two-part name, which the server refuses.
 CREATE FUNCTION roads.owner_list() RETURNS NVARCHAR(MAX) AS

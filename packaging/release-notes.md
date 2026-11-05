@@ -1,6 +1,6 @@
 Columbus {{VERSION}}, a test release. Click a link to download that file.
 
-**New in this version: Settings changes apply at once, and a Test button.** Changes you make in Settings (connections, edits, scripts) reach Claude on its next request: no more quitting Claude desktop after each change. Tightening takes effect immediately; anything that gives your assistant more access still asks for Touch ID or your password (Windows Hello on Windows) first. In the connection editor, **Test** has the running Columbus open the connection exactly as it would use it, before you save, and says how many datasets it can see. Update both the extension and the app. Since 0.5.0: Settings in the Columbus app; since 0.4.0: editing data in GeoPackage and PostGIS.
+**New in this version: notes about your data, drafted from your database.** In Settings, **Draft notes** next to a connection (or ask your assistant to draft them) writes notes about its tables from the database itself: fields and types, row counts, keys, relationships between tables, the descriptions written in the database, and the codes short fields hold. Your assistant reads them before it queries, so it knows your data. Fill in what things mean, or ask your assistant to from your documents: you approve every change it makes. Hidden fields and refused tables never appear. Update both the extension and the app. Since 0.6.0: Settings changes apply without a restart, and Test checks a connection before you save it.
 
 ## Mac (Apple Silicon: M1 or later)
 
