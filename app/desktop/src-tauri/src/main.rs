@@ -39,7 +39,7 @@ use tauri_plugin_deep_link::DeepLinkExt;
 
 /// Where sessions announce themselves: `COLUMBUS_LIVE_DIR`, else `live/`
 /// in the person's Columbus folder (the gateway's `config::live_dir`).
-fn live_dir() -> PathBuf {
+pub(crate) fn live_dir() -> PathBuf {
     if let Some(d) = std::env::var_os("COLUMBUS_LIVE_DIR").filter(|v| !v.is_empty()) {
         return PathBuf::from(d);
     }
@@ -198,12 +198,20 @@ async fn open_chat(app: AppHandle) -> Result<(), String> {
         return Ok(());
     }
     WebviewWindowBuilder::new(&app, "chat", WebviewUrl::App("chat.html".into()))
+        .on_navigation(app_page)
         .title("Columbus chat")
         .inner_size(760.0, 860.0)
         .min_inner_size(480.0, 520.0)
         .build()
         .map(|_| ())
         .map_err(|e| e.to_string())
+}
+
+/// The app's own pages only: the settings and chat windows never navigate
+/// anywhere else (tauri://localhost on macOS and Linux,
+/// http://tauri.localhost on Windows).
+fn app_page(url: &tauri::Url) -> bool {
+    url.scheme() == "tauri" || (url.scheme() == "http" && url.host_str() == Some("tauri.localhost"))
 }
 
 /// Open the settings window: connections and the organization's switches.
@@ -215,6 +223,7 @@ async fn open_settings(app: AppHandle) -> Result<(), String> {
         return Ok(());
     }
     WebviewWindowBuilder::new(&app, "settings", WebviewUrl::App("settings.html".into()))
+        .on_navigation(app_page)
         .title("Columbus settings")
         .inner_size(820.0, 860.0)
         .min_inner_size(560.0, 560.0)

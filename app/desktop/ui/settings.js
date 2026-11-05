@@ -40,6 +40,11 @@ function render() {
     ? "On this system, changes that give it more access cannot be made here (there is no Touch ID or Windows Hello to confirm them)."
     : `Changes that give it more access ask for ${state.confirm_with} first.`;
   $("conn-dir").textContent = state.connections_dir;
+  const other = state.other_folders || [];
+  $("other-folders").hidden = other.length === 0;
+  $("other-folders").textContent = other.length
+    ? `A running Columbus session reads its connections from ${other.join(", ")}, not from this folder, so changes here do not reach it. Clear the Connections folder setting of the Columbus extension in Claude desktop to use this one.`
+    : "";
   const list = $("connections");
   list.replaceChildren();
   $("no-conn").hidden = state.connections.length > 0;
@@ -123,7 +128,22 @@ function openEditor(c) {
   (c ? form.mode : form.conn_id).focus();
 }
 
-const list = (s) => s.split(",").map((x) => x.trim()).filter(Boolean);
+// Comma-separated patterns; a comma inside {…} belongs to the pattern.
+function list(s) {
+  const out = [];
+  let cur = "";
+  let depth = 0;
+  for (const ch of s) {
+    if (ch === "{") depth += 1;
+    if (ch === "}") depth = Math.max(0, depth - 1);
+    if (ch === "," && depth === 0) {
+      out.push(cur);
+      cur = "";
+    } else cur += ch;
+  }
+  out.push(cur);
+  return out.map((x) => x.trim()).filter(Boolean);
+}
 
 async function save(ev) {
   ev.preventDefault();

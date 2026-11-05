@@ -369,7 +369,9 @@ impl ApprovalsPage {
 
     /// Start the server now, not at the first approval, and say where it is
     /// in `live/<session>.json`, so the person's Columbus app can open it.
-    pub async fn start_live(&self) -> Result<PathBuf, String> {
+    /// `settings`: the settings files this server read (no secrets), so the
+    /// Columbus app can tell when it edits other ones.
+    pub async fn start_live(&self, settings: serde_json::Value) -> Result<PathBuf, String> {
         let shared = self.start().await?;
         let dir = self
             .live_dir
@@ -384,6 +386,7 @@ impl ApprovalsPage {
             "user": self.user,
             "started": chrono::Local::now().to_rfc3339(),
             "server": format!("columbus-mcp {}", env!("CARGO_PKG_VERSION")),
+            "settings": settings,
         });
         std::fs::write(&file, serde_json::to_vec_pretty(&body).unwrap_or_default())
             .map_err(|e| e.to_string())?;

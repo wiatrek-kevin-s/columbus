@@ -60,6 +60,9 @@ pub struct SettingsState {
     policy: PolicyView,
     /// How loosening changes are confirmed here.
     confirm_with: String,
+    /// Connections folders running sessions read that are not this one
+    /// (the extension's own setting can point elsewhere).
+    other_folders: Vec<String>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -204,7 +207,38 @@ fn state() -> SettingsState {
             problem,
         },
         confirm_with: confirm_with().into(),
+        other_folders: other_folders(&dir),
     }
+}
+
+/// The connections folders running sessions say they read, other than `dir`.
+fn other_folders(dir: &Path) -> Vec<String> {
+    let mine = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+    let mut out = vec![];
+    let Ok(entries) = std::fs::read_dir(crate::live_dir()) else {
+        return out;
+    };
+    for e in entries.flatten() {
+        let p = e.path();
+        if p.file_name().and_then(|n| n.to_str()) == Some("app.json") {
+            continue;
+        }
+        let Some(v) = std::fs::read_to_string(&p)
+            .ok()
+            .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        else {
+            continue;
+        };
+        if let Some(c) = v["settings"]["connections"].as_str() {
+            let theirs = Path::new(c)
+                .canonicalize()
+                .unwrap_or_else(|_| PathBuf::from(c));
+            if theirs != mine && !out.contains(&c.to_string()) {
+                out.push(c.to_string());
+            }
+        }
+    }
+    out
 }
 
 /// A connection from the form, on top of the one it replaces (limits and
@@ -283,8 +317,7 @@ fn build(form: &ConnForm, old: Option<&Connection>) -> Result<Connection, String
 
 /// Whether going from `old` to `new` gives access to anything `old` did
 /// not: then the person confirms it. Only a description change, a lower
-/// mode, fewer allowed patterns, more denied ones, or a row filter added
-/// where there was none count as no loosening.
+/// mode, fewer allowed patterns or more denied ones count as no loosening.
 pub(crate) fn loosens(old: Option<&Connection>, new: &Connection) -> bool {
     let Some(old) = old else { return true };
     let same = |a: &Connection, b: &Connection| {
@@ -321,24 +354,218 @@ pub(crate) fn loosens(old: Option<&Connection>, new: &Connection) -> bool {
     {
         return true;
     }
-    match (&old.row_filter, &new.row_filter) {
-        (a, b) if a == b => false,
-        (None, Some(_)) => false,
-        _ => true,
+    // Any change of row filter: even a new one can reveal what it tests,
+    // by the rows it keeps.
+    old.row_filter != new.row_filter
+}
+
+/// One change at a time, across the window's commands.
+static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Write a file whole (a fresh temporary file beside it, flushed to disk),
+/// then move it into place, keeping the old file's permissions. A link is
+/// not followed: the window will not change a file that lives elsewhere.
+fn write_atomic(path: &Path, text: &str) -> Result<(), String> {
+    use std::io::Write;
+    let show = |e: std::io::Error| format!("{}: {e}", path.display());
+    if std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
+        return Err(format!(
+            "{} is a link to another file; change that file instead",
+            path.display()
+        ));
+    }
+    let dir = path.parent().ok_or("no folder")?;
+    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let mut b = [0u8; 8];
+    getrandom_bytes(&mut b);
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("settings");
+    let tmp = dir.join(format!(
+        ".{name}.{}.tmp",
+        b.iter().map(|x| format!("{x:02x}")).collect::<String>()
+    ));
+    let result = (|| {
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)
+            .map_err(show)?;
+        f.write_all(text.as_bytes()).map_err(show)?;
+        f.sync_all().map_err(show)?;
+        if let Ok(m) = std::fs::metadata(path) {
+            let _ = std::fs::set_permissions(&tmp, m.permissions());
+        }
+        std::fs::rename(&tmp, path).map_err(show)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
+}
+
+/// Random bytes for a temporary file's name (uniqueness, not secrecy).
+fn getrandom_bytes(b: &mut [u8]) {
+    use std::hash::{BuildHasher, Hasher};
+    for chunk in b.chunks_mut(8) {
+        let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+        h.write_u128(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0),
+        );
+        let v = h.finish().to_le_bytes();
+        chunk.copy_from_slice(&v[..chunk.len()]);
     }
 }
 
-/// Write a file whole, then move it into place.
-fn write_atomic(path: &Path, text: &str) -> Result<(), String> {
-    if let Some(d) = path.parent() {
-        std::fs::create_dir_all(d).map_err(|e| format!("{}: {e}", d.display()))?;
+/// What a change gives access to, in words, for the confirmation prompt.
+fn widening(old: Option<&Connection>, new: &Connection, password: bool) -> String {
+    let place = new
+        .path
+        .clone()
+        .or_else(|| {
+            new.host.clone().map(|h| {
+                format!(
+                    "{h}{}",
+                    new.database
+                        .as_deref()
+                        .map(|d| format!("/{d}"))
+                        .unwrap_or_default()
+                )
+            })
+        })
+        .or_else(|| new.dsn.clone())
+        .unwrap_or_default();
+    let mut parts: Vec<String> = Vec::new();
+    match old {
+        None => parts.push(format!(
+            "add the connection {} ({}, {}), {}",
+            new.id,
+            place,
+            if new.mode == Mode::ReadWrite {
+                "read and write"
+            } else {
+                "read only"
+            },
+            if new.datasets.allow == ["*"] {
+                "all datasets".to_string()
+            } else {
+                format!("datasets {}", new.datasets.allow.join(", "))
+            }
+        )),
+        Some(o) => {
+            let mut a = serde_json::to_value(o).unwrap_or(Value::Null);
+            let mut b = serde_json::to_value(new).unwrap_or(Value::Null);
+            for v in [&mut a, &mut b] {
+                if let Some(m) = v.as_object_mut() {
+                    for k in ["description", "mode", "datasets", "row_filter"] {
+                        m.remove(k);
+                    }
+                }
+            }
+            if a != b {
+                parts.push(format!("point {} at {place}", new.id));
+            }
+            if new.mode == Mode::ReadWrite && o.mode != Mode::ReadWrite {
+                parts.push(format!("make {} read and write", new.id));
+            }
+            let more: Vec<&String> = new
+                .datasets
+                .allow
+                .iter()
+                .filter(|p| !o.datasets.allow.contains(p))
+                .collect();
+            if !more.is_empty() {
+                parts.push(format!(
+                    "allow {}",
+                    more.iter()
+                        .map(|s| s.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+            }
+            let fewer: Vec<&String> = o
+                .datasets
+                .deny
+                .iter()
+                .filter(|p| !new.datasets.deny.contains(p))
+                .collect();
+            if !fewer.is_empty() {
+                parts.push(format!(
+                    "stop refusing {}",
+                    fewer
+                        .iter()
+                        .map(|s| s.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+            }
+            if o.row_filter != new.row_filter {
+                parts.push(match &new.row_filter {
+                    Some(f) => format!("set the row filter to {f}"),
+                    None => "remove the row filter".into(),
+                });
+            }
+        }
     }
-    let tmp = path.with_extension("tmp-columbus");
-    std::fs::write(&tmp, text).map_err(|e| format!("{}: {e}", path.display()))?;
-    std::fs::rename(&tmp, path).map_err(|e| {
-        let _ = std::fs::remove_file(&tmp);
-        format!("{}: {e}", path.display())
-    })
+    if password {
+        parts.push(format!("store a new password for {}", new.id));
+    }
+    parts.join("; ")
+}
+
+/// Credential names that connected servers' manifests use (kept when a
+/// connection of the same name is removed).
+fn manifest_credentials() -> Vec<String> {
+    let mut out = vec![];
+    for d in paths::servers_dirs() {
+        let Ok(entries) = std::fs::read_dir(&d) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            let Ok(text) = std::fs::read_to_string(e.path()) else {
+                continue;
+            };
+            for (i, _) in text.match_indices("credential:") {
+                let rest = text[i + "credential:".len()..].trim_start();
+                let name: String = rest
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+                    .collect();
+                if !name.is_empty() {
+                    out.push(name.to_lowercase());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// A row filter must not name a field the organization hides: counting the
+/// rows it keeps would reveal the hidden values.
+fn filter_uses_hidden(filter: &str, hidden: &[String]) -> Option<String> {
+    if hidden.is_empty() {
+        return None;
+    }
+    let rules = DatasetRules {
+        allow: hidden.to_vec(),
+        deny: vec![],
+    };
+    let mut word = String::new();
+    let mut words = vec![];
+    for c in filter.chars().chain(std::iter::once(' ')) {
+        if c.is_alphanumeric() || c == '_' || c == '$' || c == '#' {
+            word.push(c);
+        } else if !word.is_empty() {
+            words.push(std::mem::take(&mut word));
+        }
+    }
+    words
+        .into_iter()
+        .find(|w| rules.permits(w).unwrap_or(false))
 }
 
 #[tauri::command]
@@ -349,11 +576,13 @@ pub async fn settings_save_connection(form: ConnForm) -> Result<String, String> 
 }
 
 fn save_connection(form: ConnForm) -> Result<String, String> {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
     let dir = paths::connections_dir();
     let found = scan(&dir);
-    let existing = found
-        .iter()
-        .find(|(_, c)| c.as_ref().is_ok_and(|c| c.id == form.id));
+    let existing = found.iter().find(|(_, c)| {
+        c.as_ref()
+            .is_ok_and(|c| c.id.eq_ignore_ascii_case(&form.id))
+    });
     if form.existing != existing.is_some() {
         return Err(if form.existing {
             format!("there is no connection {:?} any more", form.id)
@@ -364,17 +593,36 @@ fn save_connection(form: ConnForm) -> Result<String, String> {
     let old = existing.and_then(|(_, c)| c.as_ref().ok());
     let new = build(&form, old)?;
     let password = form.password.as_deref().filter(|p| !p.is_empty());
-    if loosens(old, &new) || password.is_some() {
-        let what = match old {
-            None => format!("add the connection {}", new.id),
-            Some(_) => format!("widen what the connection {} gives access to", new.id),
-        };
-        confirm(&what)?;
+    // A password left under this name (by an earlier connection, the
+    // command line, or a connected server's key) would go to the new place.
+    if old.is_none() && password.is_none() && has_password(&new.id) {
+        return Err(format!(
+            "a password named {:?} is already stored on this computer (from an earlier connection or a connected server). Enter this connection's password, or choose another name",
+            new.id
+        ));
+    }
+    let hidden = paths::policy_file();
+    let hide_fields = OrgPolicy::load(&hidden)
+        .map(|p| p.hide_fields)
+        .unwrap_or_default();
+    if let Some(f) = new.row_filter.as_deref() {
+        if let Some(w) = filter_uses_hidden(f, &hide_fields) {
+            return Err(format!(
+                "the row filter uses {w}, a field your organization hides"
+            ));
+        }
     }
     let file = existing
         .map(|(p, _)| p.clone())
         .unwrap_or_else(|| dir.join(format!("{}.yaml", new.id)));
     let previous = std::fs::read_to_string(&file).ok();
+    if loosens(old, &new) || password.is_some() {
+        confirm(&widening(old, &new, password.is_some()))?;
+        // Nothing else changed it while the person was asked.
+        if std::fs::read_to_string(&file).ok() != previous {
+            return Err("the connection changed while you were asked; nothing was saved. Look again and save".into());
+        }
+    }
     let text = format!(
         "# Written by the Columbus app. The password, if any, is in the system's credential store.\n{}",
         serde_yaml::to_string(&new).map_err(|e| e.to_string())?
@@ -408,8 +656,10 @@ pub async fn settings_delete_connection(id: String, forget_password: bool) -> Re
             .into_iter()
             .find(|(_, c)| c.as_ref().is_ok_and(|c| c.id == id))
             .ok_or_else(|| format!("there is no connection {id:?}"))?;
+        let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
         std::fs::remove_file(&file).map_err(|e| format!("{}: {e}", file.display()))?;
-        if forget_password {
+        // A connected server's key of the same name stays.
+        if forget_password && !manifest_credentials().contains(&id.to_lowercase()) {
             if let Ok(e) = secret_entry(&id) {
                 let _ = e.delete_credential();
             }
@@ -440,36 +690,30 @@ fn set_switch(name: &str, on: bool) -> Result<(), String> {
             path.display()
         ));
     }
-    let before = std::fs::read_to_string(&path).ok();
-    let text = match &before {
-        Some(t) => set_key(t, name, on),
-        // No file yet: Columbus's defaults, written out, with this switch.
-        None => {
-            let mut v = serde_yaml::to_value(OrgPolicy::default()).map_err(|e| e.to_string())?;
-            v[name] = serde_yaml::Value::Bool(on);
-            format!(
-                "# Written by the Columbus app from Columbus's defaults.\n{}",
-                serde_yaml::to_string(&v).map_err(|e| e.to_string())?
-            )
-        }
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    // Only a file that exists: where there is none, Columbus's strict
+    // defaults apply, and an organization may rely on that (on Windows any
+    // user could otherwise create one in ProgramData).
+    let Ok(before) = std::fs::read_to_string(&path) else {
+        return Err(format!(
+            "there is no organization settings file at {} yet, so Columbus's defaults apply (no edits, no scripts). Create it as the install guide shows, then change it here",
+            path.display()
+        ));
     };
+    let text = set_key(&before, name, on);
     if on {
         confirm(if name == "allow_edits" {
             "let your assistant write to read-write connections, after your approval of each change"
         } else {
             "let your assistant run Python scripts, after your approval of each one"
         })?;
+        if std::fs::read_to_string(&path).ok().as_deref() != Some(before.as_str()) {
+            return Err("the settings file changed while you were asked; nothing was saved".into());
+        }
     }
     write_atomic(&path, &text)?;
     if let Err(e) = OrgPolicy::load(&path) {
-        match before {
-            Some(b) => {
-                let _ = write_atomic(&path, &b);
-            }
-            None => {
-                let _ = std::fs::remove_file(&path);
-            }
-        }
+        let _ = write_atomic(&path, &before);
         return Err(format!("not saved: the server would refuse the file: {e}"));
     }
     Ok(())
@@ -669,5 +913,43 @@ mod tests {
             set_key("allow_edits_x: 1\n", "allow_edits", true),
             "allow_edits_x: 1\nallow_edits: true\n"
         );
+    }
+}
+
+#[cfg(test)]
+mod more_tests {
+    use super::*;
+
+    #[test]
+    fn filters_naming_hidden_fields_are_refused() {
+        let hidden = vec!["*SSN*".to_string(), "owner_*".to_string()];
+        assert_eq!(
+            filter_uses_hidden("OWNER_SSN LIKE '4%'", &hidden).as_deref(),
+            Some("OWNER_SSN")
+        );
+        assert_eq!(
+            filter_uses_hidden("owner_name = 'x'", &hidden).as_deref(),
+            Some("owner_name")
+        );
+        assert_eq!(filter_uses_hidden("district = 14", &hidden), None);
+    }
+
+    #[test]
+    fn writes_refuse_links() {
+        let d = std::env::temp_dir().join(format!("columbus-settings-test-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let real = d.join("real.yaml");
+        std::fs::write(&real, "a: 1\n").unwrap();
+        write_atomic(&real, "a: 2\n").unwrap();
+        assert_eq!(std::fs::read_to_string(&real).unwrap(), "a: 2\n");
+        #[cfg(unix)]
+        {
+            let link = d.join("link.yaml");
+            let _ = std::fs::remove_file(&link);
+            std::os::unix::fs::symlink(&real, &link).unwrap();
+            assert!(write_atomic(&link, "a: 3\n").is_err());
+            assert_eq!(std::fs::read_to_string(&real).unwrap(), "a: 2\n");
+        }
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

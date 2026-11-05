@@ -70,3 +70,13 @@ pub fn policy_file() -> PathBuf {
 pub fn connections_dir() -> PathBuf {
     env_path("COLUMBUS_CONNECTIONS").unwrap_or_else(|| platform_dirs().1.join("connections"))
 }
+
+/// The folders of connected servers' manifests: the organization's and the
+/// person's.
+pub fn servers_dirs() -> Vec<PathBuf> {
+    let (org, user, _) = platform_dirs();
+    vec![
+        env_path("COLUMBUS_SERVERS").unwrap_or_else(|| org.join("servers")),
+        env_path("COLUMBUS_PERSONAL_SERVERS").unwrap_or_else(|| user.join("servers")),
+    ]
+}

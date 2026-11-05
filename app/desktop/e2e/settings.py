@@ -28,6 +28,7 @@ APP = Path(sys.argv[1]).resolve()
 OUT = Path(__file__).resolve().parent / "out"
 POLICY = """# The organization's settings.
 connection_types: [gpkg, postgis]
+hide_fields: ["*ssn*"]
 allow_scripts: false   # run_python
 allow_edits: false     # edits
 """
@@ -73,6 +74,10 @@ def main():
         fill(d, "conn_id", "roads")
         fill(d, "path", str(gpkg))
         fill(d, "deny", "*audit*")
+        # A filter on a hidden field would reveal it, row count by row count.
+        fill(d, "row_filter", "owner_ssn LIKE '4%'")
+        d.find_element(By.ID, "save").click()
+        wait.until(lambda drv: "a field your organization hides" in drv.find_element(By.ID, "form-error").text)
         fill(d, "row_filter", "district = 14")
         d.save_screenshot(str(OUT / "settings-add.png"))
         d.find_element(By.ID, "save").click()

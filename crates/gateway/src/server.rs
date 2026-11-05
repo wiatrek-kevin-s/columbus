@@ -650,7 +650,12 @@ impl Gateway {
         if std::env::var("COLUMBUS_COMPANION").as_deref() == Ok("off") {
             return;
         }
-        if let Err(e) = self.state.page.start_live().await {
+        let p = &self.state.paths;
+        let settings = json!({
+            "policy": p.policy.display().to_string(),
+            "connections": p.connections.display().to_string(),
+        });
+        if let Err(e) = self.state.page.start_live(settings).await {
             tracing::warn!("companion window unavailable: {e}");
         }
     }

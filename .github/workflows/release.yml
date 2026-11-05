@@ -143,6 +143,17 @@ jobs:
         run: |
           npm ci
           npx tauri build
+      - name: The release app has none of the debug builds' test switches
+        shell: bash
+        run: |
+          set -eu
+          bin=app/desktop/src-tauri/target/release/columbus-desktop
+          [ -f "$bin" ] || bin=app/desktop/src-tauri/target/release/columbus-desktop.exe
+          # The confirmation stand-in exists only in debug builds.
+          for s in COLUMBUS_APP_TEST_CONFIRM; do
+            if grep -a -q "$s" "$bin"; then echo "::error::$s is in the release app"; exit 1; fi
+          done
+          echo "no test switches in $bin"
       - name: Collect
         shell: bash
         run: |
