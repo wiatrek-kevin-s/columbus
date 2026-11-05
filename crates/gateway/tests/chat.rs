@@ -313,6 +313,11 @@ async fn script_code_reaches_the_window_apart_from_the_servers_words() {
         eprintln!("skipping: the GIS engine is not installed");
         return;
     };
+    // Scripts are refused, not asked about, where they cannot be confined.
+    if let Err(e) = columbus_confine::ready(columbus_confine::Level::A) {
+        eprintln!("skipping: scripts cannot run confined here: {e}");
+        return;
+    }
     let (_dir, root) = setup(&py);
     let policy = root.join("policy.yaml");
     let mut text = std::fs::read_to_string(&policy).unwrap();
