@@ -412,7 +412,7 @@ impl Gateway {
                 .and_then(Value::as_str)
                 .map(String::from)
         });
-        let read_limit = self.state.policy.limits.rows.unwrap_or(200_000).max(1);
+        let read_limit = self.state.policy().limits.rows.unwrap_or(200_000).max(1);
         let cap = args.limit.unwrap_or(read_limit).clamp(1, read_limit);
         let page = PAGE.min(cap);
         let url = match first_url(&kind, &base, layer.as_deref(), args.bbox.as_deref(), page) {
@@ -455,7 +455,7 @@ impl Gateway {
         }
 
         // Approval unless the organization pre-approved the host.
-        if !self.state.policy.fetch_host_allowed(&host) {
+        if !self.state.policy().fetch_host_allowed(&host) {
             let summary = format!(
                 "Download {} from {host} ({}){}, licence {license}{}. Approval needed because {host} is not on the organization's list of download hosts.",
                 entry.get("name").and_then(Value::as_str).unwrap_or(&args.id),

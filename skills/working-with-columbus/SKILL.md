@@ -69,6 +69,15 @@ Call `whoami` once, first, with no arguments. Read and keep:
   active, writes and uploads to connected servers need approval.
 - `notes`: setup warnings (for example, dev secrets mode or an audit-folder fallback).
 
+The person can change connections and the edit and script switches in the Columbus app's
+Settings while you work; the change applies from your next call, with no restart. When
+they say they changed something (or a call is refused for a connection or switch you
+expected), call `whoami` again rather than relying on the first answer. Never ask them to
+restart for a Settings change. If every tool is refused with "settings could not be read"
+or "only when Columbus starts", tell them exactly that: they fix the file in Settings, or
+restart their AI app after changing servers, plugins or hosts. A change set from
+`propose_edits` made before a settings change must be proposed again.
+
 ### 2. Look up context before an unfamiliar dataset
 
 ```json

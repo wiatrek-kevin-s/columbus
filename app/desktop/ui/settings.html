@@ -13,9 +13,7 @@
       <p>What your assistant may use through Columbus. <span id="confirm-note">Changes that give it more access ask you to confirm first.</span> Your assistant cannot change these.</p>
     </header>
     <main>
-      <p id="restart" class="notice" role="status" hidden>
-        Saved. Quit your AI app (in Claude desktop: <kbd>Cmd</kbd>+<kbd>Q</kbd> or <b>Quit</b>) and open it again for your assistant to use the change.
-      </p>
+      <p id="restart" class="notice" role="status" hidden></p>
       <p id="error" role="alert" hidden></p>
 
       <section aria-labelledby="conn-h">
@@ -86,9 +84,11 @@
           <label class="wide">Description <input name="description" autocomplete="off" /></label>
         </div>
         <p id="form-error" class="error-text" role="alert" hidden></p>
+        <p id="test-result" role="status" hidden></p>
         <div class="actions">
           <button type="button" id="delete" class="danger" hidden>Remove</button>
           <span class="spacer"></span>
+          <button type="button" id="test" title="Try opening it as Columbus would, without saving">Test</button>
           <button type="button" id="cancel">Cancel</button>
           <button type="submit" id="save" class="primary">Save</button>
         </div>

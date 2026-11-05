@@ -44,7 +44,9 @@ impl Companion {
     /// wants to see at a glance.
     pub fn overview(&self) -> Result<Value, String> {
         let s = self.st()?;
-        let p = &s.policy;
+        s.refresh();
+        let settings = s.settings();
+        let p = &settings.policy;
         Ok(json!({
             "session": s.session,
             "user": s.user,
@@ -56,7 +58,7 @@ impl Companion {
                 "edits_allowed": p.allow_edits,
                 "rows_returned_per_call": p.return_rows,
             },
-            "connections": s.connections.iter().map(|c| json!({
+            "connections": settings.connections.iter().map(|c| json!({
                 "id": c.id, "type": c.kind, "description": c.description,
             })).collect::<Vec<_>>(),
             "export_folders": p.exports.iter().map(|e| json!({
@@ -68,9 +70,41 @@ impl Companion {
         }))
     }
 
+    /// The Settings window's Test button: can this session open a
+    /// connection as the form describes it, before it is saved? Checked
+    /// exactly as a saved one would be (the organization's policy, then the
+    /// engine listing its datasets), with the password typed in the form;
+    /// with none typed, the stored one is used only when the form points
+    /// where the saved connection of that name already does. Nothing is
+    /// saved, and the AI sees none of it. Recorded in the audit log.
+    pub async fn test_connection(&self, spec: Value, password: Option<String>) -> Value {
+        let s = match self.st() {
+            Ok(s) => s,
+            Err(e) => return json!({"ok": false, "message": e}),
+        };
+        let r = test_connection(&s, spec, password).await;
+        let (decision, reason, conn) = match &r {
+            Ok((id, _)) => ("allowed", None, Some(id.clone())),
+            Err((id, msg)) => ("error", Some(msg.clone()), id.clone()),
+        };
+        let _ = s.audit.append(&columbus_shared::audit::AuditRecord {
+            user: s.user.clone(),
+            client: "columbus-app (settings)".into(),
+            tool: "settings.test_connection".into(),
+            connection: conn,
+            decision: decision.into(),
+            reason,
+            ..Default::default()
+        });
+        match r {
+            Ok((_, v)) => v,
+            Err((_, msg)) => json!({"ok": false, "message": msg}),
+        }
+    }
+
     /// Whether organization policy lets the person turn on the basemap.
     pub fn basemap_allowed(&self) -> bool {
-        self.st().is_ok_and(|s| s.policy.companion.basemap)
+        self.st().is_ok_and(|s| s.policy().companion.basemap)
     }
 
     /// A number that changes whenever the outputs or provenance do, so the
@@ -225,4 +259,111 @@ fn summarize_checks(checks: &Value) -> Value {
         }
     }
     json!({"fail": c.0, "warn": c.1, "info": c.2})
+}
+
+/// How long a Test may take in the engine.
+const TEST_SECONDS: u64 = 20;
+
+type Tested = Result<(String, Value), (Option<String>, String)>;
+
+async fn test_connection(s: &Arc<State>, spec: Value, password: Option<String>) -> Tested {
+    use columbus_shared::policy::{Connection, EffectiveAccess};
+    let conn: Connection = serde_json::from_value(spec).map_err(|e| {
+        (
+            None,
+            format!("the form is not a connection Columbus can read: {e}"),
+        )
+    })?;
+    let id = Some(conn.id.clone());
+    let fail = |m: String| (id.clone(), m);
+    conn.validate(std::path::Path::new("the form"))
+        .map_err(|e| fail(e.to_string()))?;
+    s.refresh();
+    if let Some(why) = s.problem() {
+        return Err(fail(why));
+    }
+    let settings = s.settings();
+    let access = EffectiveAccess::resolve(&settings.policy, &conn, &s.scope, chrono::Utc::now())
+        .map_err(|e| fail(format!("Columbus would refuse this connection: {e}")))?;
+    if !crate::server::Gateway::engine_ready(&conn.kind) {
+        return Err(fail(format!(
+            "Columbus cannot open {} connections yet, so it cannot test this one",
+            conn.kind
+        )));
+    }
+    let (names, total): (Vec<String>, usize) = if crate::raster_tools::is_rasters(&conn.kind) {
+        let (datasets, total) = crate::raster_tools::list_rasters(&conn, &access).map_err(fail)?;
+        let names = datasets
+            .iter()
+            .filter_map(|d| d.get("name").and_then(Value::as_str).map(String::from))
+            .collect();
+        (names, total)
+    } else {
+        let typed = password.filter(|p| !p.is_empty());
+        let secret = match typed {
+            Some(p) => Some(p),
+            None if conn.path.is_none() => {
+                // A stored password goes only where it already goes.
+                let same_place = settings
+                    .connections
+                    .iter()
+                    .any(|c| c.id == conn.id && c.location() == conn.location());
+                if same_place {
+                    s.secrets
+                        .get(&conn.id)
+                        .map_err(|e| fail(format!("the stored password could not be read: {e}")))?
+                } else {
+                    None
+                }
+            }
+            None => None,
+        };
+        let handle = crate::server::connection_handle(&conn, secret);
+        let reply = s
+            .worker
+            .core(
+                "list_datasets",
+                json!({"connection": handle, "timeout_s": TEST_SECONDS,
+                       "schemas": crate::server::Gateway::listed_schemas(&conn)}),
+                Duration::from_secs(TEST_SECONDS + 10),
+            )
+            .await
+            .map_err(|e| fail(format!("Columbus could not open it: {e}")))?;
+        let all = reply
+            .get("datasets")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let total = all.len();
+        let names = all
+            .iter()
+            .filter_map(|d| d.get("name").and_then(Value::as_str))
+            .filter(|n| access.dataset_allowed(n))
+            .map(String::from)
+            .collect();
+        (names, total)
+    };
+    let shown: Vec<&String> = names.iter().take(5).collect();
+    let message = match (names.len(), total) {
+        (_, 0) => "Opened, but it holds no datasets Columbus can see.".to_string(),
+        (0, t) => format!(
+            "Opened. It holds {t} dataset{}, but this connection's dataset lists allow none of them.",
+            if t == 1 { "" } else { "s" }
+        ),
+        (n, t) if n == t => format!(
+            "Opened. Columbus can use all {t} dataset{}: {}{}.",
+            if t == 1 { "" } else { "s" },
+            shown.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", "),
+            if n > shown.len() { ", …" } else { "" }
+        ),
+        (n, t) => format!(
+            "Opened. Columbus can use {n} of its {t} datasets (the lists leave out the rest): {}{}.",
+            shown.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", "),
+            if n > shown.len() { ", …" } else { "" }
+        ),
+    };
+    Ok((
+        conn.id.clone(),
+        json!({"ok": true, "message": message, "datasets": total, "usable": names.len()}),
+    ))
 }

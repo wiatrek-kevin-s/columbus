@@ -335,7 +335,7 @@ impl Gateway {
                 "describe_dataset",
                 json!({
                     "connection": handle, "dataset": dataset, "count_sql": count.sql,
-                    "hide_fields": self.state.policy.hide_fields, "timeout_s": timeout,
+                    "hide_fields": self.state.policy().hide_fields, "timeout_s": timeout,
                 }),
                 Duration::from_secs(timeout + 10),
             )
@@ -495,7 +495,7 @@ impl Gateway {
     ) -> Result<Read, String> {
         let (access, conn) = self.access(conn_id).map_err(|e| e.to_string())?;
         if crate::raster_tools::is_rasters(&conn.kind) {
-            return Err(crate::raster_tools::not_tabular(conn));
+            return Err(crate::raster_tools::not_tabular(&conn));
         }
         if !Self::engine_ready(&conn.kind) {
             return Err(format!(
@@ -510,19 +510,19 @@ impl Gateway {
                 q.dataset
             ));
         }
-        let info = self.dataset_info(&access, conn, &q.dataset, false).await?;
+        let info = self.dataset_info(&access, &conn, &q.dataset, false).await?;
         let dialect = SqlDialect::for_connection_type(&conn.kind);
         let plan = self.plan(&info, &q.dataset, dialect, q)?;
         let read_limit = access.limits.rows.unwrap_or(200_000);
         let max_rows = limit.unwrap_or(read_limit).min(read_limit).max(1);
-        let cols = self.table_columns(&access, conn).await?;
+        let cols = self.table_columns(&access, &conn).await?;
         let checked = if plan.bbox.is_some() {
             check_select_unlimited(&plan.sql, &access, max_rows, &cols)
         } else {
             check_select(&plan.sql, &access, max_rows, &cols)
         }
         .map_err(|e| e.to_string())?;
-        let handle = self.handle(conn)?;
+        let handle = self.handle(&conn)?;
         let output_stem = match stem {
             Some(s) => Some(self.state.sandbox.resolve(s).map_err(|e| e.to_string())?),
             None => None,
@@ -540,7 +540,7 @@ impl Gateway {
                     "return_rows": return_rows.min(access.return_rows),
                     "output_stem": output_stem,
                     "layer_name": file_stem(&q.dataset),
-                    "hide_fields": self.state.policy.hide_fields,
+                    "hide_fields": self.state.policy().hide_fields,
                     "geometry_column": info.get("geometry_column"),
                     "crs_spec": info.get("crs").and_then(|c| c.get("code")).map(|c| json!({"code": c}))
                         .or_else(|| info.get("crs_spec").cloned()),
@@ -852,11 +852,11 @@ impl Gateway {
         }
         let described = if crate::raster_tools::is_rasters(&conn.kind) {
             match crate::raster_tools::refuse_filters(&access, &args.dataset) {
-                Ok(()) => self.raster_describe(conn, &args.dataset).await,
+                Ok(()) => self.raster_describe(&conn, &args.dataset).await,
                 Err(e) => Err(e),
             }
         } else {
-            self.dataset_info(&access, conn, &args.dataset, true).await
+            self.dataset_info(&access, &conn, &args.dataset, true).await
         };
         let mut info = match described {
             Ok(i) => i,
@@ -1118,7 +1118,7 @@ impl Gateway {
             Ok(s) => s,
             Err(e) => return Err(self.deny(&ctx, rec, e)),
         };
-        let timeout = self.state.policy.limits.seconds.unwrap_or(120).max(1);
+        let timeout = self.state.policy().limits.seconds.unwrap_or(120).max(1);
         let reply = self
             .state
             .worker
@@ -1128,7 +1128,7 @@ impl Gateway {
                     "op": args.op, "inputs": paths, "params": args.params, "output_stem": stem,
                     // Results larger than the organization's read limit are
                     // refused before they are built.
-                    "max_rows": self.state.policy.limits.rows.unwrap_or(200_000),
+                    "max_rows": self.state.policy().limits.rows.unwrap_or(200_000),
                 }),
                 Duration::from_secs(timeout + 10),
             )

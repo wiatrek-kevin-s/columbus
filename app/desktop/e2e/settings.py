@@ -4,10 +4,12 @@ Adds a GeoPackage connection, makes it read-write, turns edits on and
 removes it, checking each file as the server reads it; then, with the
 person declining to confirm, checks that nothing that widens access is
 saved. A debug build stands in for Touch ID / Windows Hello with
-COLUMBUS_APP_TEST_CONFIRM (allow or deny).
+COLUMBUS_APP_TEST_CONFIRM (allow or deny). A real Columbus session runs
+beside the app on the same files: Test asks it to open a connection
+before it is saved, and the saved notice says no restart is needed.
 
     dbus-run-session -- xvfb-run -a python app/desktop/e2e/settings.py \\
-        app/desktop/src-tauri/target/debug/columbus-desktop
+        target/debug/columbus-mcp app/desktop/src-tauri/target/debug/columbus-desktop
 """
 
 import os
@@ -24,7 +26,8 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
 REPO = Path(__file__).resolve().parents[3]
-APP = Path(sys.argv[1]).resolve()
+GATEWAY = Path(sys.argv[1]).resolve()
+APP = Path(sys.argv[2]).resolve()
 OUT = Path(__file__).resolve().parent / "out"
 POLICY = """# The organization's settings.
 connection_types: [gpkg, postgis]
@@ -34,10 +37,27 @@ allow_edits: false     # edits
 """
 
 
+def files(root):
+    return dict(os.environ, COLUMBUS_POLICY=str(root / "policy.yaml"), COLUMBUS_CONNECTIONS=str(root / "connections"),
+                COLUMBUS_LIVE_DIR=str(root / "live"), XDG_CONFIG_HOME=str(root / "config"))
+
+
+def columbus(root):
+    """A Columbus session on the same files, as Claude desktop would run it."""
+    env = dict(files(root), COLUMBUS_WORKSPACES=str(root / "ws"), COLUMBUS_AUDIT_DIR=str(root / "audit"),
+               COLUMBUS_WORKER=str(REPO / "workers/python/columbus_worker.py"), COLUMBUS_PYTHON=sys.executable,
+               COLUMBUS_APPROVALS_BROWSER="none", COLUMBUS_LOG="warn")
+    proc = subprocess.Popen([str(GATEWAY), "serve"], env=env, stdin=subprocess.PIPE,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    for _ in range(200):
+        if list((root / "live").glob("*.key")):
+            return proc
+        time.sleep(0.05)
+    raise SystemExit("the Columbus session did not announce itself")
+
+
 def session(root, confirm):
-    env = dict(os.environ, COLUMBUS_POLICY=str(root / "policy.yaml"), COLUMBUS_CONNECTIONS=str(root / "connections"),
-               COLUMBUS_LIVE_DIR=str(root / "live"), COLUMBUS_APP_TEST_CONFIRM=confirm,
-               XDG_CONFIG_HOME=str(root / "config"))
+    env = dict(files(root), COLUMBUS_APP_TEST_CONFIRM=confirm)
     proc = subprocess.Popen(["tauri-driver"], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     time.sleep(2)
     opts = webdriver.common.options.ArgOptions()
@@ -64,15 +84,32 @@ def main():
     (root / "connections").mkdir()
     (root / "policy.yaml").write_text(POLICY)
     gpkg = root / "roads.gpkg"
-    gpkg.write_bytes(b"not read by this test")
+    subprocess.run([sys.executable, "-c", """
+import sys, geopandas as gpd
+from shapely.geometry import LineString
+gpd.GeoDataFrame({"RTE": ["IH0035", "US0183"]}, geometry=[LineString([(0, 0), (1000, 0)]), LineString([(0, 0), (0, 900)])],
+    crs="EPSG:3081").to_file(sys.argv[1], layer="routes", driver="GPKG", engine="pyogrio")
+""", str(gpkg)], check=True)
+    broken = root / "broken.gpkg"
+    broken.write_bytes(b"not a GeoPackage")
 
+    server = columbus(root)
     d, proc, wait = session(root, "allow")
     try:
-        # Add a GeoPackage connection.
+        # Add a GeoPackage connection; Test before saving.
         d.find_element(By.ID, "add").click()
         wait.until(EC.visibility_of_element_located((By.NAME, "conn_id")))
         fill(d, "conn_id", "roads")
+        fill(d, "path", str(broken))
+        d.find_element(By.ID, "test").click()
+        wait.until(lambda drv: "could not open" in drv.find_element(By.ID, "test-result").text)
+        assert "test-bad" in d.find_element(By.ID, "test-result").get_attribute("class")
         fill(d, "path", str(gpkg))
+        d.find_element(By.ID, "test").click()
+        wait.until(lambda drv: "Opened" in drv.find_element(By.ID, "test-result").text)
+        assert "routes" in d.find_element(By.ID, "test-result").text
+        d.save_screenshot(str(OUT / "settings-test.png"))
+        assert not (root / "connections" / "roads.yaml").exists(), "Test saves nothing"
         fill(d, "deny", "*audit*")
         # A filter on a hidden field would reveal it, row count by row count.
         fill(d, "row_filter", "owner_ssn LIKE '4%'")
@@ -82,6 +119,8 @@ def main():
         d.save_screenshot(str(OUT / "settings-add.png"))
         d.find_element(By.ID, "save").click()
         wait.until(lambda drv: drv.find_element(By.ID, "restart").is_displayed())
+        # The running session picks it up by itself.
+        assert "no need to restart" in d.find_element(By.ID, "restart").text, d.find_element(By.ID, "restart").text
         c = yaml.safe_load((root / "connections" / "roads.yaml").read_text())
         assert c["id"] == "roads" and c["type"] == "gpkg" and c["path"] == str(gpkg), c
         assert c["mode"] == "read" and c["datasets"] == {"allow": ["*"], "deny": ["*audit*"]}, c
@@ -135,6 +174,8 @@ def main():
     finally:
         d.quit()
         proc.terminate()
+        server.stdin.close()
+        server.wait(timeout=30)
 
 
 if __name__ == "__main__":

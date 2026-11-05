@@ -63,6 +63,8 @@ pub(crate) struct ChangeSet {
     pub diff: Value,
     pub diff_total: u64,
     pub labels: Vec<String>,
+    /// The settings version it was checked against (State::generation).
+    pub generation: u64,
 }
 
 pub(crate) type ChangeSets = std::sync::Mutex<HashMap<PathBuf, ChangeSet>>;
@@ -369,6 +371,9 @@ impl Gateway {
         let request = json!({"connection": args.connection, "dataset": args.dataset,
                              "changes": args.changes.len(), "crs": args.crs});
         let mut rec = self.gate(&ctx, "propose_edits", &request)?;
+        // Checked against the settings in force now; apply_edits refuses
+        // it if they change before it is applied.
+        let generation = self.state.generation();
         rec.connection = Some(args.connection.clone());
         rec.dataset = Some(args.dataset.clone());
         let started = Local::now();
@@ -484,6 +489,7 @@ impl Gateway {
                 diff: reply["diff"].clone(),
                 diff_total: reply["diff_total"].as_u64().unwrap_or(0),
                 labels: labels.clone(),
+                generation,
             },
         );
         let lines = diff_lines(&reply["diff"], &key, 50);
@@ -564,6 +570,14 @@ impl Gateway {
         };
         rec.connection = Some(cs.connection.clone());
         rec.dataset = Some(cs.dataset.clone());
+        if cs.generation != self.state.generation() {
+            self.changes().remove(&path);
+            return Err(self.deny(
+                &ctx,
+                rec,
+                "Columbus's settings changed after this change set was proposed, so it was dropped; propose the edits again so they are checked against the new settings".to_string(),
+            ));
+        }
         let target = args.target.as_str();
         if !matches!(target, "copy" | "source") {
             return Err(self.deny(
@@ -647,7 +661,7 @@ impl Gateway {
         }
 
         // Writing the source.
-        if !self.state.policy.allow_edits {
+        if !self.state.policy().allow_edits {
             return Err(self.deny(
                 &ctx,
                 rec,
@@ -678,7 +692,7 @@ impl Gateway {
         labels.extend(self.labels());
         labels.remove(&own);
         let dest = format!("connection:{}", conn.id);
-        let decision = columbus_flow::evaluate_to(&self.state.policy.flows, &labels, &dest);
+        let decision = columbus_flow::evaluate_to(&self.state.policy().flows, &labels, &dest);
         rec.flow_decision = Some(decision.label().into());
         if let columbus_flow::FlowDecision::Deny { labels, rule } = &decision {
             return Err(self.deny(

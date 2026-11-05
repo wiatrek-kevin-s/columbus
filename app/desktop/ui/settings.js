@@ -25,8 +25,23 @@ function showError(target, err) {
 }
 
 function saved() {
+  $("restart").textContent = state && state.restart_needed
+    ? "Saved. The Columbus running in your AI app is an older version: quit your AI app (in Claude desktop: Cmd+Q or Quit) and open it again for your assistant to use the change."
+    : "Saved. Your assistant uses the change from its next request; there is no need to restart anything.";
   $("restart").hidden = false;
   showError("error", null);
+}
+
+function showTest(result) {
+  const box = $("test-result");
+  if (!result) {
+    box.hidden = true;
+    box.textContent = "";
+    return;
+  }
+  box.textContent = result.message;
+  box.className = result.ok ? "test-ok" : "test-bad";
+  box.hidden = false;
 }
 
 function where(c) {
@@ -106,6 +121,7 @@ function openEditor(c) {
   editing = c || null;
   form.reset();
   showError("form-error", null);
+  showTest(null);
   $("editor-h").textContent = c ? `Edit ${c.id}` : "Add connection";
   form.conn_id.readOnly = !!c;
   $("delete").hidden = !c;
@@ -145,41 +161,60 @@ function list(s) {
   return out.map((x) => x.trim()).filter(Boolean);
 }
 
+function formValue() {
+  return {
+    existing: !!editing,
+    id: form.conn_id.value.trim(),
+    kind: form.kind.value,
+    path: form.path.value,
+    host: form.host.value,
+    port: form.port.value ? Number(form.port.value) : null,
+    database: form.database.value,
+    dsn: form.dsn.value,
+    user: form.user.value,
+    password: form.password.value || null,
+    sslmode: form.sslmode.value,
+    search_path: form.search_path.value,
+    mode: form.mode.value,
+    allow: list(form.allow.value),
+    deny: list(form.deny.value),
+    row_filter: form.row_filter.value,
+    description: form.description.value,
+  };
+}
+
 async function save(ev) {
   ev.preventDefault();
   const btn = $("save");
   btn.disabled = true;
   showError("form-error", null);
   try {
-    await invoke("settings_save_connection", {
-      form: {
-        existing: !!editing,
-        id: form.conn_id.value.trim(),
-        kind: form.kind.value,
-        path: form.path.value,
-        host: form.host.value,
-        port: form.port.value ? Number(form.port.value) : null,
-        database: form.database.value,
-        dsn: form.dsn.value,
-        user: form.user.value,
-        password: form.password.value || null,
-        sslmode: form.sslmode.value,
-        search_path: form.search_path.value,
-        mode: form.mode.value,
-        allow: list(form.allow.value),
-        deny: list(form.deny.value),
-        row_filter: form.row_filter.value,
-        description: form.description.value,
-      },
-    });
+    await invoke("settings_save_connection", { form: formValue() });
     dialog.close();
-    saved();
+    // The notice depends on the sessions running now.
     await refresh();
+    saved();
   } catch (e) {
     showError("form-error", e);
   } finally {
     btn.disabled = false;
     form.password.value = "";
+  }
+}
+
+async function test() {
+  const btn = $("test");
+  btn.disabled = true;
+  btn.textContent = "Testing…";
+  showError("form-error", null);
+  showTest(null);
+  try {
+    showTest(await invoke("settings_test_connection", { form: formValue() }));
+  } catch (e) {
+    showTest({ ok: false, message: String(e) });
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Test";
   }
 }
 
@@ -189,8 +224,8 @@ async function remove() {
   try {
     await invoke("settings_delete_connection", { id, forgetPassword: true });
     dialog.close();
-    saved();
     await refresh();
+    saved();
   } catch (e) {
     showError("form-error", e);
   }
@@ -202,15 +237,17 @@ async function toggle(ev) {
   box.disabled = true;
   try {
     await invoke("settings_set_switch", { name: box.id, on: want });
+    await refresh();
     saved();
   } catch (e) {
     showError("error", e);
+    await refresh();
   }
-  await refresh();
 }
 
 $("add").addEventListener("click", () => openEditor(null));
 $("cancel").addEventListener("click", () => dialog.close());
+$("test").addEventListener("click", test);
 $("delete").addEventListener("click", remove);
 form.addEventListener("submit", save);
 form.kind.addEventListener("change", () => setKind(form.kind.value));

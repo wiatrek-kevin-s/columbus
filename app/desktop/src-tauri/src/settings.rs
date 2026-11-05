@@ -63,6 +63,9 @@ pub struct SettingsState {
     /// Connections folders running sessions read that are not this one
     /// (the extension's own setting can point elsewhere).
     other_folders: Vec<String>,
+    /// A running session reading these files is too old to pick up changes
+    /// by itself: the AI app must be restarted for it.
+    restart_needed: bool,
 }
 
 #[derive(Deserialize, Debug)]
@@ -218,7 +221,191 @@ fn state() -> SettingsState {
         },
         confirm_with: confirm_with().into(),
         other_folders: other_folders(&dir),
+        restart_needed: sessions_here(&dir).iter().any(|s| s.key.is_none()),
     }
+}
+
+/// A running session that reads this window's connections folder.
+struct LiveSession {
+    port: u16,
+    /// Its key for connection tests; sessions from before 0.6 have none
+    /// (and do not pick up changed settings either).
+    key: Option<String>,
+    last_used: Option<String>,
+    started: Option<String>,
+}
+
+/// The running sessions reading `dir`, the one in use first.
+fn sessions_here(dir: &Path) -> Vec<LiveSession> {
+    let mine = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+    let mut out = vec![];
+    let Ok(entries) = std::fs::read_dir(crate::live_dir()) else {
+        return out;
+    };
+    for e in entries.flatten() {
+        let p = e.path();
+        let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if name == "app.json" || !name.ends_with(".json") {
+            continue;
+        }
+        let Some(v) = std::fs::read_to_string(&p)
+            .ok()
+            .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        else {
+            continue;
+        };
+        let Some(c) = v["settings"]["connections"].as_str() else {
+            continue;
+        };
+        let theirs = Path::new(c)
+            .canonicalize()
+            .unwrap_or_else(|_| PathBuf::from(c));
+        let Some(port) = v["port"].as_u64().and_then(|p| u16::try_from(p).ok()) else {
+            continue;
+        };
+        if theirs != mine || port < 1024 || !crate::answers(port) {
+            continue;
+        }
+        let key = std::fs::read_to_string(p.with_extension("key"))
+            .ok()
+            .map(|k| k.trim().to_string())
+            .filter(|k| k.len() == 64 && k.bytes().all(|b| b.is_ascii_hexdigit()));
+        let s = |k: &str| v[k].as_str().map(String::from);
+        out.push(LiveSession {
+            port,
+            key,
+            last_used: s("last_used"),
+            started: s("started"),
+        });
+    }
+    out.sort_by(|a, b| {
+        b.last_used
+            .cmp(&a.last_used)
+            .then_with(|| b.started.cmp(&a.started))
+    });
+    out
+}
+
+/// Ask a running session to try the connection in the form, exactly as it
+/// would use it. Nothing is saved and nothing needs confirming: a typed
+/// password goes only to that session's engine, and a stored one is used
+/// only where it already goes (the session checks).
+#[tauri::command]
+pub async fn settings_test_connection(form: ConnForm) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || test_connection(form))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn test_connection(form: ConnForm) -> Result<Value, String> {
+    let dir = paths::connections_dir();
+    let found = scan(&dir);
+    let old = found
+        .iter()
+        .filter_map(|(_, c)| c.as_ref().ok())
+        .find(|c| form.existing && c.id.eq_ignore_ascii_case(&form.id));
+    let conn = build(&form, old)?;
+    let sessions = sessions_here(&dir);
+    let Some((port, key)) = sessions
+        .iter()
+        .find_map(|s| s.key.as_ref().map(|k| (s.port, k.clone())))
+    else {
+        return Err(if sessions.is_empty() {
+            "No Columbus session is running to test with. Open Claude desktop (it starts Columbus), then try again. You can still save it now.".into()
+        } else {
+            "The Columbus running now is too old to test connections. Update the Columbus extension in Claude desktop, then try again.".into()
+        });
+    };
+    let body = serde_json::to_vec(&json!({
+        "connection": conn,
+        "password": form.password.as_deref().filter(|p| !p.is_empty()),
+    }))
+    .map_err(|e| e.to_string())?;
+    let (code, reply) = post_local(
+        port,
+        "/api/test-connection",
+        &[("X-Columbus-Test", &key)],
+        &body,
+    )?;
+    match code {
+        200 => Ok(reply),
+        429 => Err("A test is already running; wait for it to finish.".into()),
+        413 => Err("The form is too long to test (shorten the description or filter).".into()),
+        _ => Err(format!(
+            "The Columbus session could not run the test ({code}: {}).",
+            reply["error"].as_str().unwrap_or("no reason given")
+        )),
+    }
+}
+
+/// A small HTTP/1.1 POST to a session's page on this computer, waiting up
+/// to a minute for its answer (a database can be slow to answer).
+fn post_local(
+    port: u16,
+    path: &str,
+    headers: &[(&str, &str)],
+    body: &[u8],
+) -> Result<(u16, Value), String> {
+    use std::io::{Read, Write};
+    use std::net::{SocketAddr, TcpStream};
+    use std::time::Duration;
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    let mut s = TcpStream::connect_timeout(&addr, Duration::from_millis(800))
+        .map_err(|e| format!("could not reach the Columbus session: {e}"))?;
+    let _ = s.set_read_timeout(Some(Duration::from_secs(60)));
+    let _ = s.set_write_timeout(Some(Duration::from_secs(5)));
+    let mut req = format!(
+        "POST {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n",
+        body.len()
+    );
+    for (k, v) in headers {
+        req.push_str(&format!("{k}: {v}\r\n"));
+    }
+    req.push_str("\r\n");
+    s.write_all(req.as_bytes())
+        .and_then(|_| s.write_all(body))
+        .map_err(|e| format!("could not reach the Columbus session: {e}"))?;
+    let mut buf = Vec::new();
+    // At most 64 KB of answer.
+    s.take(64 * 1024)
+        .read_to_end(&mut buf)
+        .map_err(|e| format!("the Columbus session did not answer in time: {e}"))?;
+    let text = String::from_utf8_lossy(&buf);
+    let (head, rest) = text
+        .split_once("\r\n\r\n")
+        .ok_or("the Columbus session gave no answer")?;
+    let code = head
+        .lines()
+        .next()
+        .and_then(|l| l.split_whitespace().nth(1))
+        .and_then(|c| c.parse::<u16>().ok())
+        .ok_or("the Columbus session gave no answer")?;
+    let chunked = head
+        .lines()
+        .any(|l| l.to_ascii_lowercase().replace(' ', "") == "transfer-encoding:chunked");
+    let body = if chunked {
+        dechunk(rest)
+    } else {
+        rest.to_string()
+    };
+    let v = serde_json::from_str(&body).unwrap_or(Value::Null);
+    Ok((code, v))
+}
+
+/// The body of a chunked HTTP answer.
+fn dechunk(mut s: &str) -> String {
+    let mut out = String::new();
+    while let Some((size, rest)) = s.split_once("\r\n") {
+        let Ok(n) = usize::from_str_radix(size.trim(), 16) else {
+            break;
+        };
+        if n == 0 || rest.len() < n {
+            break;
+        }
+        out.push_str(&rest[..n]);
+        s = rest[n..].trim_start_matches("\r\n");
+    }
+    out
 }
 
 /// The connections folders running sessions say they read, other than `dir`.

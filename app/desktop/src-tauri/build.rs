@@ -23,6 +23,7 @@ fn main() {
             "settings_delete_connection",
             "settings_set_switch",
             "settings_pick",
+            "settings_test_connection",
         ]),
     ))
     .expect("tauri build");

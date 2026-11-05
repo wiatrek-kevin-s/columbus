@@ -173,7 +173,7 @@ impl Gateway {
             Ok(v) => v,
             Err(e) => return Err(self.deny(&ctx, rec, e)),
         };
-        let cap = self.state.policy.return_rows.unwrap_or(500).clamp(1, 500);
+        let cap = self.state.policy().return_rows.unwrap_or(500).clamp(1, 500);
         let limit = args.limit.unwrap_or(50).clamp(1, cap);
         let reply = match self
             .state
@@ -243,20 +243,9 @@ impl Gateway {
             Ok(v) => v,
             Err(e) => return Err(self.deny(&ctx, rec, e)),
         };
-        let Some(folder) = self
-            .state
-            .policy
-            .exports
-            .iter()
-            .find(|f| f.id == args.folder)
-        else {
-            let ids: Vec<&str> = self
-                .state
-                .policy
-                .exports
-                .iter()
-                .map(|f| f.id.as_str())
-                .collect();
+        let policy = self.state.policy();
+        let Some(folder) = policy.exports.iter().find(|f| f.id == args.folder) else {
+            let ids: Vec<&str> = policy.exports.iter().map(|f| f.id.as_str()).collect();
             return Err(self.deny(
                 &ctx,
                 rec,
@@ -510,7 +499,7 @@ impl Gateway {
         let labels = self.state.flow.file_labels(&path);
         rec.labels = labels.iter().cloned().collect();
         let dest = format!("folder:{}", folder.id);
-        let decision = columbus_flow::evaluate_to(&self.state.policy.flows, &labels, &dest);
+        let decision = columbus_flow::evaluate_to(&self.state.policy().flows, &labels, &dest);
         rec.flow_decision = Some(decision.label().into());
         if let columbus_flow::FlowDecision::Deny { labels, rule } = &decision {
             return Err(self.deny(

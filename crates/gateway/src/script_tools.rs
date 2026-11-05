@@ -540,7 +540,7 @@ impl Gateway {
         let mut rec = self.gate(&ctx, "run_python", &request)?;
         let started = Local::now();
         let prov = new_prov_id();
-        let policy = &self.state.policy;
+        let policy = &self.state.policy();
         if !policy.allow_scripts {
             return Err(self.deny(
                 &ctx,

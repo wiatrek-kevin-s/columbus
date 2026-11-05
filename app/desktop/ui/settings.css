@@ -35,3 +35,7 @@ input:focus-visible, select:focus-visible { outline: 2px solid var(--hydro); out
 .actions .spacer { flex: 1; }
 button.danger { border-color: var(--fail); color: var(--fail); background: transparent; }
 @media (max-width: 600px) { .grid { grid-template-columns: 1fr; } }
+#test-result { border-radius: 6px; padding: 8px 10px; margin: 10px 0 0; overflow-wrap: anywhere; white-space: pre-line; }
+#test-result.test-ok { background: #e6f2e7; color: #1d4d24; border: 1px solid #b9dcbd; }
+#test-result.test-bad { color: var(--fail); border: 1px solid var(--fail); }
+@media (prefers-color-scheme: dark) { #test-result.test-ok { background: #17301b; color: #cfe9d2; border-color: #2f5a35; } }

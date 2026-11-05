@@ -178,6 +178,11 @@ struct Shared {
     sessions: Mutex<HashMap<String, (Instant, Scope)>>,
     /// When a tab was last opened, and how many since the person last decided.
     launches: Mutex<(Option<Instant>, u32)>,
+    /// The key the person's Columbus app sends to test a connection; it is
+    /// in `live/<session>.key`, readable by this account only.
+    test_key: String,
+    /// One connection test at a time.
+    testing: tokio::sync::Mutex<()>,
 }
 
 impl Shared {
@@ -315,9 +320,29 @@ pub struct ApprovalsPage {
 impl Drop for ApprovalsPage {
     fn drop(&mut self) {
         if let Some(p) = self.live_file.lock().ok().and_then(|mut f| f.take()) {
+            let _ = std::fs::remove_file(p.with_extension("key"));
             let _ = std::fs::remove_file(p);
         }
     }
+}
+
+/// Write a secret to a new file only this account can read (an old file,
+/// or a link, at that name is removed first, never followed).
+fn write_private(path: &std::path::Path, text: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    if std::fs::symlink_metadata(path).is_ok() {
+        std::fs::remove_file(path)?;
+    }
+    let mut o = std::fs::OpenOptions::new();
+    o.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        o.mode(0o600);
+    }
+    let mut f = o.open(path)?;
+    f.write_all(text.as_bytes())?;
+    f.sync_all()
 }
 
 fn token() -> String {
@@ -388,6 +413,8 @@ impl ApprovalsPage {
             "server": format!("columbus-mcp {}", env!("CARGO_PKG_VERSION")),
             "settings": settings,
         });
+        // The key first: the app looks for it once the session is listed.
+        write_private(&file.with_extension("key"), &shared.test_key).map_err(|e| e.to_string())?;
         std::fs::write(&file, serde_json::to_vec_pretty(&body).unwrap_or_default())
             .map_err(|e| e.to_string())?;
         *self.live_file.lock().expect("live file") = Some(file.clone());
@@ -444,6 +471,8 @@ impl ApprovalsPage {
                     launch: Mutex::new(HashMap::new()),
                     sessions: Mutex::new(HashMap::new()),
                     launches: Mutex::new((None, 0)),
+                    test_key: token(),
+                    testing: tokio::sync::Mutex::new(()),
                 });
                 let app = Router::new()
                     .route("/", get(page))
@@ -451,6 +480,7 @@ impl ApprovalsPage {
                     .route("/api/approvals", get(list))
                     .route("/api/approvals/{id}", post(decide))
                     .route("/api/open", post(open_window))
+                    .route("/api/test-connection", post(test_connection))
                     .route("/api/review", post(review))
                     .route("/api/state", get(state))
                     .route("/api/overview", get(overview))
@@ -805,6 +835,57 @@ async fn open_window(State(s): State<Arc<Shared>>, h: HeaderMap) -> Response<Bod
     }
 }
 
+#[derive(Deserialize)]
+struct TestRequest {
+    connection: serde_json::Value,
+    #[serde(default)]
+    password: Option<String>,
+}
+
+/// `POST /api/test-connection`: the Settings window's Test button, from the
+/// person's Columbus app. Needs `X-Columbus-Test: <key>`, the key in
+/// `live/<session>.key` (readable by this account only), and no `Origin`:
+/// no web page, not even this server's own, can send it. Saves nothing.
+async fn test_connection(
+    State(s): State<Arc<Shared>>,
+    h: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response<Body> {
+    if !host_ok(&h, &s) {
+        return status(StatusCode::FORBIDDEN, "wrong host");
+    }
+    let key_ok = h
+        .get("x-columbus-test")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|k| same(k, &s.test_key));
+    if !key_ok || h.contains_key(header::ORIGIN) {
+        return status(StatusCode::FORBIDDEN, "refused");
+    }
+    let Some(companion) = s.companion.clone() else {
+        return status(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "this session cannot test connections",
+        );
+    };
+    let Ok(req) = serde_json::from_slice::<TestRequest>(&body) else {
+        return status(StatusCode::BAD_REQUEST, "expected {connection, password}");
+    };
+    let Ok(_one) = s.testing.try_lock() else {
+        return status(StatusCode::TOO_MANY_REQUESTS, "a test is already running");
+    };
+    // Run to the end even if the app stops waiting: the engine is not left
+    // half way through a request.
+    let job = tokio::spawn(async move {
+        companion
+            .test_connection(req.connection, req.password)
+            .await
+    });
+    match job.await {
+        Ok(v) => json_response(StatusCode::OK, v),
+        Err(e) => status(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+    }
+}
+
 /// `POST /api/review`: from a window that may not decide, open the
 /// browser page that can, for requests waiting now.
 async fn review(State(s): State<Arc<Shared>>, h: HeaderMap) -> Response<Body> {
@@ -1024,6 +1105,8 @@ mod tests {
             launch: Mutex::new(HashMap::new()),
             sessions: Mutex::new(HashMap::new()),
             launches: Mutex::new((None, 0)),
+            test_key: token(),
+            testing: tokio::sync::Mutex::new(()),
         };
         (d, s)
     }

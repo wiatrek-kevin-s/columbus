@@ -355,7 +355,7 @@ impl Gateway {
             ));
         }
         refuse_filters(&access, &dataset)?;
-        let path = raster_path(&folder(conn)?, &dataset)?;
+        let path = raster_path(&folder(&conn)?, &dataset)?;
         self.note_read(&conn.id, None, None, Some(prov), "raster_op");
         let meta = std::fs::metadata(&path).ok();
         Ok(RasterIn {
@@ -423,7 +423,7 @@ impl Gateway {
         let mut labels = BTreeSet::new();
         let mut warnings = Vec::new();
         let mut reads = Vec::new();
-        let mut rows_limits = vec![DEFAULT_LIMITS.narrow(self.state.policy.limits).rows];
+        let mut rows_limits = vec![DEFAULT_LIMITS.narrow(self.state.policy().limits).rows];
         for (name, v) in &args.inputs {
             let got = if name == "raster" {
                 self.raster_input(v, &prov).await.map(|r| {
@@ -467,7 +467,7 @@ impl Gateway {
             Ok(s) => s,
             Err(e) => return Err(self.deny(&ctx, rec, e)),
         };
-        let timeout = self.state.policy.limits.seconds.unwrap_or(120).max(1);
+        let timeout = self.state.policy().limits.seconds.unwrap_or(120).max(1);
         let reply = self
             .state
             .worker

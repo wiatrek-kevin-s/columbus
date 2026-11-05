@@ -8,6 +8,7 @@
     "allow-settings-save-connection",
     "allow-settings-delete-connection",
     "allow-settings-set-switch",
-    "allow-settings-pick"
+    "allow-settings-pick",
+    "allow-settings-test-connection"
   ]
 }

@@ -79,7 +79,7 @@ struct Session {
 
 /// A port that answers like a Columbus page: `GET /api/state` without a
 /// token is refused with 401 (a page that is someone else's would not).
-fn answers(port: u16) -> bool {
+pub(crate) fn answers(port: u16) -> bool {
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
     let Ok(mut s) = TcpStream::connect_timeout(&addr, Duration::from_millis(300)) else {
         return false;
@@ -366,6 +366,7 @@ fn main() {
             settings::settings_delete_connection,
             settings::settings_set_switch,
             settings::settings_pick,
+            settings::settings_test_connection,
         ])
         .setup(|app| {
             heartbeat();

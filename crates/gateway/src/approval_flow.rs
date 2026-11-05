@@ -58,7 +58,7 @@ impl Gateway {
             .contains(&ElicitationMode::Form)
         {
             "in your AI client, as a prompt".into()
-        } else if self.state.policy.approvals.page {
+        } else if self.state.policy().approvals.page {
             "on the Columbus approvals page, opened in the browser".into()
         } else {
             "nowhere: this client cannot show prompts and policy turns the approvals page off"
@@ -72,6 +72,17 @@ impl Gateway {
         ask: Ask<'_>,
     ) -> Result<Sought, Denied> {
         let st = &self.state;
+        // The request was checked against the settings in force now; if they
+        // change while the person decides, a yes is not used.
+        let generation = st.generation();
+        let settled = |granted: String| -> Sought {
+            st.refresh();
+            if st.generation() != generation || st.problem().is_some() {
+                Sought::Declined("Columbus's settings changed while the person was deciding, so this approval was not used. Call the tool again: the request is checked against the new settings and the person is asked again.".into())
+            } else {
+                Sought::Granted(granted)
+            }
+        };
         if let Some(id) = ask.approval_id {
             st.approvals
                 .consume(id, ask.tool, ask.request, self.now())?;
@@ -109,7 +120,7 @@ impl Gateway {
                 st.approvals.decide_via(&ap.id, d, self.now(), "client")?;
                 st.approvals
                     .consume(&ap.id, ask.tool, ask.request, self.now())?;
-                return Ok(Sought::Granted(ap.id));
+                return Ok(settled(ap.id));
             }
             Asked::Declined => {
                 let _ = st
@@ -120,7 +131,7 @@ impl Gateway {
             Asked::Unsupported => {}
         }
 
-        let next = if !st.policy.approvals.page {
+        let next = if !st.policy().approvals.page {
             "This client cannot show approval prompts and organization policy turns the Columbus approvals page off, so the person cannot approve this here.".to_string()
         } else {
             match st.page.show().await {
@@ -128,12 +139,12 @@ impl Gateway {
                     "This client cannot show approval prompts and Columbus could not open its approvals page: {e}. Tell the person what is waiting."
                 ),
                 Ok(_) => {
-                    let deadline = Instant::now() + Duration::from_secs(st.policy.approvals.wait_seconds.min(300));
+                    let deadline = Instant::now() + Duration::from_secs(st.policy().approvals.wait_seconds.min(300));
                     loop {
                         match st.approvals.status(&ap.id, self.now()).map(|a| a.state) {
                             Some(State::Approved) => {
                                 st.approvals.consume(&ap.id, ask.tool, ask.request, self.now())?;
-                                return Ok(Sought::Granted(ap.id));
+                                return Ok(settled(ap.id));
                             }
                             Some(State::Declined) => return Ok(Sought::Declined(declined())),
                             Some(State::Pending) if Instant::now() < deadline => {

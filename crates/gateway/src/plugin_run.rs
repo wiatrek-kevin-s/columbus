@@ -245,7 +245,7 @@ impl Gateway {
                 }
             }
             let max_rows = access.limits.rows.unwrap_or(200_000);
-            let cols = match self.table_columns(&access, conn).await {
+            let cols = match self.table_columns(&access, &conn).await {
                 Ok(c) => c,
                 Err(e) => return Err(self.deny(ctx, rec, e)),
             };
@@ -253,7 +253,7 @@ impl Gateway {
                 Ok(c) => c,
                 Err(e) => return Err(self.deny(ctx, rec, e)),
             };
-            let handle = match self.handle(conn) {
+            let handle = match self.handle(&conn) {
                 Ok(h) => h,
                 Err(e) => return Err(self.deny(ctx, rec, e)),
             };
@@ -278,7 +278,7 @@ impl Gateway {
                     json!({
                         "connection": handle, "connection_id": conn.id, "dataset": dataset,
                         "sql": checked.sql, "max_rows": max_rows, "output_path": out,
-                        "hide_fields": self.state.policy.hide_fields, "labels": labels, "timeout_s": timeout,
+                        "hide_fields": self.state.policy().hide_fields, "labels": labels, "timeout_s": timeout,
                     }),
                     Duration::from_secs(timeout + 10),
                 )
@@ -477,7 +477,7 @@ impl Gateway {
                 }
             })
         });
-        let timeout = self.state.policy.limits.seconds.unwrap_or(120).max(1);
+        let timeout = self.state.policy().limits.seconds.unwrap_or(120).max(1);
         let started = Local::now();
         let result = worker
             .run(

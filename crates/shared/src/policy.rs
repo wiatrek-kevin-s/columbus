@@ -338,7 +338,12 @@ impl Default for OrgPolicy {
 impl OrgPolicy {
     pub fn load(path: &Path) -> Result<Self, LoadError> {
         let text = std::fs::read_to_string(path).map_err(|e| LoadError::Io(path.into(), e))?;
-        serde_yaml::from_str(&text).map_err(|e| LoadError::Parse(path.into(), e.to_string()))
+        Self::parse(&text, path)
+    }
+
+    /// The policy in `text`, as read from `path` (named in errors).
+    pub fn parse(text: &str, path: &Path) -> Result<Self, LoadError> {
+        serde_yaml::from_str(text).map_err(|e| LoadError::Parse(path.into(), e.to_string()))
     }
 
     pub fn tool_allowed(&self, tool: &str) -> bool {
@@ -413,8 +418,21 @@ fn default_mode() -> Mode {
 impl Connection {
     pub fn load(path: &Path) -> Result<Self, LoadError> {
         let text = std::fs::read_to_string(path).map_err(|e| LoadError::Io(path.into(), e))?;
-        let c: Connection = serde_yaml::from_str(&text)
-            .map_err(|e| LoadError::Parse(path.into(), e.to_string()))?;
+        Self::parse(&text, path)
+    }
+
+    /// The connection in `text`, as read from `path` (named in errors).
+    pub fn parse(text: &str, path: &Path) -> Result<Self, LoadError> {
+        let c: Connection =
+            serde_yaml::from_str(text).map_err(|e| LoadError::Parse(path.into(), e.to_string()))?;
+        c.validate(path)?;
+        Ok(c)
+    }
+
+    /// What `load` checks beyond parsing: an id, and dataset patterns that
+    /// compile.
+    pub fn validate(&self, path: &Path) -> Result<(), LoadError> {
+        let c = self;
         if c.id.is_empty() {
             return Err(LoadError::Invalid(format!(
                 "{}: id is empty",
@@ -423,7 +441,23 @@ impl Connection {
         }
         // Fail early on bad patterns rather than at query time.
         c.datasets.permits("")?;
-        Ok(c)
+        Ok(())
+    }
+
+    /// Where a connection points, and as whom: everything that decides
+    /// which data a stored password opens.
+    pub fn location(&self) -> serde_json::Value {
+        serde_json::json!([
+            self.kind.to_ascii_lowercase(),
+            self.dsn,
+            self.path,
+            self.host,
+            self.port,
+            self.database,
+            self.user,
+            self.sslmode,
+            self.search_path
+        ])
     }
 
     /// Load every `*.yaml` / `*.yml` in a folder, sorted by id.
@@ -440,9 +474,15 @@ impl Connection {
                 out.push(Connection::load(&path)?);
             }
         }
+        Self::check_ids(&mut out)?;
+        Ok(out)
+    }
+
+    /// Sort by id and refuse duplicate ids, as `load_dir` does.
+    pub fn check_ids(out: &mut [Self]) -> Result<(), LoadError> {
         out.sort_by(|a, b| a.id.cmp(&b.id));
         let mut seen = BTreeSet::new();
-        for c in &out {
+        for c in out.iter() {
             if !seen.insert(c.id.clone()) {
                 return Err(LoadError::Invalid(format!(
                     "duplicate connection id {:?}",
@@ -450,7 +490,7 @@ impl Connection {
                 )));
             }
         }
-        Ok(out)
+        Ok(())
     }
 }
 

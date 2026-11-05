@@ -407,11 +407,40 @@ pub struct QueryResult {
 
 // ---------- server state ----------
 
+/// The settings in force now, swapped whole when the files change.
+pub struct Live {
+    settings: Arc<crate::config::Settings>,
+    /// Hash of the bytes `settings` came from (or failed to come from).
+    digest: [u8; 32],
+    /// Goes up by one every time new settings take effect.
+    generation: u64,
+    /// Set while the files cannot be used (they do not load, or they change
+    /// what only a restart can apply): every tool but whoami is refused.
+    problem: Option<String>,
+}
+
+/// The organization policy in force when it was taken; it stays the same
+/// while held, whatever the files do meanwhile.
+pub struct PolicyRef(Arc<crate::config::Settings>);
+
+impl std::ops::Deref for PolicyRef {
+    type Target = OrgPolicy;
+    fn deref(&self) -> &OrgPolicy {
+        &self.0.policy
+    }
+}
+
+/// The parts of the policy a session applies only when it starts: the
+/// connected servers and engine plugins are set up from them then.
+fn startup_only(p: &OrgPolicy) -> Value {
+    json!({"servers": p.servers, "plugins": p.plugins, "hosts": p.hosts})
+}
+
 pub struct State {
     pub paths: Paths,
-    pub policy: OrgPolicy,
-    pub policy_source: PolicySource,
-    pub connections: Vec<Connection>,
+    live: std::sync::Mutex<Live>,
+    /// `startup_only` of the policy this session started with.
+    fixed: Value,
     pub scope: ProjectScope,
     pub sandbox: Sandbox,
     pub audit: Arc<AuditLog>,
@@ -461,8 +490,9 @@ fn current_user() -> String {
 
 impl State {
     pub fn load(paths: Paths) -> anyhow::Result<Self> {
-        let (policy, policy_source) = crate::config::load_policy(&paths)?;
-        let connections = crate::config::load_connections(&paths)?;
+        let (digest, settings) = crate::config::read_settings(&paths);
+        let settings = settings?;
+        let policy = settings.policy.clone();
         let session = format!(
             "{}-{}",
             Local::now().format("%Y%m%d-%H%M%S"),
@@ -596,9 +626,13 @@ impl State {
             scripts: tokio::sync::Mutex::new(()),
             edits: Default::default(),
             paths,
-            policy,
-            policy_source,
-            connections,
+            fixed: startup_only(&policy),
+            live: std::sync::Mutex::new(Live {
+                settings: Arc::new(settings),
+                digest,
+                generation: 0,
+                problem: None,
+            }),
             scope: ProjectScope::default(),
             sandbox,
             audit,
@@ -611,6 +645,132 @@ impl State {
             notes,
         })
     }
+}
+
+/// What a settings reload did, for the audit log.
+pub enum Reload {
+    Applied(u64),
+    Refused(String),
+}
+
+impl State {
+    fn live(&self) -> std::sync::MutexGuard<'_, Live> {
+        self.live.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The settings in force now.
+    pub fn settings(&self) -> Arc<crate::config::Settings> {
+        self.live().settings.clone()
+    }
+
+    /// The organization policy in force now.
+    pub fn policy(&self) -> PolicyRef {
+        PolicyRef(self.settings())
+    }
+
+    /// Changes every time new settings take effect.
+    pub fn generation(&self) -> u64 {
+        self.live().generation
+    }
+
+    /// Why tools are refused until the settings files are fixed, if they are.
+    pub fn problem(&self) -> Option<String> {
+        self.live().problem.clone()
+    }
+
+    /// Re-read the settings files if they changed since last time. Changes
+    /// take effect for calls that start after this: a tighter policy, a
+    /// removed connection, a switch turned off apply at once. Files that do
+    /// not load, or that change what only a restart applies (connected
+    /// servers, plugins, allowed hosts), stop every tool but whoami until
+    /// they are fixed: never half old, half new.
+    pub fn refresh(&self) -> Option<Reload> {
+        let mut live = self.live();
+        let (digest, read) = crate::config::read_settings(&self.paths);
+        if digest == live.digest {
+            return None;
+        }
+        live.digest = digest;
+        let outcome = match read {
+            Err(e) => {
+                let why = format!(
+                    "Columbus's settings could not be read, so it refuses every request until they are fixed: {e:#}. Open Settings in the Columbus app to see and fix the problem."
+                );
+                live.problem = Some(why.clone());
+                Reload::Refused(why)
+            }
+            Ok(new) if startup_only(&new.policy) != self.fixed => {
+                let why = "The organization's settings for connected servers, engine plugins or allowed hosts changed. Those apply only when Columbus starts, so it refuses every request until Claude desktop is restarted (or the change is undone).".to_string();
+                live.problem = Some(why.clone());
+                Reload::Refused(why)
+            }
+            Ok(new) => {
+                live.settings = Arc::new(new);
+                live.generation += 1;
+                live.problem = None;
+                // What was learned under the old settings is not reused.
+                self.datasets
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clear();
+                self.columns
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clear();
+                Reload::Applied(live.generation)
+            }
+        };
+        drop(live);
+        let rec = match &outcome {
+            Reload::Applied(g) => AuditRecord {
+                tool: "settings.reload".into(),
+                decision: "allowed".into(),
+                reason: Some(format!("new settings in force (version {g})")),
+                ..Default::default()
+            },
+            Reload::Refused(why) => AuditRecord {
+                tool: "settings.reload".into(),
+                decision: "denied".into(),
+                reason: Some(why.clone()),
+                ..Default::default()
+            },
+        };
+        let _ = self.audit.append(&AuditRecord {
+            user: self.user.clone(),
+            client: "columbus".into(),
+            ..rec
+        });
+        Some(outcome)
+    }
+}
+
+/// What a worker gets to open a connection: where it is and, for a
+/// database login, its password.
+pub(crate) fn connection_handle(conn: &Connection, secret: Option<String>) -> Value {
+    let mut h = json!({"kind": conn.kind});
+    let m = h.as_object_mut().expect("object");
+    for (k, v) in [
+        ("path", conn.path.clone()),
+        ("host", conn.host.clone()),
+        ("database", conn.database.clone()),
+        ("user", conn.user.clone()),
+        ("sslmode", conn.sslmode.clone()),
+        ("search_path", conn.search_path.clone()),
+        ("dsn", conn.dsn.clone()),
+    ] {
+        if let Some(v) = v {
+            m.insert(k.into(), Value::String(v));
+        }
+    }
+    if let Some(port) = conn.port {
+        m.insert("port".into(), json!(port));
+    }
+    if conn.path.is_none() {
+        if let Some(secret) = secret {
+            m.insert("password".into(), Value::String(secret));
+        }
+    }
+    h
 }
 
 pub(crate) fn client_name(ctx: &RequestContext<RoleServer>) -> String {
@@ -693,7 +853,7 @@ impl Gateway {
             request: Some(request_hash(tool, args)),
             ..Default::default()
         };
-        if !self.state.policy.tool_allowed(tool) {
+        if !self.state.policy().tool_allowed(tool) {
             let denied = Denied::Tool(tool.into());
             self.audit(
                 ctx,
@@ -729,18 +889,18 @@ impl Gateway {
         }
     }
 
-    pub(crate) fn connection(&self, id: &str) -> Result<&Connection, Denied> {
-        self.state
+    /// The connection and what this session may do with it, both from one
+    /// snapshot of the settings.
+    pub(crate) fn access(&self, id: &str) -> Result<(EffectiveAccess, Connection), Denied> {
+        let settings = self.state.settings();
+        let conn = settings
             .connections
             .iter()
             .find(|c| c.id == id)
-            .ok_or_else(|| Denied::UnknownConnection(id.into()))
-    }
-
-    pub(crate) fn access(&self, id: &str) -> Result<(EffectiveAccess, &Connection), Denied> {
-        let conn = self.connection(id)?;
+            .cloned()
+            .ok_or_else(|| Denied::UnknownConnection(id.into()))?;
         let access =
-            EffectiveAccess::resolve(&self.state.policy, conn, &self.state.scope, self.now())?;
+            EffectiveAccess::resolve(&settings.policy, &conn, &self.state.scope, self.now())?;
         Ok((access, conn))
     }
 
@@ -848,36 +1008,17 @@ impl Gateway {
     /// connect and, for databases, the login secret from the credential
     /// store. It goes to the worker over its private pipe and nowhere else.
     pub(crate) fn handle(&self, conn: &Connection) -> Result<Value, String> {
-        let mut h = json!({"kind": conn.kind});
-        let m = h.as_object_mut().expect("object");
-        for (k, v) in [
-            ("path", conn.path.clone()),
-            ("host", conn.host.clone()),
-            ("database", conn.database.clone()),
-            ("user", conn.user.clone()),
-            ("sslmode", conn.sslmode.clone()),
-            ("search_path", conn.search_path.clone()),
-            ("dsn", conn.dsn.clone()),
-        ] {
-            if let Some(v) = v {
-                m.insert(k.into(), Value::String(v));
-            }
-        }
-        if let Some(port) = conn.port {
-            m.insert("port".into(), json!(port));
-        }
-        if conn.path.is_none() {
+        let secret = if conn.path.is_none() {
             // A database login. No stored secret is fine: the login may use
             // integrated (Windows/Kerberos) authentication.
-            match self.state.secrets.get(&conn.id) {
-                Ok(Some(secret)) => {
-                    m.insert("password".into(), Value::String(secret));
-                }
-                Ok(None) => {}
-                Err(e) => return Err(format!("cannot read the secret for {:?}: {e}", conn.id)),
-            }
-        }
-        Ok(h)
+            self.state
+                .secrets
+                .get(&conn.id)
+                .map_err(|e| format!("cannot read the secret for {:?}: {e}", conn.id))?
+        } else {
+            None
+        };
+        Ok(connection_handle(conn, secret))
     }
 
     fn worker_error(e: WorkerError) -> String {
@@ -885,12 +1026,17 @@ impl Gateway {
     }
 
     fn connection_cards(&self) -> Vec<ConnectionCard> {
-        self.state
+        let settings = self.state.settings();
+        settings
             .connections
             .iter()
             .map(|c| {
-                let resolved =
-                    EffectiveAccess::resolve(&self.state.policy, c, &self.state.scope, self.now());
+                let resolved = EffectiveAccess::resolve(
+                    &self.state.policy(),
+                    c,
+                    &self.state.scope,
+                    self.now(),
+                );
                 ConnectionCard {
                     id: c.id.clone(),
                     kind: c.kind.clone(),
@@ -1080,7 +1226,7 @@ impl Gateway {
             Ok(v) => v,
             Err(e) => json!({"error": e.to_string()}),
         };
-        let p = &self.state.policy;
+        let p = &self.state.policy();
         let limits = columbus_shared::policy::DEFAULT_LIMITS.narrow(p.limits);
         let result = WhoAmI {
             server: format!("{SERVER_NAME} {}", env!("CARGO_PKG_VERSION")),
@@ -1088,7 +1234,7 @@ impl Gateway {
             client: client_name(&ctx),
             session: self.state.session.clone(),
             policy: PolicySummary {
-                source: self.state.policy_source.clone(),
+                source: self.state.settings().source.clone(),
                 connection_types: p.connection_types.clone(),
                 scripts_allowed: p.allow_scripts,
                 edits_allowed: p.allow_edits,
@@ -1123,7 +1269,14 @@ impl Gateway {
             engines,
             providers: self.provider_cards().await,
             labels: self.labels(),
-            notes: self.state.notes.clone(),
+            notes: {
+                let mut notes = self.state.notes.clone();
+                if let Some(why) = self.state.problem() {
+                    notes.insert(0, why);
+                }
+                notes.push("Changes the person makes in the Columbus app's Settings (connections, edits, scripts) apply to this session from its next call: no restart is needed. Call whoami again to see them.".into());
+                notes
+            },
         };
         self.audit(&ctx, rec)?;
         Ok(out(result))
@@ -1160,7 +1313,7 @@ impl Gateway {
         let mut candidates: Vec<(String, ToolCard)> = Vec::new();
         if args.provider.as_deref().is_none_or(|p| p == "columbus") {
             for t in self.tool_router.list_all() {
-                if !self.state.policy.tool_allowed(&t.name) {
+                if !self.state.policy().tool_allowed(&t.name) {
                     continue;
                 }
                 let desc = t.description.as_deref().unwrap_or("").to_string();
@@ -1188,7 +1341,7 @@ impl Gateway {
             }
             for (name, t) in &p.manifest.tools {
                 let full = format!("{}.{name}", p.id());
-                if !self.state.policy.tool_allowed(&full) {
+                if !self.state.policy().tool_allowed(&full) {
                     continue;
                 }
                 candidates.push((
@@ -1216,7 +1369,7 @@ impl Gateway {
         }
         for (full, (p, t, rule)) in self.state.broker.enabled_tools().await {
             if args.provider.as_deref().is_some_and(|want| want != p.id())
-                || !self.state.policy.tool_allowed(&full)
+                || !self.state.policy().tool_allowed(&full)
             {
                 continue;
             }
@@ -1273,7 +1426,7 @@ impl Gateway {
         let rec = self.gate(&ctx, "describe_tool", &json!({"name": args.name}))?;
         if let Some((ns, tool_name)) = args.name.rsplit_once('.') {
             if let Some(pl) = self.state.plugins.get(ns).cloned() {
-                if !self.state.policy.tool_allowed(&args.name) {
+                if !self.state.policy().tool_allowed(&args.name) {
                     return Err(self.deny(&ctx, rec, Denied::Tool(args.name.clone())));
                 }
                 if let Err(e) = self.state.plugins.worker(&pl).await {
@@ -1326,7 +1479,7 @@ impl Gateway {
                     format!("no provider named {ns:?}; see list_providers"),
                 ));
             };
-            if !self.state.policy.tool_allowed(&args.name) {
+            if !self.state.policy().tool_allowed(&args.name) {
                 return Err(self.deny(&ctx, rec, Denied::Tool(args.name.clone())));
             }
             // Only an enabled tool, whose live definition still matches the
@@ -1364,7 +1517,7 @@ impl Gateway {
             return Ok(out(detail));
         }
         let tool = match self.tool_router.get(&args.name) {
-            Some(t) if self.state.policy.tool_allowed(&t.name) => t.clone(),
+            Some(t) if self.state.policy().tool_allowed(&t.name) => t.clone(),
             _ => {
                 return Err(self.deny(
                     &ctx,
@@ -1470,7 +1623,7 @@ impl Gateway {
             ));
         }
         if crate::raster_tools::is_rasters(&conn.kind) {
-            let (datasets, total) = match crate::raster_tools::list_rasters(conn, &access) {
+            let (datasets, total) = match crate::raster_tools::list_rasters(&conn, &access) {
                 Ok(v) => v,
                 Err(e) => return Err(self.deny(&ctx, rec, e)),
             };
@@ -1484,7 +1637,7 @@ impl Gateway {
             return Ok(out(result));
         }
         let timeout = access.limits.seconds.unwrap_or(120);
-        let handle = match self.handle(conn) {
+        let handle = match self.handle(&conn) {
             Ok(h) => h,
             Err(e) => return Err(self.deny(&ctx, rec, e)),
         };
@@ -1493,7 +1646,7 @@ impl Gateway {
             .worker
             .core(
                 "list_datasets",
-                json!({"connection": handle, "timeout_s": timeout, "schemas": Self::listed_schemas(conn)}),
+                json!({"connection": handle, "timeout_s": timeout, "schemas": Self::listed_schemas(&conn)}),
                 Duration::from_secs(timeout + 10),
             )
             .await;
@@ -1565,7 +1718,7 @@ impl Gateway {
                 .tool_router
                 .list_all()
                 .iter()
-                .filter(|t| self.state.policy.tool_allowed(&t.name))
+                .filter(|t| self.state.policy().tool_allowed(&t.name))
                 .count(),
             approval_tools: vec![],
         }];
@@ -1598,7 +1751,7 @@ impl Gateway {
             ));
         };
         rec.provider = Some(ns.to_string());
-        if !self.state.policy.tool_allowed(&args.name) {
+        if !self.state.policy().tool_allowed(&args.name) {
             return Err(self.deny(&ctx, rec, Denied::Tool(args.name.clone())));
         }
         if let Some(pl) = self.state.plugins.get(ns).cloned() {
@@ -1643,7 +1796,7 @@ impl Gateway {
             args.args.clone(),
             &self.state.session,
             &self.state.sandbox,
-            &self.state.policy,
+            &self.state.policy(),
             &extra_hosts,
             &columbus_broker::registry::server_dir(
                 self.state.sandbox.root(),
@@ -1658,7 +1811,7 @@ impl Gateway {
         let labels = self.state.flow.labels_for(&prepared.files);
         rec.labels = labels.iter().cloned().collect();
         let decision =
-            columbus_flow::evaluate(&self.state.policy.flows, &labels, ns, rule.outbound());
+            columbus_flow::evaluate(&self.state.policy().flows, &labels, ns, rule.outbound());
         rec.flow_decision = Some(decision.label().into());
         if let columbus_flow::FlowDecision::Deny { labels, rule: i } = &decision {
             return Err(self.deny(
@@ -1771,7 +1924,7 @@ impl Gateway {
         if let Err(e) = crate::providers::do_copies(self.state.sandbox.root(), &prepared.copies) {
             return Err(self.deny(&ctx, rec, e));
         }
-        let timeout = self.state.policy.limits.seconds.unwrap_or(120).max(1);
+        let timeout = self.state.policy().limits.seconds.unwrap_or(120).max(1);
         let started = Local::now();
         let result = match self
             .state
@@ -1980,7 +2133,7 @@ impl Gateway {
             },
         };
         if status.state == "pending"
-            && self.state.policy.approvals.page
+            && self.state.policy().approvals.page
             && !self.state.page.is_open()
             && !ctx
                 .peer
@@ -2010,7 +2163,7 @@ impl Gateway {
             Err(e) => return Err(self.deny(&ctx, rec, e)),
         };
         let max_rows = access.limits.rows.unwrap_or(200_000);
-        let cols = match self.table_columns(&access, conn).await {
+        let cols = match self.table_columns(&access, &conn).await {
             Ok(c) => c,
             Err(e) => return Err(self.deny(&ctx, rec, e)),
         };
@@ -2034,7 +2187,7 @@ impl Gateway {
             .resolve(&format!("results/{prov}.csv"))
             .map_err(|e| e.to_string())?;
         let timeout = access.limits.seconds.unwrap_or(120);
-        let handle = match self.handle(conn) {
+        let handle = match self.handle(&conn) {
             Ok(h) => h,
             Err(e) => return Err(self.deny(&ctx, rec, e)),
         };
@@ -2050,7 +2203,7 @@ impl Gateway {
                     "max_rows": max_rows,
                     "return_rows": access.return_rows,
                     "output_path": output_path,
-                    "hide_fields": self.state.policy.hide_fields,
+                    "hide_fields": self.state.policy().hide_fields,
                     "timeout_s": timeout,
                 }),
                 Duration::from_secs(timeout + 10),
@@ -2241,6 +2394,25 @@ impl ServerHandler for Gateway {
     ) -> Result<rmcp::model::CallToolResponse, rmcp::ErrorData> {
         // Shown in the Columbus app as "used 2 minutes ago".
         self.state.page.touch_live();
+        // Settings changed in the Columbus app (or the files) apply from the
+        // next call on, without a restart.
+        self.state.refresh();
+        if let Some(why) = self.state.problem() {
+            if request.name != "whoami" {
+                let _ = self.state.audit.append(&AuditRecord {
+                    user: self.state.user.clone(),
+                    client: client_name(&context),
+                    tool: request.name.to_string(),
+                    decision: "denied".into(),
+                    reason: Some(why.clone()),
+                    ..Default::default()
+                });
+                return Ok(rmcp::model::CallToolResult::error(vec![
+                    rmcp::model::ContentBlock::text(format!("refused: {why}")),
+                ])
+                .into());
+            }
+        }
         let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
         self.tool_router.call(tcc).await
     }

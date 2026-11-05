@@ -1,6 +1,6 @@
 Columbus {{VERSION}}, a test release. Click a link to download that file.
 
-**New in this version: Settings in the Columbus app.** Add, edit and remove connections (Browse for a GeoPackage or a raster folder, or fill in a database; passwords go into your Keychain or Credential Manager) and turn edits and scripts on or off, without editing files. Anything that gives your assistant more access asks for Touch ID or your password (Windows Hello on Windows) first. Update both the extension and the app. Since 0.4.0: editing data in GeoPackage and PostGIS.
+**New in this version: Settings changes apply at once, and a Test button.** Changes you make in Settings (connections, edits, scripts) reach Claude on its next request: no more quitting Claude desktop after each change. Tightening takes effect immediately; anything that gives your assistant more access still asks for Touch ID or your password (Windows Hello on Windows) first. In the connection editor, **Test** has the running Columbus open the connection exactly as it would use it, before you save, and says how many datasets it can see. Update both the extension and the app. Since 0.5.0: Settings in the Columbus app; since 0.4.0: editing data in GeoPackage and PostGIS.
 
 ## Mac (Apple Silicon: M1 or later)
 

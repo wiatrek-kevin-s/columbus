@@ -155,6 +155,125 @@ pub fn load_connections(paths: &Paths) -> Result<Vec<Connection>> {
     Connection::load_dir(&paths.connections).with_context(|| "loading connections")
 }
 
+/// What a session reads from its settings files: the organization's policy
+/// and the person's connections. A running session re-reads them whenever
+/// they change (see `State::refresh`).
+#[derive(Debug, Clone)]
+pub struct Settings {
+    pub policy: OrgPolicy,
+    pub source: PolicySource,
+    pub connections: Vec<Connection>,
+}
+
+/// Read the settings files once: a hash of exactly the bytes read, and the
+/// settings parsed from those same bytes (so a file that changes while it
+/// is read is seen as changed again next time, never half-applied). The
+/// hash covers every connection file's name and contents and the policy
+/// file's, so any change, or a read that fails, shows as a new hash.
+pub fn read_settings(paths: &Paths) -> ([u8; 32], Result<Settings>) {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    let mut feed = |tag: &[u8], bytes: &[u8]| {
+        h.update((tag.len() as u64).to_le_bytes());
+        h.update(tag);
+        h.update((bytes.len() as u64).to_le_bytes());
+        h.update(bytes);
+    };
+    let policy_bytes = match std::fs::read(&paths.policy) {
+        Ok(b) => Ok(Some(b)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e),
+    };
+    match &policy_bytes {
+        Ok(Some(b)) => feed(b"policy", b),
+        Ok(None) => feed(b"policy-absent", b""),
+        Err(e) => feed(b"policy-error", e.to_string().as_bytes()),
+    }
+    let mut files: Vec<(PathBuf, std::io::Result<Vec<u8>>)> = Vec::new();
+    let listing = match std::fs::read_dir(&paths.connections) {
+        Ok(entries) => {
+            for entry in entries {
+                match entry {
+                    Ok(e) => {
+                        let path = e.path();
+                        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                        if ext == "yaml" || ext == "yml" {
+                            let bytes = std::fs::read(&path);
+                            files.push((path, bytes));
+                        }
+                    }
+                    Err(e) => feed(b"listing-error", e.to_string().as_bytes()),
+                }
+            }
+            Ok(())
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            feed(b"connections-absent", b"");
+            Ok(())
+        }
+        Err(e) => {
+            feed(b"connections-error", e.to_string().as_bytes());
+            Err(e)
+        }
+    };
+    files.sort_by(|a, b| a.0.cmp(&b.0));
+    for (path, bytes) in &files {
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        match bytes {
+            Ok(b) => feed(name.as_bytes(), b),
+            Err(e) => feed(format!("{name}/error").as_bytes(), e.to_string().as_bytes()),
+        }
+    }
+    let digest: [u8; 32] = h.finalize().into();
+
+    let parsed = (|| -> Result<Settings> {
+        let found = match policy_bytes {
+            Ok(Some(b)) => Some(b),
+            Ok(None) => None,
+            Err(e) => {
+                return Err(anyhow::anyhow!("{}: {e}", paths.policy.display()))
+                    .context("loading organization policy")
+            }
+        };
+        let policy = match &found {
+            Some(b) => {
+                let text = std::str::from_utf8(b).map_err(|e| {
+                    anyhow::anyhow!("{}: not UTF-8 text ({e})", paths.policy.display())
+                })?;
+                OrgPolicy::parse(text, &paths.policy).context("loading organization policy")?
+            }
+            None => OrgPolicy::default(),
+        };
+        if let Err(e) = listing {
+            return Err(anyhow::anyhow!("{}: {e}", paths.connections.display()))
+                .context("loading connections");
+        }
+        let mut connections = Vec::new();
+        for (path, bytes) in files {
+            let bytes = bytes
+                .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))
+                .context("loading connections")?;
+            let text = std::str::from_utf8(&bytes)
+                .map_err(|e| anyhow::anyhow!("{}: not UTF-8 text ({e})", path.display()))
+                .context("loading connections")?;
+            connections.push(Connection::parse(text, &path).context("loading connections")?);
+        }
+        Connection::check_ids(&mut connections).context("loading connections")?;
+        Ok(Settings {
+            policy,
+            source: PolicySource {
+                path: paths.policy.display().to_string(),
+                found: found.is_some(),
+            },
+            connections,
+        })
+    })();
+    (digest, parsed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
