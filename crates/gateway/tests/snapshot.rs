@@ -190,3 +190,107 @@ gpd.GeoDataFrame({"NAME": ["West", "East", "Main"], "SECRET": ["a", "b", "c"]},
     assert_eq!(r.is_error, Some(true));
     c.cancel().await.unwrap();
 }
+
+#[tokio::test]
+async fn a_raster_of_the_session_is_drawn_underneath() {
+    let Some(py) = python() else {
+        eprintln!("skipped: no Python with geopandas and rasterio");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join("connections")).unwrap();
+    std::fs::create_dir_all(root.join("rasters")).unwrap();
+    let gpkg = root.join("tx.gpkg");
+    let script = r#"
+import sys
+import numpy as np
+import geopandas as gpd
+import rasterio
+from rasterio.transform import from_bounds
+from shapely.geometry import box
+gpd.GeoDataFrame({"NAME": ["Tract"]}, geometry=[box(-97.8, 30.7, -97.7, 30.8)],
+    crs="EPSG:4269").to_file(sys.argv[1], layer="tracts", driver="GPKG", engine="pyogrio")
+z = (np.arange(100 * 100, dtype="float32").reshape(1, 100, 100) + 100.0)
+with rasterio.open(sys.argv[2], "w", driver="GTiff", width=100, height=100, count=1, dtype="float32",
+                   crs="EPSG:3081", transform=from_bounds(1_190_000, 930_000, 1_240_000, 980_000, 100, 100)) as d:
+    d.write(z)
+"#;
+    assert!(StdCommand::new(&py)
+        .arg("-c")
+        .arg(script)
+        .arg(&gpkg)
+        .arg(root.join("rasters/dem.tif"))
+        .status()
+        .unwrap()
+        .success());
+    let q = |p: PathBuf| serde_json::to_string(&p.display().to_string()).unwrap();
+    std::fs::write(
+        root.join("connections/tx.yaml"),
+        format!(
+            "id: tx\ntype: gpkg\npath: {}\ndatasets:\n  allow: [\"*\"]\n",
+            q(gpkg.clone())
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("connections/dem.yaml"),
+        format!(
+            "id: dem\ntype: rasters\npath: {}\ndatasets:\n  allow: [\"*\"]\n",
+            q(root.join("rasters"))
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("policy.yaml"),
+        "connection_types: [gpkg, rasters]\n",
+    )
+    .unwrap();
+    let c = start(root, &py).await;
+
+    let q = call(
+        &c,
+        "query_features",
+        json!({"connection": "tx", "dataset": "tracts"}),
+    )
+    .await;
+    assert_ne!(q.is_error, Some(true), "{:?}", q.content);
+    let layer = q.structured_content.unwrap()["result"]["layer"]["handle"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let r = call(
+        &c,
+        "raster_op",
+        json!({"op": "reproject", "inputs": {"raster": "dem:dem.tif"}, "params": {"crs": "EPSG:4269", "resampling": "bilinear"}}),
+    )
+    .await;
+    assert_ne!(r.is_error, Some(true), "{:?}", r.content);
+    let out = r.structured_content.unwrap();
+    let raster = out["result"]["layer"]["handle"]
+        .as_str()
+        .or_else(|| out["result"]["handle"].as_str())
+        .unwrap_or_else(|| panic!("a raster handle: {out}"))
+        .to_string();
+
+    let r = call(
+        &c,
+        "map_snapshot",
+        json!({"layers": [layer], "imagery": raster, "width": 600, "height": 600}),
+    )
+    .await;
+    assert_ne!(r.is_error, Some(true), "{:?}", r.content);
+    let out = r.structured_content.unwrap();
+    assert_eq!(out["result"]["imagery"]["bands"], "one band, grey", "{out}");
+    assert_eq!(out["result"]["imagery"]["covers"], true, "{out}");
+
+    // Only this session's own rasters.
+    let r = call(
+        &c,
+        "map_snapshot",
+        json!({"layers": [layer], "imagery": "ws://other/results/x.tif"}),
+    )
+    .await;
+    assert_eq!(r.is_error, Some(true));
+    c.cancel().await.unwrap();
+}

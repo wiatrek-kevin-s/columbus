@@ -1783,8 +1783,11 @@ def map_snapshot(params: dict[str, Any]) -> dict[str, Any]:
         h = int(params.get("height") or 700)
     except (TypeError, ValueError):
         raise WorkerError(INVALID_PARAMS, "width and height must be whole numbers") from None
+    imagery = params.get("imagery")
+    if imagery is not None and not isinstance(imagery, str):
+        raise WorkerError(INVALID_PARAMS, "imagery is one raster path")
     try:
-        return g.map_snapshot(paths, out, w, h, bbox)
+        return g.map_snapshot(paths, out, w, h, bbox, imagery)
     except g.GISError as e:
         raise _refused(e) from None
 

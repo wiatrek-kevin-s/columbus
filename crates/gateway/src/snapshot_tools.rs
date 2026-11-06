@@ -41,12 +41,17 @@ pub struct SnapshotArgs {
     pub width: Option<u32>,
     #[serde(default)]
     pub height: Option<u32>,
+    /// A raster of this session's (ws:// handle, e.g. from raster_op) to
+    /// draw underneath: aerial imagery, a hillshade, a DEM. Three 8-bit
+    /// bands are drawn in colour, one band in grey.
+    #[serde(default)]
+    pub imagery: Option<String>,
 }
 
 #[tool_router(router = snapshot_router, vis = "pub(crate)")]
 impl Gateway {
     #[tool(
-        description = "Look at layers on a map: draws 1 to 8 of this session's workspace layers (ws:// handles) as a PNG picture you can see, each layer its own colour (polygons lightly filled with an outline, lines and points solid), on a plain background with no basemap. Use it to check what numbers cannot show: slivers, gaps and overlaps, features in the wrong place (a CRS mix-up), a layer that does not line up with another, the shape of a selection. Geometry only: no attribute values or labels are drawn. The answer lists each layer's colour and feature count, the CRS and extent drawn. The picture is saved in the workspace (handle).",
+        description = "Look at layers on a map: draws 1 to 8 of this session's workspace layers (ws:// handles) as a PNG picture you can see, each layer its own colour (polygons lightly filled with an outline, lines and points solid), on a plain background, or over a raster of this session's (imagery: aerial imagery, a hillshade or a DEM, e.g. clipped with raster_op). Nothing is downloaded: no web basemap. Use it to check what numbers cannot show: slivers, gaps and overlaps, features in the wrong place (a CRS mix-up), a layer that does not line up with another, the shape of a selection. Geometry only: no attribute values or labels are drawn. The answer lists each layer's colour and feature count, the CRS and extent drawn. The picture is saved in the workspace (handle).",
         annotations(read_only_hint = true, open_world_hint = false),
         output_schema = rmcp::handler::server::common::schema_for_output::<crate::server::Output<Value>>()
     )]
@@ -55,7 +60,7 @@ impl Gateway {
         Parameters(args): Parameters<SnapshotArgs>,
         ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, String> {
-        let request = json!({"layers": args.layers, "bbox": args.bbox, "width": args.width, "height": args.height});
+        let request = json!({"layers": args.layers, "bbox": args.bbox, "width": args.width, "height": args.height, "imagery": args.imagery});
         let mut rec = self.gate(&ctx, "map_snapshot", &request)?;
         if args.layers.is_empty() || args.layers.len() > 8 {
             return Err(self.deny(&ctx, rec, "give 1 to 8 layers (ws:// handles)"));
@@ -67,6 +72,13 @@ impl Gateway {
                 Err(e) => return Err(self.deny(&ctx, rec, e)),
             }
         }
+        let imagery = match &args.imagery {
+            Some(h) => match self.own_output(h) {
+                Ok((p, _)) => Some(p),
+                Err(e) => return Err(self.deny(&ctx, rec, e)),
+            },
+            None => None,
+        };
         let prov = new_prov_id();
         let out = match self
             .state
@@ -90,7 +102,7 @@ impl Gateway {
             .worker
             .core(
                 "map_snapshot",
-                json!({"paths": paths, "out_path": out, "bbox": args.bbox,
+                json!({"paths": paths, "out_path": out, "bbox": args.bbox, "imagery": imagery,
                     "width": args.width.unwrap_or(1000), "height": args.height.unwrap_or(700)}),
                 Duration::from_secs(120),
             )
@@ -118,7 +130,13 @@ impl Gateway {
             Ok(Some(b)) if b.starts_with(b"\x89PNG\r\n\x1a\n") => b,
             _ => return Err(self.deny(&ctx, rec, "the engine made no picture")),
         };
-        let labels = self.state.flow.labels_for(&paths);
+        let labels = self.state.flow.labels_for(
+            &paths
+                .iter()
+                .chain(imagery.iter())
+                .cloned()
+                .collect::<Vec<_>>(),
+        );
         self.state.flow.record_file(&out, &labels);
         let features: u64 = reply["layers"]
             .as_array()
@@ -143,7 +161,8 @@ impl Gateway {
             "extent": reply["extent"],
             "wrapped_antimeridian": reply["wrapped_antimeridian"],
             "layers": layers,
-            "note": "Geometry only, no basemap: colours are per layer, as listed. A geographic CRS is drawn with longitude scaled for latitude; across the 180th meridian it is drawn in one piece (longitudes past 180).",
+            "imagery": reply["imagery"],
+            "note": "Geometry only, no web basemap (imagery only if you gave a raster of this session's): colours are per layer, as listed. A geographic CRS is drawn with longitude scaled for latitude; across the 180th meridian it is drawn in one piece (longitudes past 180).",
         });
         let structured = json!({"result": result, "checks": [], "provenance": Value::Null});
         let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);

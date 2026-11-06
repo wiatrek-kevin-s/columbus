@@ -222,9 +222,11 @@ Counts and checks say a lot, not everything. When the question is about where th
 how layers fit (slivers, gaps, overlaps, a CRS mix-up that puts features in the ocean, a
 selection that looks wrong, two layers that should line up), call `map_snapshot` with the
 layers' handles and look at the picture before you answer. It draws geometry only (each layer
-its own colour, listed in the answer), with no basemap, so say what you saw in those terms
+its own colour, listed in the answer), with no web basemap, so say what you saw in those terms
 ("the 12 regions form one block across the 180th meridian; none fall outside Alaska"), and
-don't claim detail a picture at that size can't show.
+don't claim detail a picture at that size can't show. To see layers against the ground, pass
+a raster of the session's as `imagery` (aerial imagery or a DEM from a rasters connection,
+clipped or reprojected with `raster_op` first); it is drawn underneath.
 
 ### 7. Approvals
 

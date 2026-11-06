@@ -1482,8 +1482,42 @@ def _wrap_antimeridian(gdf):
     return gdf.set_geometry(shapely.transform(gdf.geometry.values, lambda xy: xy + [[360.0, 0.0]] * (xy[:, :1] < 0)))
 
 
+def _snapshot_imagery(path: str, crs, transform, shape) -> tuple[Any, Any, dict[str, Any]]:
+    """A raster of the session's, warped onto the picture's grid: an RGB
+    image and where it has data. Three or more 8-bit bands are drawn as
+    red, green, blue; anything else as grey, stretched between its 2nd and
+    98th percentiles."""
+    import numpy as np
+    import rasterio
+    from rasterio.warp import Resampling, reproject
+
+    with rasterio.open(path) as src:
+        if src.crs is None:
+            raise GISError("params", f"{os.path.basename(path)} has no CRS, so it cannot be placed under the layers")
+        rgb = src.count >= 3 and all(d == "uint8" for d in src.dtypes[:3])
+        bands = [1, 2, 3] if rgb else [1]
+        out = np.full((len(bands),) + shape, np.nan, dtype=np.float32)
+        for i, b in enumerate(bands):
+            reproject(source=rasterio.band(src, b), destination=out[i], src_transform=src.transform,
+                      src_crs=src.crs, src_nodata=src.nodata, dst_transform=transform, dst_crs=crs,
+                      dst_nodata=np.nan, resampling=Resampling.bilinear)
+    have = ~np.isnan(out).all(axis=0)
+    info = {"bands": "red, green, blue" if rgb else "one band, grey", "covers": bool(have.any())}
+    if not have.any():
+        return np.zeros(shape + (3,), dtype=np.float32), have, info
+    if rgb:
+        img = np.moveaxis(np.nan_to_num(out), 0, -1)
+    else:
+        v = out[0]
+        lo, hi = np.nanpercentile(v[have], [2, 98])
+        g = np.clip((np.nan_to_num(v) - lo) / ((hi - lo) or 1.0), 0, 1) * 255
+        img = np.repeat(g[:, :, None], 3, axis=2)
+        info["stretch"] = [float(lo), float(hi)]
+    return img.astype(np.float32), have, info
+
+
 def map_snapshot(paths: list[str], out_path: str, width: int = 1000, height: int = 700,
-                 bbox: list[float] | None = None) -> dict[str, Any]:
+                 bbox: list[float] | None = None, imagery: str | None = None) -> dict[str, Any]:
     """Draw layers as a PNG: geometry only (no attribute, label or name is
     drawn), each layer its own colour, polygons filled lightly with an
     outline, lines and points solid, on a plain background with no basemap.
@@ -1547,6 +1581,14 @@ def map_snapshot(paths: list[str], out_path: str, width: int = 1000, height: int
     img = np.empty((height, width, 3), dtype=np.float32)
     img[:] = SNAPSHOT_PAPER
     shape = (height, width)
+    imagery_info = None
+    if imagery:
+        if crs is None:
+            raise GISError("params", "the layers have no CRS, so imagery cannot be placed under them")
+        if geographic and maxx > 180:
+            raise GISError("params", "imagery cannot be drawn across the 180th meridian; leave it out or draw one side")
+        under, have, imagery_info = _snapshot_imagery(imagery, crs, transform, shape)
+        img[have] = under[have]
 
     def burn(geoms, all_touched=True):
         geoms = [g for g in geoms if g is not None and not g.is_empty]
@@ -1625,4 +1667,5 @@ def map_snapshot(paths: list[str], out_path: str, width: int = 1000, height: int
             "crs": (crs.to_string() if crs is not None else None),
             "extent": [float(minx), float(miny), float(maxx), float(maxy)],
             "wrapped_antimeridian": bool(geographic and maxx > 180),
+            "imagery": imagery_info,
             "layers": layers}

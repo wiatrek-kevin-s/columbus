@@ -138,7 +138,7 @@ Jobs the person wants run again without waiting for them: the assistant proposes
 
 ### Map snapshots
 
-`map_snapshot` draws up to 8 of the session's own layers as a PNG that the assistant sees (and the app's chat shows the person): geometry only, each layer its own colour, no attribute values, labels or basemap, and nothing is downloaded to make it. It shows the assistant the shape of every feature in those layers, which the per-call row limit does not cap; an organization that treats geometry as sensitive can turn it off with `deny_tools: [map_snapshot]`.
+`map_snapshot` draws up to 8 of the session's own layers as a PNG that the assistant sees (and the app's chat shows the person): geometry only, each layer its own colour, no attribute values, labels or web basemap, and nothing is downloaded to make it. It can draw one of the session's own rasters underneath (`imagery`: aerial imagery, a DEM or a hillshade from a rasters connection), warped to the layers' CRS. It shows the assistant the shape of every feature in those layers, which the per-call row limit does not cap; an organization that treats geometry as sensitive can turn it off with `deny_tools: [map_snapshot]`.
 
 ## Connected MCP servers
 

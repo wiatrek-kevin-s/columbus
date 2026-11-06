@@ -8,7 +8,7 @@ Columbus {{VERSION}}, a test release. Click a link to download that file.
 - Turn them on with **Allow workflows** (Workflows page or Settings › Organization). Scheduled runs happen while you are signed in; one missed while the computer slept runs once when it wakes. Yours alone; sharing with your team comes later.
 - On a Mac, keep a workflow's data and export folders out of Documents, Desktop, Downloads and iCloud Drive (a scheduled run cannot ask for access there), or give `columbus-mcp` Full Disk Access.
 
-**Also new: your assistant can look at the map.** A new tool, `map_snapshot`, draws the session's layers as a picture the assistant sees, so it can spot slivers, gaps, layers that don't line up or features in the wrong place. It is drawn on your computer from geometry only (no attribute values, labels or basemap; nothing is downloaded), and the chat shows you what it saw. Your organization can turn it off.
+**Also new: your assistant can look at the map.** A new tool, `map_snapshot`, draws the session's layers as a picture the assistant sees, so it can spot slivers, gaps, layers that don't line up or features in the wrong place. It is drawn on your computer from geometry only (no attribute values, labels or web basemap; nothing is downloaded), and the chat shows you what it saw. It can draw your own imagery or elevation underneath: a raster from one of your rasters connections. Your organization can turn it off.
 
 **Also:** the app's chat streams replies, so long answers at a high thinking level are not cut off; a new README with a tour of the app.
 

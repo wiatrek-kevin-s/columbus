@@ -46,6 +46,47 @@ class SnapshotTest(unittest.TestCase):
             self.assertTrue(f.read(8).startswith(b"\x89PNG"))
         self.assertFalse(os.path.exists(out + ".aux.xml"), "no side file")
 
+    def raster(self, name, data, crs, bounds):
+        import numpy as np
+        from rasterio.transform import from_bounds
+        p = os.path.join(self.d, f"{name}.tif")
+        data = np.asarray(data)
+        count, h, w = data.shape
+        with rasterio.open(p, "w", driver="GTiff", width=w, height=h, count=count, dtype=data.dtype,
+                           crs=crs, transform=from_bounds(*bounds, w, h), nodata=0 if data.dtype.kind == "u" else None) as dst:
+            dst.write(data)
+        return p
+
+    def test_imagery_is_drawn_underneath_in_the_layers_crs(self):
+        import numpy as np
+        # A layer in metres (Texas), imagery in degrees around it: the
+        # imagery is warped onto the picture, the layer drawn over it.
+        a = self.layer("a", [box(1_205_000, 946_000, 1_225_000, 966_000)], crs="EPSG:3081")
+        red = np.zeros((3, 50, 50), dtype="uint8")
+        red[0] = 200
+        img = self.raster("rgb", red, "EPSG:4326", (-98.5, 30.0, -97.0, 31.5))
+        out = os.path.join(self.d, "s.png")
+        r = g.map_snapshot([a], out, 400, 400, imagery=img)
+        self.assertEqual(r["imagery"]["bands"], "red, green, blue")
+        with rasterio.open(out) as src:
+            px = src.read()
+        # The corner, outside the polygon but under the imagery: red.
+        self.assertEqual(int(px[0, 5, 5]), 200)
+        self.assertEqual(int(px[1, 5, 5]), 0)
+        # One band: grey.
+        dem = self.raster("dem", np.arange(2500, dtype="float32").reshape(1, 50, 50) + 1,
+                          "EPSG:4326", (-98.5, 30.0, -97.0, 31.5))
+        r = g.map_snapshot([a], out, 400, 400, imagery=dem)
+        self.assertEqual(r["imagery"]["bands"], "one band, grey")
+        with rasterio.open(out) as src:
+            px = src.read()
+        self.assertEqual(int(px[0, 5, 5]), int(px[1, 5, 5]))
+        self.assertEqual(int(px[1, 5, 5]), int(px[2, 5, 5]))
+        # Imagery somewhere else entirely: the paper shows through.
+        far = self.raster("far", red, "EPSG:4326", (10, 10, 11, 11))
+        r = g.map_snapshot([a], out, 400, 400, imagery=far)
+        self.assertFalse(r["imagery"]["covers"])
+
     def test_what_it_refuses(self):
         a = self.layer("a", [box(0, 0, 1, 1)], crs="EPSG:3081")
         out = os.path.join(self.d, "s.png")
