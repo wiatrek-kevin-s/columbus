@@ -44,7 +44,7 @@ jobs:
             Where-Object name -eq "columbus-mcp" | Select-Object -ExpandProperty version
           $out = "dist\columbus"
           New-Item -ItemType Directory -Force $out | Out-Null
-          Copy-Item target\release\columbus-mcp.exe, target\release\columbus-confine.exe $out
+          Copy-Item target\release\columbus-mcp.exe, target\release\columbus-confine.exe, target\release\columbus-workflow.exe $out
           New-Item -ItemType Directory -Force "$out\workers" | Out-Null
           Copy-Item -Recurse workers\python "$out\workers\python"
           Remove-Item -Recurse -Force "$out\workers\python\tests" -ErrorAction SilentlyContinue
@@ -95,7 +95,7 @@ jobs:
           version=$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"]=="columbus-mcp"))')
           out=dist/columbus
           mkdir -p "$out/workers" "$out/engine"
-          cp target/release/columbus-mcp target/release/columbus-confine "$out/"
+          cp target/release/columbus-mcp target/release/columbus-confine target/release/columbus-workflow "$out/"
           cp -R workers/python "$out/workers/python"
           rm -rf "$out/workers/python/tests"
           find "$out" -type d -name __pycache__ -prune -exec rm -rf {} +
@@ -188,6 +188,7 @@ jobs:
             [ -f "$dir/$f" ] || { echo "::error::the app's server folder has no $f"; exit 1; }
           done
           ls "$dir" | grep -q '^columbus-confine' || { echo "::error::the app's server folder has no columbus-confine"; exit 1; }
+          ls "$dir" | grep -q '^columbus-workflow' || { echo "::error::the app's server folder has no columbus-workflow"; exit 1; }
       - name: The release app has none of the debug builds' test switches
         shell: bash
         run: |

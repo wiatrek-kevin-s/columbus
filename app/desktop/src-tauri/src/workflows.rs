@@ -375,19 +375,24 @@ pub(crate) fn task_xml(
         .filter(|(d, _)| v.days.iter().any(|x| x == d))
         .map(|(_, n)| format!("<{n} />"))
         .collect();
+    // The windowless launcher beside the server, when there (no console
+    // window for the run); it adds "workflow run" itself.
+    let launcher = server.with_file_name("columbus-workflow.exe");
+    let (program, args) = if launcher.is_file() {
+        (launcher, entry_args(&v.id, engine).split_off(2))
+    } else {
+        (server.to_path_buf(), entry_args(&v.id, engine))
+    };
     // Windows command-line quoting: each argument in double quotes (no path
     // or id here can contain one).
-    let args: Vec<String> = entry_args(&v.id, engine)
-        .into_iter()
-        .map(|a| format!("\"{a}\""))
-        .collect();
+    let args: Vec<String> = args.into_iter().map(|a| format!("\"{a}\"")).collect();
     // Any day in the past: the days of the week and the time are what count.
     let today = "2024-01-01";
     format!(
         "<?xml version=\"1.0\" encoding=\"UTF-16\"?>\n<Task version=\"1.2\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\">\n  <RegistrationInfo><Description>Columbus workflow {}: runs what you approved in the Columbus app.</Description></RegistrationInfo>\n  <Triggers>\n    <CalendarTrigger>\n      <StartBoundary>{today}T{at}:00</StartBoundary>\n      <Enabled>true</Enabled>\n      <ScheduleByWeek><DaysOfWeek>{days}</DaysOfWeek><WeeksInterval>1</WeeksInterval></ScheduleByWeek>\n    </CalendarTrigger>\n  </Triggers>\n  <Principals><Principal id=\"Author\"><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>\n  <Settings>\n    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>\n    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>\n    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>\n    <StartWhenAvailable>true</StartWhenAvailable>\n    <ExecutionTimeLimit>PT{}M</ExecutionTimeLimit>\n    <Enabled>true</Enabled>\n  </Settings>\n  <Actions Context=\"Author\">\n    <Exec><Command>{}</Command><Arguments>{}</Arguments></Exec>\n  </Actions>\n</Task>\n",
         xml_escape(&v.id),
         run_minutes + 5,
-        xml_escape(&server.display().to_string()),
+        xml_escape(&program.display().to_string()),
         xml_escape(&args.join(" "))
     )
 }
@@ -643,5 +648,18 @@ mod tests {
             "{t}"
         );
         assert!(t.contains("<LogonType>InteractiveToken</LogonType>"), "{t}");
+        // With the windowless launcher beside the server, the task runs it.
+        let dir = std::env::temp_dir().join(format!("wf-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let server = dir.join("columbus-mcp.exe");
+        std::fs::write(&server, "").unwrap();
+        std::fs::write(dir.join("columbus-workflow.exe"), "").unwrap();
+        let t = task_xml(&v, &server, None, 30);
+        assert!(t.contains("columbus-workflow.exe</Command>"), "{t}");
+        assert!(
+            t.contains("<Arguments>&quot;crash-check&quot; &quot;--scheduled&quot;</Arguments>"),
+            "{t}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

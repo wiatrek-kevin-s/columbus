@@ -12,6 +12,10 @@ name = "columbus-mcp"
 path = "src/main.rs"
 
 [[bin]]
+name = "columbus-workflow"
+path = "src/workflow_launcher.rs"
+
+[[bin]]
 name = "columbus-confine"
 path = "src/bin/confine.rs"
 

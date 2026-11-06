@@ -1,23 +1,19 @@
 Columbus {{VERSION}}, a test release. Click a link to download that file.
 
-**Fixed in this version:**
-- **The app's chat now brings its own Columbus server.** Before, it started the server in your Columbus folder, which the update steps never replaced, so it could be many versions old: layer names with spaces were refused and the map beside the chat did not load. The app now carries the server of its own version and uses your Columbus folder only for the GIS engine. **Settings › Models and accounts** shows which server and engine a chat uses. If your Columbus folder is somewhere other than your home folder (or is `C:\Columbus` on Windows), Settings shows a **Use …** button for its engine: click it, then **Save settings**.
-- **Choose the model and thinking level for each chat**, below the message box: Claude Sonnet 5.5, Opus 5.5, Fable 5.1 or Haiku 5.5, and thinking from Low to Max. Settings sets what a new chat starts with; a chat can switch between messages.
-- **Tables in replies** show as tables.
-- On Windows, a personal tool's run folder is emptied reliably after it runs.
+**New in this version: workflows.** Jobs that run by themselves on a schedule, without you waiting: for example, read a dataset, check it and put the results in your export folder every weekday at 06:00.
+- **Ask your assistant** ("make what we just did a workflow that runs every weekday at 6"). It proposes one; you find it under **Workflows**, read what it does in plain words and in full, and approve it with Touch ID or Windows Hello. Nothing runs before that.
+- **It does only what it lists:** it reads only the connections it names, its steps are reading and checking tools or personal tools you installed (never scripts or edits), and it never waits for you: a step that would need your approval stops the run with "needs you". A changed workflow, or a changed tool it uses, is off until you approve it again.
+- **Run now**, **Pause**, and every run's **report** (steps, row counts, checks, what was exported). Home and the menu's foot show workflows that need you.
+- Turn them on with **Allow workflows** (Workflows page or Settings › Organization). Scheduled runs happen while you are signed in; one missed while the computer slept runs once when it wakes. Yours alone; sharing with your team comes later.
+- On a Mac, keep a workflow's data and export folders out of Documents, Desktop, Downloads and iCloud Drive (a scheduled run cannot ask for access there), or give `columbus-mcp` Full Disk Access.
 
-**New in 0.9.0: a redesigned Columbus app.** One main window replaces the separate windows, with a menu down the side: Home, Chats, Projects, Documents, Skills, Connections, Tools, Activity and Settings.
-- **Home** shows what needs you: requests waiting, notes in draft, tools to review and your recent chats, with a setup checklist the first time.
-- **Chats** open with the map and table beside them (one click puts the map first). Tool steps fold into short lines with check badges; chats are saved and searchable with **Ctrl+K**. Sessions from Claude desktop show up too, with what they did and their map.
-- **Connections, your notes** (now with **Mark reviewed**), **personal tools, settings**, an **approvals inbox** across every session (decide in the browser page, as before) and an **audit log viewer** are all pages of the main window. The old session list and settings windows are still under **Classic windows…** for now.
-- Workflows, the registry and data groups have their pages, saying plainly that they are coming.
-- A new compass icon.
+**Also new: your assistant can look at the map.** A new tool, `map_snapshot`, draws the session's layers as a picture the assistant sees, so it can spot slivers, gaps, layers that don't line up or features in the wrong place. It is drawn on your computer from geometry only (no attribute values, labels or basemap; nothing is downloaded), and the chat shows you what it saw. Your organization can turn it off.
 
-**Also new: big tables and project databases.** Your organization can raise the per-query limits (up to 20 million rows), large results are saved to disk as they are read, and your assistant can build a local project database (DuckDB) to load several tables into, add keys and indexes, and join them with SQL, writing only to that one file, never to your databases. Your data rules, hidden fields and labels follow the data in, and a size cap protects your disk.
+**Smaller fixes:** chat search finds Greek words typed in capitals.
 
-**Fixed:** saving a script as a tool now works in Claude (0.8.0 refused every proposal), and Columbus hands assistants its own guides (`columbus_guide`), including how to design a tool.
+**Since 0.9.0 (in 0.9.1):** the app's chat brings its own Columbus server (so it is never older than the app); choose the model and thinking level for each chat; tables in replies show as tables. If your Columbus folder is somewhere other than your home folder, Settings › Models and accounts shows a **Use …** button for its engine: click it, then **Save settings**.
 
-Since 0.8.0: your own tools (switch on **Allow personal tools** in Settings).
+**Since 0.8.1 (in 0.9.0):** the redesigned Columbus app (one main window: Home, Chats, Documents, Connections, Tools, Workflows, Activity, Settings), and big tables with project databases.
 
 ## Mac (Apple Silicon: M1 or later)
 
