@@ -145,6 +145,8 @@ ENV_CALLS = {"rasterio.Env", "rasterio.env.Env", "fiona.Env", "fiona.env.Env", "
 CALL_ONLY_ATTRS = {"query", "eval"}
 # Calls whose positional arguments reach a refused setting.
 # Calls that run a function chosen by name.
+# What a tool may use of ctx (the documented methods).
+CTX_METHODS = {"param", "input_file", "output_path", "set_output", "warn", "progress", "cancelled", "check_cancelled"}
 DISPATCH_CALLS = {"agg", "aggregate", "apply", "transform", "pipe", "map", "applymap", "dissolve", "pivot_table"}
 # Of those, the ones whose first argument is a column, not the function.
 DISPATCH_BY_KEYWORD = {"dissolve", "pivot_table"}
@@ -299,12 +301,15 @@ class _Lint(ast.NodeVisitor):
             self.err(node, "tool.private", f".{node.attr}: a tool may use only the public parts of other objects (no names starting with _)")
         if any(full == r or full.startswith(r + ".") for r in REFUSED_SUBMODULES):
             self.err(node, "tool.import", f"{full}: this part of {_root(full)} loads native code, starts programs or loads modules named in text")
+        if isinstance(node.value, ast.Name) and node.value.id in self.ctx_names and node.attr not in CTX_METHODS \
+                and node.attr not in ("dataset", "_plugin", "_send", "_notify"):
+            self.err(node, "tool.sdk", f"ctx.{node.attr}: use only ctx's documented methods ({', '.join(sorted(CTX_METHODS))}); take each parameter with ctx.param(name)")
         if node.attr in TEMPLATE_ATTRS:
             self.err(node, "tool.settings", f".{node.attr}: a tool may not use template engines (they run code)")
         parent = self.parents.get(id(node))
         is_func = isinstance(parent, ast.Call) and parent.func is node
         if node.attr in CALL_ONLY_ATTRS and not is_func:
-            spatial = node.attr == "query" and ((isinstance(node.value, ast.Attribute) and node.value.attr == "sindex")
+            spatial = node.attr == "query" and ((isinstance(node.value, ast.Attribute) and node.value.attr == "sindex" and _dotted(node.value))
                                                  or (isinstance(node.value, ast.Name) and node.value.id in self.trees))
             if not spatial:
                 self.err(node, "tool.eval", f".{node.attr}: call it in place with a fixed expression; do not pass it around")
@@ -365,7 +370,7 @@ class _Lint(ast.NodeVisitor):
         # fixed text written in the tool, with no @names, is allowed.
         spatial = isinstance(f, ast.Attribute) and f.attr == "query" and (
             any(k.arg in ("predicate", "distance") for k in node.keywords)
-            or (isinstance(f.value, ast.Attribute) and f.value.attr == "sindex")
+            or (isinstance(f.value, ast.Attribute) and f.value.attr == "sindex" and _dotted(f.value))
             or (isinstance(f.value, ast.Name) and f.value.id in self.trees))
         if isinstance(f, ast.Attribute) and f.attr in ("query", "eval") and not spatial:
             expr = node.args[0] if node.args else next((k.value for k in node.keywords if k.arg == "expr"), None)
@@ -381,13 +386,16 @@ class _Lint(ast.NodeVisitor):
         # A run-time text choosing which method or function runs
         # (df.agg(ctx.param("stat")) looks the text up as any attribute).
         if attr in DISPATCH_CALLS:
-            chosen = [node.args[0]] if node.args and attr not in DISPATCH_BY_KEYWORD else []
-            chosen += [k.value for k in node.keywords if k.arg in ("func", "aggfunc", "arg")]
-            for c in chosen:
-                if self._from_param(c):
+            # One positional argument is the function (df.transform(f));
+            # pyproj and rasterio's transform(a, b, ...) take data.
+            first = [node.args[0]] if node.args and attr not in DISPATCH_BY_KEYWORD else []
+            keyed = [k.value for k in node.keywords if k.arg in ("func", "aggfunc", "arg")]
+            for c in first + keyed:
+                if self._from_param(c) and (c in keyed or len(node.args) == 1):
                     self.err(node, "tool.dispatch", f"{attr}(): a parameter may not choose the function that runs; look it up in a fixed dict ({{'sum': 'sum', 'mean': 'mean'}}[ctx.param('stat')]) or declare it with enum")
                 text = _const_str(c)
-                if text is not None and (text.startswith("_") or text in REFUSED_METHODS or SETTINGS_ATTR.search(text)):
+                if text is not None and (text.startswith("_") or text in REFUSED_METHODS or text in CALL_ONLY_ATTRS
+                                         or text in PICKLE_CALLS or SETTINGS_ATTR.search(text)):
                     self.err(node, "tool.dispatch", f"{attr}({text!r}): this names a private or refused method")
         for k in node.keywords:
             if k.arg is None and not (isinstance(k.value, ast.Name) or _dotted(k.value)):
@@ -457,10 +465,6 @@ class _Lint(ast.NodeVisitor):
             and isinstance(node.func.value, ast.Name) and node.func.value.id in self.ctx_names
 
     def visit_Assign(self, node: ast.Assign) -> None:
-        if isinstance(node.value, ast.Call) and self._resolve(node.value.func).endswith("STRtree"):
-            for t in node.targets:
-                if isinstance(t, ast.Name):
-                    self.trees.add(t.id)
         if self._from_param(node.value):
             for t in node.targets:
                 if isinstance(t, ast.Name):
@@ -742,6 +746,29 @@ def _imports(tree: ast.Module, lint: _Lint) -> None:
                 lint.err(node, "tool.call", f"{name}: an import inside a function may not take the name of a Python built-in a tool may not use")
 
 
+def _trees(tree: ast.Module, lint: _Lint) -> None:
+    """Names that hold a shapely STRtree wherever they are bound (their
+    .query is a spatial query). A name also bound any other way is not."""
+    good: set[str] = set()
+    bad: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            parent = lint.parents.get(id(node))
+            is_tree = isinstance(parent, ast.Assign) and parent.targets == [node] \
+                and isinstance(parent.value, ast.Call) \
+                and lint._resolve(parent.value.func) in ("shapely.STRtree", "shapely.strtree.STRtree")
+            (good if is_tree else bad).add(node.id)
+        elif isinstance(node, ast.arg):
+            bad.add(node.arg)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            bad.add(node.name)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            bad.update((a.asname or a.name).split(".")[0] for a in node.names)
+        elif isinstance(node, (ast.Global, ast.Nonlocal)):
+            bad.update(node.names)
+    lint.trees = good - bad
+
+
 def lint_tool(code: str) -> dict[str, Any]:
     """Check a tool's code. Returns errors (each refuses the tool), warnings,
     and the names the code uses from ctx."""
@@ -756,6 +783,7 @@ def lint_tool(code: str) -> dict[str, Any]:
     lint = _Lint()
     _source_checks(code, lint)
     _imports(tree, lint)
+    _trees(tree, lint)
     for node in ast.walk(tree):
         if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.body:
             first = node.body[0]

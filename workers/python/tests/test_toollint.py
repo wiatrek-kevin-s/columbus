@@ -228,8 +228,21 @@ class ToolLintTest(unittest.TestCase):
             "    field = ctx.param('field')\n    out = gdf.dissolve(field, aggfunc='sum')\n    return {'n': len(out)}\n",
             "    with rasterio.open(ctx.input_file('r')) as src:\n        with rasterio.open(ctx.output_path('o'), 'w', **src.profile) as dst:\n            dst.write(src.read())\n    return {}\n",
         ]
+        ok += [
+            "    import pyproj\n    t = pyproj.Transformer.from_crs(4326, 3081, always_xy=True)\n    x, y = t.transform(ctx.param('lon'), ctx.param('lat'))\n    return {'x': x}\n",
+            "    lon = ctx.param('lon')\n    return {'x': rasterio.warp.transform('EPSG:4326', gdf.crs, [lon], [0])}\n",
+        ]
         for body in ok:
             self.assertEqual(rules(head + body)[0], set(), body)
+        refused_any = {
+            "    import numpy as np\n    return {'a': np.load(ctx.input_file('a'), **ctx.params)}\n": "tool.sdk",
+            "    return {'t': gdf.apply('query', args=('a > 1',))}\n": "tool.dispatch",
+            "    return {'t': gdf.agg('eval', 0, 'x')}\n": "tool.dispatch",
+            "    tree = shapely.STRtree(gdf.geometry.values)\n    tree = gdf\n    return {'t': tree.query(ctx.param('w'))}\n": "tool.eval",
+            "    def mySTRtree(x):\n        return x\n    tree = mySTRtree(gdf)\n    return {'t': tree.query(ctx.param('w'))}\n": "tool.eval",
+        }
+        for body, rule in refused_any.items():
+            self.assertIn(rule, rules(head + body)[0], body)
         refused = [
             "    return {'t': gdf.agg(ctx.param('stat'))}\n",
             "    stat = ctx.param('stat')\n    return {'t': gdf.apply(stat)}\n",

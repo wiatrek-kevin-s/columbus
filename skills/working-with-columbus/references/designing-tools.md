@@ -160,7 +160,10 @@ start points first); calibrated LRS measures (this measures length along the lin
   runs (`gdf.agg(ctx.param("stat"))` is refused): give it an `enum` and look the function
   up in a fixed dict, `{"sum": "sum", "mean": "mean"}[ctx.param("stat")]`. Spatial-index
   lookups (`gdf.sindex.query(geom, predicate="intersects")`, `STRtree(...).query(g)`) are
-  fine.
+  fine. Use only ctx's documented methods (`param`, `input_file`, `output_path`,
+  `set_output`, `warn`, `progress`, `cancelled`, `check_cancelled`), taking each parameter
+  with `ctx.param(name)`. No parameter may be named for a library setting (`allow_pickle`,
+  `backend`, `engine`, `options`, `config`, `env`, `driver_options`).
 
 **`outputs`**: `kind` `layer` (GeoPackage), `table` (CSV) or `report` (JSON), with a
 `description`, and for layers `geometry` and `crs` (`"same as routes"`). List the `fields`

@@ -534,7 +534,7 @@ impl Gateway {
                 .extension()
                 .and_then(|e| e.to_str())
                 .filter(|e| {
-                    (1..=8).contains(&e.len()) && e.chars().all(|c| c.is_ascii_alphanumeric())
+                    (1..=12).contains(&e.len()) && e.chars().all(|c| c.is_ascii_alphanumeric())
                 })
                 .unwrap_or("dat")
                 .to_ascii_lowercase();

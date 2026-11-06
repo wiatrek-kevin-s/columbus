@@ -365,6 +365,11 @@ fn param_spec(problems: &mut Vec<String>, name: &str, p: &ParamDecl) -> ParamSpe
     if p.choices.is_some() && p.kind != ScalarType::String {
         problems.push(format!("{what}: enum is for strings"));
     }
+    if let Some(n) = what.strip_prefix("params.") {
+        if columbus_shared::tools::REFUSED_PARAM_NAMES.contains(&n) {
+            problems.push(format!("{what}: a parameter may not be named for a library setting (allow_pickle, backend, engine...)"));
+        }
+    }
     if p.format.is_some() && p.kind != ScalarType::String {
         problems.push(format!("{what}: format is for strings"));
     }
@@ -1494,6 +1499,22 @@ mod tests {
         let loose = built.manifest_text.replace("format: field_name", "");
         let e = PluginManifest::parse_personal(&loose, &id).err().unwrap();
         assert!(e.contains("needs enum or format"), "{e}");
+        // Settings shows it as invalid too.
+        let e = columbus_shared::tools::check_files(&id, loose.as_bytes(), built.entry.as_bytes())
+            .err()
+            .unwrap();
+        assert!(e.contains("needs enum or format"), "{e}");
+        // A parameter named for a library setting is refused.
+        let mut a = good();
+        a.params.insert(
+            "allow_pickle".into(),
+            serde_json::from_value(
+                json!({"type": "boolean", "description": "Whether to allow it"}),
+            )
+            .unwrap(),
+        );
+        let p = build(&a).err().unwrap().join("\n");
+        assert!(p.contains("named for a library setting"), "{p}");
     }
 
     #[test]

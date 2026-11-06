@@ -190,6 +190,18 @@ fn read_plain(path: &Path, cap: usize) -> Result<Vec<u8>, String> {
 /// `tool.py` as its entry, no confinement but A, and the one `run` tool.
 /// The server checks everything again (the full manifest rules) when it
 /// loads the tool.
+/// Parameter names refused for personal tools: names libraries read as
+/// settings (a manifest could otherwise set them through **ctx.params).
+pub const REFUSED_PARAM_NAMES: &[&str] = &[
+    "allow_pickle",
+    "backend",
+    "engine",
+    "options",
+    "config",
+    "env",
+    "driver_options",
+];
+
 pub fn check_files(id: &str, manifest: &[u8], entry: &[u8]) -> Result<serde_yaml::Value, String> {
     if !id_ok(id) {
         return Err(format!("{id:?} is not a personal tool's id"));
@@ -225,6 +237,25 @@ pub fn check_files(id: &str, manifest: &[u8], entry: &[u8]) -> Result<serde_yaml
         .ok_or("plugin.yaml lists no tools")?;
     if tools.len() != 1 || tools.get(TOOL).is_none() {
         return Err("a personal tool has exactly one tool, named run".into());
+    }
+    // Text reaching the tool at run time is a fixed choice or has a narrow
+    // shape; no parameter is named for a setting a library reads.
+    if let Some(serde_yaml::Value::Mapping(params)) = tools.get(TOOL).and_then(|t| t.get("params"))
+    {
+        for (k, p) in params {
+            let name = k.as_str().unwrap_or_default();
+            if REFUSED_PARAM_NAMES.contains(&name) {
+                return Err(format!(
+                    "{name}: a parameter may not be named for a library setting; ask your assistant to propose the tool again"
+                ));
+            }
+            let text = p.get("type").and_then(|t| t.as_str()) == Some("string");
+            if text && p.get("enum").is_none() && p.get("format").is_none() {
+                return Err(format!(
+                    "{name}: a text parameter needs enum or format; ask your assistant to propose the tool again"
+                ));
+            }
+        }
     }
     if let Some(r) = tools
         .get(TOOL)
