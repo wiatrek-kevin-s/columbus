@@ -32,6 +32,11 @@ use crate::server::{client_name, Gateway, Output, State};
 /// What a refused approval says in a run: the step needs the person.
 pub(crate) const NEEDS_YOU: &str = "needs you:";
 
+/// The AI review, as policy names it (`deny_tools`) and as a data-flow
+/// destination (`flows`: `to: [ai:anthropic]`).
+pub const REVIEW_TOOL: &str = "workflow_review";
+pub const REVIEW_DESTINATION: &str = "ai:anthropic";
+
 /// The name the runner's calls carry in the audit log.
 pub const RUNNER: &str = "columbus-runner";
 
@@ -95,6 +100,25 @@ impl Gateway {
                     "step {:?}: organization policy does not allow {tool}",
                     s.id
                 ));
+            }
+        }
+        if w.review.is_some() {
+            if !policy.tool_allowed(REVIEW_TOOL) {
+                problems.push(format!(
+                    "it has an AI review, and organization policy does not allow one ({REVIEW_TOOL})"
+                ));
+            }
+            for c in &w.scope.connections {
+                let labels = std::iter::once(columbus_flow::connection_label(c)).collect();
+                match columbus_flow::evaluate_to(&policy.flows, &labels, REVIEW_DESTINATION) {
+                    columbus_flow::FlowDecision::Deny { .. } => problems.push(format!(
+                        "it has an AI review, and a flow rule forbids sending data from {c} to {REVIEW_DESTINATION}"
+                    )),
+                    columbus_flow::FlowDecision::Approve { rule: Some(_), .. } => problems.push(format!(
+                        "it has an AI review, and a flow rule needs a person to approve each sending of data from {c} to {REVIEW_DESTINATION}, which a run cannot wait for"
+                    )),
+                    _ => {}
+                }
             }
         }
         if !w.personal_tools().is_empty() && !policy.allow_personal_tools {
@@ -317,12 +341,27 @@ pub async fn run_cli_with(id: &str, scheduled: bool, python: Option<&str>) -> an
     };
     record["session"] = json!(state.session);
     record["workspace"] = json!(state.sandbox.root().display().to_string());
-    let audit = state.audit.clone();
-    let who = (state.user.clone(), state.session.clone());
-    let return_rows = state.policy().return_rows.unwrap_or(500).clamp(1, 500);
+    let state = std::sync::Arc::new(state);
+    // Whatever blocks, the run ends: at its time limit and two minutes, it
+    // records that it stopped there and exits (its lock goes with it).
+    {
+        let base = record.clone();
+        let dir = run_dir.clone();
+        let w = workflow.clone();
+        let limit = Duration::from_secs(u64::from(workflow.run_minutes()) * 60 + 120);
+        std::thread::spawn(move || {
+            std::thread::sleep(limit);
+            let mut r = base;
+            r["status"] = json!("stopped_at_limit");
+            r["finished"] = json!(Local::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, false));
+            r["reason"] = json!("the run did not finish in its time limit, so it was stopped");
+            let _ = write_run(&dir, &r, Some(&w));
+            std::process::exit(1);
+        });
+    }
 
     let deadline = Instant::now() + Duration::from_secs(u64::from(workflow.run_minutes()) * 60);
-    let gateway = Gateway::new(state);
+    let gateway = Gateway::with_state(state.clone());
     let (server_io, client_io) = tokio::io::duplex(8 << 20);
     let server = tokio::spawn(async move {
         if let Ok(s) = gateway.serve(server_io).await {
@@ -346,8 +385,7 @@ pub async fn run_cli_with(id: &str, scheduled: bool, python: Option<&str>) -> an
             // run's results as they are, marked.
             let s = match &workflow.review {
                 Some(r) => {
-                    let ok =
-                        review(&client, r, &mut record, &audit, &who, return_rows, deadline).await;
+                    let ok = review(&client, r, &mut record, &state, deadline).await;
                     if ok {
                         s
                     } else {
@@ -693,14 +731,48 @@ async fn review(
     client: &Client,
     r: &wf::Review,
     record: &mut Value,
-    audit: &std::sync::Arc<columbus_shared::audit::AuditLog>,
-    who: &(String, String),
-    return_rows: u64,
+    state: &std::sync::Arc<State>,
     deadline: Instant,
 ) -> bool {
     let model = r.model().to_string();
     let mut out = json!({"model": model, "status": "did_not_run"});
+    let policy = state.policy();
+    let return_rows = policy.return_rows.unwrap_or(500).clamp(1, 500);
+    let mut labels = std::collections::BTreeSet::new();
+    let mut flow_decision = None;
     let result: Result<(), String> = async {
+        if !policy.tool_allowed(REVIEW_TOOL) {
+            return Err(format!("organization policy does not allow an AI review ({REVIEW_TOOL})"));
+        }
+        // The data's labels, and the organization's rules on sending it to the AI.
+        for c in &state.scope.connections {
+            labels.insert(columbus_flow::connection_label(c));
+        }
+        for step in &r.reads {
+            if let Some(h) = record["results"].get(step).and_then(Value::as_str) {
+                if let Ok(p) = crate::providers::resolve_handle(&state.session, &state.sandbox, h) {
+                    labels.extend(state.flow.file_labels(&p));
+                }
+            }
+        }
+        // With no rule of the organization's, labelled data leaving needs
+        // the person's approval, and approving the workflow was that: what
+        // it sends, and to whom, is in what they approved. A rule that asks
+        // for an approval each time cannot be met by a run.
+        match columbus_flow::evaluate_to(&policy.flows, &labels, REVIEW_DESTINATION) {
+            columbus_flow::FlowDecision::Allow => flow_decision = Some("allow"),
+            columbus_flow::FlowDecision::Approve { rule: None, .. } => {
+                flow_decision = Some("approved_with_workflow")
+            }
+            columbus_flow::FlowDecision::Approve { .. } => {
+                flow_decision = Some("approve");
+                return Err(format!("a flow rule needs a person's approval to send this data to {REVIEW_DESTINATION}, and a run never waits for one"));
+            }
+            columbus_flow::FlowDecision::Deny { .. } => {
+                flow_decision = Some("deny");
+                return Err(format!("a flow rule forbids sending this data to {REVIEW_DESTINATION}"));
+            }
+        }
         let mut left = u64::from(r.rows()).min(return_rows);
         let mut tables = String::new();
         let mut sent = 0u64;
@@ -752,10 +824,22 @@ async fn review(
             left = left.saturating_sub(rows.len() as u64);
         }
         out["rows_sent"] = json!(sent);
-        let key = api_key()?;
+        // The credential store may ask the person first (on a Mac); a run
+        // does not wait long for that.
+        let wait = deadline
+            .saturating_duration_since(Instant::now())
+            .min(Duration::from_secs(30));
+        let key = tokio::time::timeout(wait, tokio::task::spawn_blocking(api_key))
+            .await
+            .map_err(|_| "the API key could not be read without you (on a Mac, start the workflow once with Run now and choose Always Allow)".to_string())?
+            .map_err(|e| e.to_string())??;
+        let max_tokens = match r.effort.as_deref() {
+            Some("high" | "xhigh" | "max") => 32_000,
+            _ => 8_000,
+        };
         let mut body = json!({
             "model": model,
-            "max_tokens": 8000,
+            "max_tokens": max_tokens,
             "system": REVIEW_SYSTEM,
             "messages": [{"role": "user", "content": format!("Criteria:\n{}\n\nResults:\n{tables}", r.criteria.trim())}],
         });
@@ -795,10 +879,19 @@ async fn review(
             .filter_map(|b| b["text"].as_str())
             .collect::<Vec<_>>()
             .join("\n");
+        // Only a whole answer in the form asked for counts; anything else is
+        // a review that did not run, never an all-clear.
+        if v["stop_reason"] != "end_turn" {
+            return Err(format!(
+                "the AI's answer was not complete ({})",
+                v["stop_reason"].as_str().unwrap_or("no stop reason")
+            ));
+        }
         let parsed = text
             .find('{')
             .zip(text.rfind('}'))
-            .and_then(|(a, b)| serde_json::from_str::<Value>(&text[a..=b]).ok());
+            .and_then(|(a, b)| serde_json::from_str::<Value>(&text[a..=b]).ok())
+            .filter(|p| p["flagged"].is_array() && p["summary"].is_string());
         let clip = |s: &str, n: usize| s.chars().take(n).collect::<String>();
         match parsed {
             Some(p) => {
@@ -816,7 +909,9 @@ async fn review(
                     .collect();
                 out["flagged"] = json!(flagged);
             }
-            None => out["summary"] = json!(clip(&text, 1500)),
+            None => {
+                return Err("the AI's answer was not in the form asked for, so it was not used".into())
+            }
         }
         out["status"] = json!("done");
         Ok(())
@@ -826,10 +921,12 @@ async fn review(
         out["reason"] = json!(e);
     }
     // The model call in the audit log: who, which model, how many rows, never the rows.
-    let _ = audit.append(&columbus_shared::audit::AuditRecord {
-        user: who.0.clone(),
+    let _ = state.audit.append(&columbus_shared::audit::AuditRecord {
+        user: state.user.clone(),
         client: RUNNER.into(),
-        session: Some(who.1.clone()),
+        session: Some(state.session.clone()),
+        labels: labels.iter().cloned().collect(),
+        flow_decision: flow_decision.map(String::from),
         tool: "workflow_review".into(),
         rows: out["rows_sent"].as_u64(),
         decision: if result.is_ok() {

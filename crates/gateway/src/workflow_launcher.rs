@@ -9,7 +9,7 @@
 use std::process::{Command, Stdio};
 
 fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
     let exe = if cfg!(windows) {
         "columbus-mcp.exe"
     } else {

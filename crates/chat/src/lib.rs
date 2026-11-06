@@ -613,7 +613,17 @@ impl Chat {
                 .and_then(|v| v.to_str().ok())
                 .is_some_and(|t| t.starts_with("text/event-stream"));
             if code.is_success() && streamed {
-                return read_stream(r).await;
+                match read_stream(r).await {
+                    // Busy, said inside the stream: as for a busy status, try again.
+                    Err(e) if e.to_string().contains("(overloaded_error)") && tries < 4 => {
+                        self.ui.event(Event::Status {
+                            text: "The AI service is busy; trying again…".into(),
+                        });
+                        tokio::time::sleep(Duration::from_secs(2u64.pow(tries))).await;
+                        continue;
+                    }
+                    other => return other,
+                }
             }
             let v: Value = r.json().await.unwrap_or(Value::Null);
             if code.is_success() {
@@ -777,11 +787,13 @@ async fn read_stream(mut r: reqwest::Response) -> Result<Value> {
             }
         }
     }
-    if s.started {
-        Ok(s.message())
+    // A stream that ends before message_stop is not a whole reply: a tool
+    // call in it may be cut off.
+    bail!(if s.started {
+        "the reply was cut off before it ended"
     } else {
-        bail!("the AI service sent no reply")
-    }
+        "the AI service sent no reply"
+    })
 }
 
 /// Where the first event in `buf` ends (after its blank line).
@@ -855,7 +867,9 @@ impl Assembly {
                     self.blocks[i]["input"] = if j.trim().is_empty() {
                         json!({})
                     } else {
-                        serde_json::from_str(&j).unwrap_or(json!({}))
+                        serde_json::from_str(&j).map_err(|_| {
+                            anyhow!("a tool call arrived incomplete, so it was not run")
+                        })?
                     };
                 }
             }
@@ -871,7 +885,8 @@ impl Assembly {
             }
             "message_stop" => return Ok(true),
             "error" => bail!(
-                "the AI service answered: {}",
+                "the AI service answered ({}): {}",
+                v["error"]["type"].as_str().unwrap_or("error"),
                 v["error"]["message"].as_str().unwrap_or("an error")
             ),
             _ => {}
@@ -1072,5 +1087,27 @@ mod tests {
         let v = json!({"result": {"rows_read": 12, "layer": {"summary": {"crs": {"code": "EPSG:3081"}}}}, "checks": [{"severity": "warn"}, {"severity": "fail"}, {"severity": "info"}]});
         assert_eq!(result_summary(Some(&v)), "12 rows, EPSG:3081");
         assert_eq!(count_checks(&v), (1, 1));
+    }
+
+    #[test]
+    fn a_tool_call_cut_off_in_the_stream_is_refused() {
+        let mut s = Assembly::default();
+        s.take(json!({"type": "message_start", "message": {"role": "assistant", "content": []}}))
+            .unwrap();
+        s.take(json!({"type": "content_block_start", "index": 0, "content_block": {"type": "tool_use", "id": "t", "name": "sql_select", "input": {}}})).unwrap();
+        s.take(json!({"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": "{\"sql\": \"select"}})).unwrap();
+        let e = s
+            .take(json!({"type": "content_block_stop", "index": 0}))
+            .unwrap_err();
+        assert!(e.to_string().contains("incomplete"), "{e}");
+    }
+
+    #[test]
+    fn an_error_in_the_stream_names_its_type() {
+        let mut s = Assembly::default();
+        let e = s
+            .take(json!({"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}}))
+            .unwrap_err();
+        assert!(e.to_string().contains("(overloaded_error)"), "{e}");
     }
 }

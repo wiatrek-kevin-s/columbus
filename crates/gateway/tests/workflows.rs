@@ -461,6 +461,119 @@ async fn an_ai_review_reads_its_rows_and_nothing_else() {
     );
 }
 
+/// Run crash-check against a stand-in AI that answers `answer` with
+/// `status`; the run's record and how many calls the stand-in had.
+async fn run_review(env: &Env, status: u16, answer: Value) -> (Value, usize) {
+    let (base, seen) = ai_stand_in(status, answer).await;
+    let vars = env.vars();
+    let w = env.workflows();
+    let rec = tokio::task::spawn_blocking(move || {
+        StdCommand::new(env!("CARGO_BIN_EXE_columbus-mcp"))
+            .args(["workflow", "run", "crash-check"])
+            .envs(vars)
+            .envs([
+                ("COLUMBUS_WORKFLOW_API_BASE", base.as_str()),
+                ("COLUMBUS_WORKFLOW_API_KEY", "sk-test"),
+            ])
+            .output()
+            .unwrap();
+        let latest = wf::list_runs(&w, "crash-check", 1)[0]["run"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        wf::read_run(&w, "crash-check", &latest).unwrap().0
+    })
+    .await
+    .unwrap();
+    let n = seen.lock().unwrap().len();
+    (rec, n)
+}
+
+#[tokio::test]
+async fn a_review_that_is_not_whole_or_not_allowed_never_reads_as_an_all_clear() {
+    let Some(py) = python() else {
+        return;
+    };
+    let env = setup(&py);
+    let text = WORKFLOW.replace(
+        "outputs:",
+        "review:\n  reads: [crashes]\n  criteria: Flag crash C2.\noutputs:",
+    );
+    let c = start(&env).await;
+    let r = call(&c, "propose_workflow", json!({"workflow": text})).await;
+    assert_ne!(r.is_error, Some(true), "{:?}", r.content);
+    c.cancel().await.unwrap();
+    approve(&env, "crash-check");
+
+    // Prose instead of the form asked for: did not run.
+    let prose = json!({"content": [{"type": "text", "text": "Everything looks fine to me."}],
+        "usage": {"input_tokens": 1, "output_tokens": 1}, "stop_reason": "end_turn"});
+    let (rec, _) = run_review(&env, 200, prose).await;
+    assert_eq!(rec["review"]["status"], "did_not_run", "{rec}");
+    assert_eq!(rec["status"], "succeeded_with_warnings", "{rec}");
+    // Cut off at its token limit, even with valid-looking JSON: did not run.
+    let cut = json!({"content": [{"type": "text", "text": "{\"summary\": \"ok\", \"flagged\": []}"}],
+        "usage": {"input_tokens": 1, "output_tokens": 1}, "stop_reason": "max_tokens"});
+    let (rec, _) = run_review(&env, 200, cut).await;
+    assert_eq!(rec["review"]["status"], "did_not_run", "{rec}");
+    // flagged not a list: did not run.
+    let odd = json!({"content": [{"type": "text", "text": "{\"summary\": \"ok\", \"flagged\": \"none\"}"}],
+        "usage": {"input_tokens": 1, "output_tokens": 1}, "stop_reason": "end_turn"});
+    let (rec, _) = run_review(&env, 200, odd).await;
+    assert_eq!(rec["review"]["status"], "did_not_run", "{rec}");
+    // The whole answer, in form: done.
+    let good = json!({"content": [{"type": "text", "text": "{\"summary\": \"ok\", \"flagged\": []}"}],
+        "usage": {"input_tokens": 1, "output_tokens": 1}, "stop_reason": "end_turn"});
+    let (rec, _) = run_review(&env, 200, good.clone()).await;
+    assert_eq!(rec["review"]["status"], "done", "{rec}");
+
+    // The organization turns the review off after it was approved: nothing is sent.
+    env.policy("allow_workflows: true\ndeny_tools: [workflow_review]\n");
+    let (rec, n) = run_review(&env, 200, good.clone()).await;
+    assert_eq!(rec["review"]["status"], "did_not_run", "{rec}");
+    assert_eq!(n, 0, "nothing was sent to the AI");
+    assert_eq!(rec["deliveries"][0]["status"], "done", "{rec}");
+    // ... and a new one with a review is refused when proposed.
+    let c = start(&env).await;
+    let r = call(
+        &c,
+        "propose_workflow",
+        json!({"workflow": text.replace("crash-check", "crash-check-2")}),
+    )
+    .await;
+    assert_eq!(r.is_error, Some(true));
+    assert!(err(&r).contains("workflow_review"), "{}", err(&r));
+    c.cancel().await.unwrap();
+
+    // A flow rule forbids this connection's data going to the AI.
+    env.policy("allow_workflows: true\nflows:\n  - { from: [\"connection:crashes\"], to: [\"ai:anthropic\"], action: deny }\n");
+    let (rec, n) = run_review(&env, 200, good.clone()).await;
+    assert_eq!(rec["review"]["status"], "did_not_run", "{rec}");
+    assert!(
+        rec["review"]["reason"]
+            .as_str()
+            .unwrap_or("")
+            .contains("forbids"),
+        "{rec}"
+    );
+    assert_eq!(n, 0, "nothing was sent to the AI");
+    let c = start(&env).await;
+    let r = call(
+        &c,
+        "propose_workflow",
+        json!({"workflow": text.replace("crash-check", "crash-check-2")}),
+    )
+    .await;
+    assert_eq!(r.is_error, Some(true));
+    assert!(err(&r).contains("forbids"), "{}", err(&r));
+    c.cancel().await.unwrap();
+    // A rule asking for an approval each time: a run cannot wait for one.
+    env.policy("allow_workflows: true\nflows:\n  - { from: [\"connection:*\"], to: [\"ai:*\"], action: approve }\n");
+    let (rec, n) = run_review(&env, 200, good).await;
+    assert_eq!(rec["review"]["status"], "did_not_run", "{rec}");
+    assert_eq!(n, 0, "nothing was sent to the AI");
+}
+
 #[test]
 fn the_runner_reads_only_its_scope() {
     // The scope the runner gives its session: listed connections, or none.
