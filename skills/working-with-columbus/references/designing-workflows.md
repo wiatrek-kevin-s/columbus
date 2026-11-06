@@ -75,6 +75,27 @@ Every step's checks go in the run's report. A step with a `fail` check stops the
 the workflow is meant to find. Warnings never stop it; the run ends "succeeded, with findings
 to review".
 
+### An AI review (optional)
+
+```yaml
+review:
+  reads: [checked]               # the steps whose layers it reads
+  fields: [SEG_ID, GSC, CN]      # only these fields (leave out for all)
+  max_rows: 200                  # rows sent to the model, at most (default 100, at most 500)
+  model: claude-haiku-5-5        # claude-sonnet-5-5 (default), -opus-5-5, -fable-5-1, -haiku-5-5
+  effort: low                    # low, medium, high, xhigh, max
+  criteria: |
+    Flag a segment if its GSC is rural but it lies inside the urbanized area.
+```
+
+After the steps, Columbus reads those rows itself (under the person's rules: row filters,
+hidden fields and the per-call row limit apply) and sends them with the criteria to Anthropic,
+using the API key the person saved in the Columbus app. The model has **no tools**: it cannot
+read anything else or change anything. Its notes (a summary and the flagged rows) go in the
+report, marked as the AI's. If it cannot run (no key, the service is busy), the run still
+delivers its results, marked "AI review did not run". Write criteria a careful colleague could
+apply from the rows alone, and ask only for the fields the criteria need.
+
 ### Outputs
 
 `outputs.folder` exports the layers of the steps it lists to one of the policy's export

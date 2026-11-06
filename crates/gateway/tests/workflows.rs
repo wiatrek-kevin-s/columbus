@@ -320,6 +320,147 @@ async fn a_workflow_is_proposed_approved_and_runs_without_a_person() {
     c.cancel().await.unwrap();
 }
 
+/// A stand-in for the AI service: answers each review with `answer` (or
+/// fails with `status`), and keeps what it was sent.
+async fn ai_stand_in(
+    status: u16,
+    answer: Value,
+) -> (String, std::sync::Arc<std::sync::Mutex<Vec<Value>>>) {
+    use axum::routing::post;
+    let seen: std::sync::Arc<std::sync::Mutex<Vec<Value>>> = Default::default();
+    let s2 = seen.clone();
+    let app = axum::Router::new().route(
+        "/v1/messages",
+        post(move |axum::Json(body): axum::Json<Value>| {
+            let s2 = s2.clone();
+            let answer = answer.clone();
+            async move {
+                s2.lock().unwrap().push(body);
+                (
+                    axum::http::StatusCode::from_u16(status).unwrap(),
+                    axum::Json(answer),
+                )
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    (format!("http://{addr}"), seen)
+}
+
+#[tokio::test]
+async fn an_ai_review_reads_its_rows_and_nothing_else() {
+    let Some(py) = python() else {
+        return;
+    };
+    let env = setup(&py);
+    let text = WORKFLOW.replace(
+        "outputs:",
+        "review:\n  reads: [crashes]\n  fields: [crash_id]\n  max_rows: 50\n  model: claude-haiku-5-5\n  effort: low\n  criteria: Flag crash C2.\noutputs:",
+    );
+    let c = start(&env).await;
+    let r = call(&c, "propose_workflow", json!({"workflow": text})).await;
+    assert_ne!(r.is_error, Some(true), "{:?}", r.content);
+    c.cancel().await.unwrap();
+    let p = wf::read_proposal(&env.workflows(), &env.tools(), "crash-check").unwrap();
+    assert!(p.plain.join(" ").contains("AI review: sends at most 50 rows of crashes (only crash_id) to Anthropic (claude-haiku-5-5, thinking low)"), "{:?}", p.plain);
+    approve(&env, "crash-check");
+
+    let answer = json!({"content": [{"type": "text", "text": "{\"summary\": \"One crash matches.\", \"flagged\": [{\"layer\": \"crashes\", \"row\": 2, \"why\": \"it is C2\"}]}"}],
+        "usage": {"input_tokens": 120, "output_tokens": 30}, "stop_reason": "end_turn"});
+    let (base, seen) = ai_stand_in(200, answer).await;
+    let vars = [
+        ("COLUMBUS_WORKFLOW_API_BASE", base.as_str()),
+        ("COLUMBUS_WORKFLOW_API_KEY", "sk-test"),
+    ];
+    let (code, rec, report) = tokio::task::spawn_blocking({
+        let env_vars = env.vars();
+        let root = env.root.clone();
+        let vars: Vec<(String, String)> = vars
+            .iter()
+            .map(|(a, b)| (a.to_string(), b.to_string()))
+            .collect();
+        move || {
+            let out = StdCommand::new(env!("CARGO_BIN_EXE_columbus-mcp"))
+                .args(["workflow", "run", "crash-check"])
+                .envs(env_vars)
+                .envs(vars)
+                .output()
+                .unwrap();
+            let w = root.join("workflows");
+            let latest = wf::list_runs(&w, "crash-check", 1)[0]["run"]
+                .as_str()
+                .unwrap()
+                .to_string();
+            let (rec, report) = wf::read_run(&w, "crash-check", &latest).unwrap();
+            (out.status.code().unwrap_or(-1), rec, report)
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(code, 0, "{rec}");
+    assert_eq!(rec["review"]["status"], "done", "{rec}");
+    assert_eq!(rec["review"]["flagged"][0]["row"], 2, "{rec}");
+    assert!(report.contains("One crash matches."), "{report}");
+    let sent = seen.lock().unwrap().clone();
+    assert_eq!(sent.len(), 1);
+    let body = &sent[0];
+    assert_eq!(body["model"], "claude-haiku-5-5");
+    assert_eq!(body["output_config"]["effort"], "low");
+    assert!(body.get("tools").is_none(), "the review has no tools");
+    let prompt = body["messages"][0]["content"].as_str().unwrap();
+    assert!(prompt.contains("Flag crash C2."), "{prompt}");
+    assert!(prompt.contains("C1") && prompt.contains("C2"), "{prompt}");
+    // Only the field asked for, and only rows the connection allows.
+    assert!(!prompt.contains("district"), "{prompt}");
+    assert!(!prompt.contains("C3"), "{prompt}");
+    let audit: String = std::fs::read_dir(env.root.join("audit"))
+        .unwrap()
+        .flatten()
+        .map(|e| std::fs::read_to_string(e.path()).unwrap_or_default())
+        .collect();
+    assert!(
+        audit.contains("workflow_review"),
+        "the model call is audited"
+    );
+
+    // A review that cannot run leaves the run's results, marked.
+    let (base, _) = ai_stand_in(529, json!({"error": {"message": "overloaded"}})).await;
+    let env2 = env.vars();
+    let (code, rec, report) = tokio::task::spawn_blocking(move || {
+        let out = StdCommand::new(env!("CARGO_BIN_EXE_columbus-mcp"))
+            .args(["workflow", "run", "crash-check"])
+            .envs(env2)
+            .envs([
+                ("COLUMBUS_WORKFLOW_API_BASE", base.as_str()),
+                ("COLUMBUS_WORKFLOW_API_KEY", "sk-test"),
+            ])
+            .output()
+            .unwrap();
+        (out.status.code().unwrap_or(-1),)
+    })
+    .await
+    .map(|(c,)| {
+        let w = env.workflows();
+        let latest = wf::list_runs(&w, "crash-check", 1)[0]["run"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let (rec, report) = wf::read_run(&w, "crash-check", &latest).unwrap();
+        (c, rec, report)
+    })
+    .unwrap();
+    assert_eq!(code, 0, "{rec}");
+    assert_eq!(rec["status"], "succeeded_with_warnings", "{rec}");
+    assert_eq!(rec["review"]["status"], "did_not_run", "{rec}");
+    assert!(report.contains("AI review did not run"), "{report}");
+    assert_eq!(
+        rec["deliveries"][0]["status"], "done",
+        "results are still delivered: {rec}"
+    );
+}
+
 #[test]
 fn the_runner_reads_only_its_scope() {
     // The scope the runner gives its session: listed connections, or none.

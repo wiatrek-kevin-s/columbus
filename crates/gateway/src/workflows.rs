@@ -317,6 +317,9 @@ pub async fn run_cli_with(id: &str, scheduled: bool, python: Option<&str>) -> an
     };
     record["session"] = json!(state.session);
     record["workspace"] = json!(state.sandbox.root().display().to_string());
+    let audit = state.audit.clone();
+    let who = (state.user.clone(), state.session.clone());
+    let return_rows = state.policy().return_rows.unwrap_or(500).clamp(1, 500);
 
     let deadline = Instant::now() + Duration::from_secs(u64::from(workflow.run_minutes()) * 60);
     let gateway = Gateway::new(state);
@@ -339,6 +342,20 @@ pub async fn run_cli_with(id: &str, scheduled: bool, python: Option<&str>) -> an
     .await;
     let status = match status {
         Ok(s) if s == "succeeded" || s == "succeeded_with_warnings" => {
+            // The AI review, if any: a review that cannot run leaves the
+            // run's results as they are, marked.
+            let s = match &workflow.review {
+                Some(r) => {
+                    let ok =
+                        review(&client, r, &mut record, &audit, &who, return_rows, deadline).await;
+                    if ok {
+                        s
+                    } else {
+                        s.max_with("succeeded_with_warnings".into())
+                    }
+                }
+                None => s,
+            };
             deliver(&client, &workflow, &run, &mut record, deadline)
                 .await
                 .unwrap_or_else(|s| s)
@@ -638,6 +655,202 @@ async fn run_steps(
     })
 }
 
+/// The API key the person saved in the Columbus app (its credential store
+/// entry). Test builds may give one in the environment.
+fn api_key() -> Result<String, String> {
+    #[cfg(debug_assertions)]
+    if let Ok(k) = std::env::var("COLUMBUS_WORKFLOW_API_KEY") {
+        return Ok(k);
+    }
+    #[cfg(any(windows, target_os = "macos"))]
+    {
+        keyring_core::Entry::new("columbus-app", "anthropic-api-key")
+            .and_then(|e| e.get_password())
+            .map_err(|e| format!("the API key saved in the Columbus app could not be read here ({e}); on a Mac, choose Always Allow when asked during Run now"))
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    Err("no API key: the Columbus app keeps it in the system's credential store, which this system does not have".into())
+}
+
+fn api_base() -> String {
+    #[cfg(debug_assertions)]
+    if let Ok(b) = std::env::var("COLUMBUS_WORKFLOW_API_BASE") {
+        return b;
+    }
+    "https://api.anthropic.com".into()
+}
+
+const REVIEW_SYSTEM: &str = "You review the results of a GIS workflow for the person who set it up, against their criteria. \
+You are given rows of its results as tables. You cannot see anything else and cannot act; do not ask questions. \
+Answer with one JSON object only, no other text: {\"summary\": \"one to three sentences\", \"flagged\": [{\"layer\": \"<step id>\", \"row\": <row number as given>, \"why\": \"a short reason\"}]}. \
+Flag only rows the criteria say to flag. If the rows given may not be all of them, say so in the summary.";
+
+/// The AI review: the listed layers' rows (read through the session, so
+/// every rule applies and the reads are audited), the criteria, one model
+/// call with no tools, and the notes in the run's record. False when it
+/// did not run (the reason is recorded).
+async fn review(
+    client: &Client,
+    r: &wf::Review,
+    record: &mut Value,
+    audit: &std::sync::Arc<columbus_shared::audit::AuditLog>,
+    who: &(String, String),
+    return_rows: u64,
+    deadline: Instant,
+) -> bool {
+    let model = r.model().to_string();
+    let mut out = json!({"model": model, "status": "did_not_run"});
+    let result: Result<(), String> = async {
+        let mut left = u64::from(r.rows()).min(return_rows);
+        let mut tables = String::new();
+        let mut sent = 0u64;
+        for step in &r.reads {
+            let Some(h) = record["results"].get(step).and_then(Value::as_str).map(String::from) else {
+                return Err(format!("step {step} made no layer to review"));
+            };
+            if left == 0 {
+                break;
+            }
+            let mut args = json!({"handle": h, "limit": left});
+            if !r.fields.is_empty() {
+                args["fields"] = json!(r.fields);
+            }
+            let time = deadline.saturating_duration_since(Instant::now());
+            let (ok, v, text) = call(client, "read_output", args, time).await;
+            if !ok {
+                return Err(format!("its rows of {step} could not be read: {}", text.chars().take(300).collect::<String>()));
+            }
+            let res = &v["result"];
+            let cols: Vec<String> = res["columns"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|c| c.as_str().unwrap_or("").to_string())
+                .collect();
+            let rows = res["rows"].as_array().cloned().unwrap_or_default();
+            let total = res["total"].as_u64().unwrap_or(rows.len() as u64);
+            tables.push_str(&format!(
+                "Layer {step}: {} of {total} rows shown.\nrow\t{}\n",
+                rows.len(),
+                cols.join("\t")
+            ));
+            for (i, row) in rows.iter().enumerate() {
+                let cells: Vec<String> = row
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(|c| match c {
+                        Value::String(s) => s.replace(['\t', '\n'], " "),
+                        Value::Null => String::new(),
+                        other => other.to_string(),
+                    })
+                    .collect();
+                tables.push_str(&format!("{}\t{}\n", i + 1, cells.join("\t")));
+            }
+            tables.push('\n');
+            sent += rows.len() as u64;
+            left = left.saturating_sub(rows.len() as u64);
+        }
+        out["rows_sent"] = json!(sent);
+        let key = api_key()?;
+        let mut body = json!({
+            "model": model,
+            "max_tokens": 8000,
+            "system": REVIEW_SYSTEM,
+            "messages": [{"role": "user", "content": format!("Criteria:\n{}\n\nResults:\n{tables}", r.criteria.trim())}],
+        });
+        if let Some(e) = &r.effort {
+            body["output_config"] = json!({"effort": e});
+        }
+        let http = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(deadline.saturating_duration_since(Instant::now()).max(Duration::from_secs(1)))
+            .build()
+            .map_err(|e| e.to_string())?;
+        let resp = http
+            .post(format!("{}/v1/messages", api_base().trim_end_matches('/')))
+            .header("x-api-key", key)
+            .header("anthropic-version", "2023-06-01")
+            .header("content-type", "application/json")
+            .body(body.to_string())
+            .send()
+            .await
+            .map_err(|_| "the AI service could not be reached".to_string())?;
+        let code = resp.status();
+        let bytes = resp.bytes().await.map_err(|_| "the reply was cut off".to_string())?;
+        let v: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+        if !code.is_success() {
+            return Err(format!(
+                "the AI service answered {}: {}",
+                code.as_u16(),
+                v["error"]["message"].as_str().unwrap_or("no reason given")
+            ));
+        }
+        out["tokens"] = json!({"input": v["usage"]["input_tokens"], "output": v["usage"]["output_tokens"]});
+        let text: String = v["content"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|b| b["type"] == "text")
+            .filter_map(|b| b["text"].as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let parsed = text
+            .find('{')
+            .zip(text.rfind('}'))
+            .and_then(|(a, b)| serde_json::from_str::<Value>(&text[a..=b]).ok());
+        let clip = |s: &str, n: usize| s.chars().take(n).collect::<String>();
+        match parsed {
+            Some(p) => {
+                out["summary"] = json!(clip(p["summary"].as_str().unwrap_or(""), 1500));
+                let flagged: Vec<Value> = p["flagged"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .take(500)
+                    .map(|f| json!({
+                        "layer": clip(f["layer"].as_str().unwrap_or(""), 40),
+                        "row": f["row"].as_u64(),
+                        "why": clip(f["why"].as_str().unwrap_or(""), 300),
+                    }))
+                    .collect();
+                out["flagged"] = json!(flagged);
+            }
+            None => out["summary"] = json!(clip(&text, 1500)),
+        }
+        out["status"] = json!("done");
+        Ok(())
+    }
+    .await;
+    if let Err(e) = &result {
+        out["reason"] = json!(e);
+    }
+    // The model call in the audit log: who, which model, how many rows, never the rows.
+    let _ = audit.append(&columbus_shared::audit::AuditRecord {
+        user: who.0.clone(),
+        client: RUNNER.into(),
+        session: Some(who.1.clone()),
+        tool: "workflow_review".into(),
+        rows: out["rows_sent"].as_u64(),
+        decision: if result.is_ok() {
+            "allow".into()
+        } else {
+            "error".into()
+        },
+        reason: Some(match &result {
+            Ok(()) => format!(
+                "model {model}; tokens {} in, {} out",
+                out["tokens"]["input"], out["tokens"]["output"]
+            ),
+            Err(e) => e.clone(),
+        }),
+        provider: Some("anthropic".into()),
+        ..Default::default()
+    });
+    record["review"] = out;
+    result.is_ok()
+}
+
 /// Export the chosen steps' layers to the workflow's folder.
 async fn deliver(
     client: &Client,
@@ -650,8 +863,9 @@ async fn deliver(
         return Ok("succeeded".into());
     };
     let handles = record["results"].clone();
-    // The date and time of the run: a second run the same day has its own.
-    let when = &run[..19];
+    // The run's id (its date and time, to the millisecond, and a random
+    // part): every run's files have their own names.
+    let when = run;
     let mut worst = "succeeded".to_string();
     for step in &f.steps {
         let Some(h) = handles.get(step).and_then(Value::as_str) else {
@@ -789,6 +1003,39 @@ pub(crate) fn report(record: &Value, workflow: Option<&Workflow>) -> String {
             }
         }
         out.push('\n');
+    }
+    if let Some(r) = record.get("review").filter(|r| r.is_object()) {
+        if r["status"] == "done" {
+            out.push_str(&format!(
+                "## AI review\n\nThe AI's own notes ({}, {} rows read), not checked by Columbus:\n\n",
+                s(&r["model"]),
+                r["rows_sent"].as_u64().unwrap_or(0)
+            ));
+            let summary = one_para(&s(&r["summary"]));
+            if !summary.is_empty() {
+                out.push_str(&format!("{summary}\n\n"));
+            }
+            let flagged = r["flagged"].as_array().cloned().unwrap_or_default();
+            if flagged.is_empty() {
+                out.push_str("It flagged nothing.\n\n");
+            } else {
+                out.push_str("| Layer | Row | Why |\n|---|---|---|\n");
+                for f in &flagged {
+                    out.push_str(&format!(
+                        "| {} | {} | {} |\n",
+                        cell(&s(&f["layer"])),
+                        f["row"].as_u64().map(|n| n.to_string()).unwrap_or_default(),
+                        cell(&s(&f["why"]))
+                    ));
+                }
+                out.push('\n');
+            }
+        } else {
+            out.push_str(&format!(
+                "## AI review\n\n**AI review did not run:** {}. The results above are the rules' alone.\n\n",
+                one_para(&s(&r["reason"]))
+            ));
+        }
     }
     if let Some(d) = record["deliveries"].as_array().filter(|a| !a.is_empty()) {
         out.push_str("## Results delivered\n\n");

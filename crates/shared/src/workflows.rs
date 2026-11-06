@@ -141,8 +141,56 @@ pub struct Workflow {
     #[serde(default)]
     pub scope: Scope,
     pub steps: Vec<Step>,
+    /// An AI review of chosen results against the person's criteria,
+    /// after the steps and before delivery.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review: Option<Review>,
     #[serde(default)]
     pub outputs: Outputs,
+}
+
+/// The models a review may use, and the thinking levels.
+pub const REVIEW_MODELS: &[&str] = &[
+    "claude-sonnet-5-5",
+    "claude-opus-5-5",
+    "claude-fable-5-1",
+    "claude-haiku-5-5",
+];
+pub const REVIEW_EFFORTS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
+/// Rows a review may send to the model, at most; and the default.
+pub const MAX_REVIEW_ROWS: u32 = 500;
+pub const DEFAULT_REVIEW_ROWS: u32 = 100;
+
+/// The AI review: it gets the rows of the listed steps' layers (at most
+/// `max_rows` in all, only `fields` if given) and the criteria, and writes
+/// notes for the report. It has no tools: it reads nothing else and
+/// changes nothing.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Review {
+    /// The steps whose layers it reads.
+    pub reads: Vec<String>,
+    /// Only these fields (geometry is sent as its type and bounding box).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fields: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_rows: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+    /// What to flag, in the person's words.
+    pub criteria: String,
+}
+
+impl Review {
+    pub fn rows(&self) -> u32 {
+        self.max_rows.unwrap_or(DEFAULT_REVIEW_ROWS)
+    }
+
+    pub fn model(&self) -> &str {
+        self.model.as_deref().unwrap_or(REVIEW_MODELS[0])
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -391,6 +439,48 @@ pub fn check(text: &str) -> Result<Workflow, String> {
         }
         seen.push(&s.id);
     }
+    if let Some(r) = &wf.review {
+        if r.reads.is_empty() {
+            return Err("review reads the layers of at least one step (reads: [step])".into());
+        }
+        for s in &r.reads {
+            if !seen.contains(&s.as_str()) {
+                return Err(format!("review reads step {s:?}, which is not a step"));
+            }
+        }
+        for f in &r.fields {
+            let ok = (1..=64).contains(&f.chars().count())
+                && f.chars()
+                    .all(|c| c.is_alphanumeric() || matches!(c, '_' | ' ' | '-' | '.'));
+            if !ok {
+                return Err(format!("review fields: {f:?} is not a field name"));
+            }
+        }
+        if let Some(n) = r.max_rows {
+            if !(1..=MAX_REVIEW_ROWS).contains(&n) {
+                return Err(format!("review max_rows is 1 to {MAX_REVIEW_ROWS}"));
+            }
+        }
+        if !REVIEW_MODELS.contains(&r.model()) {
+            return Err(format!(
+                "review model {:?}: one of {}",
+                r.model(),
+                REVIEW_MODELS.join(", ")
+            ));
+        }
+        if let Some(e) = &r.effort {
+            if !REVIEW_EFFORTS.contains(&e.as_str()) {
+                return Err(format!(
+                    "review effort {e:?}: one of {}",
+                    REVIEW_EFFORTS.join(", ")
+                ));
+            }
+        }
+        let n = r.criteria.trim().chars().count();
+        if n == 0 || n > 4000 {
+            return Err("review criteria: what to flag, at most 4000 characters".into());
+        }
+    }
     if let Some(f) = &wf.outputs.folder {
         if !connection_id_ok(&f.export) {
             return Err(format!("{:?} is not an export folder id", f.export));
@@ -582,6 +672,20 @@ pub fn describe(wf: &Workflow) -> Vec<String> {
             s.tool,
             if args.is_empty() { "" } else { " " },
             args
+        ));
+    }
+    if let Some(r) = &wf.review {
+        out.push(format!(
+            "Then an AI review: sends at most {} rows of {}{} to Anthropic ({}{}) with your API key (billed to it), with your criteria. It has no tools: it cannot read anything else or change anything. Its notes go in the report, marked as the AI's; if it cannot run, the run says so and goes on.",
+            r.rows(),
+            r.reads.join(", "),
+            if r.fields.is_empty() {
+                " (all their fields)".to_string()
+            } else {
+                format!(" (only {})", r.fields.join(", "))
+            },
+            r.model(),
+            r.effort.as_deref().map(|e| format!(", thinking {e}")).unwrap_or_default()
         ));
     }
     match &wf.outputs.folder {

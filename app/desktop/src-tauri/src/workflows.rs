@@ -95,8 +95,13 @@ pub async fn workflow_install(
             Some(at) => format!("on its schedule ({} at {at})", days_words(&p.days)),
             None => "when you start it".into(),
         };
+        let ai = if p.plain.iter().any(|l| l.starts_with("Then an AI review")) {
+            ", and sends some of its results to Anthropic with your API key for an AI review"
+        } else {
+            ""
+        };
         confirm(&format!(
-            "approve the workflow \"{}\", which then runs by itself {when}, reading {} and doing exactly what it lists",
+            "approve the workflow \"{}\", which then runs by itself {when}, reading {} and doing exactly what it lists{ai}",
             p.name,
             if p.connections.is_empty() {
                 "no connection".to_string()
