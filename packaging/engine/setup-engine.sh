@@ -55,6 +55,7 @@ else
 fi
 
 "$vpy" -c "import geopandas, pyogrio, shapely, pyproj, rasterio; print('engine ready: GDAL', pyogrio.__gdal_version_string__)"
+"$vpy" -c "import duckdb, duckdb_extension_spatial; print('project databases ready: DuckDB', duckdb.__version__, 'with the spatial extension')"
 "$vpy" -c "import psycopg, oracledb; print('database drivers ready: PostgreSQL, Oracle', oracledb.__version__, '(thin mode)')"
 # pyodbc needs unixODBC, and SQL Server needs Microsoft's ODBC driver; both
 # are separate installs, needed only for SQL Server connections.

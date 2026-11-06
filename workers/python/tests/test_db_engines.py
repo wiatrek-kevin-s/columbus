@@ -25,6 +25,27 @@ sys.path.insert(0, os.path.dirname(HERE))
 import columbus_worker as w  # noqa: E402
 
 
+def streamed_layer(test, conn, sql, geom, crs="EPSG:4326", rows=600):
+    """query_layer on a database engine with a small batch threshold: the
+    rows go to the GeoPackage in batches, and read back whole."""
+    try:
+        import geopandas as gpd
+    except ImportError:
+        test.skipTest("GIS engine not installed")
+    with tempfile.TemporaryDirectory() as d:
+        r = w.query_layer({"connection": conn, "sql": sql, "max_rows": 100_000, "geometry_column": geom,
+                           "crs_spec": {"code": crs}, "return_rows": 3, "stream_after": 100,
+                           "output_stem": os.path.join(d, "results", "s"), "hide_fields": ["owner_*"]})
+        test.assertTrue(r["streamed"])
+        test.assertEqual((r["rows_read"], r["summary"]["rows"]), (rows, rows))
+        test.assertEqual(len(r["rows"]), 3)
+        out = gpd.read_file(r["output_path"], engine="pyogrio")
+        test.assertEqual(len(out), rows)
+        test.assertEqual(out.crs.to_epsg(), int(crs.split(":")[1]))
+        test.assertFalse(any(c.lower().startswith("owner_") for c in out.columns))
+        test.assertTrue(out.geometry.notna().all())
+
+
 def _wkb_line():
     # LINESTRING(1 2, 3 4), little-endian WKB
     return struct.pack("<BII", 1, 2, 2) + struct.pack("<4d", 1, 2, 3, 4)
@@ -115,6 +136,9 @@ class OracleTests(unittest.TestCase):
         self.assertEqual(r["columns"], ["ID", "DISTRICT", "GEOM"])
         self.assertEqual(r["rows"][0][2]["geometry"], "ewkb")
         self.assertFalse(r["hit_read_limit"])
+
+    def test_query_layer_streams_in_batches(self):
+        streamed_layer(self, ora_conn(), "SELECT id, route_code, owner_name, geom FROM roads.roads WHERE district = 14", "GEOM")
 
     def test_read_limit_on_server_cursor(self):
         r = sel(ora_conn(), "SELECT id FROM roads.roads", max_rows=1000)
@@ -291,6 +315,9 @@ class SqlServerTests(unittest.TestCase):
             self.assertEqual(g.type, "Point")
             self.assertAlmostEqual(g.parts[0][0], -97.7404)  # longitude first, as WKB has it
             ex.close()
+
+    def test_query_layer_streams_in_batches(self):
+        streamed_layer(self, ms_conn(), "SELECT id, route_code, owner_name, geom FROM roads.roads WHERE district = 14", "geom", crs="EPSG:3081")
 
     def test_read_limit(self):
         r = sel(ms_conn(), "SELECT id FROM roads.roads", max_rows=1000)

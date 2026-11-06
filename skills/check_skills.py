@@ -75,7 +75,7 @@ def check() -> list[str]:
     # Prefixes Columbus tools use; plain snake_case words (field names, SQL,
     # library functions) with other prefixes are not checked.
     tool_prefixes = {"describe", "registry", "context", "approval", "vector", "sample",
-                     "sql", "pointcloud", "raster", "export", "propose", "apply"}
+                     "sql", "pointcloud", "raster", "export", "propose", "apply", "project"}
 
     folders = sorted(p for p in SKILLS.iterdir() if p.is_dir() and not p.name.startswith((".", "_")))
     for folder in folders:

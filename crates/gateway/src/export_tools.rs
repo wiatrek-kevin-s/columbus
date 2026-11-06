@@ -431,7 +431,9 @@ impl Gateway {
             .core(
                 "export_layer",
                 json!({"path": src_copy, "out_stem": out_dir.join(&args.name), "format": format, "crs": crs, "rename": rename}),
-                Duration::from_secs(300),
+                // A large layer takes as long as the organization lets a
+                // read take, and never less than five minutes.
+                Duration::from_secs(self.state.policy().read_limits().max_seconds().max(300) + 10),
             )
             .await
         {

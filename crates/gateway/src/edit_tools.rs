@@ -316,7 +316,7 @@ impl Gateway {
     ) -> Result<(String, String, Value), String> {
         let dialect = SqlDialect::for_connection_type(&conn.kind);
         let handle = self.handle(conn)?;
-        let timeout = access.limits.seconds.unwrap_or(120);
+        let timeout = access.limits.max_seconds();
         let s = self
             .state
             .worker
@@ -424,7 +424,7 @@ impl Gateway {
                 .resolve(&format!("edits/{prov}.json"))
                 .map_err(|e| e.to_string())?;
             let preview_stem = self.state.sandbox.resolve(&stem).map_err(|e| e.to_string())?;
-            let timeout = access.limits.seconds.unwrap_or(120);
+            let timeout = access.limits.max_seconds();
             let reply = self
                 .state
                 .worker
@@ -600,7 +600,7 @@ impl Gateway {
             Ok(i) => i,
             Err(e) => return Err(self.deny(&ctx, rec, e)),
         };
-        let timeout = access.limits.seconds.unwrap_or(120);
+        let timeout = access.limits.max_seconds();
         let crs_spec = info
             .get("crs")
             .and_then(|c| c.get("code"))
@@ -608,7 +608,7 @@ impl Gateway {
             .or_else(|| info.get("crs_spec").cloned());
 
         if target == "copy" {
-            let read_limit = access.limits.rows.unwrap_or(200_000);
+            let read_limit = access.limits.max_rows();
             let r = async {
                 let all = self
                     .edit_select(&access, &conn, &cs.dataset, &info, &cs.key, None, read_limit + 1)

@@ -40,6 +40,7 @@ if ($Wheels) {
     & $vpy -m pip install -r $req -r $db
 }
 & $vpy -c "import geopandas, pyogrio, shapely, pyproj, rasterio; print('engine ready: GDAL', pyogrio.__gdal_version_string__)"
+& $vpy -c "import duckdb, duckdb_extension_spatial; print('project databases ready: DuckDB', duckdb.__version__, 'with the spatial extension')"
 & $vpy -c "import psycopg, oracledb, pyodbc; print('database drivers ready: oracledb', oracledb.__version__, '(thin mode), pyodbc', pyodbc.version)"
 $odbc = & $vpy -c "import pyodbc; print('ODBC Driver 18 for SQL Server' in pyodbc.drivers())"
 if ($odbc -ne "True") {

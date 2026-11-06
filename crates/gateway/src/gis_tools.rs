@@ -333,7 +333,7 @@ impl Gateway {
         )
         .map_err(|e| e.to_string())?;
         let handle = self.handle(conn)?;
-        let timeout = access.limits.seconds.unwrap_or(120);
+        let timeout = access.limits.max_seconds();
         let info = self
             .state
             .worker
@@ -519,7 +519,7 @@ impl Gateway {
         let info = self.dataset_info(&access, &conn, &q.dataset, false).await?;
         let dialect = SqlDialect::for_connection_type(&conn.kind);
         let plan = self.plan(&info, &q.dataset, dialect, q)?;
-        let read_limit = access.limits.rows.unwrap_or(200_000);
+        let read_limit = access.limits.max_rows();
         let max_rows = limit.unwrap_or(read_limit).min(read_limit).max(1);
         let cols = self.table_columns(&access, &conn).await?;
         let checked = if plan.bbox.is_some() {
@@ -533,7 +533,7 @@ impl Gateway {
             Some(s) => Some(self.state.sandbox.resolve(s).map_err(|e| e.to_string())?),
             None => None,
         };
-        let timeout = access.limits.seconds.unwrap_or(120);
+        let timeout = access.limits.max_seconds();
         let reply = self
             .state
             .worker
@@ -676,8 +676,17 @@ impl Gateway {
                     r.max_rows
                 ),
                 detail: None,
-                fix: Some("Narrow the query with where or bbox".into()),
+                fix: Some("Narrow the query with where or bbox, or aggregate in the database with sql_select; an administrator can raise the limit (policy limits.allow_raise)".into()),
             });
+        }
+        if r.reply.get("streamed").and_then(Value::as_bool) == Some(true) {
+            checks.push(Check::info(
+                "query.streamed",
+                format!(
+                    "{} rows written to the layer in batches as they were read",
+                    r.rows_read
+                ),
+            ));
         }
         let mut hidden: Vec<String> = r
             .reply
@@ -1146,7 +1155,7 @@ impl Gateway {
             Ok(s) => s,
             Err(e) => return Err(self.deny(&ctx, rec, e)),
         };
-        let timeout = self.state.policy().limits.seconds.unwrap_or(120).max(1);
+        let timeout = self.state.policy().read_limits().max_seconds();
         let reply = self
             .state
             .worker
@@ -1156,7 +1165,7 @@ impl Gateway {
                     "op": args.op, "inputs": paths, "params": args.params, "output_stem": stem,
                     // Results larger than the organization's read limit are
                     // refused before they are built.
-                    "max_rows": self.state.policy().limits.rows.unwrap_or(200_000),
+                    "max_rows": self.state.policy().read_limits().max_rows(),
                 }),
                 Duration::from_secs(timeout + 10),
             )

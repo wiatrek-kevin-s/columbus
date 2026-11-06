@@ -18,3 +18,9 @@ rasterio = ">=1.4,<2"
 psycopg = ">=3.2"
 oracledb = ">=2.0"
 pyodbc = ">=5.1,<6"
+
+# Project databases: DuckDB and its spatial extension from PyPI, at the same
+# exact version (see workers/python/requirements-gis.txt).
+[pypi-dependencies]
+duckdb = "==1.5.5"
+duckdb-extension-spatial = "==1.5.5"
