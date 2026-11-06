@@ -466,19 +466,20 @@ impl Chat {
             used += u["input_tokens"].as_u64().unwrap_or(0)
                 + u["cache_creation_input_tokens"].as_u64().unwrap_or(0)
                 + u["cache_read_input_tokens"].as_u64().unwrap_or(0) / 10;
-            let mut content = reply["content"].as_array().cloned().unwrap_or_default();
+            let content = reply["content"].as_array().cloned().unwrap_or_default();
+            let mut kept = content.clone();
             if reply["stop_reason"] == "max_tokens" {
                 // A tool call cut off by the length limit is never run, and
                 // is not kept: a call with no result breaks the conversation.
-                content.retain(|b| b["type"] != "tool_use");
-                if content.iter().all(|b| b["type"] != "text") {
-                    content.push(
+                kept.retain(|b| b["type"] != "tool_use");
+                if kept.iter().all(|b| b["type"] != "text") {
+                    kept.push(
                         json!({"type": "text", "text": "(The reply reached its length limit.)"}),
                     );
                 }
             }
             self.history
-                .push(json!({"role": "assistant", "content": content.clone()}));
+                .push(json!({"role": "assistant", "content": kept}));
             for block in &content {
                 if block["type"] == "text" {
                     if let Some(t) = block["text"].as_str().filter(|t| !t.trim().is_empty()) {

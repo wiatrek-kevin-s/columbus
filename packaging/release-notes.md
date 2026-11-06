@@ -1,7 +1,7 @@
 Columbus {{VERSION}}, a test release. Click a link to download that file.
 
 **Fixed in this version:**
-- **The app's chat now brings its own Columbus server.** Before, it started the server in your Columbus folder, which the update steps never replaced, so it could be many versions old: layer names with spaces were refused and the map beside the chat did not load. The app now carries the server of its own version and uses your Columbus folder only for the GIS engine. **Settings › Models and accounts** shows which server and engine a chat uses.
+- **The app's chat now brings its own Columbus server.** Before, it started the server in your Columbus folder, which the update steps never replaced, so it could be many versions old: layer names with spaces were refused and the map beside the chat did not load. The app now carries the server of its own version and uses your Columbus folder only for the GIS engine. **Settings › Models and accounts** shows which server and engine a chat uses. If your Columbus folder is somewhere other than your home folder (or is `C:\Columbus` on Windows), Settings shows a **Use …** button for its engine: click it, then **Save settings**.
 - **Choose the model and thinking level for each chat**, below the message box: Claude Sonnet 5.5, Opus 5.5, Fable 5.1 or Haiku 5.5, and thinking from Low to Max. Settings sets what a new chat starts with; a chat can switch between messages.
 - **Tables in replies** show as tables.
 - On Windows, a personal tool's run folder is emptied reliably after it runs.

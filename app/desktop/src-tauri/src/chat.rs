@@ -25,6 +25,9 @@ use tokio::sync::{oneshot, Mutex};
 pub const MAIN: &str = "main";
 const KEY_SERVICE: &str = "columbus-app";
 const KEY_ACCOUNT: &str = "anthropic-api-key";
+/// The engine the person confirmed in Settings, kept where a program that
+/// only writes the settings file cannot change it.
+const ENGINE_ACCOUNT: &str = "confirmed-engine";
 
 #[derive(Default)]
 pub struct ChatState {
@@ -131,8 +134,8 @@ fn home_folder() -> Option<PathBuf> {
         .map(|h| PathBuf::from(h).join("Columbus"))
 }
 
-/// A server in the person's own Columbus folder, for builds without one
-/// of their own (development).
+/// A server in the person's own Columbus folder, for a build without one
+/// of its own (development, or an app whose own server is missing).
 fn installed_server() -> Option<PathBuf> {
     startable(&home_folder()?.join(EXE))
 }
@@ -210,6 +213,9 @@ pub(crate) fn engine_python(s: &Settings, server: Option<&Path>) -> Option<PathB
     let chats = CHATS.get().map(PathBuf::as_path);
     s.engine
         .as_deref()
+        // Only the engine the person confirmed: the settings file alone is
+        // not enough to name a program the server runs.
+        .filter(|p| confirmed_engine().as_deref() == Some(*p))
         .and_then(|p| engine_ok(p, chats).ok())
         .or_else(|| server.and_then(Path::parent).and_then(engine_in))
         .or_else(|| home_folder().as_deref().and_then(engine_in))
@@ -352,6 +358,31 @@ fn store() -> Result<(), String> {
     }
 }
 
+/// The engine path recorded when the person confirmed it.
+fn confirmed_engine() -> Option<PathBuf> {
+    store().ok()?;
+    keyring_core::Entry::new(KEY_SERVICE, ENGINE_ACCOUNT)
+        .ok()?
+        .get_password()
+        .ok()
+        .filter(|p| !p.is_empty())
+        .map(PathBuf::from)
+}
+
+fn record_engine(p: Option<&Path>) -> Result<(), String> {
+    store()?;
+    let e = keyring_core::Entry::new(KEY_SERVICE, ENGINE_ACCOUNT).map_err(|e| e.to_string())?;
+    match p {
+        Some(p) => e
+            .set_password(&p.display().to_string())
+            .map_err(|e| e.to_string()),
+        None => match e.delete_credential() {
+            Ok(()) | Err(keyring_core::Error::NoEntry) => Ok(()),
+            Err(e) => Err(e.to_string()),
+        },
+    }
+}
+
 pub(crate) fn read_key() -> Option<String> {
     // Development and tests only.
     #[cfg(debug_assertions)]
@@ -483,13 +514,21 @@ pub async fn chat_save_settings(
     let old_engine = old.engine.clone();
     let engine =
         tauri::async_runtime::spawn_blocking(move || -> Result<Option<PathBuf>, String> {
-            let Some(w) = wanted else { return Ok(None) };
+            let Some(w) = wanted else {
+                let _ = record_engine(None);
+                return Ok(None);
+            };
             let w = engine_ok(&w, chats.as_deref())?;
-            if old_engine.as_ref() != Some(&w) {
+            if old_engine.as_ref() != Some(&w) || confirmed_engine().as_ref() != Some(&w) {
                 crate::settings::confirm(&format!(
                     "let the app's chat run {} as the GIS engine",
                     w.display()
                 ))?;
+                record_engine(Some(&w)).map_err(|e| {
+                    format!(
+                        "the engine could not be recorded in this computer's credential store: {e}"
+                    )
+                })?;
             }
             Ok(Some(w))
         })
