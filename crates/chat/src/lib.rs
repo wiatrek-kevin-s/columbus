@@ -673,8 +673,21 @@ impl Chat {
     /// tool results with a note.
     fn trim_history(&mut self) {
         let size = |h: &Vec<Value>| h.iter().map(|m| m.to_string().len()).sum::<usize>();
-        let mut total = size(&self.history);
         let last = self.history.len().saturating_sub(2);
+        // Pictures go first: an earlier one is the biggest thing to keep,
+        // and the words of every result are worth more.
+        if size(&self.history) > HISTORY_CHARS {
+            for m in self.history.iter_mut().take(last) {
+                for b in m["content"].as_array_mut().into_iter().flatten() {
+                    if let Some(parts) = b["content"].as_array_mut() {
+                        for p in parts.iter_mut().filter(|p| p["type"] == "image") {
+                            *p = json!({"type": "text", "text": "[An earlier picture, removed to keep the conversation short.]"});
+                        }
+                    }
+                }
+            }
+        }
+        let mut total = size(&self.history);
         for i in 0..last {
             if total <= HISTORY_CHARS {
                 break;
@@ -786,7 +799,7 @@ struct Made {
 }
 
 /// Largest picture passed on to the model, as base64 characters.
-const MAX_IMAGE_B64: usize = 6 * 1024 * 1024;
+const MAX_IMAGE_B64: usize = 5_000_000;
 
 /// The PNG pictures in a tool's result: base64 only, at most two, each of
 /// a size the AI service takes.

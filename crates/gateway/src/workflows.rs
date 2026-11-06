@@ -272,7 +272,7 @@ pub async fn run_cli_with(id: &str, scheduled: bool, python: Option<&str>) -> an
     let tools_now = wf::tool_hashes(&workflow, &tools_root).unwrap_or_default();
     record["fingerprint"] = json!(fingerprint);
     record["name"] = json!(workflow.name);
-    let _lock = match wf::lock(&root, id, workflow.run_minutes()) {
+    let _lock = match wf::lock(&root, id) {
         Ok(l) => l,
         Err(e) => {
             let code = finish(&mut record, "skipped", Some(e));

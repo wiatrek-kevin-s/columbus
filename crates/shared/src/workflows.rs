@@ -1092,79 +1092,30 @@ pub fn prune_runs(root: &Path, id: &str, keep: usize, workspaces: Option<&Path>)
     }
 }
 
-/// One run at a time per workflow: held while the run lasts, removed when
-/// dropped (only if it is still this run's). A lock is stale when the
-/// process that took it is gone, or it is older than that workflow's time
-/// limit and ten minutes: a killed run does not block the next one.
+/// One run at a time per workflow: the operating system's lock on
+/// `locks/<id>.lock`, held while the run's process lives and released when
+/// it ends, however it ends (a killed or crashed run never blocks the next).
 pub struct Lock {
-    path: PathBuf,
-    mine: String,
+    _file: std::fs::File,
 }
 
-impl Drop for Lock {
-    fn drop(&mut self) {
-        if std::fs::read_to_string(&self.path).is_ok_and(|t| t == self.mine) {
-            let _ = std::fs::remove_file(&self.path);
-        }
-    }
-}
-
-#[cfg(unix)]
-fn process_gone(pid: u32) -> bool {
-    // SAFETY: kill with signal 0 only asks whether the process exists.
-    let r = unsafe { libc::kill(pid as libc::pid_t, 0) };
-    r != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
-}
-
-#[cfg(not(unix))]
-fn process_gone(_pid: u32) -> bool {
-    false
-}
-
-pub fn lock(root: &Path, id: &str, run_minutes: u32) -> Result<Lock, String> {
-    use std::io::Write;
+pub fn lock(root: &Path, id: &str) -> Result<Lock, String> {
     let dir = root.join(LOCKS);
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let p = dir.join(format!("{id}.lock"));
-    let mine = format!("{} {}", std::process::id(), uuid::Uuid::new_v4().simple());
-    let make = || -> std::io::Result<Lock> {
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&p)?;
-        f.write_all(mine.as_bytes())?;
-        Ok(Lock {
-            path: p.clone(),
-            mine: mine.clone(),
-        })
-    };
-    match make() {
-        Ok(l) => Ok(l),
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-            let md = std::fs::symlink_metadata(&p)
-                .ok()
-                .filter(|m| m.file_type().is_file());
-            let old = md
-                .as_ref()
-                .and_then(|m| m.modified().ok())
-                .and_then(|t| t.elapsed().ok())
-                .is_some_and(|age| age.as_secs() > u64::from(run_minutes) * 60 + 600);
-            let gone = std::fs::read_to_string(&p)
-                .ok()
-                .and_then(|t| {
-                    t.split_whitespace()
-                        .next()
-                        .and_then(|n| n.parse::<u32>().ok())
-                })
-                .is_some_and(process_gone);
-            if old || gone {
-                let _ = std::fs::remove_file(&p);
-                make().map_err(|e| e.to_string())
-            } else {
-                Err(format!("{id} is already running"))
-            }
-        }
-        Err(e) => Err(format!("{}: {e}", p.display())),
+    if std::fs::symlink_metadata(&p).is_ok_and(|m| !m.file_type().is_file()) {
+        return Err(format!("{} is not a plain file", p.display()));
+    }
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&p)
+        .map_err(|e| format!("{}: {e}", p.display()))?;
+    match file.try_lock() {
+        Ok(()) => Ok(Lock { _file: file }),
+        Err(std::fs::TryLockError::WouldBlock) => Err(format!("{id} is already running")),
+        Err(std::fs::TryLockError::Error(e)) => Err(format!("{}: {e}", p.display())),
     }
 }
 
@@ -1266,17 +1217,14 @@ mod tests {
         );
         // One run at a time.
         std::fs::write(root.join("morning-check").join(FILE), WF).unwrap();
-        let held = lock(&root, "morning-check", 10).unwrap();
-        assert!(lock(&root, "morning-check", 10)
+        let held = lock(&root, "morning-check").unwrap();
+        assert!(lock(&root, "morning-check")
             .err()
             .unwrap()
             .contains("already running"));
         drop(held);
-        lock(&root, "morning-check", 10).unwrap();
-        // A lock whose process is gone is stale.
-        std::fs::write(root.join(LOCKS).join("morning-check.lock"), "999999999 x").unwrap();
-        #[cfg(unix)]
-        lock(&root, "morning-check", 10).unwrap();
+        // Released with its holder; a lock file left behind holds nothing.
+        lock(&root, "morning-check").unwrap();
         remove(&root, "morning-check").unwrap();
         assert!(ready(&root, &tools, "morning-check").is_err());
         assert!(remove(&root, "runs").is_err());

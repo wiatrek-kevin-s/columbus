@@ -21,8 +21,9 @@ use serde_json::{json, Value};
 
 use crate::server::{new_prov_id, Gateway};
 
-/// Largest picture returned, in bytes.
-const MAX_PNG: u64 = 4 * 1024 * 1024;
+/// Largest picture returned, in bytes: within the AI service's limit for
+/// one image once it is base64 (5 MB).
+const MAX_PNG: u64 = 3_600_000;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

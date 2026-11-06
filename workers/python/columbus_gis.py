@@ -1589,10 +1589,26 @@ def map_snapshot(paths: list[str], out_path: str, width: int = 1000, height: int
             m = thicken(burn(list(lines.values)))
             img[m] = color
         if len(points):
-            # Round on the picture: three pixels across each way.
-            from shapely import affinity
-            dots = burn([affinity.scale(g.buffer(1.0, 8), px * 3.0, py * 3.0) for g in points.values])
-            img[thicken(dots) & ~dots] = SNAPSHOT_FRAME
+            # Straight to pixels (fast for many points), a dot 7 pixels
+            # across with a dark rim.
+            xy = shapely.get_coordinates(points.values)
+            cols = np.floor((xy[:, 0] - minx) / px).astype(np.int64)
+            rows = np.floor((maxy - xy[:, 1]) / py).astype(np.int64)
+            keep = (cols >= 0) & (cols < width) & (rows >= 0) & (rows < height)
+            centres = np.zeros(shape, dtype=bool)
+            centres[rows[keep], cols[keep]] = True
+            def disc(m, r):
+                out = np.zeros_like(m)
+                rr, cc = np.nonzero(m)
+                for dy in range(-r, r + 1):
+                    for dx in range(-r, r + 1):
+                        if dx * dx + dy * dy <= r * r:
+                            y, x = rr + dy, cc + dx
+                            ok = (y >= 0) & (y < height) & (x >= 0) & (x < width)
+                            out[y[ok], x[ok]] = True
+                return out
+            dots = disc(centres, 3)
+            img[disc(centres, 4) & ~dots] = SNAPSHOT_FRAME
             img[dots] = color
         layers.append({"features": int(len(f)), "geometry_types": sorted(set(types)),
                        "color": "#%02x%02x%02x" % tuple(int(v) for v in color)})

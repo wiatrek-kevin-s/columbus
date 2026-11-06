@@ -122,6 +122,20 @@ Then the proposal is filed in the person's tools folder (`tools/proposals/<id>/`
 
 **Known limits.** An agent that can run programs as the person (a coding agent with a shell) can write the tools folder and `approved.yaml` itself, as it could the policy, connections or plugin approvals: give such agents only read-only database logins. The code checks are a second line of defence; the confinement is the boundary, with the same known limits as scripts (above, under Confinement levels). An installed tool is trusted to compute what it says: its checks and test run help, but the person's reading of the code is the review.
 
+### Workflows
+
+Jobs the person wants run again without waiting for them: the assistant proposes one with `propose_workflow` (a `workflow.yaml`: steps, the connections it reads, a schedule, an export folder for results), the person reads it in plain words and in full in the Columbus app (Workflows) and approves it with Touch ID or Windows Hello, and `columbus-mcp workflow run <id>` runs it: on its schedule (a launchd agent on macOS, a Task Scheduler task on Windows, made by the app), or with **Run now**.
+
+- **Approval binds exactly what was shown:** the fingerprint covers `workflow.yaml` and the installed hash of every personal tool it uses. Any change to either is off until approved again.
+- **A run does only what it lists.** Steps are reading and checking tools (`list_datasets`, `describe_dataset`, `sample_rows`, `query_features`, `sql_select`, `vector_op`, `raster_op`, `verify`, `read_output`) or installed personal tools; never scripts, edits, downloads or connected servers. The session's project scope is the workflow's connections. References between steps never fill what is read or where results go.
+- **A run never waits for a person.** Any call that would need an approval is refused at once ("needs you") and the run stops there; an export to a folder that isn't `granted` is such a call.
+- **Records:** each run writes `run.json` and a Markdown report under `workflows/runs/<id>/`; its calls are in the audit log as client `columbus-runner`. Runs are kept per `keep_runs` (with their workspaces).
+- **Policy:** `allow_workflows: true` turns them on (off by default); off stops every installed one at once and refuses `propose_workflow`.
+
+### Map snapshots
+
+`map_snapshot` draws up to 8 of the session's own layers as a PNG that the assistant sees (and the app's chat shows the person): geometry only, each layer its own colour, no attribute values, labels or basemap, and nothing is downloaded to make it. It shows the assistant the shape of every feature in those layers, which the per-call row limit does not cap; an organization that treats geometry as sensitive can turn it off with `deny_tools: [map_snapshot]`.
+
 ## Connected MCP servers
 
 Columbus is an MCP client to other servers too (design change 1, "governed MCP host"). Each one needs a **Columbus manifest**, written or approved by a person or IT, under `%ProgramData%\Columbus\servers\` (personal manifests under `%APPDATA%` only if policy allows). The manifest decides everything: which tools are on, their risk, whether they send data out, which arguments are files, paths or URLs, and when to ask. The server's own hints are shown at review and never trusted. See [`examples/servers`](examples/servers).
@@ -262,7 +276,7 @@ Releases ship a zip and a `.mcpb` bundle (the MCP project's one-click format for
 
 ## Build and run
 
-Requires Rust (stable, 1.85+) and Python 3.12+. For the GIS tools, `pip install -r workers/python/requirements-gis.txt` (geopandas, pyogrio, shapely, pyproj, rasterio; the wheels include GDAL and PROJ); for project databases, also `pip install --require-hashes --no-deps --only-binary :all: -r workers/python/requirements-projectdb.txt` (DuckDB and its spatial extension, hash-pinned; they then work offline). For PostGIS, Oracle and SQL Server, also `pip install -r workers/python/requirements-db.txt` (psycopg, oracledb, pyodbc; SQL Server also needs Microsoft ODBC Driver 18 for SQL Server).
+Requires Rust (stable, 1.89+) and Python 3.12+. For the GIS tools, `pip install -r workers/python/requirements-gis.txt` (geopandas, pyogrio, shapely, pyproj, rasterio; the wheels include GDAL and PROJ); for project databases, also `pip install --require-hashes --no-deps --only-binary :all: -r workers/python/requirements-projectdb.txt` (DuckDB and its spatial extension, hash-pinned; they then work offline). For PostGIS, Oracle and SQL Server, also `pip install -r workers/python/requirements-db.txt` (psycopg, oracledb, pyodbc; SQL Server also needs Microsoft ODBC Driver 18 for SQL Server).
 
 ```powershell
 cargo build --release

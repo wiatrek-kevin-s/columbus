@@ -42,7 +42,7 @@ fn bbox(ctx: &mut Context) -> Result<Value, ToolError> {
     let mut extent: Option<[f64; 4]> = None;
 
     for row in layer.rows()? {
-        if rows % 1000 == 0 {
+        if rows.is_multiple_of(1000) {
             let pct = if total > 0 {
                 Some(100.0 * rows as f64 / total as f64)
             } else {
