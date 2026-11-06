@@ -1,6 +1,16 @@
 Columbus {{VERSION}}, a test release. Click a link to download that file.
 
-**New in this version: far fewer approvals when your assistant fills in notes.** Your assistant now sends all its note changes at once, and you approve them together: one card listing every change, instead of one per note. Choose **Allow for this session** to let it carry on without asking; the card says exactly what that covers, and it asks again before putting data from one connection into notes about another that you haven't seen on a card. Every change is still recorded, your organization's data rules still apply, and notes stay drafts until you mark them reviewed. Since 0.7.0: notes about your data, drafted from your database (Draft notes in Settings).
+**New in this version: your own tools.** Ask your assistant to "save the script we just made as a tool" and it packages it as one of your own Columbus tools, with a clear description, typed inputs, and the units and checks other assistants need to use it well. You approve one test run (you see the full code), then install it in the Columbus app under **Settings → Tools** with Touch ID or Windows Hello. After that, any assistant can find it and run it on your layers without asking each time. A worked example for locating points along routes (LRS measures) is included.
+
+How your tools are kept safe:
+- **You decide:** only you can install a tool, and only the exact code you read; if anyone changes it, it switches off until you review it again.
+- **Contained:** every run is sandboxed: no network, it reads only the layers it's given and writes only its own results, in a fresh folder each time.
+- **Nothing hidden:** Columbus checks the code reads the way it runs, uses only standard data and GIS libraries, and that settings passed in later (like a field name) can never become code.
+- **Off until you turn it on:** switch on **Allow personal tools** in Settings (scripts must be allowed too).
+
+Also fixed: a way a script shown to you for approval could hide extra code behind its first line (scripts now run exactly as shown).
+
+Since 0.7.1: one approval for a batch of note changes.
 
 ## Mac (Apple Silicon: M1 or later)
 
