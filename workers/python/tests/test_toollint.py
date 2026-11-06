@@ -169,6 +169,9 @@ class ToolLintTest(unittest.TestCase):
         refused.update({
             "from numpy import ctypeslib\n": "tool.import",
             "import numpy.f2py\n": "tool.import",
+            "from logging import os\n": "tool.import",
+            "from pandas import read_clipboard\n": "tool.import",
+            "from numpy.lib import ctypeslib\n": "tool.import",
             "import numpy as np\n\n\ndef later(ctx):\n    return np.ctypeslib\n": "tool.introspection",
             "import logging.handlers\n": "tool.import",
             "import pandas as pd\n\n\ndef later(ctx):\n    return pd.read_clipboard()\n": "tool.settings",

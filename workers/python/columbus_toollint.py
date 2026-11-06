@@ -225,6 +225,9 @@ class _Lint(ast.NodeVisitor):
                 self.err(node, "tool.import", f"from {mod or '.'} import *: name each thing you import, so the reader sees every name the tool uses")
                 continue
             full = f"{mod}.{a.name}" if mod else a.name
+            if any(full == r or full.startswith(r + ".") for r in REFUSED_SUBMODULES) or a.name in ESCAPE_ATTRS \
+                    or a.name in REFUSED_METHODS:
+                self.err(node, "tool.import", f"from {mod} import {a.name}: this part of {_root(full)} loads native code, starts programs, reaches the operating system or changes settings")
             if full in REFUSED_MODULES or full in REFUSED_NAMES:
                 self.err(node, "tool.import", f"from {mod} import {a.name}: a tool may not use {REFUSED_MODULES.get(full, 'ways to reach code or attributes by name')}")
             if mod == "os" and (a.name in OS_CALLS or a.name in OS_ATTRS):
