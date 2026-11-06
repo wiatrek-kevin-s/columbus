@@ -125,11 +125,11 @@ def main():
             go(d, wait, href, title)
         go(d, wait, "#/skills", "Skills")
         wait.until(lambda drv: "working-with-columbus" in text(drv, "main"))
-        go(d, wait, "#/workflows", "Workflows")
+        go(d, wait, "#/registry", "Registry")
         assert "Coming" in text(d, "main"), "a page with no backend says it is coming"
-        # The rail's foot: the policy's source, and no runner yet.
+        # The rail's foot: the policy's source, and the workflows.
         foot = text(d, ".rail-foot")
-        assert "Runner" in foot and "not set up" in foot and "Policy" in foot, foot
+        assert "Workflows" in foot and "Policy" in foot, foot
 
         # The session another AI app runs, under Chats: its activity and its map.
         go(d, wait, "#/chats", "Chats")

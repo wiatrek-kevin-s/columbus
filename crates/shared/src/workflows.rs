@@ -101,7 +101,9 @@ pub fn workflows_dir() -> PathBuf {
 /// A workflow's id: 3 to 40 lowercase letters, digits and single hyphens,
 /// starting with a letter.
 pub fn id_ok(id: &str) -> bool {
-    (3..=40).contains(&id.len())
+    // Not the names of the folder's own parts.
+    ![RUNS, LOCKS, PROPOSALS].contains(&id)
+        && (3..=40).contains(&id.len())
         && id.starts_with(|c: char| c.is_ascii_lowercase())
         && !id.ends_with('-')
         && !id.contains("--")
@@ -276,6 +278,10 @@ pub fn check(text: &str) -> Result<Workflow, String> {
     plain_chars(text).map_err(|e| format!("workflow.yaml: {e}"))?;
     let wf: Workflow =
         serde_yaml::from_str(text).map_err(|e| format!("workflow.yaml does not read: {e}"))?;
+    // What the person is shown is what was read: no character hidden in
+    // an escape (\u202e, a line break in a name) either.
+    let parsed = serde_json::to_value(&wf).map_err(|e| e.to_string())?;
+    plain_values(&parsed).map_err(|e| format!("workflow.yaml: {e}"))?;
     if !id_ok(&wf.id) {
         return Err(format!(
             "{:?} is not a workflow id: 3 to 40 lowercase letters, digits and single hyphens, starting with a letter",
@@ -372,7 +378,7 @@ pub fn check(text: &str) -> Result<Workflow, String> {
                 MAX_ARGS / 1024
             ));
         }
-        check_args(&s.args, &seen, &at, 0)?;
+        check_args(&s.args, &seen, &at, 0, None)?;
         if let Some(c) = s.args.get("connection") {
             let c = c
                 .as_str()
@@ -418,7 +424,26 @@ pub fn check(text: &str) -> Result<Workflow, String> {
 
 /// Arguments: no approval ids (a run never spends one), references only to
 /// earlier steps, not too deep.
-fn check_args(v: &Value, earlier: &[&str], at: &str, depth: usize) -> Result<(), String> {
+/// Arguments a reference may never fill: what is read, how, and where
+/// results go are fixed when the person approves the workflow, not chosen
+/// by data a run reads.
+pub const FIXED_ARGS: &[&str] = &[
+    "sql",
+    "where",
+    "dataset",
+    "connection",
+    "folder",
+    "name",
+    "op",
+];
+
+fn check_args(
+    v: &Value,
+    earlier: &[&str],
+    at: &str,
+    depth: usize,
+    key: Option<&str>,
+) -> Result<(), String> {
     if depth > 8 {
         return Err(format!("{at}: its arguments are nested too deeply"));
     }
@@ -430,15 +455,20 @@ fn check_args(v: &Value, earlier: &[&str], at: &str, depth: usize) -> Result<(),
                         "{at}: a workflow never carries an approval; a run does not wait for a person"
                     ));
                 }
-                check_args(x, earlier, at, depth + 1)?;
+                check_args(x, earlier, at, depth + 1, Some(k))?;
             }
         }
         Value::Array(a) => {
             for x in a {
-                check_args(x, earlier, at, depth + 1)?;
+                check_args(x, earlier, at, depth + 1, key)?;
             }
         }
         Value::String(s) if s.contains("${") => {
+            if let Some(k) = key.filter(|k| FIXED_ARGS.contains(k)) {
+                return Err(format!(
+                    "{at}: {k} is fixed when the workflow is approved; it cannot be a reference ({s:?})"
+                ));
+            }
             let Some((step, path)) = reference(s) else {
                 return Err(format!(
                     "{at}: {s:?}: a reference is a whole value, ${{step}} or ${{step.field}}"
@@ -460,6 +490,23 @@ fn check_args(v: &Value, earlier: &[&str], at: &str, depth: usize) -> Result<(),
         _ => {}
     }
     Ok(())
+}
+
+/// Every text value and key of the parsed workflow is plain (see
+/// [`plain_chars`]), and the one-line ones have no line break.
+fn plain_values(v: &Value) -> Result<(), String> {
+    match v {
+        Value::String(s) => plain_chars(s),
+        Value::Array(a) => a.iter().try_for_each(plain_values),
+        Value::Object(m) => m.iter().try_for_each(|(k, x)| {
+            if k.contains('\n') {
+                return Err(format!("the key {k:?} has a line break"));
+            }
+            plain_chars(k)?;
+            plain_values(x)
+        }),
+        _ => Ok(()),
+    }
 }
 
 /// The fingerprint a person approves: `workflow.yaml`'s bytes, a zero byte,
@@ -1003,8 +1050,10 @@ pub fn read_run(root: &Path, id: &str, run: &str) -> Result<(Value, String), Str
     Ok((rec, report))
 }
 
-/// Delete all but the newest `keep` runs.
-pub fn prune_runs(root: &Path, id: &str, keep: usize) {
+/// Delete all but the newest `keep` runs, with each one's session
+/// workspace (its copies of the data) when that is a folder directly in
+/// `workspaces`.
+pub fn prune_runs(root: &Path, id: &str, keep: usize, workspaces: Option<&Path>) {
     let dir = runs_dir(root, id);
     let Ok(entries) = std::fs::read_dir(&dir) else {
         return;
@@ -1021,43 +1070,96 @@ pub fn prune_runs(root: &Path, id: &str, keep: usize) {
         .collect();
     runs.sort();
     let n = runs.len().saturating_sub(keep);
+    let ws_root = workspaces.and_then(|w| w.canonicalize().ok());
     for p in runs.into_iter().take(n) {
+        if let Some(ws_root) = &ws_root {
+            let ws = read_plain(&p.join(RUN_FILE), 1024 * 1024)
+                .ok()
+                .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+                .and_then(|v| v["workspace"].as_str().map(PathBuf::from))
+                .and_then(|w| {
+                    std::fs::symlink_metadata(&w)
+                        .ok()
+                        .filter(|m| m.is_dir())
+                        .map(|_| w)
+                })
+                .and_then(|w| w.canonicalize().ok());
+            if let Some(ws) = ws.filter(|w| w.parent() == Some(ws_root.as_path())) {
+                let _ = std::fs::remove_dir_all(ws);
+            }
+        }
         let _ = std::fs::remove_dir_all(p);
     }
 }
 
 /// One run at a time per workflow: held while the run lasts, removed when
-/// dropped. A lock older than the longest run allowed is stale.
-pub struct Lock(PathBuf);
+/// dropped (only if it is still this run's). A lock is stale when the
+/// process that took it is gone, or it is older than that workflow's time
+/// limit and ten minutes: a killed run does not block the next one.
+pub struct Lock {
+    path: PathBuf,
+    mine: String,
+}
 
 impl Drop for Lock {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
+        if std::fs::read_to_string(&self.path).is_ok_and(|t| t == self.mine) {
+            let _ = std::fs::remove_file(&self.path);
+        }
     }
 }
 
-pub fn lock(root: &Path, id: &str) -> Result<Lock, String> {
+#[cfg(unix)]
+fn process_gone(pid: u32) -> bool {
+    // SAFETY: kill with signal 0 only asks whether the process exists.
+    let r = unsafe { libc::kill(pid as libc::pid_t, 0) };
+    r != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+}
+
+#[cfg(not(unix))]
+fn process_gone(_pid: u32) -> bool {
+    false
+}
+
+pub fn lock(root: &Path, id: &str, run_minutes: u32) -> Result<Lock, String> {
+    use std::io::Write;
     let dir = root.join(LOCKS);
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let p = dir.join(format!("{id}.lock"));
-    let make = || {
-        std::fs::OpenOptions::new()
+    let mine = format!("{} {}", std::process::id(), uuid::Uuid::new_v4().simple());
+    let make = || -> std::io::Result<Lock> {
+        let mut f = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
-            .open(&p)
+            .open(&p)?;
+        f.write_all(mine.as_bytes())?;
+        Ok(Lock {
+            path: p.clone(),
+            mine: mine.clone(),
+        })
     };
     match make() {
-        Ok(_) => Ok(Lock(p)),
+        Ok(l) => Ok(l),
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-            let stale = std::fs::symlink_metadata(&p)
+            let md = std::fs::symlink_metadata(&p)
                 .ok()
-                .filter(|m| m.file_type().is_file())
+                .filter(|m| m.file_type().is_file());
+            let old = md
+                .as_ref()
                 .and_then(|m| m.modified().ok())
                 .and_then(|t| t.elapsed().ok())
-                .is_some_and(|age| age.as_secs() > u64::from(MAX_RUN_MINUTES) * 60 + 600);
-            if stale {
+                .is_some_and(|age| age.as_secs() > u64::from(run_minutes) * 60 + 600);
+            let gone = std::fs::read_to_string(&p)
+                .ok()
+                .and_then(|t| {
+                    t.split_whitespace()
+                        .next()
+                        .and_then(|n| n.parse::<u32>().ok())
+                })
+                .is_some_and(process_gone);
+            if old || gone {
                 let _ = std::fs::remove_file(&p);
-                make().map(|_| Lock(p.clone())).map_err(|e| e.to_string())
+                make().map_err(|e| e.to_string())
             } else {
                 Err(format!("{id} is already running"))
             }
@@ -1110,6 +1212,15 @@ mod tests {
         assert!(bad("purpose:", "surprise: 1\npurpose:").contains("does not read"));
         assert!(bad("Count", "Count\u{202E}").contains("displays differently"));
         assert!(bad("id: check", "id: tracts").contains("two steps"));
+        assert!(bad(
+            "{ layer: \"${tracts}\" }",
+            "{ layer: \"${tracts}\", where: \"${tracts.a}\" }"
+        )
+        .contains("fixed when"));
+        assert!(bad("name: Morning check", "name: \"Morning\\u202echeck\"")
+            .contains("displays differently"));
+        assert!(bad("name: Morning check", "name: \"Morning\\ncheck\"").contains("one plain line"));
+        assert!(bad("id: morning-check", "id: runs").contains("not a workflow id"));
         // A personal tool is a step by its full tool name.
         let t = WF.replace("tool: verify", "tool: personal.count-features.run");
         let wf = check(&t).unwrap();
@@ -1155,16 +1266,21 @@ mod tests {
         );
         // One run at a time.
         std::fs::write(root.join("morning-check").join(FILE), WF).unwrap();
-        let held = lock(&root, "morning-check").unwrap();
-        assert!(lock(&root, "morning-check")
+        let held = lock(&root, "morning-check", 10).unwrap();
+        assert!(lock(&root, "morning-check", 10)
             .err()
             .unwrap()
             .contains("already running"));
         drop(held);
-        lock(&root, "morning-check").unwrap();
+        lock(&root, "morning-check", 10).unwrap();
+        // A lock whose process is gone is stale.
+        std::fs::write(root.join(LOCKS).join("morning-check.lock"), "999999999 x").unwrap();
+        #[cfg(unix)]
+        lock(&root, "morning-check", 10).unwrap();
         remove(&root, "morning-check").unwrap();
         assert!(ready(&root, &tools, "morning-check").is_err());
         assert!(remove(&root, "runs").is_err());
+        assert!(!id_ok("runs") && !id_ok("proposals") && !id_ok("locks"));
     }
 
     #[test]

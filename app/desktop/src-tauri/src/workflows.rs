@@ -104,15 +104,25 @@ pub async fn workflow_install(
                 p.connections.join(", ")
             }
         ))?;
+        // A version the person had paused stays paused.
+        let paused = wf::list_installed(&root, &tools_root())
+            .into_iter()
+            .find(|w| w.id == id)
+            .is_some_and(|w| w.at.is_some() && schedule_state(&w, program.as_ref().map(|p| &p.0)) == "off");
         // Checked again on the file itself: what was shown is what goes in.
         let v = wf::install(&root, &tools_root(), &id, &fingerprint, &columbus_shared::tools::now())?;
+        // No entry from an earlier version may outlive it: the new one
+        // runs on its own schedule or none.
+        unschedule(&id)?;
         // Where there is no scheduler yet, the page says so; Run now works.
-        if v.at.is_some() && scheduler_kind().is_some() {
+        if v.at.is_some() && scheduler_kind().is_some() && !paused {
             let (server, engine) = program.ok_or(
                 "approved, but Columbus's server was not found, so it is not scheduled; Run now works once it is",
             )?;
-            schedule(&v, &server, engine.as_deref())
-                .map_err(|e| format!("approved, but its schedule could not be set: {e}"))?;
+            if let Err(e) = schedule(&v, &server, engine.as_deref()) {
+                let _ = unschedule(&id);
+                return Err(format!("approved, but its schedule could not be set, so it runs only when you start it: {e}"));
+            }
         }
         Ok(())
     })
@@ -391,8 +401,10 @@ fn plist_path(id: &str) -> Option<PathBuf> {
     )
 }
 
+/// At the top of the person's task library: a new folder there would need
+/// an administrator.
 fn task_name(id: &str) -> String {
-    format!("\\Columbus\\Workflow {id}")
+    format!("Columbus Workflow {id}")
 }
 
 fn run_minutes_of(id: &str) -> u32 {
@@ -420,18 +432,22 @@ fn schedule(v: &wf::WorkflowView, server: &Path, engine: Option<&Path>) -> Resul
         let _ = Command::new("/bin/launchctl")
             .args(["bootout", &format!("{domain}/{}", label(&v.id))])
             .output();
-        let out = Command::new("/bin/launchctl")
-            .args(["bootstrap", &domain])
-            .arg(&p)
-            .output()
-            .map_err(|e| e.to_string())?;
-        if !out.status.success() {
-            return Err(format!(
-                "launchctl: {}",
-                String::from_utf8_lossy(&out.stderr).trim()
-            ));
+        // launchd can refuse a bootstrap right after a bootout; try again.
+        let mut last = String::new();
+        for _ in 0..5 {
+            let out = Command::new("/bin/launchctl")
+                .args(["bootstrap", &domain])
+                .arg(&p)
+                .output()
+                .map_err(|e| e.to_string())?;
+            if out.status.success() {
+                return Ok(());
+            }
+            last = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            std::thread::sleep(Duration::from_millis(400));
         }
-        Ok(())
+        let _ = std::fs::remove_file(&p);
+        Err(format!("launchctl: {last}"))
     } else if cfg!(windows) {
         let xml = task_xml(v, server, engine, run_minutes_of(&v.id));
         let dir =

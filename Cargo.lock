@@ -363,6 +363,7 @@ dependencies = [
  "chrono",
  "globset",
  "hex",
+ "libc",
  "schemars",
  "serde",
  "serde_json",

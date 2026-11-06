@@ -213,6 +213,8 @@ pub async fn run_cli_with(id: &str, scheduled: bool, python: Option<&str>) -> an
         paths.python = p.to_path_buf();
     }
     let tools_root = paths.tools.clone();
+    let ws_root = paths.workspaces.clone();
+    let prune = |keep: u32| wf::prune_runs(&root, id, keep as usize, Some(&ws_root));
     let started = Local::now();
     let run = wf::new_run_id();
     let run_dir = wf::runs_dir(&root, id).join(&run);
@@ -246,16 +248,36 @@ pub async fn run_cli_with(id: &str, scheduled: bool, python: Option<&str>) -> an
         Err(e) => {
             let code = finish(&mut record, "needs_reapproval", Some(e));
             write_run(&run_dir, &record, None)?;
+            prune(wf::DEFAULT_KEEP_RUNS);
             return Ok(code);
         }
     };
+    // A schedule entry left behind for a workflow that no longer has one
+    // runs nothing.
+    if scheduled && workflow.schedule.is_none() {
+        let code = finish(
+            &mut record,
+            "skipped",
+            Some(
+                "it has no schedule now (a schedule entry was left behind); run it from the app"
+                    .into(),
+            ),
+        );
+        write_run(&run_dir, &record, Some(&workflow))?;
+        prune(workflow.keep_runs());
+        return Ok(code);
+    }
+    // The personal tools it uses, as approved: checked again before each
+    // of their steps, since a tool may be reinstalled while a run goes on.
+    let tools_now = wf::tool_hashes(&workflow, &tools_root).unwrap_or_default();
     record["fingerprint"] = json!(fingerprint);
     record["name"] = json!(workflow.name);
-    let _lock = match wf::lock(&root, id) {
+    let _lock = match wf::lock(&root, id, workflow.run_minutes()) {
         Ok(l) => l,
         Err(e) => {
             let code = finish(&mut record, "skipped", Some(e));
             write_run(&run_dir, &record, Some(&workflow))?;
+            prune(workflow.keep_runs());
             return Ok(code);
         }
     };
@@ -280,6 +302,7 @@ pub async fn run_cli_with(id: &str, scheduled: bool, python: Option<&str>) -> an
             Some("organization policy turns workflows off (allow_workflows)".into()),
         );
         write_run(&run_dir, &record, Some(&workflow))?;
+        prune(workflow.keep_runs());
         return Ok(code);
     }
     state.unattended = true;
@@ -305,7 +328,15 @@ pub async fn run_cli_with(id: &str, scheduled: bool, python: Option<&str>) -> an
     });
     let client = RunnerClient.serve(client_io).await?;
 
-    let status = run_steps(&client, &workflow, &mut record, deadline).await;
+    let status = run_steps(
+        &client,
+        &workflow,
+        &mut record,
+        deadline,
+        &tools_root,
+        &tools_now,
+    )
+    .await;
     let status = match status {
         Ok(s) if s == "succeeded" || s == "succeeded_with_warnings" => {
             deliver(&client, &workflow, &run, &mut record, deadline)
@@ -320,7 +351,7 @@ pub async fn run_cli_with(id: &str, scheduled: bool, python: Option<&str>) -> an
     server.abort();
     let code = finish(&mut record, &status, None);
     write_run(&run_dir, &record, Some(&workflow))?;
-    wf::prune_runs(&root, id, workflow.keep_runs() as usize);
+    prune(workflow.keep_runs());
     eprintln!("{id}: {status} (run {run})");
     Ok(code)
 }
@@ -376,7 +407,17 @@ fn resolve(v: &Value, results: &BTreeMap<String, Value>) -> Result<Value, String
                         }
                         .ok_or_else(|| format!("{s}: step {step}'s result has no {p}"))?;
                     }
-                    cur.clone()
+                    // A number, a yes/no or a workspace handle: never text
+                    // from the data, which could steer what a step does.
+                    match cur {
+                        Value::Number(_) | Value::Bool(_) | Value::Null => cur.clone(),
+                        Value::String(h) if h.starts_with("ws://") && !h.chars().any(char::is_whitespace) => cur.clone(),
+                        _ => {
+                            return Err(format!(
+                                "{s}: a reference to a result field may be a number, true/false or a layer handle, not text or a list"
+                            ))
+                        }
+                    }
                 }
             }
             None => v.clone(),
@@ -483,6 +524,8 @@ async fn run_steps(
     workflow: &Workflow,
     record: &mut Value,
     deadline: Instant,
+    tools_root: &Path,
+    tools_approved: &BTreeMap<String, String>,
 ) -> Result<String, String> {
     let mut results: BTreeMap<String, Value> = BTreeMap::new();
     let mut warned = false;
@@ -503,7 +546,16 @@ async fn run_steps(
         }
         // Checked again: only the steps a workflow may have.
         let (tool, args) = match wf::personal_tool_id(&s.tool) {
-            Some(_) => {
+            Some(tid) => {
+                let now = wf::tool_hashes(workflow, tools_root).unwrap_or_default();
+                if !now.contains_key(&tid) || now.get(&tid) != tools_approved.get(&tid) {
+                    step["status"] = json!("failed");
+                    step["error"] = json!(format!(
+                        "{tid} changed since this run started (or since you approved the workflow); it was not run"
+                    ));
+                    push(record, step);
+                    return Err("needs_reapproval".into());
+                }
                 let args = match resolve(&s.args, &results) {
                     Ok(a) => a,
                     Err(e) => {
@@ -598,7 +650,8 @@ async fn deliver(
         return Ok("succeeded".into());
     };
     let handles = record["results"].clone();
-    let date = &run[..10];
+    // The date and time of the run: a second run the same day has its own.
+    let when = &run[..19];
     let mut worst = "succeeded".to_string();
     for step in &f.steps {
         let Some(h) = handles.get(step).and_then(Value::as_str) else {
@@ -609,7 +662,9 @@ async fn deliver(
             );
             continue;
         };
-        let name = format!("{}-{}-{}", workflow.id, step, date);
+        let base = format!("{}-{}", workflow.id, step);
+        let base: String = base.chars().take(80 - 1 - when.len()).collect();
+        let name = format!("{base}-{when}");
         let mut args = json!({"handle": h, "folder": f.export, "name": name});
         if let Some(fmt) = &f.format {
             args["format"] = json!(fmt);

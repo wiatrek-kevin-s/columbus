@@ -601,6 +601,7 @@ dependencies = [
  "chrono",
  "globset",
  "hex",
+ "libc",
  "schemars 1.2.3",
  "serde",
  "serde_json",

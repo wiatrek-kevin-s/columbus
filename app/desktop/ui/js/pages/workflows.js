@@ -51,11 +51,12 @@ export async function render(main, rest) {
   const err = h("p", { id: "wf-error", class: "error-text", role: "alert", hidden: true });
   const off = h("p", { id: "wf-off", class: "notice warn", role: "status", hidden: true }, "Workflows are turned off in your organization's settings, so none run, and none can be approved.");
   const noSched = h("p", { id: "wf-nosched", class: "notice", role: "status", hidden: true }, "Schedules are not available on this system yet. Run now works.");
+  const macNote = h("p", { id: "wf-macnote", class: "small muted", hidden: true }, "On a Mac, a scheduled run cannot ask for access to Documents, Desktop, Downloads, iCloud Drive, network or removable drives: keep a workflow's data and export folders elsewhere (your Columbus folder, for example), or give columbus-mcp Full Disk Access in System Settings › Privacy & Security.");
   const waiting = h("ul", { id: "wf-waiting", class: "list", "aria-live": "polite" });
   const installed = h("ul", { id: "wf-installed", class: "list", "aria-live": "polite" });
   const runsBox = h("section", { class: "card", id: "wf-runs", hidden: true });
   const sw = h("div", {});
-  body.append(notice, err, off, noSched,
+  body.append(notice, err, off, noSched, macNote,
     h("p", { class: "small muted" }, "A workflow reads only the connections it lists, runs only the steps it lists (reading and processing tools, and personal tools you installed), and never waits for you: a step that needs an approval stops the run with \"needs you\". Runs happen while you are signed in to this computer; one missed while it slept runs once when it wakes. Ask your assistant, for example: ", h("i", {}, "make what we just did a workflow that runs every weekday at 6"), "."),
     h("section", { class: "card" }, h("div", { class: "hd" }, h("h2", {}, "Waiting for you")), h("div", { class: "bd flush" }, waiting, h("p", { id: "wf-no-waiting", class: "pad muted small", hidden: true }, "Nothing is waiting."))),
     h("section", { class: "card" }, h("div", { class: "hd" }, h("h2", {}, "Your workflows")), h("div", { class: "bd flush" }, installed, h("p", { id: "wf-no-installed", class: "pad muted small", hidden: true }, "No workflows yet."))),
@@ -68,6 +69,7 @@ export async function render(main, rest) {
     $("wf-dir").textContent = state.dir;
     off.hidden = state.allowed;
     noSched.hidden = !!state.scheduler;
+    macNote.hidden = state.scheduler !== "launchd";
     waiting.replaceChildren();
     $("wf-no-waiting").hidden = state.waiting.length > 0;
     for (const w of state.waiting) {

@@ -79,6 +79,20 @@ export async function render(main) {
   rc.append(h("div", { class: "bd flush" }, items.length ? rl : h("div", { class: "pad" }, h("p", { class: "muted" }, "No chats yet."))));
   left.append(rc);
 
+  // Workflows that need the person: waiting to be approved, or a last run
+  // that failed or stopped for them.
+  const wf = store.workflows;
+  if (wf && (wf.waiting.length || wf.installed.length)) {
+    const bad = wf.installed.filter((w) => w.last_run && ["failed", "needs_you", "needs_reapproval", "stopped_at_limit"].includes(w.last_run.status));
+    const words = { failed: "failed", needs_you: "needs you", needs_reapproval: "needs re-approval", stopped_at_limit: "stopped at its time limit" };
+    const ul = h("ul", { class: "list" });
+    for (const w of bad) ul.append(h("li", {}, h("div", { class: "text" }, h("b", {}, w.name), h("span", { class: "where" }, `Last run ${words[w.last_run.status]}${w.last_run.started ? `, ${ago(w.last_run.started)}` : ""}`)), h("a", { class: "btn sm", href: `#/workflows/${encodeURIComponent(w.id)}` }, "See run")));
+    for (const w of wf.waiting) ul.append(h("li", {}, h("div", { class: "text" }, h("b", {}, w.name), h("span", { class: "where" }, "Waiting for you to approve")), h("a", { class: "btn sm", href: "#/workflows" }, "Review")));
+    right.append(h("section", { class: "card", "aria-labelledby": "h-wf" },
+      h("div", { class: "hd" }, h("h2", { id: "h-wf" }, "Workflows"), h("a", { class: "btn sm more", href: "#/workflows" }, "All workflows")),
+      h("div", { class: "bd flush" }, ul.childNodes.length ? ul : h("div", { class: "pad" }, h("p", { class: "muted" }, `${plural(wf.installed.length, "workflow")} approved; their last runs went fine.`)))));
+  }
+
   // Notes in draft.
   const drafts = notes ? notes.notes.filter((n) => n.status === "draft") : [];
   right.append(h("section", { class: "card", "aria-labelledby": "h-notes" },
