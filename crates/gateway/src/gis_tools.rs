@@ -96,7 +96,9 @@ pub struct VectorOpArgs {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct VerifyArgs {
-    /// A workspace handle (ws://…) or a dataset as "<connection>:<dataset>".
+    /// A workspace handle (ws://…), a dataset as "<connection>:<dataset>",
+    /// or {connection, dataset, where}.
+    #[schemars(extend("type" = ["string", "object"]))]
     pub layer: Value,
 }
 
@@ -718,6 +720,17 @@ impl Gateway {
         v: &Value,
         prov: &str,
     ) -> Result<Input, String> {
+        // Some clients send an object argument as its JSON text.
+        let parsed;
+        let v = match v.as_str().map(str::trim_start) {
+            Some(t) if t.starts_with('{') => {
+                parsed = serde_json::from_str::<Value>(t).map_err(|e| {
+                    format!("input {name:?}: not a handle, a dataset or a JSON object ({e})")
+                })?;
+                &parsed
+            }
+            _ => v,
+        };
         if let Some(h) = v
             .as_str()
             .filter(|s| s.starts_with(crate::providers::HANDLE_SCHEME))

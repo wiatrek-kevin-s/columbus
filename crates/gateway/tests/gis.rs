@@ -388,6 +388,14 @@ async fn gis_session_on_a_geopackage() {
         "{}",
         v["checks"]
     );
+    // The object form, sent as JSON text the way some clients do.
+    let v = ok(&call(
+        &client,
+        "verify",
+        json!({"layer": "{\"connection\": \"austin\", \"dataset\": \"roads\"}"}),
+    )
+    .await);
+    assert!(check_ids(&v).contains(&"crs.info".to_string()));
 
     // A result cut off at a limit says so wherever it is used next.
     let cut = ok(&call(
