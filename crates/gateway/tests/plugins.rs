@@ -277,6 +277,19 @@ async fn unapproved_and_changed_plugins_stay_off() {
 }
 
 #[tokio::test]
+async fn files_changed_after_the_session_started_are_not_run() {
+    let Some(py) = python() else { return };
+    let env = setup(&py);
+    env.approve();
+    let c = start(&env, &py).await;
+    // Approved when the session read it; changed before its worker starts.
+    std::fs::write(env.plugin_dir().join("worker.py"), "# tampered\n").unwrap();
+    let e = err(&call(&c, "run_tool", run_args()).await);
+    assert!(e.contains("changed since they were approved"), "{e}");
+    c.cancel().await.unwrap();
+}
+
+#[tokio::test]
 async fn a_worker_that_does_not_match_its_manifest_is_refused() {
     let Some(py) = python() else { return };
     let env = setup(&py);

@@ -59,6 +59,9 @@ pub struct Launch {
     /// None: inherit the gateway's environment (Columbus's own engine).
     /// Some: start from an empty environment plus the allow list and these.
     pub env: Option<Vec<(String, OsString)>>,
+    /// A plugin: its folder, entry file and approved hash, checked against
+    /// the files on disk before every start and restart.
+    pub contents: Option<(PathBuf, String, String)>,
 }
 
 impl Launch {
@@ -70,6 +73,7 @@ impl Launch {
             args: vec!["-I".into(), "-u".into(), script.into_os_string()],
             cwd,
             env: None,
+            contents: None,
         }
     }
 
@@ -88,6 +92,7 @@ impl Launch {
             args,
             cwd: Some(workspace),
             env: Some(env),
+            contents: None,
         }
     }
 }
@@ -172,6 +177,16 @@ impl Worker {
 
     async fn start(&self) -> Result<Running, WorkerError> {
         let l = &self.launch;
+        if let Some((dir, entry, want)) = &l.contents {
+            let now = std::fs::read_to_string(dir.join("plugin.yaml"))
+                .map_err(|e| e.to_string())
+                .and_then(|m| crate::plugins::plugin_hash(dir, &m, entry));
+            if now.as_deref() != Ok(want.as_str()) {
+                return Err(WorkerError::Unavailable(
+                    "its files changed since they were approved, so it was not started; it stays off until a person approves it again".into(),
+                ));
+            }
+        }
         if !l.program.exists() && l.program.components().count() > 1 {
             return Err(WorkerError::Unavailable(format!(
                 "{} not found",

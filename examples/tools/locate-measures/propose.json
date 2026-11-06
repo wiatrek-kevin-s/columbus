@@ -1,0 +1,49 @@
+{
+  "name": "locate_measures",
+  "title": "Locate points along routes",
+  "description": "Locate each point on the nearest route and give its route id and its measure (distance along the route from its start) in the measure unit asked for. Use it for crash, sign, bridge or asset points that need a route and milepoint, before joining them to route events. Points farther than max_distance from every route are kept with no route id or measure.",
+  "not_for": "Lines or polygons (locate their start or centroid points first), routes with gaps or several parts out of order (the measure follows the line's own direction), or calibrated LRS measures (this measures distance along the line, not the official milepoints).",
+  "version": "1.0.0",
+  "inputs": {
+    "routes": {
+      "kind": "layer",
+      "description": "Route centerlines, one line per route, digitized in the direction of increasing measure.",
+      "geometry": "line",
+      "crs": "any projected CRS (EPSG:3081 for Texas statewide work)",
+      "fields": [{"name": "RTE_ID", "type": "text", "description": "the route id (the field is chosen with route_field)"}]
+    },
+    "points": {
+      "kind": "layer",
+      "description": "The points to locate, such as crashes or signs.",
+      "geometry": "point",
+      "crs": "any (reprojected to the routes' CRS)"
+    }
+  },
+  "params": {
+    "route_field": {"type": "string", "description": "The routes field holding the route id", "default": "RTE_ID"},
+    "measure_unit": {"type": "string", "description": "Unit of the measures written", "enum": ["mile", "foot", "kilometre", "metre"], "default": "mile"},
+    "max_distance": {"type": "number", "description": "Farthest a point may be from a route and still be located", "unit": "foot", "default": 100, "min": 0, "max": 5280}
+  },
+  "outputs": {
+    "located": {
+      "kind": "layer",
+      "description": "Every input point with ROUTE_ID, MEASURE (in measure_unit) and OFFSET_FT (distance to the nearest route, in feet).",
+      "geometry": "point",
+      "crs": "same as routes",
+      "fields": [
+        {"name": "ROUTE_ID", "type": "text"},
+        {"name": "MEASURE", "type": "number", "description": "in measure_unit, from the route's first vertex"},
+        {"name": "OFFSET_FT", "type": "number", "description": "distance to the nearest route, in feet"}
+      ]
+    }
+  },
+  "checks": {
+    "lrs.off_route": "Points farther than max_distance from every route: they have no route id or measure"
+  },
+  "examples": [
+    {
+      "description": "Locate crashes on state routes, measures in miles",
+      "arguments": {"routes": "ws://<session>/results/routes.gpkg", "points": "ws://<session>/results/crashes.gpkg", "measure_unit": "mile"}
+    }
+  ]
+}

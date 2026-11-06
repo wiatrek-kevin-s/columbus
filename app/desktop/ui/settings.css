@@ -42,3 +42,17 @@ button.danger { border-color: var(--fail); color: var(--fail); background: trans
 .draft-status:empty { display: none; }
 .draft-status.bad { color: var(--fail); }
 .conn button + button { margin-left: 6px; }
+h3 { font-size: 14px; margin: 14px 0 6px; }
+.tool { display: flex; align-items: center; gap: 12px; border-top: 1px solid var(--rule); padding: 10px 0; }
+.tool:first-child { border-top: 0; }
+.tool .text { display: grid; flex: 1; min-width: 0; gap: 1px; }
+.tool .where { color: var(--soft); font-size: 12.5px; overflow-wrap: anywhere; }
+.tool button + button { margin-left: 6px; }
+.chip.off { border-color: var(--fail); color: var(--fail); }
+.review { padding: 18px; }
+.review p { margin: 6px 0; overflow-wrap: anywhere; }
+pre { background: var(--paper); border: 1px solid var(--rule); border-radius: 6px; padding: 10px; margin: 0; max-height: 40vh; overflow: auto; font-size: 12.5px; line-height: 1.4; white-space: pre-wrap; overflow-wrap: anywhere; }
+#review-warnings { display: block; padding-left: 18px; list-style: disc; color: var(--fail); }
+pre { counter-reset: line; }
+pre span.ln { display: block; }
+pre span.ln::before { counter-increment: line; content: counter(line); display: inline-block; width: 3em; margin-right: .75em; text-align: right; opacity: .55; user-select: none; }

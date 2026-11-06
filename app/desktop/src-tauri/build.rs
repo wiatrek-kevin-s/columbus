@@ -25,6 +25,11 @@ fn main() {
             "settings_pick",
             "settings_test_connection",
             "settings_draft_notes",
+            "settings_tools",
+            "settings_tool_install",
+            "settings_tool_decline",
+            "settings_tool_remove",
+            "settings_tool_files",
         ]),
     ))
     .expect("tauri build");

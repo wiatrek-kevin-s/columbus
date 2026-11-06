@@ -28,6 +28,9 @@ pub struct Paths {
     pub registry: PathBuf,
     /// The organization's context pack (a folder with `pack.yaml`).
     pub context: PathBuf,
+    /// The person's own tools (`tools/` beside the workspaces, or
+    /// `COLUMBUS_TOOLS`): installed ones and proposals waiting for them.
+    pub tools: PathBuf,
 }
 
 #[cfg(test)]
@@ -52,6 +55,7 @@ impl Paths {
             registry: env_path("COLUMBUS_REGISTRY")
                 .unwrap_or_else(|| program_data.join("registry")),
             context: env_path("COLUMBUS_CONTEXT").unwrap_or_else(|| program_data.join("context")),
+            tools: columbus_shared::tools::tools_dir(),
             python: env_path("COLUMBUS_PYTHON")
                 .or_else(bundled_engine)
                 .unwrap_or_else(|| {

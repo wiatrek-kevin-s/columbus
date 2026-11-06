@@ -53,6 +53,7 @@ every check id is in [references/check-ids.md](references/check-ids.md).
 Call `whoami` once, first, with no arguments. Read and keep:
 
 - `policy.edits_allowed`, `policy.scripts_allowed`: phase 1 is read-only by default.
+  `policy.personal_tools_allowed`: whether the person's own tools (section 13) are on.
 - `policy.rows_returned_per_call` (at most 500), `policy.rows_read_per_query` (default
   200,000; an organization may raise it, up to 20,000,000), `policy.query_seconds`
   (default 120, at most 3,600), `policy.limits_raised`, and `policy.project_db` (whether
@@ -399,6 +400,24 @@ The project database writes only its own file. `ATTACH`, `COPY`, `EXPORT`, `INST
 `query()` are refused. Bring data in with `load`, take it out with `query` and
 `export_output`. If a database is withheld because the settings changed since its data
 came in, tell the person; only they can decide to delete it and build it again.
+
+### 13. Personal tools
+
+The person can keep scripts as their own tools. `search_tools` lists installed ones as
+`personal.<name>.run` (provider kind `personal` in `list_providers`); call them with
+`run_tool` like any plugin tool. They need no approval per run, run confined like scripts,
+and their outputs carry the inputs' labels and checks. Prefer an installed tool that fits
+over writing a new script, and read its `describe_tool` (inputs' geometry, CRS and fields,
+units, `not_for`) before calling it.
+
+When the person asks to save a script as a tool ("add the script we just made as a tool"),
+or the same script keeps being written, use `propose_tool`. Read
+[references/designing-tools.md](references/designing-tools.md) first: the code is a
+`run(ctx)` function, the manifest is written for other assistants, and Columbus refuses
+network use, credentials, environment variables, absolute paths and undeclared names. The
+person approves a test run, then installs the tool in the Columbus app (Settings, Tools);
+you cannot install it, and it is usable from the next call after they do. A changed tool is
+a new proposal and a new install.
 
 ### Worked session (illustrative values)
 

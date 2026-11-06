@@ -355,27 +355,7 @@ fn shown_as_run(code: &str) -> Result<(), String> {
             ));
         }
         for c in line.chars() {
-            let bad = match c {
-                '\t' => false,
-                '\r' => true,
-                c if c.is_control() => true,
-                '\u{200B}'..='\u{200F}'
-                | '\u{202A}'..='\u{202E}'
-                | '\u{2060}'..='\u{206F}'
-                | '\u{FEFF}'
-                | '\u{00AD}'
-                | '\u{034F}'
-                | '\u{061C}'
-                | '\u{115F}'
-                | '\u{1160}'
-                | '\u{17B4}'
-                | '\u{17B5}'
-                | '\u{180E}'
-                | '\u{3164}'
-                | '\u{FFA0}'
-                | '\u{E0000}'..='\u{E007F}' => true,
-                _ => false,
-            };
+            let bad = c != '\t' && columbus_shared::canon::hidden_char(c);
             if bad {
                 return Err(format!(
                     "line {n} contains the character U+{:04X}, which displays differently from how Python reads it; scripts must be plain text",
@@ -398,18 +378,18 @@ fn check(id: &str, severity: Severity, message: String, fix: Option<&str>) -> Ch
 }
 
 /// One input, checked and bound.
-struct ScriptInput {
-    name: String,
-    handle: String,
-    path: PathBuf,
-    meta: OutputMeta,
-    sha256: String,
+pub(crate) struct ScriptInput {
+    pub(crate) name: String,
+    pub(crate) handle: String,
+    pub(crate) path: PathBuf,
+    pub(crate) meta: OutputMeta,
+    pub(crate) sha256: String,
 }
 
 impl Gateway {
     /// A workspace file Columbus recorded in this session, not from a
     /// connected server, unchanged (as `own_output` for exports).
-    fn script_input(&self, name: &str, handle: &str) -> Result<ScriptInput, String> {
+    pub(crate) fn script_input(&self, name: &str, handle: &str) -> Result<ScriptInput, String> {
         let path =
             crate::providers::resolve_handle(&self.state.session, &self.state.sandbox, handle)
                 .map_err(|e| format!("input {name}: {e}"))?;

@@ -138,8 +138,7 @@ fn shown(v: &Value) -> String {
 /// reorders text (controls, line and paragraph separators, zero-width and
 /// direction marks, fillers, variation selectors, tags).
 pub(crate) fn hidden_char(c: char) -> bool {
-    c.is_control()
-        || matches!(c as u32, 0xAD | 0x034F | 0x061C | 0x115F | 0x1160 | 0x17B4 | 0x17B5 | 0x180B..=0x180E | 0x200B..=0x200F | 0x2028..=0x202E | 0x2060..=0x206F | 0x3164 | 0xFE00..=0xFE0F | 0xFEFF | 0xFFA0 | 0xFFF9..=0xFFFB | 0xE0000..=0xE0FFF)
+    columbus_shared::canon::hidden_char(c)
 }
 
 /// Characters that do not show, or that reorder text, as `\u{…}`.

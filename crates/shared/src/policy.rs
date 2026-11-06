@@ -233,6 +233,11 @@ pub struct OrgPolicy {
     pub allow_scripts: bool,
     #[serde(default)]
     pub allow_edits: bool,
+    /// The person's own tools: scripts the assistant packaged with
+    /// `propose_tool` and the person installed in the Columbus app. Off by
+    /// default; off hides every installed one at once.
+    #[serde(default)]
+    pub allow_personal_tools: bool,
     /// Rows read and seconds per call; see [`OrgLimits`]. Use
     /// [`OrgPolicy::read_limits`] for the values in force.
     #[serde(default)]
@@ -500,6 +505,7 @@ impl Default for OrgPolicy {
             deny_tools: vec![],
             allow_scripts: false,
             allow_edits: false,
+            allow_personal_tools: false,
             limits: OrgLimits::DEFAULT,
             project_db: ProjectDbPolicy::default(),
             return_rows: Some(DEFAULT_RETURN_ROWS),

@@ -369,6 +369,11 @@ fn main() {
             settings::settings_pick,
             settings::settings_test_connection,
             settings::settings_draft_notes,
+            settings::settings_tools,
+            settings::settings_tool_install,
+            settings::settings_tool_decline,
+            settings::settings_tool_remove,
+            settings::settings_tool_files,
         ])
         .setup(|app| {
             heartbeat();

@@ -1,10 +1,12 @@
-//! The Settings window: the person's connections and the organization's
-//! switches for edits and scripts, edited here instead of in files.
+//! The Settings window: the person's connections, the organization's
+//! switches for edits, scripts and personal tools, and the person's own
+//! tools, edited here instead of in files.
 //!
 //! The assistant has no way to change these: settings are never a tool,
 //! and only this window may call these commands (capabilities/settings.json).
 //! Anything that loosens access (a new connection, read-write, more
-//! datasets, a removed row filter, edits or scripts turned on) is confirmed
+//! datasets, a removed row filter, edits, scripts or personal tools turned
+//! on, a tool installed) is confirmed
 //! by the person at the keyboard first: Touch ID or the account password on
 //! macOS, Windows Hello on Windows. Tightening and removing are not.
 //!
@@ -16,6 +18,7 @@ use std::path::{Path, PathBuf};
 
 use columbus_shared::paths;
 use columbus_shared::policy::{Connection, DatasetRules, Mode, OrgPolicy};
+use columbus_shared::tools;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -49,6 +52,7 @@ pub struct PolicyView {
     writable: bool,
     allow_edits: bool,
     allow_scripts: bool,
+    allow_personal_tools: bool,
     connection_types: Vec<String>,
     problem: Option<String>,
 }
@@ -216,6 +220,7 @@ fn state() -> SettingsState {
             writable: writable(&path),
             allow_edits: policy.allow_edits,
             allow_scripts: policy.allow_scripts,
+            allow_personal_tools: policy.allow_personal_tools,
             connection_types: policy.connection_types.clone(),
             problem,
         },
@@ -981,7 +986,10 @@ pub async fn settings_set_switch(name: String, on: bool) -> Result<(), String> {
 }
 
 fn set_switch(name: &str, on: bool) -> Result<(), String> {
-    if !matches!(name, "allow_edits" | "allow_scripts") {
+    if !matches!(
+        name,
+        "allow_edits" | "allow_scripts" | "allow_personal_tools"
+    ) {
         return Err(format!("unknown setting {name:?}"));
     }
     let path = paths::policy_file();
@@ -1003,10 +1011,12 @@ fn set_switch(name: &str, on: bool) -> Result<(), String> {
     };
     let text = set_key(&before, name, on);
     if on {
-        confirm(if name == "allow_edits" {
-            "let your assistant write to read-write connections, after your approval of each change"
-        } else {
-            "let your assistant run Python scripts, after your approval of each one"
+        confirm(match name {
+            "allow_edits" => {
+                "let your assistant write to read-write connections, after your approval of each change"
+            }
+            "allow_scripts" => "let your assistant run Python scripts, after your approval of each one",
+            _ => "let your assistant use the tools you install from what it proposes, without asking each time",
         })?;
         if std::fs::read_to_string(&path).ok().as_deref() != Some(before.as_str()) {
             return Err("the settings file changed while you were asked; nothing was saved".into());
@@ -1054,6 +1064,114 @@ pub(crate) fn set_key(text: &str, key: &str, on: bool) -> String {
     let mut s = out.join("\n");
     s.push('\n');
     s
+}
+
+/// The person's own tools: installed ones, and those an assistant proposed
+/// (with `propose_tool`) that wait for the person to read and install.
+#[derive(Serialize)]
+pub struct ToolsState {
+    dir: String,
+    /// The organization allows personal tools (`allow_personal_tools`).
+    allowed: bool,
+    installed: Vec<tools::ToolView>,
+    waiting: Vec<tools::ToolView>,
+}
+
+#[tauri::command]
+pub async fn settings_tools() -> Result<ToolsState, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let root = tools::tools_dir();
+        ToolsState {
+            dir: root.display().to_string(),
+            allowed: policy_now().allow_personal_tools,
+            installed: tools::list_installed(&root),
+            waiting: tools::list_proposals(&root),
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// The organization policy as the server reads it now (its defaults where
+/// there is no file; a file that does not read allows nothing extra).
+fn policy_now() -> OrgPolicy {
+    let path = paths::policy_file();
+    if path.exists() {
+        OrgPolicy::load(&path).unwrap_or_default()
+    } else {
+        OrgPolicy::default()
+    }
+}
+
+/// Install a tool waiting for the person: it adds to what the assistant
+/// can run without asking, so the person confirms first, and exactly the
+/// files they were shown (`hash`) are installed. Running sessions use it
+/// from their next call.
+#[tauri::command]
+pub async fn settings_tool_install(id: String, hash: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || install_tool(&id, &hash))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn install_tool(id: &str, hash: &str) -> Result<(), String> {
+    if !policy_now().allow_personal_tools {
+        return Err("your organization's settings turn personal tools off, so none can be installed here (Allow personal tools, under Organization settings)".into());
+    }
+    let root = tools::tools_dir();
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let p = tools::read_proposal(&root, id)?;
+    if p.hash != hash {
+        return Err(
+            "the tool changed after you looked at it; nothing was installed. Look again".into(),
+        );
+    }
+    confirm(&format!(
+        "add the tool \"{}\" ({}), which your assistant may then run on your data without asking",
+        p.title, p.tool
+    ))?;
+    // Checked again on the files themselves: what was shown is what goes in.
+    tools::install(&root, id, hash, &tools::now()).map(|_| ())
+}
+
+/// Decline a waiting tool: it is deleted. Nothing to confirm.
+#[tauri::command]
+pub async fn settings_tool_decline(id: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+        tools::decline(&tools::tools_dir(), &id)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Remove an installed tool: off from the next call. Nothing to confirm.
+#[tauri::command]
+pub async fn settings_tool_remove(id: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+        tools::remove(&tools::tools_dir(), &id)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// An installed tool's files, for the person to read again.
+#[tauri::command]
+pub async fn settings_tool_files(id: String) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if !tools::id_ok(&id) {
+            return Err(format!("{id:?} is not a personal tool"));
+        }
+        let dir = tools::tools_dir().join(&id);
+        let read = |f: &str| {
+            std::fs::read_to_string(dir.join(f))
+                .map_err(|e| format!("{}: {e}", dir.join(f).display()))
+        };
+        Ok(json!({"manifest_text": read(tools::MANIFEST)?, "code": read(tools::ENTRY)?}))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Open a file or folder picker; the chosen path, or None.
