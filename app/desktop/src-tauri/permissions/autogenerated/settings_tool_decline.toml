@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-settings-tool-decline"
+description = "Enables the settings_tool_decline command without any pre-configured scope."
+commands.allow = ["settings_tool_decline"]
+
+[[permission]]
+identifier = "deny-settings-tool-decline"
+description = "Denies the settings_tool_decline command without any pre-configured scope."
+commands.deny = ["settings_tool_decline"]

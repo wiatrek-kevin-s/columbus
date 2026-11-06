@@ -1,4 +1,4 @@
-// The session list. Everything shown is set as text, never as markup.
+// The classic session list. Everything shown is set as text, never as markup.
 const { invoke } = window.__TAURI__.core;
 const list = document.getElementById("sessions");
 const empty = document.getElementById("empty");
@@ -73,7 +73,6 @@ async function refresh() {
   }
 }
 
-document.getElementById("chat").addEventListener("click", () => invoke("open_chat"));
 document.getElementById("settings").addEventListener("click", () => invoke("open_settings"));
 
 refresh();

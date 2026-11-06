@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-context-read"
+description = "Enables the context_read command without any pre-configured scope."
+commands.allow = ["context_read"]
+
+[[permission]]
+identifier = "deny-context-read"
+description = "Denies the context_read command without any pre-configured scope."
+commands.deny = ["context_read"]

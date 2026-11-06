@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-audit-page"
+description = "Enables the audit_page command without any pre-configured scope."
+commands.allow = ["audit_page"]
+
+[[permission]]
+identifier = "deny-audit-page"
+description = "Denies the audit_page command without any pre-configured scope."
+commands.deny = ["audit_page"]

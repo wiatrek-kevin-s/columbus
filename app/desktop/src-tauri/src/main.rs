@@ -1,9 +1,15 @@
-//! The Columbus desktop app (design section 8), first version: the
-//! companion window for sessions run by any AI client.
+//! The Columbus desktop app (design section 8): one main window with a
+//! rail (Home, Chats, Projects, Documents, Connections, Tools, Activity,
+//! Settings…), the app's own chat, and an output panel that shows the
+//! session's map and table; plus the companion window for sessions run by
+//! any AI client.
 //!
 //! Every Columbus server announces its session in `live/<session>.json`
 //! (its port, no secret) beside the session workspaces. This app lists
-//! those sessions. "Open" asks the session's server for a window
+//! those sessions. The main window's output panel gets a session's page
+//! over the signed channel (`shell::session_page`): the session hands a
+//! view link straight to this app, which shows it in a sandboxed frame.
+//! "Open in its own window" asks the session's server for a window
 //! (`POST /api/open`); the server makes a fresh single-use launch token and
 //! hands it to this app through a `columbus://open?port=<p>#t=<token>`
 //! link, which the app opens in a window of its own. While the app runs it
@@ -14,14 +20,18 @@
 //! `columbus://` link carries a view-only token: the window shows the
 //! session's layers, tables and waiting requests, and its "Review in your
 //! browser" button has the server open the browser page that can decide.
-//! Approvals are never decided in this app.
+//! Approvals from other AI apps are never decided in this app; the app's
+//! own chat answers its own session's prompts, as any AI client does.
 //!
-//! Session windows show the local Columbus page (127.0.0.1) and have no
-//! access to the app: no capabilities, and navigation away from that
-//! page's origin is refused. Honest limit: a program the person runs can
-//! write a `live/` entry for a server of its own, and its page would then
-//! open in a Columbus window; such a program can already show the person
-//! any window it likes.
+//! Session windows and the main window's frame show the local Columbus
+//! page (127.0.0.1) and have no access to the app: no capability names a
+//! remote origin, and navigation away from the app's pages (or, for the
+//! frame, the session's page) is refused. Honest limit: a program the
+//! person runs can write a `live/` entry for a server of its own, and its
+//! page would then open in a Columbus window; such a program can already
+//! show the person any window it likes. The frame is safer than that
+//! window: the app gets its link only from a session that proves it holds
+//! the key in `live/<session>.key`.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -34,6 +44,7 @@ use serde::Serialize;
 
 mod chat;
 mod settings;
+mod shell;
 use tauri::{AppHandle, Manager, Url, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_deep_link::DeepLinkExt;
 
@@ -190,26 +201,76 @@ fn ask_for_window(port: u16) -> Result<(), String> {
     }
 }
 
-/// Open (or bring forward) the chat window.
+/// The main window's pages: the app's own files only, and the local pages
+/// of sessions it was given a link to (`allow_frame`), which it shows in a
+/// sandboxed frame. Navigation events for frames arrive here too on macOS
+/// and Linux; the frame cannot navigate the window itself (its sandbox has
+/// no top navigation), and the window's own script never does.
+fn main_page(app: &AppHandle, url: &tauri::Url) -> bool {
+    if app_page(url) || url.as_str() == "about:blank" {
+        return true;
+    }
+    url.scheme() == "http"
+        && url.host_str() == Some("127.0.0.1")
+        && url.port().is_some_and(|p| {
+            app.try_state::<Frames>()
+                .is_some_and(|f| f.0.lock().expect("frames").contains(&p))
+        })
+}
+
+/// Ports of sessions whose page the main window may show in its frame.
+#[derive(Default)]
+pub(crate) struct Frames(std::sync::Mutex<std::collections::HashSet<u16>>);
+
+pub(crate) fn allow_frame(app: &AppHandle, port: u16) {
+    if let Some(f) = app.try_state::<Frames>() {
+        f.0.lock().expect("frames").insert(port);
+    }
+}
+
+/// The main window: 1280 x 800, at least 1024 x 680 (design 4.4).
+fn main_window(app: &AppHandle) -> tauri::Result<tauri::WebviewWindow> {
+    let handle = app.clone();
+    WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+        .on_navigation(move |u| main_page(&handle, u))
+        .title("Columbus")
+        .inner_size(1280.0, 800.0)
+        .min_inner_size(1024.0, 680.0)
+        .build()
+}
+
+/// Open (or bring forward) one of the classic windows: today's session
+/// list and settings window, kept until the main window has proved itself.
 #[tauri::command]
-async fn open_chat(app: AppHandle) -> Result<(), String> {
-    if let Some(w) = app.get_webview_window("chat") {
-        let _ = w.unminimize();
-        let _ = w.set_focus();
+async fn open_classic(app: AppHandle, which: String) -> Result<(), String> {
+    let (label, page, title, w, h) = match which.as_str() {
+        "sessions" => (
+            "sessions",
+            "sessions.html",
+            "Columbus sessions (classic)",
+            560.0,
+            520.0,
+        ),
+        "settings" => return open_settings(app).await,
+        _ => return Err("no such window".into()),
+    };
+    if let Some(win) = app.get_webview_window(label) {
+        let _ = win.unminimize();
+        let _ = win.set_focus();
         return Ok(());
     }
-    WebviewWindowBuilder::new(&app, "chat", WebviewUrl::App("chat.html".into()))
+    WebviewWindowBuilder::new(&app, label, WebviewUrl::App(page.into()))
         .on_navigation(app_page)
-        .title("Columbus chat")
-        .inner_size(760.0, 860.0)
-        .min_inner_size(480.0, 520.0)
+        .title(title)
+        .inner_size(w, h)
+        .min_inner_size(420.0, 360.0)
         .build()
         .map(|_| ())
         .map_err(|e| e.to_string())
 }
 
-/// The app's own pages only: the settings and chat windows never navigate
-/// anywhere else (tauri://localhost on macOS and Linux,
+/// The app's own pages only: the settings and classic windows never
+/// navigate anywhere else (tauri://localhost on macOS and Linux,
 /// http://tauri.localhost on Windows).
 fn app_page(url: &tauri::Url) -> bool {
     url.scheme() == "tauri" || (url.scheme() == "http" && url.host_str() == Some("tauri.localhost"))
@@ -225,7 +286,7 @@ async fn open_settings(app: AppHandle) -> Result<(), String> {
     }
     WebviewWindowBuilder::new(&app, "settings", WebviewUrl::App("settings.html".into()))
         .on_navigation(app_page)
-        .title("Columbus settings")
+        .title("Columbus settings (classic)")
         .inner_size(820.0, 860.0)
         .min_inner_size(560.0, 560.0)
         .build()
@@ -233,7 +294,7 @@ async fn open_settings(app: AppHandle) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-/// Open the map window for the chat's own session.
+/// Open the map in its own window for the chat's own session.
 #[tauri::command]
 async fn chat_open_map(st: tauri::State<'_, chat::ChatState>) -> Result<(), String> {
     let session = st
@@ -347,10 +408,11 @@ fn main() {
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(chat::ChatState::default())
+        .manage(Frames::default())
         .invoke_handler(tauri::generate_handler![
             sessions,
             open_session,
-            open_chat,
+            open_classic,
             chat_open_map,
             chat::chat_settings,
             chat::chat_save_settings,
@@ -361,6 +423,11 @@ fn main() {
             chat::chat_stop,
             chat::chat_answer,
             chat::chat_end,
+            chat::chats_list,
+            chat::chat_transcript,
+            chat::chats_search,
+            chat::chat_rename,
+            chat::chat_delete,
             open_settings,
             settings::settings_state,
             settings::settings_save_connection,
@@ -374,8 +441,30 @@ fn main() {
             settings::settings_tool_decline,
             settings::settings_tool_remove,
             settings::settings_tool_files,
+            shell::shell_info,
+            shell::engine_check,
+            shell::prefs_get,
+            shell::prefs_set,
+            shell::session_page,
+            shell::session_files,
+            shell::session_provenance,
+            shell::sessions_live,
+            shell::session_activity,
+            shell::approvals_inbox,
+            shell::approvals_open_browser,
+            shell::audit_page,
+            shell::audit_verify,
+            shell::exports_list,
+            shell::notes_list,
+            shell::note_read,
+            shell::note_mark_reviewed,
+            shell::context_pack,
+            shell::context_read,
+            shell::project_databases,
+            shell::skills_list,
         ])
         .setup(|app| {
+            main_window(app.handle())?;
             heartbeat();
             let handle = app.handle().clone();
             app.deep_link()
@@ -392,7 +481,7 @@ fn main() {
             Ok(())
         })
         .on_window_event(|w, e| {
-            if w.label() == "chat" && matches!(e, tauri::WindowEvent::Destroyed) {
+            if w.label() == chat::MAIN && matches!(e, tauri::WindowEvent::Destroyed) {
                 chat::on_chat_window_closed(w.app_handle());
             }
         })

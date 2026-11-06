@@ -94,7 +94,7 @@ const MAX_LAUNCHES: u32 = 10;
 const ASKED_GAP: Duration = Duration::from_secs(3);
 const MAX_ASKED: u32 = 20;
 /// Most view links the app may take for its output panel, per session.
-const MAX_EMBEDS: u32 = 60;
+const MAX_EMBEDS: u32 = 200;
 /// The Columbus app counts as running while its heartbeat is this fresh.
 const APP_HEARTBEAT: Duration = Duration::from_secs(20);
 

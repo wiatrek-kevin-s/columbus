@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-settings-tool-files"
+description = "Enables the settings_tool_files command without any pre-configured scope."
+commands.allow = ["settings_tool_files"]
+
+[[permission]]
+identifier = "deny-settings-tool-files"
+description = "Denies the settings_tool_files command without any pre-configured scope."
+commands.deny = ["settings_tool_files"]
