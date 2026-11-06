@@ -111,13 +111,13 @@ async function ai(body) {
 
 // ---------- General ----------
 async function general(body) {
-  const theme = h("div", { class: "seg", role: "radiogroup", "aria-label": "Theme" });
+  const theme = h("div", { class: "seg", role: "group", "aria-label": "Theme" });
   for (const [v, t] of [["system", "Follow the system"], ["light", "Light"], ["dark", "Dark"]]) {
-    const b = h("button", { type: "button", role: "radio", "aria-checked": String((store.prefs.theme || "system") === v), "aria-pressed": String((store.prefs.theme || "system") === v) }, t);
+    const b = h("button", { type: "button", "aria-pressed": String((store.prefs.theme || "system") === v) }, t);
     b.addEventListener("click", async () => {
       await savePrefs({ theme: v });
       applyTheme(v);
-      for (const x of theme.children) { x.setAttribute("aria-checked", String(x === b)); x.setAttribute("aria-pressed", String(x === b)); }
+      for (const x of theme.children) x.setAttribute("aria-pressed", String(x === b));
     });
     theme.append(b);
   }

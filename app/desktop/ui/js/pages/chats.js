@@ -2,7 +2,7 @@
 // chats, and sessions started by other AI apps, each beside the output
 // panel (Map, Table, Chart, Document, Files). Everything the model, the
 // server or a file says is shown as text, never as markup.
-import { $, el, h, icon, invoke, listen, store, button, pageHead, when, ago, size, plural, timeLeft, clientName, toast, emptyState } from "../core.js";
+import { $, el, h, icon, invoke, listen, store, button, pageHead, when, ago, size, plural, timeLeft, clientName, toast, emptyState, askConfirm, askText } from "../core.js";
 
 const MODEL_NOTE = "The chat sends your messages and the results it reads to the AI service you chose (Settings › Models and accounts).";
 
@@ -19,6 +19,16 @@ const live = {
   panel: null,
   layout: "chat",
 };
+
+/** The app's own chat's session, whose prompts are answered in the chat. */
+export function liveSession() {
+  return live.session;
+}
+
+/** Requests waiting in sessions other than the app's own chat. */
+export function otherInbox() {
+  return store.inbox.filter((s) => s.session !== live.session);
+}
 
 export function waitingCount() {
   let n = 0;
@@ -851,11 +861,11 @@ async function showSaved(main, id) {
   const sub = h("p", { class: "sub" }, "");
   const seg = layoutSwitch(view, () => id);
   const del = button("Delete", "sm danger", async () => {
-    if (!confirm("Delete this chat's saved conversation? Its session's files stay where they are.")) return;
+    if (!(await askConfirm("Delete this chat?", "Its saved conversation is deleted from this computer. Files its session made stay where they are.", "Delete", true))) return;
     try { await invoke("chat_delete", { id }); refreshFns.chats(); location.hash = "#/chats"; } catch (e) { toast(String(e)); }
   });
   const rename = button("Rename", "sm", async () => {
-    const t = prompt("A new title for this chat", title.textContent);
+    const t = await askText("Rename this chat", "Title", title.textContent);
     if (!t) return;
     try { await invoke("chat_rename", { id, title: t }); title.textContent = t; refreshFns.chats(); } catch (e) { toast(String(e)); }
   });

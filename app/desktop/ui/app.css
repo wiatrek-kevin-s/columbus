@@ -39,6 +39,7 @@ a { color: var(--link); }
 code, .mono { font-family: var(--mono); font-size: 12px; }
 button, input, select, textarea { font: inherit; color: inherit; }
 :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.rail :focus-visible { outline-color: #9cc8f5; }
 [hidden] { display: none !important; }
 .visually-hidden { position: absolute !important; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .skip { position: absolute; left: 8px; top: -40px; z-index: 50; background: var(--panel); color: var(--ink); padding: 6px 10px; border-radius: 6px; border: 1px solid var(--rule); }
@@ -106,13 +107,14 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .seg { display: inline-flex; border: 1px solid var(--rule); border-radius: 6px; overflow: hidden; }
 .seg button { border: 0; background: var(--panel); color: var(--soft); padding: 4px 11px; font-size: 12.5px; cursor: pointer; }
 .seg button + button { border-left: 1px solid var(--rule); }
-.seg button[aria-pressed="true"] { background: var(--ink); color: var(--panel); font-weight: 600; }
+.seg button[aria-pressed="true"], .seg button[aria-checked="true"] { background: var(--ink); color: var(--panel); font-weight: 600; }
 .kbd { font-family: var(--mono); font-size: 11px; border: 1px solid var(--rule); border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; color: var(--soft); background: var(--panel); }
 input[type=text], input[type=password], input[type=number], input[type=search], input:not([type]), select, textarea {
   padding: 6px 8px; border: 1px solid var(--rule); border-radius: 6px; background: var(--panel); color: var(--ink); min-width: 0;
 }
 input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
-label.field { display: grid; gap: 4px; font-weight: 600; font-size: 13px; }
+label.field { display: grid; gap: 4px; font-weight: 600; font-size: 13px; align-content: start; }
+label.field input, label.field select, label.field textarea { font-weight: 400; }
 label.field small, .help { font-weight: 400; color: var(--soft); font-size: 12px; }
 .switch-row { display: flex; gap: 10px; align-items: flex-start; padding: 10px 0; border-top: 1px solid var(--rule-2); }
 .switch-row:first-of-type { border-top: 0; }

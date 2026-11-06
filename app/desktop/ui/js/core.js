@@ -198,6 +198,40 @@ export function openDialog(title, body, actions = [], label) {
   return d;
 }
 
+/** Ask the person to confirm, in the app (no browser prompt). */
+export function askConfirm(title, text, okLabel, danger = false) {
+  return new Promise((resolve) => {
+    let answer = false;
+    const ok = h("button", { type: "button", class: `btn ${danger ? "danger" : "primary"}` }, okLabel);
+    const cancel = h("button", { type: "button", class: "btn" }, "Cancel");
+    const d = openDialog(title, h("p", {}, text), [h("span", { class: "spacer" }), cancel, ok]);
+    ok.addEventListener("click", () => { answer = true; d.close(); });
+    cancel.addEventListener("click", () => d.close());
+    d.addEventListener("close", () => resolve(answer));
+    cancel.focus();
+  });
+}
+
+/** Ask the person for a line of text, in the app. Resolves to it, or null. */
+export function askText(title, label, value = "") {
+  return new Promise((resolve) => {
+    let answer = null;
+    const input = h("input", { type: "text", "aria-label": label, maxlength: "120" });
+    input.value = value;
+    const form = h("form", { class: "stack" }, h("label", { class: "field" }, label, input));
+    const ok = h("button", { type: "button", class: "btn primary" }, "Save");
+    const cancel = h("button", { type: "button", class: "btn" }, "Cancel");
+    const d = openDialog(title, form, [h("span", { class: "spacer" }), cancel, ok]);
+    const done = () => { answer = input.value.trim() || null; d.close(); };
+    ok.addEventListener("click", done);
+    form.addEventListener("submit", (e) => { e.preventDefault(); done(); });
+    cancel.addEventListener("click", () => d.close());
+    d.addEventListener("close", () => resolve(answer));
+    input.focus();
+    input.select();
+  });
+}
+
 /** Days and times as the person's computer shows them, from "YYYY-MM". */
 export function monthName(m) {
   const [y, mo] = String(m).split("-").map(Number);

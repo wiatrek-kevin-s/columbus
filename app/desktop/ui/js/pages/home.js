@@ -1,6 +1,6 @@
 // Home: what needs the person, and the first steps when nothing is set up.
 import { h, invoke, store, button, pageHead, plural, ago, clientName, savePrefs, showError } from "../core.js";
-import { recent } from "./chats.js";
+import { recent, otherInbox, waitingCount } from "./chats.js";
 import { openEditor } from "./connections.js";
 
 const STEPS = ["ai", "engine", "connection"];
@@ -47,19 +47,21 @@ export async function render(main) {
   // What needs the person.
   const waitCard = h("section", { class: "card", "aria-labelledby": "h-wait" });
   const drawWait = () => {
-    const groups = store.inbox.filter((s) => (s.pending || []).length);
-    const n = groups.reduce((k, s) => k + s.pending.length, 0);
+    const groups = otherInbox().filter((s) => (s.pending || []).length);
+    const own = waitingCount();
+    const n = groups.reduce((k, s) => k + s.pending.length, 0) + own;
     waitCard.replaceChildren(h("div", { class: "hd" }, h("h2", { id: "h-wait" }, "Waiting for you"), h("a", { class: "btn sm more", href: "#/activity/approvals" }, "Open approvals")));
     const bd = h("div", { class: "bd stack" });
     if (!n) bd.append(h("p", { class: "muted" }, "No requests are waiting. Requests from your AI apps appear here as they come."));
     else {
-      bd.append(h("p", { class: "stat" }, h("b", {}, String(n)), plural(n, "request").replace(/^\d[\d,]* /, ""), " waiting in ", plural(groups.length, "session")));
+      bd.append(h("p", { class: "stat" }, h("b", {}, String(n)), plural(n, "request").replace(/^\d[\d,]* /, ""), " waiting"));
       const ul = h("ul", { class: "list" });
+      if (own) ul.append(h("li", {}, h("div", { class: "text" }, h("b", {}, "Your chat in this app"), h("span", { class: "where" }, `${plural(own, "request")}, answered in the chat`)), h("a", { class: "btn sm", href: "#/chats/new" }, "Answer")));
       for (const s of groups) {
         const kinds = {};
         for (const a of s.pending) kinds[a.risk] = (kinds[a.risk] || 0) + 1;
         ul.append(h("li", {}, h("div", { class: "text" }, h("b", {}, `${clientName(sessionClient(s.session))} session`),
-          h("span", { class: "where" }, Object.entries(kinds).map(([k, v]) => `${v} ${k}`).join(" · "))),
+          h("span", { class: "where" }, Object.entries(kinds).map(([k, v]) => plural(v, { notes: "note change", export: "export", script: "script", edit: "edit set", download: "download", fetch: "download", tool: "tool" }[k] || k)).join(" · "))),
           h("a", { class: "btn sm", href: "#/activity/approvals" }, "Review")));
       }
       bd.append(ul);

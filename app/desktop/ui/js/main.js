@@ -1,6 +1,6 @@
 // The main window: the rail, the router, Ctrl+K search, and the polling
 // that keeps counts fresh. Pages live in pages/*.js.
-import { $, h, icon, logo, invoke, store, applyTheme } from "./core.js";
+import { $, h, icon, logo, invoke, store, applyTheme, toast } from "./core.js";
 import * as home from "./pages/home.js";
 import * as chats from "./pages/chats.js";
 import * as documents from "./pages/documents.js";
@@ -74,7 +74,7 @@ function count(n, quiet) {
 let railKey = "";
 function drawRail(r = route()) {
   const rail = $("rail");
-  const pending = store.inbox.reduce((n, s) => n + (s.pending || []).length, 0) + chats.waitingCount();
+  const pending = chats.otherInbox().reduce((n, s) => n + (s.pending || []).length, 0) + chats.waitingCount();
   const toolsWaiting = store.tools ? store.tools.waiting.length : 0;
   // Redrawn only when something it shows changed, keeping the focus.
   const key = JSON.stringify([location.hash, r.page, r.rest, pending, toolsWaiting, store.info && store.info.policy.source,
@@ -136,7 +136,7 @@ function classicMenu() {
   const d = h("dialog", { "aria-label": "Classic windows" });
   const close = () => d.close();
   const go = async (which) => {
-    try { await invoke("open_classic", { which }); } catch (e) { alert(String(e)); }
+    try { await invoke("open_classic", { which }); } catch (e) { toast(String(e)); }
     close();
   };
   d.append(h("div", { class: "dlg" },

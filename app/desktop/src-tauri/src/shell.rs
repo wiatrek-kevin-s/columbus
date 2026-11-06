@@ -112,6 +112,18 @@ fn inside(root: &Path, rel: &str) -> Result<PathBuf, String> {
     Ok(full)
 }
 
+/// The start of a file, for its front matter.
+fn read_head(path: &Path) -> Option<String> {
+    use std::io::Read;
+    let mut buf = Vec::new();
+    std::fs::File::open(path)
+        .ok()?
+        .take(16 * 1024)
+        .read_to_end(&mut buf)
+        .ok()?;
+    Some(String::from_utf8_lossy(&buf).into_owned())
+}
+
 fn read_text(path: &Path) -> Result<String, String> {
     use std::io::Read;
     let f = std::fs::File::open(path).map_err(|e| e.to_string())?;
@@ -469,7 +481,7 @@ pub async fn sessions_live() -> Result<Vec<Value>, String> {
     tauri::async_runtime::spawn_blocking(|| {
         let live = settings::live_all();
         let p = places_from(&live);
-        let recent = audit_recent(Path::new(&p.audit), 4000);
+        let recent = audit_recent(Path::new(&p.audit), 20_000);
         live.iter()
             .map(|s| {
                 let client = recent
@@ -625,12 +637,40 @@ fn months(dir: &Path) -> Vec<(String, u64)> {
     out
 }
 
-/// The newest `n` lines across the latest two months, oldest first.
+/// The lines in the last `bytes` of a file (the first, cut one dropped).
+fn audit_tail(path: &Path, bytes: u64) -> Vec<Value> {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut f) = std::fs::File::open(path) else {
+        return vec![];
+    };
+    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+    let from = len.saturating_sub(bytes);
+    if f.seek(SeekFrom::Start(from)).is_err() {
+        return vec![];
+    }
+    let mut buf = Vec::new();
+    if f.take(bytes).read_to_end(&mut buf).is_err() {
+        return vec![];
+    }
+    let text = String::from_utf8_lossy(&buf);
+    let mut lines: Vec<&str> = text.lines().collect();
+    if from > 0 && !lines.is_empty() {
+        lines.remove(0);
+    }
+    lines
+        .into_iter()
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .collect()
+}
+
+/// The newest `n` lines of the latest two months (reading at most a few
+/// megabytes of each, from the end), oldest first.
 fn audit_recent(dir: &Path, n: usize) -> Vec<Value> {
+    const TAIL: u64 = 4 * 1024 * 1024;
     let ms = months(dir);
     let mut lines = vec![];
     for (m, _) in ms.iter().take(2).rev() {
-        lines.extend(audit_lines(&dir.join(format!("{m}.jsonl"))));
+        lines.extend(audit_tail(&dir.join(format!("{m}.jsonl")), TAIL));
     }
     let k = lines.len();
     lines.drain(..k.saturating_sub(n));
@@ -779,7 +819,7 @@ pub async fn notes_list() -> Result<Value, String> {
         let notes: Vec<Value> = walk(&root, 6, &|p| p.extension().is_some_and(|e| e == "md"))
             .into_iter()
             .map(|(rel, m)| {
-                let fm = read_text(&root.join(&rel))
+                let fm = read_head(&root.join(&rel))
                     .map(|t| front_matter(&t))
                     .unwrap_or_default();
                 json!({
@@ -862,7 +902,7 @@ pub async fn context_pack() -> Result<Value, String> {
         .into_iter()
         .filter(|(rel, _)| rel != "pack.yaml")
         .map(|(rel, m)| {
-            let fm = read_text(&root.join(&rel))
+            let fm = read_head(&root.join(&rel))
                 .map(|t| front_matter(&t))
                 .unwrap_or_default();
             json!({
@@ -993,6 +1033,24 @@ mod tests {
         assert_eq!(fm["status"], "draft");
         assert!(!fm.contains_key("body"));
         assert!(!fm.contains_key("nested"));
+    }
+
+    #[test]
+    fn the_audit_tail_drops_a_cut_line() {
+        let d = std::env::temp_dir().join(format!("columbus-tail-test-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let f = d.join("2026-11.jsonl");
+        let lines: Vec<String> = (0..50)
+            .map(|i| format!("{{\"tool\":\"t{i}\",\"session\":\"s\"}}"))
+            .collect();
+        std::fs::write(&f, lines.join("\n") + "\n").unwrap();
+        let all = audit_tail(&f, 1 << 20);
+        assert_eq!(all.len(), 50);
+        let tail = audit_tail(&f, 100);
+        assert!(!tail.is_empty() && tail.len() < 50);
+        assert_eq!(tail.last().unwrap()["tool"], "t49");
+        assert_eq!(audit_recent(&d, 3).len(), 3);
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

@@ -3,7 +3,7 @@
 // browser page the session opens), the audit log (read only, with the
 // chain check) and the exports it records.
 import { h, el, invoke, store, button, pageHead, timeLeft, when, ago, plural, clientName, monthName, emptyState, toast } from "../core.js";
-import { openBrowser, waitingCount, describe } from "./chats.js";
+import { openBrowser, waitingCount, describe, otherInbox } from "./chats.js";
 
 export async function render(main, rest) {
   const sub = rest[0] || "approvals";
@@ -30,7 +30,8 @@ function approvals(page) {
       body.append(h("section", { class: "group" }, h("div", { class: "hd" }, h("span", { class: "dot run" }), h("h3", {}, "Your chat in this app"), h("span", { class: "badge info" }, plural(own, "request")),
         h("a", { class: "btn sm primary right", href: "#/chats/new" }, "Answer in the chat"))));
     }
-    const groups = store.inbox;
+    // The app's own chat's requests are answered in the chat (above).
+    const groups = otherInbox();
     let total = 0;
     for (const s of groups) {
       const pending = s.pending || [];
