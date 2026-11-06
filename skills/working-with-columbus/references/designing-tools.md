@@ -86,7 +86,8 @@ Columbus adds the lines that connect `run` to it; leave out `if __name__ == "__m
   `.eval(...)` take only a fixed expression written in the code, with no `@names`. Filter
   with a mask instead: `gdf[gdf[field] > value]`. No pickles (`read_pickle`,
   `allow_pickle=True`), no clipboard (`read_clipboard`, `to_clipboard`), no library settings
-  (`pd.set_option`, `rasterio.Env(...)` with settings), and not `numpy.ctypeslib`,
+  (`pd.set_option`, `rasterio.Env(...)` with settings, anything named `config`, `backend`,
+  `setenv`, `data_dir` or `network`, and no `backend=` keyword), and not `numpy.ctypeslib`,
   `numpy.f2py`, `numpy.testing` or `logging.handlers`. `zipfile` is fine for a zipped output. These rules make the code you read the code that runs; the sandbox
   (no network, writing only its outputs) is what contains it either way.
 - **Nothing at import time**: the top level holds only a docstring, imports, functions,

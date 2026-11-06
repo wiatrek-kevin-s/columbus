@@ -109,6 +109,10 @@ REFUSED_SYS = {"sys.modules", "sys._getframe", "sys.settrace", "sys.setprofile",
 REFUSED_NAMES = {"operator.attrgetter", "operator.methodcaller", "string.Formatter", "logging.config",
                  "pandas.eval", "typing.ForwardRef", "typing.get_type_hints", "functools.singledispatch",
                  "pandas.options", "pandas.set_option", "pandas.option_context", "pandas.read_clipboard"}
+# Library settings: any attribute whose name is about configuration,
+# backends, data folders or the network, on any object (nx.config,
+# rasterio.env.setenv, pyproj.datadir.set_data_dir, pd.plotting.plot_params).
+SETTINGS_ATTR = re.compile(r"(config|backend|setenv|defenv|from_defaults|data_dir|network|plot_params|^options$|^drivers$)", re.I)
 # GDAL settings can change where GDAL loads plugins and data from: rasterio
 # and fiona's Env take no settings in a tool.
 ENV_CALLS = {"rasterio.Env", "rasterio.env.Env", "fiona.Env", "fiona.env.Env"}
@@ -198,6 +202,10 @@ class _Lint(ast.NodeVisitor):
     def _module(self, node: ast.AST, name: str) -> None:
         root = _root(name)
         why = REFUSED_MODULES.get(name) or REFUSED_MODULES.get(root)
+        if name != "__future__" and any(part.startswith("_") for part in name.split(".")):
+            self.err(node, "tool.private", f"import of {name}: a tool may use only public modules (no parts starting with _)")
+        if any(part != root and SETTINGS_ATTR.search(part) for part in name.split(".")):
+            self.err(node, "tool.settings", f"import of {name}: a tool may not use a library's settings, backends, data folders or network")
         if any(name == r or name.startswith(r + ".") for r in REFUSED_SUBMODULES):
             self.err(node, "tool.import", f"import of {name}: this part of {root} loads native code, starts programs or loads modules named in text")
         if root != SDK and root not in ALLOWED_MODULES and not why:
@@ -226,7 +234,7 @@ class _Lint(ast.NodeVisitor):
                 continue
             full = f"{mod}.{a.name}" if mod else a.name
             if any(full == r or full.startswith(r + ".") for r in REFUSED_SUBMODULES) or a.name in ESCAPE_ATTRS \
-                    or a.name in REFUSED_METHODS:
+                    or a.name in REFUSED_METHODS or SETTINGS_ATTR.search(a.name) or a.name.startswith("_"):
                 self.err(node, "tool.import", f"from {mod} import {a.name}: this part of {_root(full)} loads native code, starts programs, reaches the operating system or changes settings")
             if full in REFUSED_MODULES or full in REFUSED_NAMES:
                 self.err(node, "tool.import", f"from {mod} import {a.name}: a tool may not use {REFUSED_MODULES.get(full, 'ways to reach code or attributes by name')}")
@@ -254,6 +262,8 @@ class _Lint(ast.NodeVisitor):
             self.err(node, "tool.private", f".{node.attr}: a tool may use only the public parts of other objects (no names starting with _)")
         if any(full == r or full.startswith(r + ".") for r in REFUSED_SUBMODULES):
             self.err(node, "tool.import", f"{full}: this part of {_root(full)} loads native code, starts programs or loads modules named in text")
+        if SETTINGS_ATTR.search(node.attr):
+            self.err(node, "tool.settings", f".{node.attr}: a tool may not read or change a library's settings, backends, data folders or network use")
         if node.attr in REFUSED_METHODS:
             self.err(node, "tool.settings", f".{node.attr}: a tool may not use the clipboard or change a library's settings")
         if node.attr in PICKLE_CALLS:
@@ -309,6 +319,8 @@ class _Lint(ast.NodeVisitor):
         if name in ENV_CALLS and (node.args or node.keywords):
             self.err(node, "tool.settings", f"{name}(...): a tool may not change GDAL's settings; use {name}() with no arguments if you need it at all")
         for k in node.keywords:
+            if k.arg == "backend":
+                self.err(node, "tool.settings", "backend=: a library loads the module this names; leave it at its default")
             if k.arg == "allow_pickle" and not (isinstance(k.value, ast.Constant) and k.value.value is False):
                 self.err(node, "tool.pickle", "allow_pickle: pickled data runs code as it loads")
         # ctx.<method>("name") for the manifest check.
