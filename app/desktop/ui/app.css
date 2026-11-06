@@ -292,11 +292,11 @@ dialog .actions .spacer { flex: 1; }
 .ask .row button:not(.primary):not(.danger) { background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; cursor: pointer; }
 .ask .row button:disabled { opacity: .5; cursor: default; }
 .ended { background: var(--panel); border: 1px dashed var(--rule); border-radius: 8px; padding: 10px 12px; font-size: 12.5px; color: var(--soft); display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-#composer { border-top: 1px solid var(--rule); padding: 10px 16px 12px; background: var(--panel); display: grid; gap: 8px; flex: none; }
+#composer { border-top: 1px solid var(--rule); padding: 10px 16px 12px; background: var(--panel); display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; flex: none; }
 #composer textarea { padding: 8px 10px; border: 1px solid var(--rule); border-radius: 8px; resize: vertical; background: var(--paper); color: var(--ink); min-height: 58px; }
 #composer .row { justify-content: flex-end; flex-wrap: wrap; }
 #composer #status { margin-right: auto; font-size: 12.5px; color: var(--soft); flex: 1 1 auto; min-width: 0; }
-#composer .chip { min-width: 0; flex: 0 1 auto; }
+#composer .chip { min-width: 0; flex: 0 1 auto; display: block; overflow: hidden; text-overflow: ellipsis; }
 .chat-empty { display: grid; gap: 10px; justify-items: start; padding: 26px 4px; max-width: 64ch; }
 .chat-empty h2 { font-size: 17px; }
 .starters { display: grid; gap: 6px; }
