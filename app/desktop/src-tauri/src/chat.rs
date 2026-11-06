@@ -14,7 +14,9 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use columbus_chat::{Answer, Cancel, Chat, Config, Event, Prompt, Ui, MODELS};
+use columbus_chat::{
+    effort_ok, model_ok, Answer, Cancel, Chat, Config, Event, Prompt, Ui, EFFORTS, MODELS,
+};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::{oneshot, Mutex};
@@ -44,8 +46,28 @@ pub struct ChatState {
 pub struct Settings {
     #[serde(default)]
     pub model: Option<String>,
+    /// The thinking level new chats start with ("" or absent: the model's own).
+    #[serde(default)]
+    pub effort: Option<String>,
     #[serde(default)]
     pub server: Option<PathBuf>,
+}
+
+impl Settings {
+    /// The default model for new chats: the saved one while it is offered.
+    fn model(&self) -> String {
+        self.model
+            .clone()
+            .filter(|m| model_ok(m))
+            .unwrap_or_else(|| MODELS[0].0.to_string())
+    }
+
+    fn effort(&self) -> String {
+        self.effort
+            .clone()
+            .filter(|e| effort_ok(e))
+            .unwrap_or_default()
+    }
 }
 
 fn settings_path(app: &AppHandle) -> Option<PathBuf> {
@@ -62,35 +84,175 @@ pub(crate) fn load(app: &AppHandle) -> Settings {
         .unwrap_or_default()
 }
 
-/// Where Columbus's server usually is: the folder the install guides use.
-fn default_server() -> Option<PathBuf> {
-    let home =
-        std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from);
-    let exe = if cfg!(windows) {
-        "columbus-mcp.exe"
-    } else {
-        "columbus-mcp"
-    };
+const EXE: &str = if cfg!(windows) {
+    "columbus-mcp.exe"
+} else {
+    "columbus-mcp"
+};
+
+/// The app's resource folder, set when the app starts.
+static RESOURCES: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// The app's chats folder, kept out of the servers the chat may start.
+static CHATS: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+pub(crate) fn set_dirs(app: &AppHandle) {
+    if let Ok(d) = app.path().resource_dir() {
+        let _ = RESOURCES.set(d);
+    }
+    if let Some(d) = chats_dir(app) {
+        let _ = CHATS.set(d);
+    }
+}
+
+/// `server_ok`, with this app's chats folder kept out too.
+fn startable(p: &Path) -> Option<PathBuf> {
+    server_ok(p, CHATS.get().map(PathBuf::as_path)).ok()
+}
+
+/// The server that comes with this app (release builds put the server
+/// folder in the app's resources), so the chat always has one that
+/// matches the app.
+fn bundled_server() -> Option<PathBuf> {
+    startable(&RESOURCES.get()?.join("server").join(EXE))
+}
+
+/// The Columbus folders the install guides use.
+fn install_folders() -> Vec<PathBuf> {
     let mut c = Vec::new();
+    if cfg!(windows) {
+        c.push(PathBuf::from(r"C:\Columbus"));
+    }
+    if let Some(h) =
+        std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from)
+    {
+        c.push(h.join("Columbus"));
+    }
+    c
+}
+
+/// A server in the folder the install guides use.
+fn installed_server() -> Option<PathBuf> {
+    install_folders()
+        .into_iter()
+        .find_map(|d| startable(&d.join(EXE)))
+}
+
+/// The GIS engine's Python in a Columbus folder (`engine/` there).
+fn engine_in(dir: &Path) -> Option<PathBuf> {
+    let candidates: &[&[&str]] = if cfg!(windows) {
+        &[
+            &["engine", "venv", "Scripts", "python.exe"],
+            &["engine", ".pixi", "envs", "default", "python.exe"],
+        ]
+    } else {
+        &[
+            &["engine", "venv", "bin", "python3"],
+            &["engine", ".pixi", "envs", "default", "bin", "python3"],
+        ]
+    };
+    candidates
+        .iter()
+        .map(|parts| parts.iter().fold(dir.to_path_buf(), |p, s| p.join(s)))
+        .find(|p| p.is_file())
+}
+
+/// The engine the chat's server uses: `COLUMBUS_PYTHON`, else the one
+/// beside the server, else the one in the person's Columbus folder (set up
+/// by the install guide; the app's own server has none beside it).
+pub(crate) fn engine_python(server: Option<&Path>) -> Option<PathBuf> {
+    if let Some(p) = std::env::var_os("COLUMBUS_PYTHON").filter(|v| !v.is_empty()) {
+        return Some(PathBuf::from(p));
+    }
+    server
+        .and_then(Path::parent)
+        .and_then(engine_in)
+        .or_else(|| install_folders().iter().find_map(|d| engine_in(d)))
+}
+
+/// `columbus-mcp 0.9.1` as (0, 9, 1).
+fn parse_version(out: &str) -> Option<(u32, u32, u32)> {
+    let v = out.split_whitespace().nth(1)?;
+    let mut it = v.split(['.', '-', '+']).map(|n| n.parse::<u32>().ok());
+    Some((it.next()??, it.next()??, it.next()??))
+}
+
+/// What a server says its version is (`--version`, cached per file).
+pub(crate) fn server_version(p: &Path) -> Option<(u32, u32, u32)> {
+    type Seen = Vec<(PathBuf, std::time::SystemTime, (u32, u32, u32))>;
+    static SEEN: std::sync::Mutex<Seen> = std::sync::Mutex::new(Vec::new());
+    let modified = std::fs::metadata(p).and_then(|m| m.modified()).ok()?;
+    if let Some(v) = SEEN
+        .lock()
+        .ok()?
+        .iter()
+        .find(|(q, t, _)| q == p && *t == modified)
+        .map(|x| x.2)
+    {
+        return Some(v);
+    }
+    let mut cmd = std::process::Command::new(p);
+    cmd.arg("--version")
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // no console window
+    }
+    let out = cmd.output().ok()?;
+    let v = parse_version(&String::from_utf8_lossy(&out.stdout))?;
+    if let Ok(mut g) = SEEN.lock() {
+        g.push((p.to_path_buf(), modified, v));
+    }
+    Some(v)
+}
+
+pub(crate) fn app_version() -> (u32, u32, u32) {
+    parse_version(&format!("x {}", env!("CARGO_PKG_VERSION"))).unwrap_or((0, 0, 0))
+}
+
+/// The server the chat starts. One chosen in Settings, unless it is older
+/// than the one that comes with the app; else the app's own; else the one
+/// in the Columbus folder.
+pub(crate) fn server(s: &Settings) -> Option<PathBuf> {
     // Test builds only: the app's end-to-end tests point at the server they built.
     #[cfg(debug_assertions)]
     if let Some(p) = std::env::var_os("COLUMBUS_SERVER").filter(|v| !v.is_empty()) {
-        c.push(PathBuf::from(p));
+        return startable(Path::new(&p));
     }
-    if cfg!(windows) {
-        c.push(PathBuf::from(r"C:\Columbus").join(exe));
+    // Checked before it is asked its version: whatever wrote the settings
+    // file, only a Columbus server is run.
+    let chosen = s.server.as_deref().and_then(startable);
+    let bundled = bundled_server();
+    match (chosen, bundled) {
+        (Some(c), Some(b)) => match (server_version(&c), server_version(&b)) {
+            (Some(vc), Some(vb)) if vc >= vb => Some(c),
+            _ => Some(b),
+        },
+        (Some(c), None) => Some(c),
+        (None, Some(b)) => Some(b),
+        (None, None) => installed_server(),
     }
-    if let Some(h) = home {
-        c.push(h.join("Columbus").join(exe));
-    }
-    c.into_iter().find_map(|p| server_ok(&p, None).ok())
 }
 
-pub(crate) fn server(s: &Settings) -> Option<PathBuf> {
-    s.server
-        .clone()
-        .filter(|p| p.is_file())
-        .or_else(default_server)
+/// Whether `p` is the server that comes with the app.
+pub(crate) fn is_bundled(p: &Path) -> bool {
+    bundled_server().is_some_and(|b| p.canonicalize().ok().as_ref() == Some(&b))
+}
+
+/// The environment the chat gives its server: the engine, when the server
+/// has none beside it.
+fn server_env(srv: &Path) -> Vec<(String, String)> {
+    if std::env::var_os("COLUMBUS_PYTHON").is_some_and(|v| !v.is_empty()) {
+        return vec![];
+    }
+    if srv.parent().and_then(engine_in).is_some() {
+        return vec![];
+    }
+    engine_python(Some(srv))
+        .map(|p| vec![("COLUMBUS_PYTHON".to_string(), p.display().to_string())])
+        .unwrap_or_default()
 }
 
 /// The system credential store, for the settings window too.
@@ -135,9 +297,54 @@ pub struct SettingsView {
     has_key: bool,
     model: String,
     models: Vec<(String, String)>,
+    effort: String,
+    efforts: Vec<(String, String)>,
+    /// The server chosen in Settings, if any.
     server: Option<String>,
     server_found: bool,
+    /// The server a new chat starts, and what is known about it.
+    server_in_use: Option<String>,
+    server_version: Option<String>,
+    server_bundled: bool,
+    /// The server in use is older than this app: some of the app does not
+    /// work with it.
+    server_older: bool,
+    /// The server chosen in Settings is not used: it is older than the one
+    /// that comes with the app.
+    chosen_ignored: bool,
+    app_version: String,
+    engine: Option<String>,
     chatting: bool,
+}
+
+struct ServerInfo {
+    in_use: Option<PathBuf>,
+    version: Option<(u32, u32, u32)>,
+    bundled: bool,
+    chosen_ignored: bool,
+    engine: Option<PathBuf>,
+}
+
+fn server_info(s: &Settings) -> ServerInfo {
+    let in_use = server(s);
+    let version = in_use.as_deref().and_then(server_version);
+    let bundled = in_use.as_deref().is_some_and(is_bundled);
+    let chosen_ignored = s.server.is_some()
+        && in_use.as_ref().is_some_and(|u| {
+            s.server
+                .as_ref()
+                .and_then(|c| c.canonicalize().ok())
+                .as_ref()
+                != Some(u)
+        });
+    let engine = engine_python(in_use.as_deref());
+    ServerInfo {
+        in_use,
+        version,
+        bundled,
+        chosen_ignored,
+        engine,
+    }
 }
 
 #[tauri::command]
@@ -146,23 +353,35 @@ pub async fn chat_settings(
     st: State<'_, ChatState>,
 ) -> Result<SettingsView, String> {
     let s = load(&app);
-    let srv = server(&s);
+    let s2 = s.clone();
+    let info = tauri::async_runtime::spawn_blocking(move || server_info(&s2))
+        .await
+        .map_err(|e| e.to_string())?;
     let has_key =
         tauri::async_runtime::spawn_blocking(|| read_key().is_some_and(|k| !k.is_empty()))
             .await
             .unwrap_or(false);
     Ok(SettingsView {
         has_key,
-        model: s.model.clone().unwrap_or_else(|| MODELS[0].0.to_string()),
+        model: s.model(),
         models: MODELS
             .iter()
             .map(|(a, b)| (a.to_string(), b.to_string()))
             .collect(),
-        server: srv
-            .as_ref()
-            .map(|p| p.display().to_string())
-            .or(s.server.map(|p| p.display().to_string())),
-        server_found: srv.is_some(),
+        effort: s.effort(),
+        efforts: EFFORTS
+            .iter()
+            .map(|(a, b)| (a.to_string(), b.to_string()))
+            .collect(),
+        server: s.server.map(|p| p.display().to_string()),
+        server_found: info.in_use.is_some(),
+        server_in_use: info.in_use.as_ref().map(|p| p.display().to_string()),
+        server_version: info.version.map(|(a, b, c)| format!("{a}.{b}.{c}")),
+        server_bundled: info.bundled,
+        server_older: info.version.is_some_and(|v| v < app_version()),
+        chosen_ignored: info.chosen_ignored,
+        app_version: env!("CARGO_PKG_VERSION").to_string(),
+        engine: info.engine.map(|p| p.display().to_string()),
         chatting: st.chat.lock().await.is_some(),
     })
 }
@@ -171,10 +390,15 @@ pub async fn chat_settings(
 pub async fn chat_save_settings(
     app: AppHandle,
     model: String,
+    effort: Option<String>,
     server: Option<String>,
 ) -> Result<(), String> {
-    if !MODELS.iter().any(|(m, _)| *m == model) {
+    if !model_ok(&model) {
         return Err("unknown model".into());
+    }
+    let effort = effort.unwrap_or_default();
+    if !effort_ok(&effort) {
+        return Err("unknown thinking level".into());
     }
     let wanted = server.filter(|v| !v.trim().is_empty()).map(PathBuf::from);
     let old = load(&app);
@@ -198,6 +422,7 @@ pub async fn chat_save_settings(
         .map_err(|e| e.to_string())??;
     let s = Settings {
         model: Some(model),
+        effort: Some(effort),
         server,
     };
     let p = settings_path(&app).ok_or("no settings folder")?;
@@ -223,11 +448,7 @@ fn on_network_share(p: &Path) -> bool {
 /// (`columbus-mcp.exe` on Windows), by its full path, and not in a folder
 /// an assistant or a session writes to (workspaces, notes, chats).
 pub(crate) fn server_ok(p: &Path, chats: Option<&Path>) -> Result<PathBuf, String> {
-    let exe = if cfg!(windows) {
-        "columbus-mcp.exe"
-    } else {
-        "columbus-mcp"
-    };
+    let exe = EXE;
     if !p.is_absolute() {
         return Err("give the server's full path".into());
     }
@@ -363,7 +584,12 @@ pub struct Started {
 
 /// Start a chat (its own Columbus session) if none is running.
 #[tauri::command]
-pub async fn chat_start(app: AppHandle, st: State<'_, ChatState>) -> Result<Started, String> {
+pub async fn chat_start(
+    app: AppHandle,
+    st: State<'_, ChatState>,
+    model: Option<String>,
+    effort: Option<String>,
+) -> Result<Started, String> {
     let mut slot = st.chat.lock().await;
     if slot.is_some() {
         // Already running (a reply may be holding it): answer without
@@ -375,9 +601,22 @@ pub async fn chat_start(app: AppHandle, st: State<'_, ChatState>) -> Result<Star
         });
     }
     let s = load(&app);
-    let srv = server(&s).ok_or(
-        "Columbus's server was not found. Unpack the Columbus folder (see the install guide), or set its place in Settings.",
-    )?;
+    // This chat's own choice, else the default from Settings.
+    let model = model.unwrap_or_else(|| s.model());
+    let effort = effort.unwrap_or_else(|| s.effort());
+    if !model_ok(&model) {
+        return Err("unknown model".into());
+    }
+    if !effort_ok(&effort) {
+        return Err("unknown thinking level".into());
+    }
+    let s2 = s.clone();
+    let srv = tauri::async_runtime::spawn_blocking(move || server(&s2))
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or(
+            "Columbus's server was not found. Unpack the Columbus folder (see the install guide), or set its place in Settings.",
+        )?;
     // Whatever wrote the settings file, only a Columbus server is started.
     let chats = chats_dir(&app);
     let srv = tauri::async_runtime::spawn_blocking(move || server_ok(&srv, chats.as_deref()))
@@ -396,10 +635,11 @@ pub async fn chat_start(app: AppHandle, st: State<'_, ChatState>) -> Result<Star
         api_base = b;
     }
     let cfg = Config {
+        server_env: server_env(&srv),
         server: srv,
-        server_env: vec![],
         api_key: key,
-        model: s.model.unwrap_or_else(|| MODELS[0].0.to_string()),
+        model: model.clone(),
+        effort: effort.clone(),
         api_base,
     };
     let cancel = Cancel::default();
@@ -408,7 +648,7 @@ pub async fn chat_start(app: AppHandle, st: State<'_, ChatState>) -> Result<Star
         .await
         .map_err(|e| e.to_string())?;
     let session = chat.session().map(String::from);
-    let id = new_transcript(&app, &st, session.as_deref(), &cfg_model(&app));
+    let id = new_transcript(&app, &st, session.as_deref(), &model, &effort);
     let started = Started {
         session,
         tools: chat.tool_count(),
@@ -451,6 +691,35 @@ pub async fn chat_send(
         };
         let _ = c.send(&text, &cancel).await;
     });
+    Ok(())
+}
+
+/// Change the running chat's model or thinking level; the next message
+/// uses it. Not while a reply is in progress.
+#[tauri::command]
+pub async fn chat_set_model(
+    app: AppHandle,
+    st: State<'_, ChatState>,
+    model: String,
+    effort: String,
+) -> Result<(), String> {
+    let chat = st
+        .chat
+        .lock()
+        .await
+        .clone()
+        .ok_or("the chat has not started")?;
+    let Ok(mut c) = chat.try_lock() else {
+        return Err("wait for the reply to finish, then change the model".into());
+    };
+    if c.model() == (model.as_str(), effort.as_str()) {
+        return Ok(());
+    }
+    c.set_model(&model, &effort).map_err(|e| e.to_string())?;
+    record(
+        &app,
+        &serde_json::json!({"kind": "model", "model": model, "effort": effort}),
+    );
     Ok(())
 }
 
@@ -568,10 +837,6 @@ pub(crate) fn id_ok(id: &str) -> bool {
         && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
 }
 
-fn cfg_model(app: &AppHandle) -> String {
-    load(app).model.unwrap_or_else(|| MODELS[0].0.to_string())
-}
-
 fn current_id(st: &ChatState) -> Option<String> {
     st.transcript
         .lock()
@@ -587,6 +852,7 @@ fn new_transcript(
     st: &ChatState,
     session: Option<&str>,
     model: &str,
+    effort: &str,
 ) -> Option<String> {
     let dir = chats_dir(app)?;
     std::fs::create_dir_all(&dir).ok()?;
@@ -599,7 +865,7 @@ fn new_transcript(
     *st.transcript.lock().expect("transcript") = Some(path);
     record(
         app,
-        &serde_json::json!({"kind": "meta", "id": id, "session": session, "model": model}),
+        &serde_json::json!({"kind": "meta", "id": id, "session": session, "model": model, "effort": effort}),
     );
     Some(id)
 }
@@ -927,6 +1193,21 @@ pub async fn chat_delete(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn server_versions_are_read_from_their_version_line() {
+        assert_eq!(
+            super::parse_version("columbus-mcp 0.9.1\n"),
+            Some((0, 9, 1))
+        );
+        assert_eq!(
+            super::parse_version("columbus-mcp 1.10.0-rc.1"),
+            Some((1, 10, 0))
+        );
+        assert_eq!(super::parse_version("columbus-mcp"), None);
+        assert_eq!(super::parse_version("something else entirely"), None);
+        assert!(super::parse_version("columbus-mcp 0.8.1") < Some(super::app_version()));
+    }
+
     #[cfg(windows)]
     #[test]
     fn a_server_on_a_network_share_is_refused() {

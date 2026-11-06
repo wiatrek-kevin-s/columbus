@@ -16,6 +16,7 @@ fn main() {
             "chat_clear_key",
             "chat_start",
             "chat_send",
+            "chat_set_model",
             "chat_stop",
             "chat_answer",
             "chat_end",

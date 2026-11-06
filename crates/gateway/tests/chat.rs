@@ -160,6 +160,7 @@ fn config(root: &Path, py: &str, api_base: String) -> Config {
         ],
         api_key: "test-key".into(),
         model: "claude-sonnet-5-5".into(),
+        effort: String::new(),
         api_base,
     }
 }
@@ -304,6 +305,49 @@ async fn a_declined_approval_stops_the_export() {
         result["content"].as_str().unwrap().contains("declined"),
         "{result}"
     );
+    chat.close().await;
+}
+
+#[tokio::test]
+async fn each_message_uses_the_chats_model_and_thinking_level() {
+    let Some(py) = python() else {
+        return;
+    };
+    let (_dir, root) = setup(&py);
+    let script = vec![
+        json!({"content": [
+            {"type": "thinking", "thinking": "plan", "signature": "sig"},
+            {"type": "text", "text": "First."}
+        ], "stop_reason": "end_turn"}),
+        json!({"content": [{"type": "text", "text": "Second."}], "stop_reason": "end_turn"}),
+    ];
+    let (base, state) = stand_in(script).await;
+    let ui = Arc::new(TestUi {
+        events: Mutex::default(),
+        prompts: Mutex::default(),
+        withdrawn: Mutex::default(),
+        answer: Answer::Decline,
+    });
+    let mut chat = Chat::start(config(&root, &py, base), ui.clone(), Cancel::default())
+        .await
+        .unwrap();
+    chat.send("one", &Cancel::default()).await.unwrap();
+    assert!(chat.set_model("claude-opus-9", "").is_err());
+    assert!(chat.set_model("claude-opus-5-5", "extreme").is_err());
+    chat.set_model("claude-opus-5-5", "high").unwrap();
+    chat.send("two", &Cancel::default()).await.unwrap();
+    let (a, b) = {
+        let g = state.lock().unwrap();
+        (g.1.requests[0].clone(), g.1.requests[1].clone())
+    };
+    assert_eq!(a["model"], "claude-sonnet-5-5");
+    assert!(a.get("output_config").is_none(), "{a}");
+    assert_eq!(b["model"], "claude-opus-5-5");
+    assert_eq!(b["output_config"]["effort"], "high");
+    // The other model's thinking is not sent; its answer is.
+    let sent = b["messages"].to_string();
+    assert!(!sent.contains("\"thinking\""), "{sent}");
+    assert!(sent.contains("First."), "{sent}");
     chat.close().await;
 }
 

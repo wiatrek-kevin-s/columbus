@@ -4,6 +4,9 @@
 // server or a file says is shown as text, never as markup.
 import { $, el, h, icon, invoke, listen, store, button, pageHead, when, ago, size, plural, timeLeft, clientName, toast, emptyState, askConfirm, askText } from "../core.js";
 
+// Model and thinking names, once the chat settings are read.
+const NAMES = new Map();
+const nameOf = (id) => NAMES.get(id) || id;
 const MODEL_NOTE = "The chat sends your messages and the results it reads to the AI service you chose (Settings › Models and accounts).";
 
 // ---------- The live chat (one at a time, as before) ----------
@@ -58,7 +61,7 @@ function otherSessions() {
 let refreshFns = null;
 export function setRefresh(r) { refreshFns = r; }
 
-// ---------- Markdown, safely: paragraphs, lists, code, bold ----------
+// ---------- Markdown, safely: paragraphs, lists, tables, code, bold ----------
 function inline(parent, s) {
   for (const p of s.split(/(`[^`]+`|\*\*[^*]+\*\*)/g)) {
     if (!p) continue;
@@ -88,6 +91,28 @@ function markdown(box, md) {
       const code = [];
       for (i++; i < lines.length && !lines[i].startsWith("```"); i++) code.push(lines[i]);
       box.append(el("pre", null, code.join("\n")));
+      continue;
+    }
+    // A table: a row of cells, then a |---|---| line under it.
+    if (/^\s*\|.*\|\s*$/.test(line) && i + 1 < lines.length && /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$/.test(lines[i + 1])) {
+      flush();
+      list = null;
+      const cells = (l) => l.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((c) => c.trim());
+      const head = cells(line);
+      const table = el("table", "md");
+      const tr = el("tr");
+      for (const c of head) { const th = el("th"); inline(th, c); tr.append(th); }
+      table.append(h("thead", {}, tr));
+      const body = el("tbody");
+      for (i += 2; i < lines.length && /^\s*\|/.test(lines[i]); i++) {
+        const row = el("tr");
+        const cs = cells(lines[i]);
+        for (let k = 0; k < head.length; k++) { const td = el("td"); inline(td, cs[k] ?? ""); row.append(td); }
+        body.append(row);
+      }
+      i--;
+      table.append(body);
+      box.append(h("div", { class: "tablewrap" }, table));
       continue;
     }
     const bullet = /^\s*[-*•]\s+(.*)$/.exec(line);
@@ -291,6 +316,10 @@ class Renderer {
         break;
       case "done":
         this.endTurn();
+        break;
+      case "model":
+        this.endTurn();
+        this.log.append(el("div", "status", `From here on: ${nameOf(e.model)}${e.effort ? `, thinking ${nameOf(`effort:${e.effort}`).toLowerCase()}` : ""}.`));
         break;
       default:
         break;
@@ -668,10 +697,27 @@ function buildLive() {
   const status = h("span", { id: "status" });
   const stop = h("button", { type: "button", id: "stop", class: "btn", hidden: true }, "Stop");
   const send = h("button", { type: "submit", id: "send", class: "btn primary" }, "Send");
-  const chip = h("span", { class: "chip", id: "model-chip" }, "…");
+  const chip = h("span", { class: "chip", id: "model-chip", hidden: true }, "");
+  // This chat's model and thinking level: from Settings for a new chat,
+  // changeable between messages.
+  const modelSel = h("select", { id: "chat-model", class: "pick", "aria-label": "Model for this chat" });
+  const effortSel = h("select", { id: "chat-effort", class: "pick", "aria-label": "Thinking level for this chat" });
+  const onPick = async () => {
+    live.pick = { model: modelSel.value, effort: effortSel.value };
+    if (!live.started) return;
+    try {
+      await invoke("chat_set_model", live.pick);
+      live.renderer.event({ kind: "model", ...live.pick });
+    } catch (err) {
+      toast(String(err));
+      await updateChip();
+    }
+  };
+  modelSel.addEventListener("change", onPick);
+  effortSel.addEventListener("change", onPick);
   const composer = h("form", { id: "composer" },
     h("label", { for: "text", class: "visually-hidden" }, "Message"), text,
-    h("div", { class: "row" }, status, chip, stop, send));
+    h("div", { class: "row" }, status, modelSel, effortSel, chip, stop, send));
   const col = h("section", { class: "chatcol", "aria-label": "Chat" }, head, tray, log, composer);
   live.panel = new Panel(() => view.classList.remove("sheet-open"));
   view.append(col, live.panel.el);
@@ -715,6 +761,8 @@ function setBusy(b) {
   live.busy = b;
   $("send").disabled = b;
   $("stop").hidden = !b;
+  $("chat-model").disabled = b;
+  $("chat-effort").disabled = b;
   $("status").textContent = b ? "Working…" : "";
 }
 
@@ -722,7 +770,7 @@ async function start() {
   if (live.started) return true;
   $("status").textContent = "Starting a Columbus session…";
   try {
-    const s = await invoke("chat_start");
+    const s = await invoke("chat_start", live.pick || {});
     live.started = true;
     live.session = s.session || null;
     live.chatId = s.chat || null;
@@ -752,6 +800,7 @@ async function newChat() {
   live.busy = false;
   live.chatId = null;
   live.session = null;
+  live.pick = null;
   live.cards.clear();
   live.log.replaceChildren();
   live.renderer = new Renderer(live.log, true, (id) => { live.panel.showProvenance(id); live.view.classList.add("sheet-open"); });
@@ -759,6 +808,7 @@ async function newChat() {
   delete $("chat-title").dataset.set;
   live.panel.setSession(null);
   setBusy(false);
+  await updateChip();
   store.set("waiting", 0);
   drawTray();
   // Only if the person is still looking at this chat.
@@ -788,6 +838,11 @@ async function emptyChat() {
   for (const p of prompts) starters.append(button(p, "", () => { $("text").value = p; $("text").focus(); }));
   try {
     const s = await invoke("chat_settings");
+    if (s.has_key && s.server_found && (s.server_older || !s.engine)) {
+      box.append(h("div", { class: "notice warn" }, h("div", {},
+        s.server_older ? `The Columbus server this chat uses is version ${s.server_version}, older than this app (${s.app_version}), so the map and newer tools may not work. ` : "The GIS engine was not found, so tools that read data will fail. ",
+        h("a", { href: "#/settings/ai" }, "See Settings › Models and accounts"), ".")));
+    }
     if (!s.has_key || !s.server_found) {
       box.append(h("div", { class: "notice warn" }, h("div", {},
         !s.has_key ? "No AI is connected yet. " : "Columbus's server was not found. ",
@@ -799,11 +854,25 @@ async function emptyChat() {
 async function updateChip() {
   try {
     const s = await invoke("chat_settings");
-    const model = (s.models.find(([id]) => id === s.model) || [s.model, s.model])[1];
+    const pick = live.pick || { model: s.model, effort: s.effort };
+    for (const [id, l] of s.models) NAMES.set(id, l.replace(/ \(.*\)$/, ""));
+    for (const [id, l] of s.efforts) if (id) NAMES.set(`effort:${id}`, l.replace(/ \(.*\)$/, ""));
+    const fill = (sel, items, cur, label) => {
+      sel.replaceChildren(...items.map(([id, l]) => {
+        const o = el("option", null, label(id, l));
+        o.value = id;
+        o.selected = id === cur;
+        return o;
+      }));
+    };
+    fill($("chat-model"), s.models, pick.model, (_, l) => l.replace(/ \(.*\)$/, ""));
+    fill($("chat-effort"), s.efforts, pick.effort, (id, l) => id ? `Thinking: ${l.replace(/ \(.*\)$/, "")}` : "Thinking: model's default");
+    $("chat-model").title = `${MODEL_NOTE} ${(s.models.find(([id]) => id === pick.model) || [0, ""])[1]}`;
+    $("chat-effort").title = "How much the model thinks before it answers. Higher is slower, costs more and is more thorough.";
     const rows = store.info?.policy?.in_force?.return_rows;
     const chip = $("model-chip");
-    chip.textContent = `${model}${rows ? ` · AI sees at most ${Number(rows).toLocaleString()} rows per call` : ""}`;
-    chip.title = MODEL_NOTE;
+    chip.hidden = !rows;
+    chip.textContent = rows ? `AI sees at most ${Number(rows).toLocaleString()} rows per call` : "";
   } catch { /* none */ }
 }
 

@@ -57,19 +57,33 @@ export async function render(main, rest) {
   return fn(body);
 }
 
+// What the chat's server and engine are, in plain words.
+export function serverLines(s) {
+  if (!s.server_found) return ["No Columbus server was found: unpack the Columbus folder, or enter where columbus-mcp is."];
+  const v = s.server_version ? `version ${s.server_version}` : "version unknown";
+  const out = [s.server_bundled ? `New chats use the server that comes with the app (${v}).` : `New chats use ${s.server_in_use} (${v}).`];
+  if (s.chosen_ignored) out.push("The server set here is older than the app's own, so the app's own is used.");
+  if (s.server_older) out.push(`It is older than this app (${s.app_version}): the map beside a chat and newer tools may not work. Clear this field to use the app's own server, or update your Columbus folder.`);
+  out.push(s.engine ? `GIS engine: ${s.engine}` : "The GIS engine was not found: set it up with the install guide's engine step (it goes in your Columbus folder's engine folder).");
+  return out;
+}
+
 // ---------- Models and accounts ----------
 async function ai(body) {
   const keyState = h("p", { id: "key-state", class: "small muted" });
   const key = h("input", { id: "key", type: "password", autocomplete: "off", spellcheck: "false", placeholder: "sk-ant-…", class: "grow" });
   const model = h("select", { id: "model" });
-  const server = h("input", { id: "server", type: "text", spellcheck: "false", placeholder: "/Users/you/Columbus/columbus-mcp", class: "grow" });
+  const effort = h("select", { id: "effort" });
+  const server = h("input", { id: "server", type: "text", spellcheck: "false", placeholder: "Empty: the server that comes with the app", class: "grow" });
   const serverState = h("p", { id: "server-state", class: "small muted" });
   const keyForm = h("form", { id: "key-form", class: "stack" },
     h("label", { class: "field", for: "key" }, "API key"),
     h("div", { class: "row wrap" }, key, h("button", { type: "submit", class: "btn primary" }, "Save key"), h("button", { type: "button", id: "key-clear", class: "btn" }, "Remove key")),
     keyState);
   const prefs = h("form", { id: "prefs-form", class: "stack" },
-    h("label", { class: "field" }, "Model", model),
+    h("label", { class: "field" }, "Model for new chats", model),
+    h("label", { class: "field" }, "Thinking level for new chats", effort),
+    h("p", { class: "small muted" }, "Each chat can change both below its message box. Higher thinking is slower, costs more and is more thorough."),
     h("label", { class: "field" }, "Columbus server", h("div", { class: "row" }, server)),
     serverState,
     h("div", { class: "row" }, h("button", { type: "submit", class: "btn primary" }, "Save settings")));
@@ -88,9 +102,10 @@ async function ai(body) {
     keyState.textContent = s.has_key ? "A key is saved." : "No key saved yet.";
     keyState.className = s.has_key ? "small muted" : "small error-text";
     model.replaceChildren(...s.models.map(([id, label]) => { const o = el("option", null, label); o.value = id; o.selected = id === s.model; return o; }));
+    effort.replaceChildren(...s.efforts.map(([id, label]) => { const o = el("option", null, label); o.value = id; o.selected = id === s.effort; return o; }));
     server.value = s.server || "";
-    serverState.textContent = s.server_found ? "Found." : "Not found: unpack the Columbus folder, or enter where columbus-mcp is.";
-    serverState.className = s.server_found ? "small muted" : "small error-text";
+    serverState.replaceChildren(...serverLines(s).map((t) => el("span", "block", t)));
+    serverState.className = !s.server_found || s.server_older || !s.engine ? "small error-text" : "small muted";
     return s;
   };
   keyForm.addEventListener("submit", async (ev) => {
@@ -101,7 +116,7 @@ async function ai(body) {
   prefs.addEventListener("submit", async (ev) => {
     ev.preventDefault();
     try {
-      await invoke("chat_save_settings", { model: model.value, server: server.value });
+      await invoke("chat_save_settings", { model: model.value, effort: effort.value, server: server.value });
       await load();
       toast("Saved. A new chat uses the new settings.");
     } catch (err) { serverState.textContent = String(err); serverState.className = "small error-text"; }

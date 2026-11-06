@@ -19,6 +19,7 @@
     "allow-chat-clear-key",
     "allow-chat-start",
     "allow-chat-send",
+    "allow-chat-set-model",
     "allow-chat-stop",
     "allow-chat-answer",
     "allow-chat-end",

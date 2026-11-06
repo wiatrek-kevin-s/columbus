@@ -43,13 +43,38 @@ pub const MAX_RESULT_CHARS: usize = 40_000;
 /// tool results are replaced by a note, so it keeps fitting.
 pub const HISTORY_CHARS: usize = 500_000;
 const API_VERSION: &str = "2023-06-01";
+/// The cap on one reply, thinking and answer together.
+pub const MAX_OUTPUT_TOKENS: u32 = 32_000;
 
 /// The models the app offers, cheapest-to-run first after the default.
 pub const MODELS: &[(&str, &str)] = &[
     ("claude-sonnet-5-5", "Claude Sonnet 5.5 (balanced)"),
-    ("claude-opus-5-5", "Claude Opus 5.5 (most capable)"),
+    ("claude-opus-5-5", "Claude Opus 5.5 (most capable Opus)"),
+    (
+        "claude-fable-5-1",
+        "Claude Fable 5.1 (Mythos tier, most capable)",
+    ),
     ("claude-haiku-5-5", "Claude Haiku 5.5 (fastest)"),
 ];
+
+/// How hard the model thinks (the API's `output_config.effort`); "" leaves
+/// the model's own default. Every model in `MODELS` takes all of these.
+pub const EFFORTS: &[(&str, &str)] = &[
+    ("", "Model's default"),
+    ("low", "Low (quickest, cheapest)"),
+    ("medium", "Medium"),
+    ("high", "High"),
+    ("xhigh", "Extra high"),
+    ("max", "Max (slowest, most thorough)"),
+];
+
+pub fn model_ok(m: &str) -> bool {
+    MODELS.iter().any(|(id, _)| *id == m)
+}
+
+pub fn effort_ok(e: &str) -> bool {
+    EFFORTS.iter().any(|(id, _)| *id == e)
+}
 
 #[derive(Clone)]
 pub struct Config {
@@ -59,6 +84,8 @@ pub struct Config {
     pub server_env: Vec<(String, String)>,
     pub api_key: String,
     pub model: String,
+    /// One of `EFFORTS`; "" for the model's default.
+    pub effort: String,
     /// `https://api.anthropic.com`, or a stand-in in tests.
     pub api_base: String,
 }
@@ -68,6 +95,7 @@ impl std::fmt::Debug for Config {
         f.debug_struct("Config")
             .field("server", &self.server)
             .field("model", &self.model)
+            .field("effort", &self.effort)
             .field("api_base", &self.api_base)
             .field("api_key", &"(hidden)")
             .finish()
@@ -369,7 +397,8 @@ impl Chat {
         }
         // No redirects: the key header would follow them to another host.
         let http = reqwest::Client::builder()
-            .timeout(Duration::from_secs(300))
+            // High effort can think for minutes before answering.
+            .timeout(Duration::from_secs(900))
             .redirect(reqwest::redirect::Policy::none())
             .build()?;
         Ok(Chat {
@@ -530,13 +559,17 @@ impl Chat {
         if let Some(last) = tools.last_mut() {
             last["cache_control"] = json!({"type": "ephemeral"});
         }
-        let body = json!({
+        let mut body = json!({
             "model": self.cfg.model,
-            "max_tokens": 8192,
+            // Thinking counts toward this too.
+            "max_tokens": MAX_OUTPUT_TOKENS,
             "system": [{"type": "text", "text": self.system, "cache_control": {"type": "ephemeral"}}],
             "tools": tools,
             "messages": self.history,
         });
+        if !self.cfg.effort.is_empty() {
+            body["output_config"] = json!({"effort": self.cfg.effort});
+        }
         let url = format!("{}/v1/messages", self.cfg.api_base.trim_end_matches('/'));
         let mut tries = 0;
         loop {
@@ -638,8 +671,42 @@ impl Chat {
         }
     }
 
+    /// Which model and effort the next message uses. A different model
+    /// does not get the earlier one's thinking: it is dropped from the
+    /// conversation so far (the answers and tool calls stay).
+    pub fn set_model(&mut self, model: &str, effort: &str) -> Result<()> {
+        if !model_ok(model) {
+            bail!("unknown model");
+        }
+        if !effort_ok(effort) {
+            bail!("unknown thinking level");
+        }
+        if model != self.cfg.model {
+            drop_thinking(&mut self.history);
+        }
+        self.cfg.model = model.to_string();
+        self.cfg.effort = effort.to_string();
+        Ok(())
+    }
+
+    pub fn model(&self) -> (&str, &str) {
+        (&self.cfg.model, &self.cfg.effort)
+    }
+
     pub async fn close(self) {
         let _ = self.client.cancel().await;
+    }
+}
+
+/// Remove thinking from the assistant's earlier turns.
+fn drop_thinking(history: &mut [Value]) {
+    for m in history.iter_mut().filter(|m| m["role"] == "assistant") {
+        if let Some(blocks) = m["content"].as_array_mut() {
+            blocks.retain(|b| b["type"] != "thinking" && b["type"] != "redacted_thinking");
+            if blocks.is_empty() {
+                blocks.push(json!({"type": "text", "text": "(thinking only)"}));
+            }
+        }
     }
 }
 

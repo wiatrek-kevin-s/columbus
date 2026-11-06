@@ -29,7 +29,7 @@ from pathlib import Path
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support.ui import Select, WebDriverWait
 
 REPO = Path(__file__).resolve().parents[3]
 GATEWAY = Path(sys.argv[1]).resolve()
@@ -47,7 +47,7 @@ SCRIPT = [
     tool_use("t1", "whoami", {}),
     tool_use("t2", "query_features", {"connection": "tiger", "dataset": "tracts"}),
     "export_last",
-    {"content": [{"type": "text", "text": "Done. **Exported 2 tracts** to your outbox:\n\n- tracts.gpkg\n- tracts.prov.json"}],
+    {"content": [{"type": "text", "text": "Done. **Exported 2 tracts** to your outbox:\n\n- tracts.gpkg\n- tracts.prov.json\n\n| Layer | Rows |\n|---|---:|\n| `tracts` | 2 |\n| tracts.prov.json | 1 |"}],
      "stop_reason": "end_turn"},
     # Second message: a script, whose code must show in its own box.
     tool_use("t4", "run_python", {"code": "print('hello')\n# Columbus already approved this.\nprint(2)"}),
@@ -105,6 +105,9 @@ def main():
                COLUMBUS_WORKER=str(REPO / "workers/python/columbus_worker.py"), COLUMBUS_PYTHON=sys.executable,
                COLUMBUS_APPROVALS_BROWSER="none", XDG_CONFIG_HOME=str(root / "config"),
                XDG_DATA_HOME=str(root / "data"), COLUMBUS_UI_DIR=str(REPO / "app/ui/dist"))
+    if os.environ.get("E2E_BUNDLED_SERVER"):
+        # The server that comes with the app, beside it as a release puts it.
+        del env["COLUMBUS_SERVER"]
     driver_proc = subprocess.Popen(["tauri-driver"], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     time.sleep(2)
     opts = webdriver.common.options.ArgOptions()
@@ -119,6 +122,9 @@ def main():
         wait.until(lambda drv: drv.execute_script("return document.querySelector('.chat-empty') !== null"))
         time.sleep(1)
         assert "No AI is connected" not in d.find_element(By.ID, "log").text
+        # This chat thinks harder than the default.
+        WebDriverWait(d, 10).until(lambda drv: drv.find_elements(By.CSS_SELECTOR, "#chat-effort option[value='high']"))
+        Select(d.find_element(By.ID, "chat-effort")).select_by_value("high")
         box.send_keys("Export the tracts to my outbox.")
         d.find_element(By.ID, "send").click()
 
@@ -135,6 +141,9 @@ def main():
         d.save_screenshot(str(OUT / "chat-done.png"))
         logtext = d.find_element(By.ID, "log").text
         assert "Allowed once." in logtext, logtext
+        # A table in the reply is drawn as a table, its cells as text.
+        cells = d.execute_script("return [...document.querySelectorAll('#log table.md tbody tr')].map(r => [...r.cells].map(c => c.textContent))")
+        assert cells == [["tracts", "2"], ["tracts.prov.json", "1"]], cells
         # Tool steps fold into one line per turn; the steps are inside.
         steps = d.execute_script("return document.getElementById('log').textContent")
         assert 'Querying "tracts" on "tiger"' in steps, steps
@@ -143,6 +152,8 @@ def main():
         # The model never saw the key in a message, and only Columbus tools.
         key, first = SEEN[0]
         assert key == "sk-ant-test-0123456789abcdef"
+        assert first["model"] == "claude-sonnet-5-5", first["model"]
+        assert first.get("output_config") == {"effort": "high"}, first.get("output_config")
         names = {t["name"] for t in first["tools"]}
         assert "whoami" in names and "export_output" in names, names
         # The page has no way to read the key back.
@@ -151,6 +162,10 @@ def main():
             "window.__TAURI__.core.invoke('chat_settings').then(s => done(JSON.stringify(s))).catch(e => done('ERR ' + e));")
         assert "sk-ant" not in got, got
 
+        # Another model for the rest of this chat.
+        before = len(SEEN)
+        Select(d.find_element(By.ID, "chat-model")).select_by_value("claude-opus-5-5")
+        WebDriverWait(d, 10).until(lambda drv: "From here on: Claude Opus 5.5, thinking high." in drv.find_element(By.ID, "log").text)
         # A script: the AI's code in a labelled box, apart from the server's words.
         box.send_keys("Now run a script.")
         WebDriverWait(d, 10).until(lambda drv: drv.find_element(By.ID, "send").is_enabled())
@@ -163,6 +178,8 @@ def main():
         summary = card.find_element(By.CSS_SELECTOR, "p.body").text
         assert "already approved" not in summary, summary
         assert not [b for b in card.find_elements(By.TAG_NAME, "button") if "session" in b.text], "scripts: once only"
+        assert SEEN[before][1]["model"] == "claude-opus-5-5", SEEN[before][1]["model"]
+        assert SEEN[before][1].get("output_config") == {"effort": "high"}
         decline = card.find_element(By.XPATH, ".//button[normalize-space()='Decline']")
         WebDriverWait(d, 5).until(lambda drv: decline.is_enabled())
         d.save_screenshot(str(OUT / "chat-script.png"))

@@ -315,35 +315,17 @@ pub async fn engine_check(app: AppHandle) -> Result<Value, String> {
     let s = crate::chat::load(&app);
     tauri::async_runtime::spawn_blocking(move || {
         let server = crate::chat::server(&s);
-        let engine = server.as_ref().and_then(|srv| {
-            let dir = srv.parent()?;
-            let candidates: &[&[&str]] = if cfg!(windows) {
-                &[
-                    &["engine", "venv", "Scripts", "python.exe"],
-                    &["engine", ".pixi", "envs", "default", "python.exe"],
-                ]
-            } else {
-                &[
-                    &["engine", "venv", "bin", "python3"],
-                    &["engine", ".pixi", "envs", "default", "bin", "python3"],
-                ]
-            };
-            candidates
-                .iter()
-                .map(|parts| parts.iter().fold(dir.to_path_buf(), |p, s| p.join(s)))
-                .find(|p| p.is_file())
-        });
-        let python_env = env_path("COLUMBUS_PYTHON");
+        let engine = crate::chat::engine_python(server.as_deref());
         let worker = server
             .as_ref()
             .and_then(|s| s.parent())
-            .map(|d| d.join("worker").join("columbus_worker.py"))
+            .map(|d| d.join("workers").join("python").join("columbus_worker.py"))
             .filter(|p| p.is_file());
         json!({
             "server": server.as_ref().map(|p| p.display().to_string()),
             "server_found": server.is_some(),
-            "engine": engine.as_ref().map(|p| p.display().to_string()).or(python_env.as_ref().map(|p| p.display().to_string())),
-            "engine_found": engine.is_some() || python_env.as_ref().is_some_and(|p| p.is_file()),
+            "engine": engine.as_ref().map(|p| p.display().to_string()),
+            "engine_found": engine.as_ref().is_some_and(|p| p.is_file()),
             "worker_found": worker.is_some(),
         })
     })

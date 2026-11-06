@@ -299,6 +299,7 @@ dialog .actions .spacer { flex: 1; }
 #composer textarea { padding: 8px 10px; border: 1px solid var(--rule); border-radius: 8px; resize: vertical; background: var(--paper); color: var(--ink); min-height: 58px; }
 #composer .row { justify-content: flex-end; flex-wrap: wrap; }
 #composer #status { margin-right: auto; font-size: 12.5px; color: var(--soft); flex: 1 1 auto; min-width: 0; }
+#composer select.pick { min-width: 0; max-width: 220px; flex: 0 1 auto; padding: 4px 6px; border: 1px solid var(--rule); border-radius: 6px; background: var(--paper); color: var(--ink); font-size: 12.5px; }
 #composer .chip { min-width: 0; flex: 0 1 auto; display: block; overflow: hidden; text-overflow: ellipsis; }
 .chat-empty { display: grid; gap: 10px; justify-items: start; padding: 26px 4px; max-width: 64ch; }
 .chat-empty h2 { font-size: 17px; }
@@ -366,3 +367,9 @@ dialog .actions .spacer { flex: 1; }
 }
 @media (min-width: 900px) { .sheet-only { display: none !important; } }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+.small .block { display: block; }
+
+.msg .tablewrap { overflow-x: auto; margin: 6px 0; }
+.msg table.md { border-collapse: collapse; font-size: 13px; }
+.msg table.md th, .msg table.md td { border: 1px solid var(--rule); padding: 4px 8px; text-align: left; vertical-align: top; }
+.msg table.md th { background: var(--panel); font-weight: 600; }

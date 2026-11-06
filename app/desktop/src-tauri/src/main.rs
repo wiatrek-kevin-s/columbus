@@ -460,6 +460,7 @@ fn main() {
             chat::chat_clear_key,
             chat::chat_start,
             chat::chat_send,
+            chat::chat_set_model,
             chat::chat_stop,
             chat::chat_answer,
             chat::chat_end,
@@ -504,6 +505,7 @@ fn main() {
             shell::skills_list,
         ])
         .setup(|app| {
+            chat::set_dirs(app.handle());
             main_window(app.handle())?;
             heartbeat();
             let handle = app.handle().clone();

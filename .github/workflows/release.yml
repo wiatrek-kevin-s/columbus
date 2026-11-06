@@ -122,7 +122,9 @@ jobs:
 
   app:
     # The Columbus desktop app (app/desktop): a .dmg for Apple Silicon and
-    # an installer for Windows. Not code-signed yet.
+    # an installer for Windows. Not code-signed yet. It carries this
+    # release's server, so the app's chat always starts one that matches.
+    needs: [windows, macos]
     strategy:
       fail-fast: false
       matrix:
@@ -138,11 +140,46 @@ jobs:
         with:
           node-version: "22"
       - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.name == 'macos-arm64' && 'columbus-macos' || 'columbus-windows' }}
+          path: server-dl
+      - name: The server that goes in the app
+        shell: bash
+        run: |
+          set -eu
+          zip=$(ls server-dl/*.zip)
+          d=app/desktop/src-tauri/server-bundle
+          rm -rf "$d"
+          mkdir -p "$d"
+          if [ "${{ matrix.name }}" = macos-arm64 ]; then
+            unzip -q "$zip" -d "$d"
+          else
+            powershell -NoProfile -Command "Expand-Archive -Path '$zip' -DestinationPath '$d'"
+          fi
+          # The program, its workers, map page and skills: the engine stays
+          # in the person's Columbus folder.
+          rm -rf "$d/engine" "$d/docs" "$d/examples" "$d/manifest.json" "$d/README.md"
+          ls "$d"
       - name: Build
         working-directory: app/desktop
+        shell: bash
         run: |
           npm ci
-          npx tauri build
+          npx tauri build --config '{"bundle":{"resources":{"server-bundle/":"server/"}}}'
+      - name: The app carries this release's server
+        shell: bash
+        run: |
+          set -eu
+          version=$(python3 -c 'import json; print(json.load(open("app/desktop/src-tauri/tauri.conf.json"))["version"])')
+          if [ "${{ matrix.name }}" = macos-arm64 ]; then
+            srv=$(ls -d app/desktop/src-tauri/target/release/bundle/macos/*.app)/Contents/Resources/server/columbus-mcp
+          else
+            srv=app/desktop/src-tauri/target/release/server/columbus-mcp.exe
+          fi
+          got=$("$srv" --version)
+          echo "$got"
+          [ "$got" = "columbus-mcp $version" ] || { echo "::error::the app's server says $got, not $version"; exit 1; }
       - name: The release app has none of the debug builds' test switches
         shell: bash
         run: |

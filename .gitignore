@@ -5,3 +5,6 @@ __pycache__/
 .DS_Store
 .claude/
 app/desktop/e2e/out/
+
+# The server a release build puts in the app
+app/desktop/src-tauri/server-bundle/
