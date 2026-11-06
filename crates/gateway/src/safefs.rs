@@ -41,6 +41,10 @@ pub struct Dir {
     path: PathBuf,
     #[cfg(unix)]
     fd: std::os::fd::OwnedFd,
+    /// Where the folder really is (Windows: files opened in it are checked
+    /// to be there).
+    #[cfg(windows)]
+    real: PathBuf,
 }
 
 #[cfg(unix)]
@@ -188,18 +192,89 @@ mod imp {
 
 #[cfg(windows)]
 mod imp {
+    //! Windows has no `openat` here, so each file is opened by its path and
+    //! then checked by its handle: where it really is (the final path,
+    //! after any junction or link on the way) must be exactly where it was
+    //! asked for, below the trusted root, and it must have one name. A
+    //! folder swapped for a junction at any moment is caught, because the
+    //! check is of the open file itself, not of the path before opening.
     use super::*;
     use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FileDispositionInfo, GetFileInformationByHandle, GetFinalPathNameByHandleW,
+        SetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, DELETE, FILE_DISPOSITION_INFO,
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_NAME_NORMALIZED, VOLUME_NAME_DOS,
+    };
 
     const REPARSE: u32 = 0x400; // FILE_ATTRIBUTE_REPARSE_POINT
     const OPEN_REPARSE_POINT: u32 = 0x0020_0000; // FILE_FLAG_OPEN_REPARSE_POINT
 
+    /// Where an open file or folder really is.
+    fn final_path(f: &File) -> io::Result<String> {
+        let h = f.as_raw_handle();
+        let mut buf = vec![0u16; 1024];
+        loop {
+            let n = unsafe {
+                GetFinalPathNameByHandleW(
+                    h as _,
+                    buf.as_mut_ptr(),
+                    buf.len() as u32,
+                    FILE_NAME_NORMALIZED | VOLUME_NAME_DOS,
+                )
+            } as usize;
+            if n == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            if n < buf.len() {
+                return Ok(String::from_utf16_lossy(&buf[..n]));
+            }
+            buf.resize(n + 1, 0);
+        }
+    }
+
+    /// The form two paths are compared in: no `\\?\` prefix, one kind of
+    /// separator, no trailing one, case folded (NTFS names compare so).
+    fn key(p: &str) -> String {
+        let p = p
+            .strip_prefix(r"\\?\UNC\")
+            .map(|r| format!(r"\\{r}"))
+            .unwrap_or_else(|| p.strip_prefix(r"\\?\").unwrap_or(p).to_string());
+        p.replace('/', "\\").trim_end_matches('\\').to_lowercase()
+    }
+
+    fn links(f: &File) -> io::Result<u32> {
+        let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+        if unsafe { GetFileInformationByHandle(f.as_raw_handle() as _, &mut info) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(info.nNumberOfLinks)
+    }
+
+    /// Delete a file through its handle (one just created somewhere else
+    /// than asked, through a swapped folder).
+    fn delete_open(f: &File) {
+        let d = FILE_DISPOSITION_INFO { DeleteFile: true };
+        unsafe {
+            SetFileInformationByHandle(
+                f.as_raw_handle() as _,
+                FileDispositionInfo,
+                (&d as *const FILE_DISPOSITION_INFO).cast(),
+                std::mem::size_of::<FILE_DISPOSITION_INFO>() as u32,
+            );
+        }
+    }
+
     impl Dir {
         pub fn open_beneath(root: &Path, comps: &[&str], create: bool) -> io::Result<Dir> {
+            // The root is the gateway's own; where it really is, once.
+            let real_root = std::fs::canonicalize(root)?;
             let mut path = root.to_path_buf();
+            let mut want = real_root.clone();
             for c in comps {
                 plain(c)?;
                 path.push(c);
+                want.push(c);
                 if create && std::fs::symlink_metadata(&path).is_err() {
                     std::fs::create_dir(&path).or_else(|e| {
                         if e.kind() == io::ErrorKind::AlreadyExists {
@@ -214,7 +289,15 @@ mod imp {
                     return Err(refused(&format!("{c} is a link or not a folder")));
                 }
             }
-            Ok(Dir { path })
+            // The folder as opened, wherever the walk led: it must be the one asked for.
+            let d = std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | OPEN_REPARSE_POINT)
+                .open(&path)?;
+            if key(&final_path(&d)?) != key(&want.to_string_lossy()) {
+                return Err(refused("a folder on the way is a link"));
+            }
+            Ok(Dir { path, real: want })
         }
 
         pub fn entries(&self) -> io::Result<Vec<String>> {
@@ -224,6 +307,10 @@ mod imp {
                 .collect();
             out.sort();
             Ok(out)
+        }
+
+        fn is_where_asked(&self, f: &File, name: &str) -> io::Result<bool> {
+            Ok(key(&final_path(f)?) == key(&self.real.join(name).to_string_lossy()))
         }
 
         pub fn open_file(&self, name: &str) -> io::Result<File> {
@@ -236,16 +323,32 @@ mod imp {
             if m.file_attributes() & REPARSE != 0 || !m.is_file() {
                 return Err(refused(&format!("{name} is a link or not a regular file")));
             }
+            if !self.is_where_asked(&f, name)? {
+                return Err(refused(&format!("{name} was reached through a link")));
+            }
+            if links(&f)? > 1 {
+                return Err(refused(&format!(
+                    "{name} has more than one name (a hard link)"
+                )));
+            }
             Ok(f)
         }
 
         pub fn create_file(&self, name: &str) -> io::Result<File> {
             plain(name)?;
-            std::fs::OpenOptions::new()
+            let f = std::fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
+                .access_mode(0x4000_0000 | 0x8000_0000 | DELETE) // GENERIC_WRITE | GENERIC_READ | DELETE
                 .custom_flags(OPEN_REPARSE_POINT)
-                .open(self.path.join(name))
+                .open(self.path.join(name))?;
+            if !self.is_where_asked(&f, name)? {
+                delete_open(&f);
+                return Err(refused(&format!(
+                    "{name} would have been made through a link; it was not"
+                )));
+            }
+            Ok(f)
         }
     }
 }
@@ -376,5 +479,60 @@ mod tests {
         assert_eq!(d.entries().unwrap(), vec!["a", "b", "f", "ok", "p"]);
         let made = Dir::open_beneath(&root, &["new", "deeper"], true).unwrap();
         assert!(made.path().ends_with("new/deeper"));
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+
+    fn junction(link: &Path, target: &Path) {
+        let ok = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(link)
+            .arg(target)
+            .output()
+            .unwrap()
+            .status
+            .success();
+        assert!(ok, "mklink /J failed");
+    }
+
+    #[test]
+    fn junctions_and_hard_links_are_refused() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret.txt"), "x").unwrap();
+        std::fs::create_dir(root.path().join("srv")).unwrap();
+        junction(&root.path().join("srv").join("out"), outside.path());
+        // A junction on the way is refused, as a folder and for its files.
+        assert!(Dir::open_beneath(root.path(), &["srv", "out"], false).is_err());
+        assert!(open_beneath(root.path(), &root.path().join("srv/out/secret.txt")).is_err());
+
+        // A folder swapped for a junction after it was reached: the file
+        // opened or made through it is refused, and nothing is left there.
+        std::fs::create_dir(root.path().join("srv").join("in")).unwrap();
+        let d = Dir::open_beneath(root.path(), &["srv", "in"], false).unwrap();
+        std::fs::remove_dir(root.path().join("srv").join("in")).unwrap();
+        junction(&root.path().join("srv").join("in"), outside.path());
+        assert!(d.open_file("secret.txt").is_err());
+        assert!(d.create_file("made.txt").is_err());
+        assert!(
+            !outside.path().join("made.txt").exists(),
+            "made through the junction"
+        );
+
+        // A hard link to a file elsewhere has two names: refused.
+        std::fs::create_dir(root.path().join("plain")).unwrap();
+        std::fs::hard_link(
+            outside.path().join("secret.txt"),
+            root.path().join("plain").join("h.txt"),
+        )
+        .unwrap();
+        let p = Dir::open_beneath(root.path(), &["plain"], false).unwrap();
+        assert!(p.open_file("h.txt").is_err());
+        std::fs::write(root.path().join("plain").join("ok.txt"), "y").unwrap();
+        assert!(p.open_file("ok.txt").is_ok());
+        assert!(p.create_file("new.txt").is_ok());
     }
 }
