@@ -74,6 +74,19 @@ Columbus adds the lines that connect `run` to it; leave out `if __name__ == "__m
   and output is used. Write the names out as text so they can be checked.
 - **Plain text**: at most 100 KB, lines of 200 characters or fewer, no invisible or
   right-to-left characters.
+- **Allowed modules only**: a tool imports only from math, cmath, statistics, decimal,
+  fractions, numbers, random, re, json, csv, datetime, time, calendar, zoneinfo, itertools,
+  functools, operator, collections, heapq, bisect, array, dataclasses, enum, typing, abc,
+  contextlib, copy, string, textwrap, unicodedata, uuid, hashlib, base64, struct, pathlib,
+  logging, warnings, geopandas, shapely, pyproj, pandas, numpy, pyogrio, fiona, rasterio,
+  scipy and networkx (plus `from columbus_plugin import ...` helpers). No `os`: build paths
+  with `pathlib.Path(ctx.output_path(...))`. Use only public names (nothing starting with
+  `_` on another object), never reach a module through another object (`shutil.os`,
+  `logging.os`), and never filter with an expression given as text: `gdf.query(...)` and
+  `.eval(...)` take only a fixed expression written in the code, with no `@names`. Filter
+  with a mask instead: `gdf[gdf[field] > value]`. No pickles (`read_pickle`,
+  `allow_pickle=True`). These rules make the code you read the code that runs; the sandbox
+  (no network, writing only its outputs) is what contains it either way.
 - **Nothing at import time**: the top level holds only a docstring, imports, functions,
   classes and names given plain values (numbers, text, `True`/`False`/`None`, and lists,
   tuples, sets and dicts of them: `METRES = {"mile": 1609.344}`). No calls, loops or `if`

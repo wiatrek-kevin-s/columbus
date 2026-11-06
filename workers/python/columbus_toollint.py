@@ -50,6 +50,27 @@ REFUSED_MODULES = {
     **{m: "credentials" for m in CREDENTIALS},
     **{m: "reaching into Python's own machinery" for m in INTROSPECTION},
 }
+# The only modules a tool may import (and their sub-modules, unless refused
+# above). Everything else is refused: a list of what is allowed cannot leak
+# the way a list of what is refused does.
+ALLOWED_MODULES = {
+    # Python's own: numbers, text, dates, data structures.
+    "math", "cmath", "statistics", "decimal", "fractions", "numbers", "random", "re", "json", "csv",
+    "datetime", "time", "calendar", "zoneinfo", "itertools", "functools", "operator", "collections",
+    "heapq", "bisect", "array", "dataclasses", "enum", "typing", "abc", "contextlib", "copy", "string",
+    "textwrap", "unicodedata", "uuid", "hashlib", "base64", "struct", "pathlib", "logging", "warnings",
+    "__future__",
+    # GIS and data.
+    "geopandas", "shapely", "pyproj", "pandas", "numpy", "pyogrio", "fiona", "rasterio", "scipy", "networkx",
+}
+# Attribute names that lead to Python's machinery or the operating system,
+# refused on any object (shutil.os.system, gzip.builtins.exec).
+ESCAPE_ATTRS = {"os", "_os", "sys", "_sys", "posix", "nt", "builtins", "bltns", "subprocess", "importlib",
+                "ctypes", "inspect", "types", "pickle", "marshal", "gc", "socket", "runpy", "six", "imp",
+                "io", "shutil", "tempfile", "platform", "signal", "threading", "multiprocessing"}
+# Calls that read pickled data (which runs code as it loads).
+PICKLE_CALLS = {"read_pickle", "to_pickle"}
+
 # The SDK is added by Columbus; a tool may take its helpers, not its server.
 SDK = "columbus_plugin"
 SDK_HELPERS = {"ToolError", "Severity", "write_csv", "write_geojson", "decode_geometry"}
@@ -74,12 +95,13 @@ REFUSED_SYS = {"sys.modules", "sys._getframe", "sys.settrace", "sys.setprofile",
 
 # Ways to reach attributes or code by a name written as text (stand-ins for
 # getattr), refused wherever they are named.
-REFUSED_NAMES = {"operator.attrgetter", "operator.methodcaller", "string.Formatter", "logging.config"}
+REFUSED_NAMES = {"operator.attrgetter", "operator.methodcaller", "string.Formatter", "logging.config",
+                 "pandas.eval", "typing.ForwardRef", "typing.get_type_hints", "functools.singledispatch"}
 # Modules whose objects may only be used as `module.thing`, never passed
 # around under another name (o = os; o.system(...)).
 DIRECT_ONLY = {"os", "sys", "shutil", "operator", "string", "io", "logging", "functools", "pathlib", "tempfile"}
 # A special name anywhere inside a text ("{0.__globals__}").
-DUNDER_IN_TEXT = re.compile(r"__[A-Za-z0-9_]+?__")
+DUNDER_IN_TEXT = re.compile(r"__[a-z][a-z0-9_]*?__")
 
 
 def _dunder(name: str) -> bool:
@@ -161,6 +183,8 @@ class _Lint(ast.NodeVisitor):
     def _module(self, node: ast.AST, name: str) -> None:
         root = _root(name)
         why = REFUSED_MODULES.get(name) or REFUSED_MODULES.get(root)
+        if root != SDK and root not in ALLOWED_MODULES and not why:
+            self.err(node, "tool.import", f"import of {name}: a tool may use only these modules: {', '.join(sorted(m for m in ALLOWED_MODULES if m != '__future__'))}")
         if root == SDK:
             if not isinstance(node, ast.ImportFrom) or any(a.name not in SDK_HELPERS for a in node.names):
                 self.err(node, "tool.sdk", f"from columbus_plugin import only {', '.join(sorted(SDK_HELPERS))}: Columbus adds the rest")
@@ -203,6 +227,13 @@ class _Lint(ast.NodeVisitor):
 
     def visit_Attribute(self, node: ast.Attribute) -> None:
         full = self._resolve(node)
+        if node.attr in ESCAPE_ATTRS:
+            self.err(node, "tool.introspection", f".{node.attr}: a tool may not reach {node.attr} through another object; it uses only its allowed modules directly")
+        if node.attr.startswith("_") and not _dunder(node.attr) \
+                and not (isinstance(node.value, ast.Name) and node.value.id in ("self", "cls")):
+            self.err(node, "tool.private", f".{node.attr}: a tool may use only the public parts of other objects (no names starting with _)")
+        if node.attr in PICKLE_CALLS:
+            self.err(node, "tool.pickle", f".{node.attr}: pickled data runs code as it loads; read and write GeoPackage, CSV or JSON instead")
         if any(full == r or full.startswith(r + ".") for r in REFUSED_NAMES):
             self.err(node, "tool.introspection", f"{full}: a tool may not reach attributes or code by a name written as text")
         if full in ("os.environ", "os.environb"):
@@ -244,6 +275,16 @@ class _Lint(ast.NodeVisitor):
             self.err(node, rule, f"{name}(): a tool may not read the environment, start programs or change the file system outside its outputs")
         if name in ("shutil.rmtree", "os.remove", "os.unlink", "os.rmdir", "shutil.move", "os.rename", "os.replace"):
             self.warn(node, "tool.file", f"{name}(): a tool should only write its outputs, not move or delete files")
+        # Expressions given as text (pandas query and eval) run code: only a
+        # fixed text written in the tool, with no @names, is allowed.
+        if isinstance(f, ast.Attribute) and f.attr in ("query", "eval"):
+            expr = node.args[0] if node.args else next((k.value for k in node.keywords if k.arg == "expr"), None)
+            text = _const_str(expr) if expr is not None else None
+            if text is None or "@" in text or "__" in text:
+                self.err(node, "tool.eval", f".{f.attr}(): only a fixed expression written in the tool, with no @names, is allowed; filter with a mask instead (gdf[gdf[field] > value])")
+        for k in node.keywords:
+            if k.arg == "allow_pickle" and not (isinstance(k.value, ast.Constant) and k.value.value is False):
+                self.err(node, "tool.pickle", "allow_pickle: pickled data runs code as it loads")
         # ctx.<method>("name") for the manifest check.
         if isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name) and f.value.id in self.ctx_names:
             first = _const_str(node.args[0]) if node.args else None
@@ -402,9 +443,26 @@ def _check_def(node: ast.AST, lint: "_Lint") -> None:
                 continue
             if isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name) and _literal(item.value) and _plain_annotation(item.annotation):
                 continue
+            if isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name) and _plain_annotation(item.annotation) \
+                    and _dataclass_field(item.value, lint):
+                continue
             if isinstance(item, ast.Pass):
                 continue
             lint.err(item, "tool.class", f"class {node.name} may hold only a docstring, functions and plain values; this runs when the tool loads")
+
+
+def _dataclass_field(value: ast.AST | None, lint: "_Lint") -> bool:
+    """dataclasses.field(...) with plain values, and a default_factory of
+    list, dict, set or tuple."""
+    if not isinstance(value, ast.Call) or value.args or lint._resolve(value.func) != "dataclasses.field":
+        return False
+    for k in value.keywords:
+        if k.arg == "default_factory":
+            if not (isinstance(k.value, ast.Name) and k.value.id in ("list", "dict", "set", "tuple")):
+                return False
+        elif k.arg is None or not _literal(k.value):
+            return False
+    return True
 
 
 def _bound_names(node: ast.AST) -> list[str]:

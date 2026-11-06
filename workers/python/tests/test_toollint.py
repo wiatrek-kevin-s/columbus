@@ -146,6 +146,50 @@ class ToolLintTest(unittest.TestCase):
         ok = "import logging\nimport operator\nimport functools\n\n\ndef run(ctx):\n    log = logging.getLogger('t')\n    log.info('start')\n    return {'n': functools.reduce(operator.add, [1, 2]), 'k': sorted([(1, 'b')], key=operator.itemgetter(1))}\n"
         self.assertEqual(rules(ok)[0], set())
 
+    def test_only_allowed_modules_and_public_parts(self):
+        # Checked as text only; none of this is run.
+        refused = {
+            "import zipfile\n": "tool.import",
+            "import six\n": "tool.import",
+            "import posix\n": "tool.import",
+            "from _operator import itemgetter\n": "tool.import",
+            "import os\n": "tool.import",
+            "import shutil\n\n\ndef later(ctx):\n    return shutil\n": "tool.import",
+            "import logging\n\n\ndef later(ctx):\n    return logging.os\n": "tool.introspection",
+            "import enum\n\n\ndef later(ctx):\n    return enum.bltns\n": "tool.introspection",
+            "import pandas as pd\n\n\ndef later(ctx):\n    return pd.errors.ctypes\n": "tool.introspection",
+            "import dataclasses\n\n\ndef later(ctx):\n    return dataclasses.sys\n": "tool.introspection",
+            "import pandas as pd\n\n\ndef later(ctx):\n    return pd._config\n": "tool.private",
+            "def later(ctx):\n    return ctx._plugin\n": "tool.private",
+            "import typing\n\n\ndef later(ctx):\n    return typing.ForwardRef('x')\n": "tool.introspection",
+            "import pandas as pd\n\n\ndef later(ctx):\n    return pd.read_pickle(ctx.input_file('a'))\n": "tool.pickle",
+            "import numpy as np\n\n\ndef later(ctx):\n    return np.load(ctx.input_file('a'), allow_pickle=True)\n": "tool.pickle",
+            "import pandas as pd\n\n\ndef later(ctx):\n    return pd.eval('1')\n": "tool.introspection",
+        }
+        for extra, rule in refused.items():
+            code = extra + "\n\ndef run(ctx):\n    return {}\n"
+            self.assertIn(rule, rules(code)[0], extra)
+
+    def test_expressions_given_as_text_are_refused(self):
+        base = "import geopandas as gpd\n\n\ndef run(ctx):\n    gdf = gpd.read_file(ctx.input_file('layer'))\n"
+        for line in ("    return gdf.query(ctx.param('where'))\n",
+                     "    return gdf.eval(ctx.param('expr'))\n",
+                     "    return gdf.query(expr=ctx.param('where'))\n",
+                     "    return gdf.query('a > @limit')\n"):
+            self.assertIn("tool.eval", rules(base + line)[0], line)
+        # A fixed expression, or a mask, is fine.
+        self.assertEqual(rules(base + "    return gdf.query('lanes > 2')\n")[0], set())
+        self.assertEqual(rules(base + "    f = ctx.param('field')\n    return gdf[gdf[f] > 2]\n")[0], set())
+
+    def test_ordinary_code_still_passes(self):
+        ok = (
+            "from dataclasses import dataclass, field\nimport logging\nfrom pathlib import Path\n\n\n"
+            "@dataclass\nclass Hit:\n    route: str\n    notes: list = field(default_factory=list)\n    offset: float = 0.0\n\n\n"
+            "def run(ctx):\n    log = logging.getLogger('t')\n    out = Path(ctx.output_path('o'))\n"
+            "    names = ['Shape__Length__', 'Shape__Area']\n    log.info('%s', names)\n    return {'out': str(out), 'hits': [Hit('IH0035')]}\n"
+        )
+        self.assertEqual(rules(ok)[0], set())
+
     def test_what_is_allowed_at_the_top_level(self):
         ok = (
             '"""Doc."""\nimport math\nfrom functools import lru_cache\n\nLIMIT = 10\nUNITS = {"mile": 1609.344, "foot": [0.3048, -1]}\n'
