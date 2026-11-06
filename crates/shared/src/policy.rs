@@ -238,6 +238,12 @@ pub struct OrgPolicy {
     /// default; off hides every installed one at once.
     #[serde(default)]
     pub allow_personal_tools: bool,
+    /// The person's workflows: saved jobs the assistant proposed with
+    /// `propose_workflow` and the person approved in the Columbus app, run
+    /// on a schedule without a person waiting. Off by default; off stops
+    /// every installed one at once.
+    #[serde(default)]
+    pub allow_workflows: bool,
     /// Rows read and seconds per call; see [`OrgLimits`]. Use
     /// [`OrgPolicy::read_limits`] for the values in force.
     #[serde(default)]
@@ -506,6 +512,7 @@ impl Default for OrgPolicy {
             allow_scripts: false,
             allow_edits: false,
             allow_personal_tools: false,
+            allow_workflows: false,
             limits: OrgLimits::DEFAULT,
             project_db: ProjectDbPolicy::default(),
             return_rows: Some(DEFAULT_RETURN_ROWS),

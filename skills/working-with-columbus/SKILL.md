@@ -419,6 +419,16 @@ person approves a test run, then installs the tool in the Columbus app (Settings
 you cannot install it, and it is usable from the next call after they do. A changed tool is
 a new proposal and a new install.
 
+### 14. Workflows
+
+When the person wants steps done again without sitting through them ("run this every
+morning", "make this a workflow"), do the steps by hand first, then use `propose_workflow`
+with the whole `workflow.yaml`. Read
+[references/designing-workflows.md](references/designing-workflows.md) (also `columbus_guide {"name": "designing-workflows"}`) first: steps are reading and processing tools
+or installed personal tools, every connection is listed in its scope, results go to an export
+folder, and a run never waits for approval. The person approves it in the Columbus app
+(Workflows); you cannot approve, run or schedule it. Needs `workflows_allowed` in `whoami`.
+
 ### Worked session (illustrative values)
 
 ```text

@@ -55,6 +55,7 @@ pub struct PolicyView {
     allow_edits: bool,
     allow_scripts: bool,
     allow_personal_tools: bool,
+    allow_workflows: bool,
     connection_types: Vec<String>,
     problem: Option<String>,
 }
@@ -223,6 +224,7 @@ fn state() -> SettingsState {
             allow_edits: policy.allow_edits,
             allow_scripts: policy.allow_scripts,
             allow_personal_tools: policy.allow_personal_tools,
+            allow_workflows: policy.allow_workflows,
             connection_types: policy.connection_types.clone(),
             problem,
         },
@@ -1037,7 +1039,7 @@ pub async fn settings_set_switch(name: String, on: bool) -> Result<(), String> {
 fn set_switch(name: &str, on: bool) -> Result<(), String> {
     if !matches!(
         name,
-        "allow_edits" | "allow_scripts" | "allow_personal_tools"
+        "allow_edits" | "allow_scripts" | "allow_personal_tools" | "allow_workflows"
     ) {
         return Err(format!("unknown setting {name:?}"));
     }
@@ -1065,6 +1067,7 @@ fn set_switch(name: &str, on: bool) -> Result<(), String> {
                 "let your assistant write to read-write connections, after your approval of each change"
             }
             "allow_scripts" => "let your assistant run Python scripts, after your approval of each one",
+            "allow_workflows" => "let the workflows you approve run by themselves, on their schedule",
             _ => "let your assistant use the tools you install from what it proposes, without asking each time",
         })?;
         if std::fs::read_to_string(&path).ok().as_deref() != Some(before.as_str()) {

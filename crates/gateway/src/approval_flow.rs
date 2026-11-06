@@ -111,6 +111,14 @@ impl Gateway {
                 return Ok(Sought::Granted("standing".into()));
             }
         }
+        // A workflow run has no person to ask: it stops here, and says why.
+        if st.unattended {
+            return Ok(Sought::Declined(format!(
+                "{} a workflow run never waits for a person, and this needs their approval: {}",
+                crate::workflows::NEEDS_YOU,
+                ask.summary
+            )));
+        }
         // Scripts are approved one run at a time and edits one change set
         // at a time, wherever the person is asked.
         let offer_always = !ask.every_time && !matches!(ask.risk, Risk::Script | Risk::Edit);

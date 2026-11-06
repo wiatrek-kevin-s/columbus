@@ -22,7 +22,7 @@ columbus-shared = { path = "../shared" }
 columbus-broker = { path = "../broker" }
 columbus-flow = { path = "../flow" }
 columbus-confine = { path = "../confine" }
-rmcp = { workspace = true, features = ["elicitation"] }
+rmcp = { workspace = true, features = ["elicitation", "client"] }
 base64 = "0.22"
 serde.workspace = true
 serde_json.workspace = true

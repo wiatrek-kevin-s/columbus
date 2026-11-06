@@ -162,7 +162,7 @@ pub fn plain_chars(text: &str) -> Result<(), String> {
 }
 
 /// A regular file's bytes, never through a link, at most `cap`.
-fn read_plain(path: &Path, cap: usize) -> Result<Vec<u8>, String> {
+pub(crate) fn read_plain(path: &Path, cap: usize) -> Result<Vec<u8>, String> {
     let md = std::fs::symlink_metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
     if !md.file_type().is_file() {
         return Err(format!("{} is not a plain file", path.display()));
@@ -402,7 +402,7 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
 }
 
 /// A folder that is really a folder (not a link to one).
-fn is_dir(p: &Path) -> bool {
+pub(crate) fn is_dir(p: &Path) -> bool {
     std::fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_dir())
 }
 
@@ -532,7 +532,7 @@ pub fn write_proposal(
 }
 
 /// Move `from` to `to`, replacing a folder already there.
-fn replace_dir(from: &Path, to: &Path) -> Result<(), String> {
+pub(crate) fn replace_dir(from: &Path, to: &Path) -> Result<(), String> {
     let old = to.with_file_name(format!(
         ".old-{}-{}",
         to.file_name().and_then(|n| n.to_str()).unwrap_or("x"),

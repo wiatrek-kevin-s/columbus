@@ -329,6 +329,8 @@ pub struct PolicySummary {
     pub edits_allowed: bool,
     /// Personal tools (propose_tool, and tools the person installed) are on.
     pub personal_tools_allowed: bool,
+    /// Workflows (propose_workflow, and workflows the person approved) are on.
+    pub workflows_allowed: bool,
     pub rows_returned_per_call: u64,
     /// Most rows one query reads (and writes to its workspace file); a
     /// connection may set less.
@@ -466,6 +468,9 @@ fn startup_only(p: &OrgPolicy) -> Value {
 
 pub struct State {
     pub paths: Paths,
+    /// A workflow run: no person is there, so nothing waits for one (an
+    /// approval is refused at once, "needs you").
+    pub unattended: bool,
     live: std::sync::Mutex<Live>,
     /// `startup_only` of the policy this session started with.
     fixed: Value,
@@ -676,6 +681,7 @@ impl State {
             None
         };
         Ok(State {
+            unattended: false,
             broker,
             plugins: Arc::new(plugins),
             tools,
@@ -1253,6 +1259,7 @@ impl Gateway {
                 + Self::edit_router()
                 + Self::notes_router()
                 + Self::tools_router()
+                + Self::workflow_router()
                 + Self::project_db_router(),
         }
     }
@@ -1742,6 +1749,7 @@ impl Gateway {
                 scripts_allowed: p.allow_scripts,
                 edits_allowed: p.allow_edits,
                 personal_tools_allowed: p.allow_personal_tools,
+                workflows_allowed: p.allow_workflows,
                 rows_returned_per_call: p.return_rows.unwrap_or(500).min(500),
                 rows_read_per_query: Some(limits.max_rows()),
                 query_seconds: Some(limits.max_seconds()),

@@ -12,5 +12,6 @@ pub mod proof;
 pub mod sandbox;
 pub mod sqlcheck;
 pub mod tools;
+pub mod workflows;
 
 pub use error::{Denied, LoadError};

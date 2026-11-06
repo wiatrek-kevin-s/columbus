@@ -47,6 +47,7 @@ mod script_tools;
 mod secrets;
 mod server;
 mod worker;
+mod workflows;
 
 use anyhow::{bail, Result};
 use rmcp::{transport::stdio, ServiceExt};
@@ -83,6 +84,19 @@ async fn main() -> Result<()> {
         ["secret", "set", id] => secret_set(id),
         ["plugins", "list"] => review_cli::plugins_list().await,
         ["plugins", "approve", id] => review_cli::plugins_approve(id).await,
+        ["workflow", "run", id] => std::process::exit(workflows::run_cli(id, false).await?),
+        ["workflow", "run", id, "--scheduled"] => {
+            std::process::exit(workflows::run_cli(id, true).await?)
+        }
+        // The scheduler entry the app writes names the engine it chose.
+        ["workflow", "run", id, "--scheduled", "--python", py] => {
+            std::process::exit(workflows::run_cli_with(id, true, Some(py)).await?)
+        }
+        ["workflow", "validate", file] => workflows::validate_cli(std::path::Path::new(file)),
+        ["workflow", "list"] => {
+            workflows::list_cli();
+            Ok(())
+        }
         ["tools", "list"] => review_cli::tools_list(),
         ["tools", "show", id] => review_cli::tools_show(id),
         ["tools", "install", id] => review_cli::tools_install(id),
@@ -112,7 +126,7 @@ async fn main() -> Result<()> {
             Ok(())
         }
         _ => bail!(
-            "usage: columbus-mcp [serve] | audit verify FILE | secret set|delete ID | servers list|review|approve|signin|signout ID | registry update [--from DIR|URL] | plugins list|approve ID | tools list|show|install|decline|remove ID | --version"
+            "usage: columbus-mcp [serve] | audit verify FILE | secret set|delete ID | servers list|review|approve|signin|signout ID | registry update [--from DIR|URL] | plugins list|approve ID | tools list|show|install|decline|remove ID | workflow run ID [--scheduled]|validate FILE|list | --version"
         ),
     }
 }

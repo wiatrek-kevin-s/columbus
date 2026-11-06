@@ -86,10 +86,20 @@ fn bundled_engine() -> Option<PathBuf> {
             &["engine", ".pixi", "envs", "default", "bin", "python3"],
         ]
     };
-    candidates
-        .iter()
-        .map(|parts| parts.iter().fold(dir.to_path_buf(), |p, s| p.join(s)))
-        .find(|p| p.is_file())
+    let in_folder = |dir: &Path| {
+        candidates
+            .iter()
+            .map(|parts| parts.iter().fold(dir.to_path_buf(), |p, s| p.join(s)))
+            .find(|p| p.is_file())
+    };
+    // Beside the program; else in the person's own Columbus folder, where
+    // the install guide sets it up (the Columbus app's own server has none
+    // beside it).
+    in_folder(dir).or_else(|| {
+        let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
+            .filter(|v| !v.is_empty())?;
+        in_folder(&PathBuf::from(home).join("Columbus"))
+    })
 }
 
 /// The companion window's files: `COLUMBUS_UI_DIR`, else `ui/` beside the

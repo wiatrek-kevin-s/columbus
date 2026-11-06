@@ -1050,6 +1050,7 @@ fn compare_uses(
 const GUIDES: &[(&str, &str, &str)] = &[
     ("working-with-columbus", "How to work with Columbus: the order of calls, checks, approvals, notes, big tables and personal tools.", include_str!("../../../skills/working-with-columbus/SKILL.md")),
     ("designing-tools", "How to design a personal tool for propose_tool: names, descriptions, typed inputs and parameters, the code rules, and a worked LRS example.", include_str!("../../../skills/working-with-columbus/references/designing-tools.md")),
+    ("designing-workflows", "How to design a workflow for propose_workflow: the format, which tools a step may be, references between steps, checks, the schedule and outputs.", include_str!("../../../skills/working-with-columbus/references/designing-workflows.md")),
     ("columbus-tools", "Every Columbus tool, its arguments and what it returns.", include_str!("../../../skills/working-with-columbus/references/columbus-tools.md")),
     ("check-ids", "The verification check ids and what each finding means.", include_str!("../../../skills/working-with-columbus/references/check-ids.md")),
 ];
@@ -1057,8 +1058,8 @@ const GUIDES: &[(&str, &str, &str)] = &[
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct GuideArgs {
-    /// Which guide: working-with-columbus, designing-tools, columbus-tools
-    /// or check-ids. Leave out to list them.
+    /// Which guide: working-with-columbus, designing-tools,
+    /// designing-workflows, columbus-tools or check-ids. Leave out to list them.
     #[serde(default)]
     pub name: Option<String>,
 }
