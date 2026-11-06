@@ -219,6 +219,15 @@ mod imp {
             .or_else(|_| final_path_as(f, FILE_NAME_NORMALIZED | VOLUME_NAME_NT))
     }
 
+    /// The trusted root, followed if it is itself a link (it is the
+    /// gateway's own, so where it leads is where it is).
+    fn open_root(p: &Path) -> io::Result<File> {
+        std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(p)
+    }
+
     fn open_folder(p: &Path) -> io::Result<File> {
         std::fs::OpenOptions::new()
             .read(true)
@@ -279,7 +288,7 @@ mod imp {
     impl Dir {
         pub fn open_beneath(root: &Path, comps: &[&str], create: bool) -> io::Result<Dir> {
             // The root is the gateway's own; where it really is, once.
-            let mut want = key(&final_path(&open_folder(root)?)?);
+            let mut want = key(&final_path(&open_root(root)?)?);
             let mut path = root.to_path_buf();
             for c in comps {
                 plain(c)?;
@@ -523,7 +532,8 @@ mod windows_tests {
             let _ = std::fs::remove_file(real.path().join("w").join(&made));
         };
         check(real.path());
-        for letter in ['Q', 'R', 'S', 'T', 'U'] {
+        let mut substituted = false;
+        for letter in ['Q', 'R', 'S', 'T', 'U', 'V', 'W'] {
             let drive = format!("{letter}:");
             let ok = std::process::Command::new("subst")
                 .arg(&drive)
@@ -535,15 +545,27 @@ mod windows_tests {
                 let _ = std::process::Command::new("subst")
                     .args([&drive, "/D"])
                     .status();
+                substituted = true;
                 break;
             }
         }
+        assert!(
+            substituted,
+            "no drive letter was free for subst, so nothing was checked"
+        );
         // The same folder as an administrative share, where there is one.
         let p = real.path().to_string_lossy().replace(':', "$");
         let unc = std::path::PathBuf::from(format!(r"\\localhost\{p}"));
         if unc.exists() {
             check(&unc);
+        } else {
+            eprintln!("skipped: no administrative share at {}", unc.display());
         }
+        // A root that is itself a junction is followed (it is trusted).
+        let link = tempfile::tempdir().unwrap();
+        let root_link = link.path().join("root");
+        junction(&root_link, real.path());
+        check(&root_link);
     }
 
     #[test]
