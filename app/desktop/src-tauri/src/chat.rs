@@ -49,8 +49,13 @@ pub struct Settings {
     /// The thinking level new chats start with ("" or absent: the model's own).
     #[serde(default)]
     pub effort: Option<String>,
+    /// A server chosen in an earlier version: no longer started (the app
+    /// has its own), only read to suggest the engine beside it.
     #[serde(default)]
     pub server: Option<PathBuf>,
+    /// The GIS engine's Python, when the person chose one in Settings.
+    #[serde(default)]
+    pub engine: Option<PathBuf>,
 }
 
 impl Settings {
@@ -117,25 +122,19 @@ fn bundled_server() -> Option<PathBuf> {
     startable(&RESOURCES.get()?.join("server").join(EXE))
 }
 
-/// The Columbus folders the install guides use.
-fn install_folders() -> Vec<PathBuf> {
-    let mut c = Vec::new();
-    if cfg!(windows) {
-        c.push(PathBuf::from(r"C:\Columbus"));
-    }
-    if let Some(h) =
-        std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from)
-    {
-        c.push(h.join("Columbus"));
-    }
-    c
+/// The person's own Columbus folder (`~/Columbus`, `%USERPROFILE%\Columbus`).
+/// A folder at the top of a drive (`C:\Columbus`) is not used without the
+/// person choosing it: on Windows any account may create one there.
+fn home_folder() -> Option<PathBuf> {
+    std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
+        .filter(|v| !v.is_empty())
+        .map(|h| PathBuf::from(h).join("Columbus"))
 }
 
-/// A server in the folder the install guides use.
+/// A server in the person's own Columbus folder, for builds without one
+/// of their own (development).
 fn installed_server() -> Option<PathBuf> {
-    install_folders()
-        .into_iter()
-        .find_map(|d| startable(&d.join(EXE)))
+    startable(&home_folder()?.join(EXE))
 }
 
 /// The GIS engine's Python in a Columbus folder (`engine/` there).
@@ -154,20 +153,81 @@ fn engine_in(dir: &Path) -> Option<PathBuf> {
     candidates
         .iter()
         .map(|parts| parts.iter().fold(dir.to_path_buf(), |p, s| p.join(s)))
-        .find(|p| p.is_file())
+        .find(|p| engine_ok(p, CHATS.get().map(PathBuf::as_path)).is_ok())
 }
 
-/// The engine the chat's server uses: `COLUMBUS_PYTHON`, else the one
-/// beside the server, else the one in the person's Columbus folder (set up
-/// by the install guide; the app's own server has none beside it).
-pub(crate) fn engine_python(server: Option<&Path>) -> Option<PathBuf> {
+/// An engine the chat may give its server: a Python program, by its full
+/// path, on this computer, not in a folder an assistant or a session writes
+/// to. The path itself is kept (not the file it leads to): a virtual
+/// environment's Python is a link, and works only by that name.
+pub(crate) fn engine_ok(p: &Path, chats: Option<&Path>) -> Result<PathBuf, String> {
+    if !p.is_absolute() {
+        return Err("give the engine's full path".into());
+    }
+    if on_network_share(p) {
+        return Err("the engine must be on this computer, not a network share".into());
+    }
+    let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let lower = name.to_ascii_lowercase();
+    let stem = lower.strip_suffix(".exe").unwrap_or(&lower);
+    let python = stem == "python"
+        || stem == "python3"
+        || stem
+            .strip_prefix("python3.")
+            .is_some_and(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()));
+    if !python {
+        return Err("the engine is the Python program of the GIS engine (python3, or python.exe on Windows)".into());
+    }
+    let full = p
+        .canonicalize()
+        .map_err(|_| format!("{} is not there", p.display()))?;
+    if !full.is_file() || on_network_share(&full) {
+        return Err(format!("{} is not a program on this computer", p.display()));
+    }
+    let mut keep_out = crate::shell::session_folders();
+    keep_out.extend(chats.map(Path::to_path_buf));
+    for d in keep_out {
+        if let Ok(d) = d.canonicalize() {
+            if full.starts_with(&d) || p.starts_with(&d) {
+                return Err(format!(
+                    "{} is in {}, a folder your assistant's sessions write to",
+                    p.display(),
+                    d.display()
+                ));
+            }
+        }
+    }
+    Ok(p.to_path_buf())
+}
+
+/// The engine the chat's server uses: `COLUMBUS_PYTHON`, else the one the
+/// person chose in Settings, else the one beside the server, else the one
+/// in the person's own Columbus folder.
+pub(crate) fn engine_python(s: &Settings, server: Option<&Path>) -> Option<PathBuf> {
     if let Some(p) = std::env::var_os("COLUMBUS_PYTHON").filter(|v| !v.is_empty()) {
         return Some(PathBuf::from(p));
     }
-    server
-        .and_then(Path::parent)
-        .and_then(engine_in)
-        .or_else(|| install_folders().iter().find_map(|d| engine_in(d)))
+    let chats = CHATS.get().map(PathBuf::as_path);
+    s.engine
+        .as_deref()
+        .and_then(|p| engine_ok(p, chats).ok())
+        .or_else(|| server.and_then(Path::parent).and_then(engine_in))
+        .or_else(|| home_folder().as_deref().and_then(engine_in))
+}
+
+/// Engines the person might mean, for Settings to offer (never used
+/// without the person choosing one): beside a server chosen in an earlier
+/// version, and in `C:\Columbus`.
+pub(crate) fn engine_suggestions(s: &Settings) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    if let Some(dir) = s.server.as_deref().and_then(Path::parent) {
+        out.extend(engine_in(dir));
+    }
+    if cfg!(windows) {
+        out.extend(engine_in(Path::new(r"C:\Columbus")));
+    }
+    out.dedup();
+    out
 }
 
 /// `columbus-mcp 0.9.1` as (0, 9, 1).
@@ -177,7 +237,8 @@ fn parse_version(out: &str) -> Option<(u32, u32, u32)> {
     Some((it.next()??, it.next()??, it.next()??))
 }
 
-/// What a server says its version is (`--version`, cached per file).
+/// What a server says its version is (`--version`, cached per file; given
+/// up after a few seconds).
 pub(crate) fn server_version(p: &Path) -> Option<(u32, u32, u32)> {
     type Seen = Vec<(PathBuf, std::time::SystemTime, (u32, u32, u32))>;
     static SEEN: std::sync::Mutex<Seen> = std::sync::Mutex::new(Vec::new());
@@ -194,14 +255,37 @@ pub(crate) fn server_version(p: &Path) -> Option<(u32, u32, u32)> {
     let mut cmd = std::process::Command::new(p);
     cmd.arg("--version")
         .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x0800_0000); // no console window
     }
-    let out = cmd.output().ok()?;
-    let v = parse_version(&String::from_utf8_lossy(&out.stdout))?;
+    let mut child = cmd.spawn().ok()?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(50))
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+    let mut out = String::new();
+    use std::io::Read;
+    child
+        .stdout
+        .take()?
+        .take(4096)
+        .read_to_string(&mut out)
+        .ok()?;
+    let v = parse_version(&out)?;
     if let Ok(mut g) = SEEN.lock() {
         g.push((p.to_path_buf(), modified, v));
     }
@@ -212,28 +296,16 @@ pub(crate) fn app_version() -> (u32, u32, u32) {
     parse_version(&format!("x {}", env!("CARGO_PKG_VERSION"))).unwrap_or((0, 0, 0))
 }
 
-/// The server the chat starts. One chosen in Settings, unless it is older
-/// than the one that comes with the app; else the app's own; else the one
-/// in the Columbus folder.
-pub(crate) fn server(s: &Settings) -> Option<PathBuf> {
+/// The server the chat starts: the one that comes with the app, else (in
+/// a build without one) the one in the person's own Columbus folder. Not
+/// a file named in the settings file: the app has its own.
+pub(crate) fn server(_s: &Settings) -> Option<PathBuf> {
     // Test builds only: the app's end-to-end tests point at the server they built.
     #[cfg(debug_assertions)]
     if let Some(p) = std::env::var_os("COLUMBUS_SERVER").filter(|v| !v.is_empty()) {
         return startable(Path::new(&p));
     }
-    // Checked before it is asked its version: whatever wrote the settings
-    // file, only a Columbus server is run.
-    let chosen = s.server.as_deref().and_then(startable);
-    let bundled = bundled_server();
-    match (chosen, bundled) {
-        (Some(c), Some(b)) => match (server_version(&c), server_version(&b)) {
-            (Some(vc), Some(vb)) if vc >= vb => Some(c),
-            _ => Some(b),
-        },
-        (Some(c), None) => Some(c),
-        (None, Some(b)) => Some(b),
-        (None, None) => installed_server(),
-    }
+    bundled_server().or_else(installed_server)
 }
 
 /// Whether `p` is the server that comes with the app.
@@ -241,16 +313,17 @@ pub(crate) fn is_bundled(p: &Path) -> bool {
     bundled_server().is_some_and(|b| p.canonicalize().ok().as_ref() == Some(&b))
 }
 
-/// The environment the chat gives its server: the engine, when the server
-/// has none beside it.
-fn server_env(srv: &Path) -> Vec<(String, String)> {
+/// The environment the chat gives its server: the engine, unless it is the
+/// one beside the server (which the server finds itself).
+fn server_env(s: &Settings, srv: &Path) -> Vec<(String, String)> {
     if std::env::var_os("COLUMBUS_PYTHON").is_some_and(|v| !v.is_empty()) {
         return vec![];
     }
-    if srv.parent().and_then(engine_in).is_some() {
+    let engine = engine_python(s, Some(srv));
+    if engine.is_some() && engine == srv.parent().and_then(engine_in) {
         return vec![];
     }
-    engine_python(Some(srv))
+    engine
         .map(|p| vec![("COLUMBUS_PYTHON".to_string(), p.display().to_string())])
         .unwrap_or_default()
 }
@@ -299,8 +372,6 @@ pub struct SettingsView {
     models: Vec<(String, String)>,
     effort: String,
     efforts: Vec<(String, String)>,
-    /// The server chosen in Settings, if any.
-    server: Option<String>,
     server_found: bool,
     /// The server a new chat starts, and what is known about it.
     server_in_use: Option<String>,
@@ -309,11 +380,12 @@ pub struct SettingsView {
     /// The server in use is older than this app: some of the app does not
     /// work with it.
     server_older: bool,
-    /// The server chosen in Settings is not used: it is older than the one
-    /// that comes with the app.
-    chosen_ignored: bool,
     app_version: String,
+    /// The engine a new chat uses, the one chosen in Settings, and others
+    /// found that the person might mean.
     engine: Option<String>,
+    engine_chosen: Option<String>,
+    engine_suggestions: Vec<String>,
     chatting: bool,
 }
 
@@ -321,29 +393,25 @@ struct ServerInfo {
     in_use: Option<PathBuf>,
     version: Option<(u32, u32, u32)>,
     bundled: bool,
-    chosen_ignored: bool,
     engine: Option<PathBuf>,
+    suggestions: Vec<PathBuf>,
 }
 
 fn server_info(s: &Settings) -> ServerInfo {
     let in_use = server(s);
     let version = in_use.as_deref().and_then(server_version);
     let bundled = in_use.as_deref().is_some_and(is_bundled);
-    let chosen_ignored = s.server.is_some()
-        && in_use.as_ref().is_some_and(|u| {
-            s.server
-                .as_ref()
-                .and_then(|c| c.canonicalize().ok())
-                .as_ref()
-                != Some(u)
-        });
-    let engine = engine_python(in_use.as_deref());
+    let engine = engine_python(s, in_use.as_deref());
+    let suggestions = engine_suggestions(s)
+        .into_iter()
+        .filter(|p| Some(p) != engine.as_ref())
+        .collect();
     ServerInfo {
         in_use,
         version,
         bundled,
-        chosen_ignored,
         engine,
+        suggestions,
     }
 }
 
@@ -373,15 +441,19 @@ pub async fn chat_settings(
             .iter()
             .map(|(a, b)| (a.to_string(), b.to_string()))
             .collect(),
-        server: s.server.map(|p| p.display().to_string()),
         server_found: info.in_use.is_some(),
         server_in_use: info.in_use.as_ref().map(|p| p.display().to_string()),
         server_version: info.version.map(|(a, b, c)| format!("{a}.{b}.{c}")),
         server_bundled: info.bundled,
         server_older: info.version.is_some_and(|v| v < app_version()),
-        chosen_ignored: info.chosen_ignored,
         app_version: env!("CARGO_PKG_VERSION").to_string(),
         engine: info.engine.map(|p| p.display().to_string()),
+        engine_chosen: s.engine.as_ref().map(|p| p.display().to_string()),
+        engine_suggestions: info
+            .suggestions
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect(),
         chatting: st.chat.lock().await.is_some(),
     })
 }
@@ -391,7 +463,7 @@ pub async fn chat_save_settings(
     app: AppHandle,
     model: String,
     effort: Option<String>,
-    server: Option<String>,
+    engine: Option<String>,
 ) -> Result<(), String> {
     if !model_ok(&model) {
         return Err("unknown model".into());
@@ -400,19 +472,22 @@ pub async fn chat_save_settings(
     if !effort_ok(&effort) {
         return Err("unknown thinking level".into());
     }
-    let wanted = server.filter(|v| !v.trim().is_empty()).map(PathBuf::from);
+    let wanted = engine
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from);
     let old = load(&app);
     let chats = chats_dir(&app);
-    // The server is the program the chat starts: pointing it elsewhere is
+    // The engine is a program the chat's server runs: choosing one is
     // confirmed by the person at the keyboard, like any widening setting.
-    let server =
+    let old_engine = old.engine.clone();
+    let engine =
         tauri::async_runtime::spawn_blocking(move || -> Result<Option<PathBuf>, String> {
             let Some(w) = wanted else { return Ok(None) };
-            let w = server_ok(&w, chats.as_deref())?;
-            let now = self::server(&old).and_then(|p| p.canonicalize().ok());
-            if now.as_ref() != Some(&w) {
+            let w = engine_ok(&w, chats.as_deref())?;
+            if old_engine.as_ref() != Some(&w) {
                 crate::settings::confirm(&format!(
-                    "let the app's chat start {} as Columbus's server",
+                    "let the app's chat run {} as the GIS engine",
                     w.display()
                 ))?;
             }
@@ -423,7 +498,8 @@ pub async fn chat_save_settings(
     let s = Settings {
         model: Some(model),
         effort: Some(effort),
-        server,
+        server: old.server,
+        engine,
     };
     let p = settings_path(&app).ok_or("no settings folder")?;
     if let Some(d) = p.parent() {
@@ -635,7 +711,7 @@ pub async fn chat_start(
         api_base = b;
     }
     let cfg = Config {
-        server_env: server_env(&srv),
+        server_env: server_env(&s, &srv),
         server: srv,
         api_key: key,
         model: model.clone(),
@@ -1193,6 +1269,32 @@ pub async fn chat_delete(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn only_a_python_program_on_this_computer_is_an_engine() {
+        let dir = std::env::temp_dir().join(format!("engine-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let dir = dir.canonicalize().unwrap();
+        let d = &dir;
+        let py = d.join("python3");
+        std::fs::write(&py, "#!/bin/sh\n").unwrap();
+        let other = d.join("evil");
+        std::fs::write(&other, "#!/bin/sh\n").unwrap();
+        // A venv's python is a link: the link's own path is what is kept.
+        let link = d.join("python3.12");
+        std::os::unix::fs::symlink(&other, &link).unwrap();
+        assert_eq!(super::engine_ok(&py, None).unwrap(), py);
+        assert_eq!(super::engine_ok(&link, None).unwrap(), link);
+        assert!(super::engine_ok(&other, None).is_err());
+        assert!(super::engine_ok(std::path::Path::new("python3"), None).is_err());
+        assert!(super::engine_ok(&d.join("python"), None).is_err());
+        assert!(
+            super::engine_ok(&py, Some(d)).is_err(),
+            "not in the chats folder"
+        );
+        let _ = std::fs::remove_dir_all(d);
+    }
+
     #[test]
     fn server_versions_are_read_from_their_version_line() {
         assert_eq!(

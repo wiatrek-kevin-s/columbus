@@ -1,0 +1,7 @@
+{
+  "bundle": {
+    "resources": {
+      "server-bundle/": "server/"
+    }
+  }
+}

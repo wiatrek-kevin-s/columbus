@@ -2,7 +2,7 @@
 // preferences, privacy, keyboard, the organization's policy in force
 // (read only, with today's switches, each turned on only after the person
 // confirms at the keyboard in the app's own code), and About.
-import { $, h, el, invoke, store, pageHead, showError, savePrefs, applyTheme, toast } from "../core.js";
+import { $, h, el, invoke, store, pageHead, showError, savePrefs, applyTheme, toast, button } from "../core.js";
 
 const SWITCHES = {
   allow_edits: ["Allow edits.", "Your assistant may write to connections set to read-write, and only after you approve each change set. When off, every connection is read-only."],
@@ -61,10 +61,9 @@ export async function render(main, rest) {
 export function serverLines(s) {
   if (!s.server_found) return ["No Columbus server was found: unpack the Columbus folder, or enter where columbus-mcp is."];
   const v = s.server_version ? `version ${s.server_version}` : "version unknown";
-  const out = [s.server_bundled ? `New chats use the server that comes with the app (${v}).` : `New chats use ${s.server_in_use} (${v}).`];
-  if (s.chosen_ignored) out.push("The server set here is older than the app's own, so the app's own is used.");
-  if (s.server_older) out.push(`It is older than this app (${s.app_version}): the map beside a chat and newer tools may not work. Clear this field to use the app's own server, or update your Columbus folder.`);
-  out.push(s.engine ? `GIS engine: ${s.engine}` : "The GIS engine was not found: set it up with the install guide's engine step (it goes in your Columbus folder's engine folder).");
+  const out = [s.server_bundled ? `New chats use the Columbus server that comes with the app (${v}).` : `New chats use ${s.server_in_use} (${v}).`];
+  if (s.server_older) out.push(`It is older than this app (${s.app_version}): the map beside a chat and newer tools may not work. Install this version's app again.`);
+  out.push(s.engine ? `GIS engine: ${s.engine}` : "The GIS engine was not found in your Columbus folder: set it up with the install guide's engine step, or enter where its Python is above.");
   return out;
 }
 
@@ -74,7 +73,8 @@ async function ai(body) {
   const key = h("input", { id: "key", type: "password", autocomplete: "off", spellcheck: "false", placeholder: "sk-ant-…", class: "grow" });
   const model = h("select", { id: "model" });
   const effort = h("select", { id: "effort" });
-  const server = h("input", { id: "server", type: "text", spellcheck: "false", placeholder: "Empty: the server that comes with the app", class: "grow" });
+  const engine = h("input", { id: "engine", type: "text", spellcheck: "false", placeholder: "Empty: the engine in your Columbus folder", class: "grow" });
+  const suggest = h("div", { class: "row wrap", id: "engine-suggest" });
   const serverState = h("p", { id: "server-state", class: "small muted" });
   const keyForm = h("form", { id: "key-form", class: "stack" },
     h("label", { class: "field", for: "key" }, "API key"),
@@ -84,7 +84,8 @@ async function ai(body) {
     h("label", { class: "field" }, "Model for new chats", model),
     h("label", { class: "field" }, "Thinking level for new chats", effort),
     h("p", { class: "small muted" }, "Each chat can change both below its message box. Higher thinking is slower, costs more and is more thorough."),
-    h("label", { class: "field" }, "Columbus server", h("div", { class: "row" }, server)),
+    h("label", { class: "field" }, "GIS engine (Python)", h("div", { class: "row" }, engine)),
+    suggest,
     serverState,
     h("div", { class: "row" }, h("button", { type: "submit", class: "btn primary" }, "Save settings")));
   body.append(
@@ -103,7 +104,8 @@ async function ai(body) {
     keyState.className = s.has_key ? "small muted" : "small error-text";
     model.replaceChildren(...s.models.map(([id, label]) => { const o = el("option", null, label); o.value = id; o.selected = id === s.model; return o; }));
     effort.replaceChildren(...s.efforts.map(([id, label]) => { const o = el("option", null, label); o.value = id; o.selected = id === s.effort; return o; }));
-    server.value = s.server || "";
+    engine.value = s.engine_chosen || "";
+    suggest.replaceChildren(...(s.engine_suggestions || []).map((p) => button(`Use ${p}`, "sm", () => { engine.value = p; })));
     serverState.replaceChildren(...serverLines(s).map((t) => el("span", "block", t)));
     serverState.className = !s.server_found || s.server_older || !s.engine ? "small error-text" : "small muted";
     return s;
@@ -116,7 +118,7 @@ async function ai(body) {
   prefs.addEventListener("submit", async (ev) => {
     ev.preventDefault();
     try {
-      await invoke("chat_save_settings", { model: model.value, effort: effort.value, server: server.value });
+      await invoke("chat_save_settings", { model: model.value, effort: effort.value, engine: engine.value });
       await load();
       toast("Saved. A new chat uses the new settings.");
     } catch (err) { serverState.textContent = String(err); serverState.className = "small error-text"; }

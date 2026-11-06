@@ -94,10 +94,11 @@ function markdown(box, md) {
       continue;
     }
     // A table: a row of cells, then a |---|---| line under it.
-    if (/^\s*\|.*\|\s*$/.test(line) && i + 1 < lines.length && /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$/.test(lines[i + 1])) {
+    const cells = (l) => l.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((c) => c.trim());
+    const rule = (l) => l.trim().includes("-") && cells(l).every((c) => /^:?-{3,}:?$/.test(c));
+    if (line.trim().startsWith("|") && line.trim().endsWith("|") && i + 1 < lines.length && rule(lines[i + 1])) {
       flush();
       list = null;
-      const cells = (l) => l.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((c) => c.trim());
       const head = cells(line);
       const table = el("table", "md");
       const tr = el("tr");
@@ -703,11 +704,12 @@ function buildLive() {
   const modelSel = h("select", { id: "chat-model", class: "pick", "aria-label": "Model for this chat" });
   const effortSel = h("select", { id: "chat-effort", class: "pick", "aria-label": "Thinking level for this chat" });
   const onPick = async () => {
-    live.pick = { model: modelSel.value, effort: effortSel.value };
-    if (!live.started) return;
+    const pick = { model: modelSel.value, effort: effortSel.value };
+    if (!live.started) { live.pick = pick; return; }
     try {
-      await invoke("chat_set_model", live.pick);
-      live.renderer.event({ kind: "model", ...live.pick });
+      await invoke("chat_set_model", pick);
+      live.pick = pick;
+      live.renderer.event({ kind: "model", ...pick });
     } catch (err) {
       toast(String(err));
       await updateChip();

@@ -315,7 +315,7 @@ pub async fn engine_check(app: AppHandle) -> Result<Value, String> {
     let s = crate::chat::load(&app);
     tauri::async_runtime::spawn_blocking(move || {
         let server = crate::chat::server(&s);
-        let engine = crate::chat::engine_python(server.as_deref());
+        let engine = crate::chat::engine_python(&s, server.as_deref());
         let worker = server
             .as_ref()
             .and_then(|s| s.parent())
