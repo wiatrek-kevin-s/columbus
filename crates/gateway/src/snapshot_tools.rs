@@ -47,7 +47,8 @@ pub struct SnapshotArgs {
 impl Gateway {
     #[tool(
         description = "Look at layers on a map: draws 1 to 8 of this session's workspace layers (ws:// handles) as a PNG picture you can see, each layer its own colour (polygons lightly filled with an outline, lines and points solid), on a plain background with no basemap. Use it to check what numbers cannot show: slivers, gaps and overlaps, features in the wrong place (a CRS mix-up), a layer that does not line up with another, the shape of a selection. Geometry only: no attribute values or labels are drawn. The answer lists each layer's colour and feature count, the CRS and extent drawn. The picture is saved in the workspace (handle).",
-        annotations(read_only_hint = true, open_world_hint = false)
+        annotations(read_only_hint = true, open_world_hint = false),
+        output_schema = rmcp::handler::server::common::schema_for_output::<crate::server::Output<Value>>()
     )]
     async fn map_snapshot(
         &self,
