@@ -115,6 +115,37 @@ class ToolLintTest(unittest.TestCase):
         self.assertIn("tool.decorator", rules("def staticmethod(f):\n    return f\n\n\n@staticmethod\ndef helper():\n    pass\n\n\ndef run(ctx):\n    return {}\n")[0])
         self.assertIn("tool.decorator", rules("from mylib import thing as dataclass\n\n\n@dataclass\nclass C:\n    pass\n\n\ndef run(ctx):\n    return {}\n")[0])
 
+    def test_names_mean_the_same_everywhere(self):
+        # What a name stands for does not depend on where or in which order
+        # the checks read it.
+        cases = {
+            "def _unused():\n    from re import compile as exec\n\n\ndef run(ctx):\n    exec(ctx.param('code'))\n": "tool.call",
+            "class K:\n    def m(self):\n        import re as getattr\n\n\ndef run(ctx):\n    return getattr(ctx, ctx.param('a'))\n": "tool.call",
+            "def run(ctx):\n    def go():\n        return o.system('id')\n    import os as o\n    return go()\n": "tool.process",
+            "import os\n\n\ndef run(ctx):\n    o = os\n    return o.system('id')\n": "tool.module",
+            "import re as m\n\n\ndef run(ctx):\n    import os as m\n    return m.system('x')\n": "tool.import",
+            "def run(ctx):\n    input = ctx.input_file('a')\n    return {}\n": "tool.call",
+        }
+        for code, rule in cases.items():
+            self.assertIn(rule, rules(code)[0], code)
+
+    def test_text_cannot_name_code_or_attributes(self):
+        cases = {
+            "import string\n\n\ndef run(ctx):\n    return string.Formatter().get_field('0.__builtins__', [run], {})\n": "tool.introspection",
+            "def run(ctx):\n    return '{0.__globals__}'.format(run)\n": "tool.introspection",
+            "import timeit\n\n\ndef run(ctx):\n    return timeit.timeit(ctx.param('c'))\n": "tool.import",
+            "import pydoc\n\n\ndef run(ctx):\n    return pydoc.locate('builtins.exec')\n": "tool.import",
+            "from pkgutil import resolve_name\n\n\ndef run(ctx):\n    return resolve_name('builtins:exec')\n": "tool.import",
+            "from logging import config\n\n\ndef run(ctx):\n    return config\n": "tool.import",
+            "import operator\n\n\ndef run(ctx):\n    return operator.attrgetter('x')(ctx)\n": "tool.introspection",
+            "from operator import methodcaller\n\n\ndef run(ctx):\n    return methodcaller('x')(ctx)\n": "tool.import",
+        }
+        for code, rule in cases.items():
+            self.assertIn(rule, rules(code)[0], code)
+        # Ordinary use of the same modules stays fine.
+        ok = "import logging\nimport operator\nimport functools\n\n\ndef run(ctx):\n    log = logging.getLogger('t')\n    log.info('start')\n    return {'n': functools.reduce(operator.add, [1, 2]), 'k': sorted([(1, 'b')], key=operator.itemgetter(1))}\n"
+        self.assertEqual(rules(ok)[0], set())
+
     def test_what_is_allowed_at_the_top_level(self):
         ok = (
             '"""Doc."""\nimport math\nfrom functools import lru_cache\n\nLIMIT = 10\nUNITS = {"mile": 1609.344, "foot": [0.3048, -1]}\n'

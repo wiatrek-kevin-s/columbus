@@ -88,7 +88,11 @@ Columbus adds the lines that connect `run` to it; leave out `if __name__ == "__m
   `functools.cache` or `functools.lru_cache`; no Python special attributes or names
   (`__code__`, `__globals__`, `__dict__`, `__builtins__`... `__init__` and `__name__` are
   fine), no `getattr`/`setattr`/`eval`/`exec`/`globals()` (called or passed along), no
-  `from x import *` (name each import), no `sys.modules`, frames, `inspect`,
+  `from x import *` (name each import); never use the names of those built-ins for
+  anything of your own (`input = ...` is refused: call it `points`); import each name once,
+  as one thing, and use modules like `os` only as `os.something`; no `timeit`, `pydoc`,
+  `pkgutil`, `logging.config`, `operator.attrgetter`/`methodcaller` or `string.Formatter`,
+  and no Python special names inside text (`"{0.__globals__}"`), no `sys.modules`, frames, `inspect`,
   `builtins`, `__main__`, `types` or `gc`; no coding declaration (`# coding: ...`) or
   byte-order mark; at most 2,000 lines, no more than 5 blank lines or 40 comment lines in
   a row.

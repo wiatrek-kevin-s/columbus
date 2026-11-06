@@ -36,7 +36,9 @@ NETWORK = {
 }
 PROCESSES = {"subprocess", "multiprocessing", "pty", "pexpect"}
 NATIVE = {"ctypes", "cffi", "mmap", "_ctypes", "winreg", "_winapi", "msvcrt", "resource", "fcntl"}
-DYNAMIC = {"importlib", "runpy", "code", "codeop", "pickle", "marshal", "shelve", "dill", "cloudpickle", "imp", "zipimport"}
+DYNAMIC = {"importlib", "runpy", "code", "codeop", "pickle", "marshal", "shelve", "dill", "cloudpickle", "imp", "zipimport",
+           # These run text as code, or look code up by name.
+           "timeit", "profile", "cProfile", "pdb", "bdb", "trace", "doctest", "pydoc", "pkgutil", "logging.config"}
 CREDENTIALS = {"getpass", "keyring", "netrc", "secrets"}
 INTROSPECTION = {"__main__", "builtins", "gc", "inspect", "types", "ctypes", "sys.modules", "atexit", "threading", "_thread",
                  "faulthandler", "tracemalloc", "dis", "opcode", "codecs", "encodings", "site", "sitecustomize"}
@@ -68,6 +70,16 @@ FRAME_ATTRS = ("f_globals", "f_locals", "f_back", "f_builtins", "f_code", "tb_fr
                "gi_code", "cr_code")
 REFUSED_SYS = {"sys.modules", "sys._getframe", "sys.settrace", "sys.setprofile", "sys.meta_path", "sys.path_hooks",
                "sys.addaudithook", "sys.excepthook", "sys.path", "sys.stdout", "sys.stderr"}
+
+
+# Ways to reach attributes or code by a name written as text (stand-ins for
+# getattr), refused wherever they are named.
+REFUSED_NAMES = {"operator.attrgetter", "operator.methodcaller", "string.Formatter", "logging.config"}
+# Modules whose objects may only be used as `module.thing`, never passed
+# around under another name (o = os; o.system(...)).
+DIRECT_ONLY = {"os", "sys", "shutil", "operator", "string", "io", "logging", "functools", "pathlib", "tempfile"}
+# A special name anywhere inside a text ("{0.__globals__}").
+DUNDER_IN_TEXT = re.compile(r"__[A-Za-z0-9_]+?__")
 
 
 def _dunder(name: str) -> bool:
@@ -129,6 +141,10 @@ class _Lint(ast.NodeVisitor):
         self.warnings: list[dict[str, Any]] = []
         self.uses: dict[str, set[str]] = {"inputs": set(), "params": set(), "outputs": set(), "checks": set()}
         self.aliases: dict[str, str] = {}  # local name -> module it stands for
+        # Names bound by imports at the top level (the only names that may
+        # shadow a refused builtin), and each node's parent.
+        self.top_imports: set[str] = set()
+        self.parents: dict[int, ast.AST] = {}
         self.ctx_names: set[str] = set()
         # Names the file binds at the top level other than by importing.
         self.local_names: set[str] = set()
@@ -168,6 +184,8 @@ class _Lint(ast.NodeVisitor):
                 self.err(node, "tool.import", f"from {mod or '.'} import *: name each thing you import, so the reader sees every name the tool uses")
                 continue
             full = f"{mod}.{a.name}" if mod else a.name
+            if full in REFUSED_MODULES or full in REFUSED_NAMES:
+                self.err(node, "tool.import", f"from {mod} import {a.name}: a tool may not use {REFUSED_MODULES.get(full, 'ways to reach code or attributes by name')}")
             if mod == "os" and (a.name in OS_CALLS or a.name in OS_ATTRS):
                 self.err(node, "tool.environment" if a.name in OS_ATTRS | {"getenv", "getenvb", "putenv", "unsetenv"} else "tool.process",
                          f"from os import {a.name}: a tool may not read the environment or start programs")
@@ -185,6 +203,8 @@ class _Lint(ast.NodeVisitor):
 
     def visit_Attribute(self, node: ast.Attribute) -> None:
         full = self._resolve(node)
+        if any(full == r or full.startswith(r + ".") for r in REFUSED_NAMES):
+            self.err(node, "tool.introspection", f"{full}: a tool may not reach attributes or code by a name written as text")
         if full in ("os.environ", "os.environb"):
             self.err(node, "tool.environment", "os.environ: a tool may not read environment variables (no credentials, no settings); take what it needs as parameters")
         if full in REFUSED_SYS:
@@ -201,10 +221,17 @@ class _Lint(ast.NodeVisitor):
         if node.id == "__file__":
             self.warn(node, "tool.file", "__file__: a tool should not read its own folder")
         # Refused builtins, called or passed along (map(eval, ...),
-        # functools.reduce(getattr, ...)).
-        if isinstance(node.ctx, ast.Load) and node.id in REFUSED_CALLS and node.id not in self.aliases:
-            self.err(node, "tool.call", f"{node.id}(): a tool may not use {REFUSED_CALLS[node.id]}")
+        # functools.reduce(getattr, ...)), unless a top-level import gave the
+        # name another meaning for the whole file (from re import compile).
+        if node.id in REFUSED_CALLS and node.id not in self.top_imports:
+            self.err(node, "tool.call", f"{node.id}: this is the name of a Python built-in a tool may not use ({REFUSED_CALLS[node.id]}); give anything of your own another name")
         target = self.aliases.get(node.id)
+        if isinstance(node.ctx, ast.Load) and target:
+            if any(target == r or target.startswith(r + ".") for r in REFUSED_NAMES):
+                self.err(node, "tool.introspection", f"{node.id} ({target}): a tool may not reach attributes or code by a name written as text")
+            parent = self.parents.get(id(node))
+            if _root(target) in DIRECT_ONLY and target == _root(target) and not (isinstance(parent, ast.Attribute) and parent.value is node):
+                self.err(node, "tool.module", f"{node.id}: use the {target} module directly (as {node.id}.something); do not pass it around or give it another name")
         if target in ("os.environ", "os.environb"):
             self.err(node, "tool.environment", "environ: a tool may not read environment variables")
         self.generic_visit(node)
@@ -242,8 +269,10 @@ class _Lint(ast.NodeVisitor):
                 v = v.decode("utf-8", "replace")
             except Exception:  # noqa: BLE001
                 v = ""
-        if isinstance(v, str) and _dunder(v) and v not in DUNDERS_OK and id(node) not in self.docstrings:
-            self.err(node, "tool.introspection", f"{v!r}: a tool may not name Python's special attributes (getattr and setattr would reach them)")
+        if isinstance(v, str) and id(node) not in self.docstrings:
+            bad = [m for m in DUNDER_IN_TEXT.findall(v) if m not in DUNDERS_OK]
+            if bad:
+                self.err(node, "tool.introspection", f"{bad[0]!r} in a text: a tool may not name Python's special attributes (format strings and getattr would reach them)")
         if isinstance(v, str) and id(node) in self.docstrings:
             if URL.search(v) or VSI.search(v):
                 self.warn(node, "tool.url", "a docstring names a URL; the tool cannot reach it (no network)")
@@ -489,6 +518,38 @@ def _source_checks(code: str, lint: _Lint) -> None:
                                 "message": f"more than {MAX_COMMENT_RUN} comment lines in a row; keep the code together so a reader sees all of it"})
 
 
+def _imports(tree: ast.Module, lint: _Lint) -> None:
+    """Every import in the file, before anything is checked, so what a name
+    stands for does not depend on the order the checks visit the code. A
+    name imported as two different things anywhere is refused; an import
+    inside a function may not take a refused built-in's name."""
+    for node in ast.walk(tree):
+        for child in ast.iter_child_nodes(node):
+            lint.parents[id(child)] = node
+    seen: dict[str, tuple[str, int]] = {}
+    top = set(id(n) for n in tree.body)
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Import, ast.ImportFrom)):
+            continue
+        for a in node.names:
+            if a.name == "*":
+                continue
+            if isinstance(node, ast.Import):
+                name = (a.asname or a.name).split(".")[0]
+                target = a.name if a.asname else _root(a.name)
+            else:
+                name = a.asname or a.name
+                target = f"{node.module}.{a.name}" if node.module else a.name
+            if name in seen and seen[name][0] != target:
+                lint.err(node, "tool.import", f"{name} is imported as two different things (lines {seen[name][1]} and {node.lineno}); give each its own name")
+            seen.setdefault(name, (target, node.lineno))
+            lint.aliases.setdefault(name, target)
+            if id(node) in top:
+                lint.top_imports.add(name)
+            elif name in REFUSED_CALLS:
+                lint.err(node, "tool.call", f"{name}: an import inside a function may not take the name of a Python built-in a tool may not use")
+
+
 def lint_tool(code: str) -> dict[str, Any]:
     """Check a tool's code. Returns errors (each refuses the tool), warnings,
     and the names the code uses from ctx."""
@@ -502,6 +563,7 @@ def lint_tool(code: str) -> dict[str, Any]:
         return {"errors": [{"line": 0, "rule": "tool.syntax", "message": f"the code cannot be read: {type(e).__name__}"}], "warnings": [], "uses": {}}
     lint = _Lint()
     _source_checks(code, lint)
+    _imports(tree, lint)
     for node in ast.walk(tree):
         if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.body:
             first = node.body[0]
