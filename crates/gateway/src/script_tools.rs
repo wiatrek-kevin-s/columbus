@@ -38,6 +38,12 @@ use crate::server::{
     checks_from, client_name, new_prov_id, Check, Gateway, Output, Severity, SERVER_NAME,
 };
 
+/// Runs the script (its path the first argument) as `__main__` from its
+/// UTF-8 text, compiled from that text: a coding declaration has no effect,
+/// so the code that runs is the code the person read. Python run on a file
+/// would honour `# coding: utf-7` and decode a comment into code.
+const RUN_TEXT: &str = "import sys, types; p = sys.argv[1]; t = open(p, encoding='utf-8', newline='').read(); m = types.ModuleType('__main__'); m.__file__ = p; m.__builtins__ = __builtins__; sys.modules['__main__'] = m; sys.argv = [p]; exec(compile(t, p, 'exec', dont_inherit=True), m.__dict__)";
+
 /// Largest script, in bytes.
 const MAX_CODE: usize = 100 * 1024;
 const MAX_INPUTS: usize = 20;
@@ -347,6 +353,7 @@ const MAX_LINE: usize = 200;
 /// control characters but tab and newline, bidirectional and invisible
 /// formatting characters (Trojan Source), and lines too long to see whole.
 fn shown_as_run(code: &str) -> Result<(), String> {
+    columbus_shared::tools::coding_line(code)?;
     for (i, line) in code.split('\n').enumerate() {
         let n = i + 1;
         if line.chars().count() > MAX_LINE {
@@ -430,8 +437,9 @@ impl Gateway {
     ) -> Result<Ran, String> {
         let python = self.state.paths.python.to_string_lossy().into_owned();
         let script = run.join("script.py").display().to_string();
-        // -X utf8 because -I ignores PYTHONIOENCODING.
-        let args: Vec<String> = ["-I", "-B", "-X", "utf8", &script]
+        // -X utf8 because -I ignores PYTHONIOENCODING. The script is run
+        // from its UTF-8 text (RUN_TEXT), never decoded by Python itself.
+        let args: Vec<String> = ["-I", "-B", "-X", "utf8", "-c", RUN_TEXT, &script]
             .iter()
             .map(|s| s.to_string())
             .collect();
@@ -1041,6 +1049,39 @@ mod tests {
         assert!(taken.is_empty(), "{skipped:?}");
     }
 
+    /// The runner reads the script's text: a coding line that would turn a
+    /// comment into code when Python decodes the file does nothing.
+    #[test]
+    fn scripts_run_from_their_text() {
+        let Some(py) = ["python3", "python"].into_iter().find(|p| {
+            std::process::Command::new(p)
+                .arg("--version")
+                .output()
+                .is_ok_and(|o| o.status.success())
+        }) else {
+            return;
+        };
+        let d = tempfile::tempdir().unwrap();
+        let script = d.path().join("script.py");
+        std::fs::write(
+            &script,
+            "# coding: utf-7\n# +AAo-print(\"evil\")\nimport sys\nprint(\"good\", __name__, sys.argv[0] == __file__)\n",
+        )
+        .unwrap();
+        let out = std::process::Command::new(py)
+            .args(["-I", "-B", "-X", "utf8", "-c", RUN_TEXT])
+            .arg(&script)
+            .output()
+            .unwrap();
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert_eq!(
+            text.trim(),
+            "good __main__ True",
+            "{text} {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
     #[test]
     fn code_must_read_as_it_runs() {
         use super::shown_as_run;
@@ -1048,6 +1089,8 @@ mod tests {
         for bad in [
             "# tidy\r__import__('os').system('x')",
             "x = 1 # \u{202E}gnirts",
+            "# coding: utf-7\n# +AAo-print(1)\n",
+            "\u{FEFF}print(1)",
             "a\u{200B}b = 1",
             "\u{1b}[2J",
             &"x".repeat(201),

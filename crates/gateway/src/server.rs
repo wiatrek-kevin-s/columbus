@@ -1763,7 +1763,14 @@ impl Gateway {
         }
         for (host, p) in self.all_plugins() {
             let p = &p;
+            // Policy first: a plugin none of whose tools are allowed is not
+            // started, not even to check it.
             if args.provider.as_deref().is_some_and(|want| want != p.id())
+                || !p
+                    .manifest
+                    .tools
+                    .keys()
+                    .any(|n| self.state.policy().tool_allowed(&format!("{}.{n}", p.id())))
                 || !matches!(host.status(p), crate::plugins::PluginStatus::Ready)
                 || host.check(p).await.is_err()
             {

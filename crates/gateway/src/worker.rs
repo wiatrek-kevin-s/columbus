@@ -107,6 +107,22 @@ struct Running {
     stdin: ChildStdin,
     stdout: Lines<BufReader<ChildStdout>>,
     next_id: u64,
+    /// A plugin started as the leader of its own process group (Unix):
+    /// everything it started is ended with it.
+    group: Option<u32>,
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        if let Some(pid) = self.group {
+            if pid > 1 {
+                // The worker and anything it forked, which kill_on_drop
+                // alone would leave running.
+                unsafe { libc::kill(-(pid as i32), libc::SIGKILL) };
+            }
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -212,6 +228,12 @@ impl Worker {
         if let Some(cwd) = &l.cwd {
             cmd.current_dir(cwd);
         }
+        // A plugin leads a process group of its own, so stopping it stops
+        // everything it started (on Windows the launcher's job object does).
+        #[cfg(unix)]
+        if l.env.is_some() {
+            cmd.process_group(0);
+        }
         if let Some(env) = &l.env {
             cmd.env_clear();
             for (k, v) in env {
@@ -226,11 +248,17 @@ impl Worker {
         })?;
         let stdin = child.stdin.take().expect("piped stdin");
         let stdout = BufReader::new(child.stdout.take().expect("piped stdout")).lines();
+        let group = if cfg!(unix) && l.env.is_some() {
+            child.id()
+        } else {
+            None
+        };
         Ok(Running {
             child,
             stdin,
             stdout,
             next_id: 1,
+            group,
         })
     }
 
@@ -282,6 +310,11 @@ impl Worker {
 
     async fn kill(run: Option<Running>) {
         if let Some(mut r) = run {
+            // Its whole group first, while the leader still holds the id.
+            #[cfg(unix)]
+            if let Some(pid) = r.group.filter(|p| *p > 1) {
+                unsafe { libc::kill(-(pid as i32), libc::SIGKILL) };
+            }
             let _ = r.child.kill().await;
         }
     }

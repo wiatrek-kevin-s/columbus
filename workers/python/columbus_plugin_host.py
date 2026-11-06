@@ -6,11 +6,15 @@ Isolated mode (-I) keeps PYTHON* variables and the user's site folder out.
 This launcher then puts exactly two folders first on the import path: the
 plugin's own folder and the SDK's folder (both installed by an
 administrator), and runs the entry script as __main__.
+
+The entry is read as UTF-8 text and compiled from that text, never handed
+to Python to decode: a coding declaration (``# coding: utf-7``) would make
+Python decode the file into other code than a person reads.
 """
 
 import os
-import runpy
 import sys
+import types
 
 
 def main() -> None:
@@ -25,7 +29,19 @@ def main() -> None:
         sys.exit(2)
     sys.path[0:0] = [plugin_dir, sdk]
     sys.argv = [entry]
-    runpy.run_path(entry, run_name="__main__")
+    run_text(entry)
+
+
+def run_text(path: str) -> None:
+    """Run a Python file as __main__ from its UTF-8 text, as it reads."""
+    with open(path, encoding="utf-8", newline="") as f:
+        text = f.read()
+    code = compile(text, path, "exec", dont_inherit=True)
+    main = types.ModuleType("__main__")
+    main.__file__ = path
+    main.__builtins__ = __builtins__
+    sys.modules["__main__"] = main
+    exec(code, main.__dict__)
 
 
 if __name__ == "__main__":

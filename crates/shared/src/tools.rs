@@ -107,6 +107,7 @@ pub fn content_hash(manifest: &[u8], entry: &[u8]) -> String {
 /// control characters but tab and newline, bidirectional and invisible
 /// formatting characters (Trojan Source), and lines too long to see whole.
 pub fn plain_text(text: &str) -> Result<(), String> {
+    coding_line(text)?;
     for (i, line) in text.split('\n').enumerate() {
         if line.chars().count() > MAX_LINE {
             return Err(format!(
@@ -116,6 +117,30 @@ pub fn plain_text(text: &str) -> Result<(), String> {
         }
     }
     plain_chars(text)
+}
+
+/// A coding declaration (PEP 263: `# coding: utf-7` on line 1 or 2) makes
+/// Python decode the file into other code than a person reads, so code may
+/// not have one (nor a byte-order mark). Columbus also runs code from its
+/// text, where such a line has no effect; this keeps the two in step.
+pub fn coding_line(text: &str) -> Result<(), String> {
+    if text.starts_with('\u{FEFF}') {
+        return Err("the code starts with a byte-order mark; save it as plain UTF-8".into());
+    }
+    for (i, line) in text.split('\n').take(2).enumerate() {
+        let l = line.trim_start_matches([' ', '\t', '\x0c']);
+        if let Some(rest) = l.strip_prefix('#') {
+            if let Some(at) = rest.find("coding") {
+                if rest[at + 6..].starts_with([':', '=']) {
+                    return Err(format!(
+                        "line {} declares a source encoding (\"coding\"); code is UTF-8 and may not declare one, since Python would read it differently from how it shows",
+                        i + 1
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// As [`plain_text`], without the limit on line length (prose, and the
@@ -227,7 +252,8 @@ pub struct ToolView {
     pub version: String,
     pub hash: String,
     /// Installed tools: `ready`, `changed` (its files differ from what was
-    /// installed: off), `not_installed` (no approval recorded: off).
+    /// installed: off), `invalid` (its files break a rule, see `problem`:
+    /// off until proposed again), `not_installed` (no approval: off).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub state: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -373,8 +399,11 @@ pub fn list_installed(root: &Path) -> Vec<ToolView> {
             let mut v = view(&id, &dir);
             v.state = Some(
                 match approvals.get(&id) {
+                    // Its files break a rule (one made after it was
+                    // installed, say): off until it is proposed again.
+                    _ if v.problem.is_some() => "invalid",
                     None => "not_installed",
-                    Some(h) if *h == v.hash && v.problem.is_none() => "ready",
+                    Some(h) if *h == v.hash => "ready",
                     Some(_) => "changed",
                 }
                 .into(),
@@ -654,6 +683,23 @@ mod tests {
     }
 
     #[test]
+    fn coding_declarations_are_refused() {
+        let utf7 = "# coding: utf-7\n# +AAo-def run(ctx): return {\"evil\": 1}\ndef run(ctx):\n    return {}\n";
+        assert!(plain_text(utf7).is_err());
+        for bad in [
+            "#!/usr/bin/env python\n# -*- coding: latin-1 -*-\n",
+            "  # vim: set fileencoding=utf-7 :\n",
+            "#coding=utf-7\n",
+            "\u{FEFF}x = 1\n",
+        ] {
+            assert!(coding_line(bad).is_err(), "{bad:?}");
+        }
+        // Only lines 1 and 2 declare one; elsewhere it is a comment.
+        assert!(coding_line("x = 1\ny = 2\n# coding: utf-7\n").is_ok());
+        assert!(coding_line("# encoded with care\n").is_ok());
+    }
+
+    #[test]
     fn text_that_shows_differently_is_refused() {
         assert!(plain_chars("a\tb\nc d").is_ok());
         for c in [
@@ -714,6 +760,17 @@ mod tests {
         decline(root, id).unwrap();
         assert!(list_proposals(root).is_empty());
 
+        // A title the rules no longer allow: shown as needing a new proposal.
+        let y = std::fs::read_to_string(root.join(id).join(MANIFEST)).unwrap();
+        std::fs::write(
+            root.join(id).join(MANIFEST),
+            y.replace("name: Locate measures", "name: 'Locate \"measures\"'"),
+        )
+        .unwrap();
+        let t = &list_installed(root)[0];
+        assert_eq!(t.state.as_deref(), Some("invalid"));
+        assert!(t.problem.as_deref().unwrap().contains("double quotes"));
+        std::fs::write(root.join(id).join(MANIFEST), y).unwrap();
         // A changed file switches it off.
         std::fs::write(root.join(id).join(ENTRY), code2).unwrap();
         assert_eq!(list_installed(root)[0].state.as_deref(), Some("changed"));

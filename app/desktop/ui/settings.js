@@ -182,10 +182,13 @@ function renderTools() {
     text.append(el("span", "where", `${t.tool} · version ${t.version || "?"}${t.installed ? ` · installed ${when(t.installed)}` : ""}`));
     if (t.description) text.append(el("span", null, t.description));
     const chips = el("div", "chips");
-    const state = t.state === "ready" ? (tools.allowed ? "In use" : "Off (organization)") : t.state === "changed" ? "Off: its files changed" : "Off: not installed";
+    const state = t.state === "ready" ? (tools.allowed ? "In use" : "Off (organization)")
+      : t.state === "changed" ? "Off: its files changed"
+      : t.state === "invalid" ? "Off: ask your assistant to propose it again"
+      : "Off: not installed";
     chips.append(el("span", t.state === "ready" && tools.allowed ? "chip" : "chip off", state));
     text.append(chips);
-    if (t.problem) text.append(el("span", "where error-text", t.problem));
+    if (t.problem) text.append(el("span", "where error-text", `Not used: ${t.problem}. Remove it, and ask your assistant to propose it again.`));
     const v = el("button", null, "Code");
     v.type = "button";
     v.addEventListener("click", () => openInstalled(t));

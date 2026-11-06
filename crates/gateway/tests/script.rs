@@ -299,6 +299,14 @@ async fn scripts_need_policy_and_the_persons_approval() {
     )
     .await);
     assert!(e.contains("at most 100 KB"), "{e}");
+    // A coding line would make Python decode a comment into code.
+    let e = err(&call(
+        &c,
+        "run_python",
+        json!({"code": "# coding: utf-7\n# +AAo-print(1)\nprint(2)\n"}),
+    )
+    .await);
+    assert!(e.contains("source encoding"), "{e}");
     c.cancel().await.unwrap();
 }
 

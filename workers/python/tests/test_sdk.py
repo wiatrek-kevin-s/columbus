@@ -131,6 +131,18 @@ PLUGIN = textwrap.dedent('''
 ''')
 
 
+class HostTests(unittest.TestCase):
+    def test_the_entry_runs_from_its_text(self):
+        """A coding line would make Python decode a comment into code; the
+        host compiles the text as it reads, so the comment stays a comment."""
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "tool.py"), "w", encoding="utf-8") as f:
+                f.write('# coding: utf-7\n# +AAo-print("evil")\nimport sys\nprint("good", __name__, sys.argv[0] == __file__)\n')
+            host = os.path.join(SDK_DIR, "columbus_plugin_host.py")
+            out = subprocess.run([sys.executable, "-I", host, d, "tool.py"], capture_output=True, text=True, timeout=30)
+            self.assertEqual(out.stdout.strip(), "good __main__ True", out.stderr)
+
+
 class ProtocolTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

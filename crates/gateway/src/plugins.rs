@@ -1060,13 +1060,14 @@ impl Plugins {
     }
 
     fn launch(&self, p: &Plugin) -> Launch {
-        self.launch_from(p, &p.dir)
+        self.launch_from(p, &p.dir, &p.folder)
     }
 
     /// Start the plugin from the files in `dir` (its own folder, or a copy
-    /// Columbus made of exactly the files it checked).
-    fn launch_from(&self, p: &Plugin, dir: &Path) -> Launch {
-        let own = plugin_dir(&self.workspace, &p.folder);
+    /// Columbus made of exactly the files it checked), with `folder` (under
+    /// `plugins/` in the workspace) as the one place it may write.
+    fn launch_from(&self, p: &Plugin, dir: &Path, folder: &str) -> Launch {
+        let own = plugin_dir(&self.workspace, folder);
         let tmp = own.join("tmp");
         let _ = std::fs::create_dir_all(&tmp);
         let (program, args, extra_read) = match p.manifest.runtime {
@@ -1190,17 +1191,18 @@ impl Plugins {
         }
         p.checked
             .get_or_init(|| async {
-                let code = self
-                    .workspace
-                    .join("tool-code")
-                    .join(uuid::Uuid::new_v4().simple().to_string());
+                // In folders of its own, never the tool's: a check can come
+                // while the tool runs, and must not touch that run's files.
+                let tag = uuid::Uuid::new_v4().simple().to_string();
+                let code = self.workspace.join("tool-code").join(&tag);
+                let folder = format!("{}.check-{}", p.folder, &tag[..12]);
                 let result = async {
                     self.stage_code(p, &code)?;
-                    self.fresh_worker(p, &code).await.map(|_| ())
+                    self.fresh_worker_in(p, &code, &folder).await.map(|_| ())
                 }
                 .await;
                 let _ = std::fs::remove_dir_all(&code);
-                self.wipe_own(p);
+                let _ = std::fs::remove_dir_all(plugin_dir(&self.workspace, &folder));
                 result
             })
             .await
@@ -1244,11 +1246,32 @@ impl Plugins {
     /// `code` (see [`stage_code`](Self::stage_code)) with an empty folder.
     /// It ends when the run's last reference to it goes.
     pub async fn fresh_worker(&self, p: &Plugin, code: &Path) -> Result<Worker, String> {
+        self.fresh_worker_in(p, code, &p.folder).await
+    }
+
+    async fn fresh_worker_in(
+        &self,
+        p: &Plugin,
+        code: &Path,
+        folder: &str,
+    ) -> Result<Worker, String> {
         if let Some(g) = &p.gate {
             return Err(describe_status(p.id(), g));
         }
-        self.wipe_own(p);
-        let w = Worker::new(self.launch_from(p, code));
+        // Not started on a folder that could not be emptied: an earlier run's
+        // files would still be there.
+        let own = plugin_dir(&self.workspace, folder);
+        match std::fs::remove_dir_all(&own) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                return Err(format!(
+                    "{} was not started: its folder from an earlier run could not be emptied ({e})",
+                    p.id()
+                ))
+            }
+        }
+        let w = Worker::new(self.launch_from(p, code, folder));
         let d = w
             .describe(Duration::from_secs(30))
             .await

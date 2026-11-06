@@ -396,6 +396,13 @@ async fn propose_test_install_run_and_remove_a_personal_tool() {
     for want in ["socket", "/etc/passwd", "os.environ", "never holds"] {
         assert!(e.contains(want), "missing {want}: {e}");
     }
+    // A coding line: Python would decode the comment into code.
+    let mut bad = proposal(&routes, &crashes);
+    bad["code"] = json!(format!(
+        "# coding: utf-7\n# +AAo-def run(ctx): return {{\"evil\": 1}}\n{}",
+        bad["code"].as_str().unwrap()
+    ));
+    assert!(err(&call(&c, "propose_tool", bad).await).contains("source encoding"));
     let mut bad = proposal(&routes, &crashes);
     bad["code"] = json!(bad["code"]
         .as_str()
@@ -742,7 +749,9 @@ async fn personal_tools_refuse_a_connected_servers_file() {
     let dir = env.tools().join("personal.count-rows");
     std::fs::create_dir_all(&dir).unwrap();
     let yaml = "id: personal.count-rows\nversion: 1.0.0\nruntime: python\nentry: tool.py\ntools:\n  run:\n    summary: Count rows.\n    params:\n      table: { type: file, kind: table }\n    outputs:\n      report: { type: file, format: json }\n    risk: read\n";
-    let code = "def run(ctx):\n    return {'path': ctx.input_file('table')}\n\n\nfrom columbus_plugin import Plugin as _P\n_plugin = _P('personal.count-rows', '1.0.0')\n_plugin.tool('run', params=['table'], outputs=['report'])(run)\nif __name__ == '__main__':\n    _plugin.serve()\n";
+    // (Installed by hand, so not checked: it also leaves a child process
+    // running, which must not outlive the run.)
+    let code = "import os, time\n\n\ndef run(ctx):\n    ctx.input_file('table')\n    pid = os.fork()\n    if pid == 0:\n        time.sleep(60)\n        os._exit(0)\n    return {'child': pid}\n\n\nfrom columbus_plugin import Plugin as _P\n_plugin = _P('personal.count-rows', '1.0.0')\n_plugin.tool('run', params=['table'], outputs=['report'])(run)\nif __name__ == '__main__':\n    _plugin.serve()\n";
     std::fs::write(dir.join("plugin.yaml"), yaml).unwrap();
     std::fs::write(dir.join("tool.py"), code).unwrap();
     std::fs::write(
@@ -782,5 +791,27 @@ async fn personal_tools_refuse_a_connected_servers_file() {
     )
     .await);
     assert_eq!(r["result"]["status"], "done", "{r}");
+    // What the tool started ends with its run (its process group).
+    #[cfg(target_os = "linux")]
+    {
+        let child = r["result"]["summary"]["child"].as_i64().unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let alive = |pid: i64| {
+            std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|s| {
+                !s.rsplit(')')
+                    .next()
+                    .unwrap_or("")
+                    .trim_start()
+                    .starts_with('Z')
+            })
+        };
+        while alive(child) && std::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(
+            !alive(child),
+            "the tool's child process {child} outlived the run"
+        );
+    }
     c.cancel().await.unwrap();
 }

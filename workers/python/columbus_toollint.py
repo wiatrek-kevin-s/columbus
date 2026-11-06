@@ -38,25 +38,49 @@ PROCESSES = {"subprocess", "multiprocessing", "pty", "pexpect"}
 NATIVE = {"ctypes", "cffi", "mmap", "_ctypes", "winreg", "_winapi", "msvcrt", "resource", "fcntl"}
 DYNAMIC = {"importlib", "runpy", "code", "codeop", "pickle", "marshal", "shelve", "dill", "cloudpickle", "imp", "zipimport"}
 CREDENTIALS = {"getpass", "keyring", "netrc", "secrets"}
+INTROSPECTION = {"__main__", "builtins", "gc", "inspect", "types", "ctypes", "sys.modules", "atexit", "threading", "_thread",
+                 "faulthandler", "tracemalloc", "dis", "opcode", "codecs", "encodings", "site", "sitecustomize"}
 REFUSED_MODULES = {
     **{m: "network access" for m in NETWORK},
     **{m: "starting other programs" for m in PROCESSES},
     **{m: "native code" for m in NATIVE},
     **{m: "loading code dynamically" for m in DYNAMIC},
     **{m: "credentials" for m in CREDENTIALS},
+    **{m: "reaching into Python's own machinery" for m in INTROSPECTION},
 }
 # The SDK is added by Columbus; a tool may take its helpers, not its server.
 SDK = "columbus_plugin"
 SDK_HELPERS = {"ToolError", "Severity", "write_csv", "write_geojson", "decode_geometry"}
 
-# Most blank lines in a row: more could push code out of sight of a reader.
+# Most blank lines in a row, comment-only lines in a row and lines in all:
+# more could push code out of sight of a reader.
 MAX_BLANK_RUN = 5
+MAX_COMMENT_RUN = 40
+MAX_LINES = 2000
+
+# Special names a tool may use; every other __x__ is refused, as names,
+# attributes and text (getattr(f, "__code__")).
+DUNDERS_OK = {"__init__", "__name__", "__doc__", "__file__", "__len__", "__iter__", "__next__", "__enter__",
+              "__exit__", "__repr__", "__str__", "__eq__", "__hash__", "__lt__", "__le__", "__gt__", "__ge__",
+              "__contains__", "__getitem__", "__post_init__", "__all__", "__slots__", "__future__"}
+NAMES_OK = {"__name__", "__doc__", "__file__", "__all__", "__slots__"}
+FRAME_ATTRS = ("f_globals", "f_locals", "f_back", "f_builtins", "f_code", "tb_frame", "gi_frame", "cr_frame", "ag_frame",
+               "gi_code", "cr_code")
+REFUSED_SYS = {"sys.modules", "sys._getframe", "sys.settrace", "sys.setprofile", "sys.meta_path", "sys.path_hooks",
+               "sys.addaudithook", "sys.excepthook", "sys.path", "sys.stdout", "sys.stderr"}
+
+
+def _dunder(name: str) -> bool:
+    return len(name) > 4 and name.startswith("__") and name.endswith("__")
+
 
 REFUSED_CALLS = {
     "globals": "changing the module's names behind the reader's back",
     "locals": "changing names behind the reader's back",
     "vars": "changing names behind the reader's back",
     "setattr": "changing names behind the reader's back",
+    "getattr": "reaching attributes by computed name",
+    "hasattr": "reaching attributes by computed name",
     "delattr": "changing names behind the reader's back",
     "eval": "running text as code",
     "exec": "running text as code",
@@ -106,6 +130,8 @@ class _Lint(ast.NodeVisitor):
         self.uses: dict[str, set[str]] = {"inputs": set(), "params": set(), "outputs": set(), "checks": set()}
         self.aliases: dict[str, str] = {}  # local name -> module it stands for
         self.ctx_names: set[str] = set()
+        # Names the file binds at the top level other than by importing.
+        self.local_names: set[str] = set()
         # Docstrings may mention a URL or path (as text, not as data).
         self.docstrings: set[int] = set()
 
@@ -157,11 +183,17 @@ class _Lint(ast.NodeVisitor):
         full = self._resolve(node)
         if full in ("os.environ", "os.environb"):
             self.err(node, "tool.environment", "os.environ: a tool may not read environment variables (no credentials, no settings); take what it needs as parameters")
-        if full in ("sys.path", "sys.modules", "sys.meta_path"):
-            self.warn(node, "tool.import_path", f"{full}: a tool should not change how Python imports")
+        if full in REFUSED_SYS:
+            self.err(node, "tool.introspection", f"{full}: a tool may not reach into Python's own machinery (it could change what runs)")
+        if _dunder(node.attr) and node.attr not in DUNDERS_OK:
+            self.err(node, "tool.introspection", f".{node.attr}: a tool may not use Python's special attributes (they can swap the code that runs)")
+        if node.attr.startswith(FRAME_ATTRS):
+            self.err(node, "tool.introspection", f".{node.attr}: a tool may not reach into running frames")
         self.generic_visit(node)
 
     def visit_Name(self, node: ast.Name) -> None:
+        if _dunder(node.id) and node.id not in NAMES_OK:
+            self.err(node, "tool.introspection", f"{node.id}: a tool may not use Python's special names")
         if node.id == "__file__":
             self.warn(node, "tool.file", "__file__: a tool should not read its own folder")
         target = self.aliases.get(node.id)
@@ -204,6 +236,8 @@ class _Lint(ast.NodeVisitor):
                 v = v.decode("utf-8", "replace")
             except Exception:  # noqa: BLE001
                 v = ""
+        if isinstance(v, str) and _dunder(v) and v not in DUNDERS_OK and id(node) not in self.docstrings:
+            self.err(node, "tool.introspection", f"{v!r}: a tool may not name Python's special attributes (getattr and setattr would reach them)")
         if isinstance(v, str) and id(node) in self.docstrings:
             if URL.search(v) or VSI.search(v):
                 self.warn(node, "tool.url", "a docstring names a URL; the tool cannot reach it (no network)")
@@ -242,8 +276,100 @@ class _Lint(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_Global(self, node: ast.Global) -> None:
-        self.warn(node, "tool.state", "global: a tool should keep nothing between runs, so every run gives the same answer for the same inputs")
+        self.err(node, "tool.state", "global: a tool may not rebind its top-level names; keep state in local variables")
         self.generic_visit(node)
+
+
+def _literal(node: ast.AST | None) -> bool:
+    """A value written out in full: numbers, text, True/False/None, and
+    lists, tuples, sets and dicts of those (a sign in front of a number is
+    fine). Nothing that runs code when the module loads."""
+    if node is None:
+        return True
+    if isinstance(node, ast.Constant):
+        return True
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
+        return isinstance(node.operand, ast.Constant) and isinstance(node.operand.value, (int, float, complex))
+    if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+        return all(_literal(e) for e in node.elts)
+    if isinstance(node, ast.Dict):
+        return all(k is not None and _literal(k) for k in node.keys) and all(_literal(v) for v in node.values)
+    return False
+
+
+def _plain_annotation(node: ast.AST | None) -> bool:
+    """An annotation that only names types: `int`, `gpd.GeoDataFrame`,
+    `list[str]`, `"Row"`, `int | None`."""
+    if node is None:
+        return True
+    if isinstance(node, (ast.Name, ast.Constant)):
+        return True
+    if isinstance(node, ast.Attribute):
+        return _plain_annotation(node.value)
+    if isinstance(node, ast.Subscript):
+        return _plain_annotation(node.value) and _plain_annotation(node.slice)
+    if isinstance(node, ast.Tuple):
+        return all(_plain_annotation(e) for e in node.elts)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+        return _plain_annotation(node.left) and _plain_annotation(node.right)
+    return False
+
+
+# Decorators a helper (never run) may have: they change nothing but the
+# function they wrap.
+# Named as imported (`from functools import cache` counts as functools.cache).
+DECORATORS = {"staticmethod", "classmethod", "property", "dataclasses.dataclass", "functools.cache", "functools.lru_cache"}
+
+
+def _decorator_ok(node: ast.AST, lint: "_Lint") -> bool:
+    if isinstance(node, ast.Call):
+        return _decorator_ok(node.func, lint) and all(_literal(a) for a in node.args) and all(_literal(k.value) for k in node.keywords)
+    head = _dotted(node).split(".")[0]
+    # A name the file itself defines is its own code, whatever it is called.
+    return head not in lint.local_names and lint._resolve(node) in DECORATORS
+
+
+def _check_def(node: ast.AST, lint: "_Lint") -> None:
+    """What runs when a def or class statement runs: its decorators,
+    default values, annotations, base classes and keywords. Only plain
+    values there, so loading the module does nothing a reader does not see."""
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        for d in node.decorator_list:
+            if node.name == "run":
+                lint.err(d, "tool.decorator", "run may not have a decorator; Columbus calls it as written")
+            elif not _decorator_ok(d, lint):
+                lint.err(d, "tool.decorator", f"decorator on {node.name}: only {', '.join(sorted(DECORATORS))} (they run when the tool loads)")
+        a = node.args
+        for v in [*a.defaults, *[d for d in a.kw_defaults if d is not None]]:
+            if not _literal(v):
+                lint.err(v, "tool.default", f"a default value of {node.name} is not a plain value; defaults run when the tool loads (use None and set it inside)")
+        for arg in [*a.posonlyargs, *a.args, *a.kwonlyargs, *([a.vararg] if a.vararg else []), *([a.kwarg] if a.kwarg else [])]:
+            if not _plain_annotation(arg.annotation):
+                lint.err(arg, "tool.annotation", f"the annotation of {arg.arg} in {node.name} is not a plain type; annotations run when the tool loads")
+        if not _plain_annotation(node.returns):
+            lint.err(node, "tool.annotation", f"the return annotation of {node.name} is not a plain type")
+    elif isinstance(node, ast.ClassDef):
+        for d in node.decorator_list:
+            if not _decorator_ok(d, lint):
+                lint.err(d, "tool.decorator", f"decorator on class {node.name}: only {', '.join(sorted(DECORATORS))}")
+        for base in node.bases:
+            if not isinstance(base, (ast.Name, ast.Attribute)):
+                lint.err(base, "tool.class", f"the base classes of {node.name} must be plain names")
+        if node.keywords:
+            lint.err(node, "tool.class", f"class {node.name}: no metaclass or other keywords; they run code when the tool loads")
+        for i, item in enumerate(node.body):
+            if i == 0 and isinstance(item, ast.Expr) and isinstance(item.value, ast.Constant) and isinstance(item.value.value, str):
+                continue
+            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                _check_def(item, lint)
+                continue
+            if isinstance(item, ast.Assign) and all(isinstance(t, ast.Name) for t in item.targets) and _literal(item.value):
+                continue
+            if isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name) and _literal(item.value) and _plain_annotation(item.annotation):
+                continue
+            if isinstance(item, ast.Pass):
+                continue
+            lint.err(item, "tool.class", f"class {node.name} may hold only a docstring, functions and plain values; this runs when the tool loads")
 
 
 def _bound_names(node: ast.AST) -> list[str]:
@@ -262,62 +388,59 @@ def _bound_names(node: ast.AST) -> list[str]:
 
 
 def _top_level(tree: ast.Module, lint: _Lint) -> None:
+    """The top level is an allow-list: a docstring, imports, functions and
+    classes, and names given plain values, each name bound once. Nothing else
+    runs when Columbus loads the tool, so what a reader sees is what runs."""
     run = None
-    # A reader sees the first definition; Python runs the last. Every name a
-    # function or class defines at the top level is bound exactly once.
-    defined: dict[str, int] = {}
     bound: dict[str, int] = {}
+    # Imports first, so decorators resolve to the modules they came from.
     for node in tree.body:
-        for name in _bound_names(node):
-            is_def = isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
-            if (is_def and name in bound) or name in defined:
-                lint.err(node, "tool.redefined", f"{name} is defined more than once at the top level (line {defined.get(name) or bound.get(name)} and line {node.lineno}); a reader sees one, Python runs the last")
-            if is_def:
-                defined.setdefault(name, node.lineno)
-            bound.setdefault(name, node.lineno)
-    # `run` defined or rebound in top-level code (inside an if, a try, a
-    # loop), or changed from inside a function, is refused too.
-    for top in tree.body:
-        top_def = isinstance(top, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
-        for node in ast.walk(top):
-            if isinstance(node, (ast.Global, ast.Nonlocal)) and "run" in node.names:
-                lint.err(node, "tool.redefined", "run is changed from inside a function; define it once, plainly")
-            if top_def or node is top:
-                continue
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.name == "run":
-                lint.err(node, "tool.redefined", "run is defined inside a block; define it once, plainly, at the top level")
-            if isinstance(node, ast.Name) and node.id == "run" and isinstance(node.ctx, (ast.Store, ast.Del)):
-                lint.err(node, "tool.redefined", "run is rebound at the top level; define it once, plainly")
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            lint.visit(node)
+        else:
+            lint.local_names.update(_bound_names(node))
     for i, node in enumerate(tree.body):
-        if isinstance(node, (ast.Import, ast.ImportFrom, ast.ClassDef)):
+        for name in _bound_names(node):
+            if name in bound:
+                lint.err(node, "tool.redefined", f"{name} is bound more than once at the top level (lines {bound[name]} and {node.lineno}); a reader sees one, Python uses the last")
+            else:
+                bound[name] = node.lineno
+            if name in ("_plugin", "_ColumbusPlugin"):
+                lint.err(node, "tool.sdk", f"{name}: this name is Columbus's")
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
             continue
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             if node.name == "run":
-                run = node
-            if node.name in ("_plugin", "_ColumbusPlugin"):
-                lint.err(node, "tool.sdk", f"{node.name}: this name is Columbus's")
+                if isinstance(node, ast.ClassDef):
+                    lint.err(node, "tool.run", "run must be a function")
+                else:
+                    run = node
+            _check_def(node, lint)
             continue
-        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str) and i == 0:
+        if i == 0 and isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
             continue  # the module's docstring
-        if isinstance(node, (ast.Assign, ast.AnnAssign)):
-            value = node.value
-            simple = value is None or isinstance(value, (ast.Constant, ast.Tuple, ast.List, ast.Dict, ast.Set, ast.Name, ast.Attribute, ast.UnaryOp, ast.BinOp))
-            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-            if any(isinstance(t, ast.Name) and t.id in ("_plugin", "_ColumbusPlugin", "run") for t in targets):
-                lint.err(node, "tool.sdk", "this name is Columbus's (or the tool's run function)")
-            if simple:
-                continue
+        if isinstance(node, ast.Assign) and all(isinstance(t, ast.Name) for t in node.targets) and _literal(node.value):
+            if any(t.id == "run" for t in node.targets):
+                lint.err(node, "tool.redefined", "run is the tool's function; do not assign to it")
+            continue
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.value is not None \
+                and _literal(node.value) and _plain_annotation(node.annotation):
+            continue
         if isinstance(node, ast.If) and _dotted(node.test.left if isinstance(node.test, ast.Compare) else node.test) == "__name__":
             lint.err(node, "tool.main", "if __name__ == '__main__': Columbus adds the part that starts the tool; leave it out")
             continue
-        lint.warn(node, "tool.import_time", "code at the top level runs every time Columbus starts the tool; put the work in run(ctx)")
+        lint.err(node, "tool.top_level", "only imports, functions, classes and names given plain values (numbers, text, lists and dicts of them) may be at the top level; anything else runs when the tool loads: put it in run(ctx)")
+    # `run` changed from inside a function.
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Global, ast.Nonlocal)) and "run" in node.names:
+            lint.err(node, "tool.redefined", "run is changed from inside a function; define it once, plainly")
     if run is None:
         lint.errors.append({"line": 0, "rule": "tool.run", "message": "the code must define run(ctx): Columbus calls it with the run's context"})
         return
     if isinstance(run, ast.AsyncFunctionDef):
         lint.err(run, "tool.run", "run(ctx) must be a plain function, not async")
     args = run.args
-    if len(args.args) != 1 or args.vararg or args.kwarg or args.kwonlyargs:
+    if len(args.args) != 1 or args.vararg or args.kwarg or args.kwonlyargs or args.posonlyargs:
         lint.err(run, "tool.run", "run takes exactly one argument, ctx")
     else:
         lint.ctx_names.add(args.args[0].arg)
@@ -339,17 +462,25 @@ def _source_checks(code: str, lint: _Lint) -> None:
             if tok.type == tokenize.NAME and not tok.string.isascii():
                 lint.errors.append({"line": tok.start[0], "rule": "tool.identifier",
                                     "message": f"the name {tok.string!r} uses characters other than ASCII letters, digits and _; names must be plain ASCII so they read as they run"})
-    except (tokenize.TokenError, SyntaxError, IndentationError):
-        pass  # the parser reports it
-    blank = 0
-    for n, line in enumerate(code.split("\n"), 1):
-        if line.strip():
-            blank = 0
-            continue
-        blank += 1
+    except (tokenize.TokenError, SyntaxError, IndentationError) as e:
+        line = e.args[1][0] if isinstance(e, tokenize.TokenError) and len(e.args) > 1 and e.args[1] else getattr(e, "lineno", 0)
+        lint.errors.append({"line": line or 0, "rule": "tool.syntax",
+                            "message": f"the code cannot be read as Python tokens: {e.args[0] if e.args else e}"})
+    lines = code.split("\n")
+    if len(lines) > MAX_LINES:
+        lint.errors.append({"line": MAX_LINES + 1, "rule": "tool.length",
+                            "message": f"the code is {len(lines)} lines; a tool is at most {MAX_LINES}, so a person can read it all"})
+    blank = comments = 0
+    for n, line in enumerate(lines, 1):
+        text = line.strip()
+        blank = 0 if text else blank + 1
+        comments = comments + 1 if text.startswith("#") else 0
         if blank == MAX_BLANK_RUN + 1:
             lint.errors.append({"line": n, "rule": "tool.blank_lines",
                                 "message": f"more than {MAX_BLANK_RUN} blank lines in a row; keep the code together so a reader sees all of it"})
+        if comments == MAX_COMMENT_RUN + 1:
+            lint.errors.append({"line": n, "rule": "tool.comment_lines",
+                                "message": f"more than {MAX_COMMENT_RUN} comment lines in a row; keep the code together so a reader sees all of it"})
 
 
 def lint_tool(code: str) -> dict[str, Any]:

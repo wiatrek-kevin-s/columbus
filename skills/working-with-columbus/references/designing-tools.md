@@ -74,10 +74,21 @@ Columbus adds the lines that connect `run` to it; leave out `if __name__ == "__m
   and output is used. Write the names out as text so they can be checked.
 - **Plain text**: at most 100 KB, lines of 200 characters or fewer, no invisible or
   right-to-left characters.
-- **Nothing at import time**: imports, constants and functions at the top; the work in `run`.
-- **Reads as it runs**: names in plain ASCII (no look-alike letters), each top-level name
-  defined once (`run` exactly once, never rebound), no `globals()`/`setattr` tricks, and no
-  more than 5 blank lines in a row.
+- **Nothing at import time**: the top level holds only a docstring, imports, functions,
+  classes and names given plain values (numbers, text, `True`/`False`/`None`, and lists,
+  tuples, sets and dicts of them: `METRES = {"mile": 1609.344}`). No calls, loops or `if`
+  there; the work goes in `run`. Class bodies hold only a docstring, methods and plain
+  values; no metaclass or class keywords, base classes by name only. Default values are
+  plain values (use `None` and set the real default inside), annotations only name types.
+- **Reads as it runs**: names in plain ASCII (no look-alike letters); each top-level name
+  bound once (`run` exactly once, never rebound, no `global`); `run` has no decorator, and
+  helpers only `staticmethod`, `classmethod`, `property`, `dataclasses.dataclass`,
+  `functools.cache` or `functools.lru_cache`; no Python special attributes or names
+  (`__code__`, `__globals__`, `__dict__`, `__builtins__`... `__init__` and `__name__` are
+  fine), no `getattr`/`setattr`/`globals()`, no `sys.modules`, frames, `inspect`,
+  `builtins`, `__main__`, `types` or `gc`; no coding declaration (`# coding: ...`) or
+  byte-order mark; at most 2,000 lines, no more than 5 blank lines or 40 comment lines in
+  a row.
 - **Nothing kept between runs**: each run is a new process with an empty folder; do not
   rely on files left by an earlier run.
 
