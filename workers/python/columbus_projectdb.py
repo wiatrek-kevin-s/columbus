@@ -192,14 +192,14 @@ def _open(path: str, memory_mb: int, create: bool = False, read_only: bool = Fal
         "autoload_known_extensions": "false",
         "allow_community_extensions": "false",
         "allow_unsigned_extensions": "false",
-        "memory_limit": f"{max(64, int(memory_mb))}MB",
+        "memory_limit": f"{max(128, int(memory_mb))}MB",
         "temp_directory": temp,
         "extension_directory": ext_dir,
         "threads": str(max(1, min(8, os.cpu_count() or 1))),
     }
     if max_mb:
         config["max_temp_directory_size"] = f"{max(64, int(max_mb))}MB"
-    _spill_root(temp_root)
+    _spill_root(temp_root, read_only)
     try:
         con = duckdb.connect(path, read_only=read_only, config=config)
     except duckdb.Error as e:
@@ -248,7 +248,7 @@ def _plain_dir(p: str) -> bool:
     return not (isjunction and isjunction(p))
 
 
-def _spill_root(root: str) -> None:
+def _spill_root(root: str, read_only: bool = False) -> None:
     """Make <db>.tmp, the folder each connection's own spill folder goes in
     (DuckDB makes only the last folder of a path). Anything but a plain
     folder there is refused, never followed or emptied."""
@@ -258,10 +258,15 @@ def _spill_root(root: str) -> None:
         except FileExistsError:
             pass
         except OSError as e:
+            if read_only:
+                return  # a read-only folder: this query just cannot spill
             raise ProjectDbError(f"could not make the project database's spill folder: {e.strerror}") from None
     if not _plain_dir(root):
         raise ProjectDbError(f"{os.path.basename(root)} beside the project database is not a plain folder (a link "
                              "or a file); remove it and try again")
+
+
+_SPILL_NAME = re.compile(r"[0-9a-f]{32}")
 
 
 def _clear_spill(root: str, keep: str) -> None:
@@ -272,7 +277,9 @@ def _clear_spill(root: str, keep: str) -> None:
     except OSError:
         return
     for name in entries:
-        if name == keep:
+        # Only DuckDB's own spill folders (a uuid's 32 hex digits, made in
+        # _open) and its spill files: nothing a person put there.
+        if name == keep or not (_SPILL_NAME.fullmatch(name) or name.startswith("duckdb_temp")):
             continue
         p = os.path.join(root, name)
         try:

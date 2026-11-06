@@ -468,8 +468,9 @@ class ProjectDbTests(unittest.TestCase):
         # As if a worker had been killed in the middle of spilling: files in
         # the old layout and in another connection's folder.
         root = self.db + ".tmp"
-        os.makedirs(os.path.join(root, "dead"), exist_ok=True)
-        with open(os.path.join(root, "dead", "spill.tmp"), "wb") as f:
+        dead = "0123456789abcdef0123456789abcdef"
+        os.makedirs(os.path.join(root, dead), exist_ok=True)
+        with open(os.path.join(root, dead, "spill.tmp"), "wb") as f:
             f.write(b"\0" * 4096)
         with open(os.path.join(root, "duckdb_temp_storage_DEFAULT-0.tmp"), "wb") as f:
             f.write(b"\0" * 4096)
