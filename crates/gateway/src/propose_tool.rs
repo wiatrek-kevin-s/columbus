@@ -733,20 +733,22 @@ pub(crate) fn build(a: &ProposeToolArgs) -> Result<Built, Vec<String>> {
     }
 
     // The code itself: size and plain text (the lint runs in the engine).
-    if a.code.trim().is_empty() {
+    // Windows line ends are taken as line ends; a lone carriage return is not.
+    let code = a.code.replace("\r\n", "\n");
+    if code.trim().is_empty() {
         problems.push("code is empty".into());
     }
-    if a.code.len() > store::MAX_CODE - 2048 {
+    if code.len() > store::MAX_CODE - 2048 {
         problems.push(format!(
             "code is {} bytes; a tool may be at most {} KB",
-            a.code.len(),
+            code.len(),
             store::MAX_CODE / 1024 - 2
         ));
     }
-    if let Err(e) = store::plain_text(&a.code) {
+    if let Err(e) = store::plain_text(&code) {
         problems.push(format!("code: {e}"));
     }
-    if a.code.contains(FOOTER_MARK) || a.code.contains("_ColumbusPlugin") {
+    if code.contains(FOOTER_MARK) || code.contains("_ColumbusPlugin") {
         problems.push(
             "code: leave out the part Columbus adds (it connects run(ctx) to Columbus itself)"
                 .into(),
@@ -849,7 +851,7 @@ pub(crate) fn build(a: &ProposeToolArgs) -> Result<Built, Vec<String>> {
     };
     let names: Vec<&String> = manifest.tools[store::TOOL].params.keys().collect();
     let outs: Vec<&String> = manifest.tools[store::TOOL].outputs.keys().collect();
-    let mut code = a.code.replace("\r\n", "\n");
+    let mut code = code;
     if !code.ends_with('\n') {
         code.push('\n');
     }
@@ -961,6 +963,8 @@ impl Gateway {
         Parameters(args): Parameters<ProposeToolArgs>,
         ctx: RequestContext<RoleServer>,
     ) -> Result<Json<Output<Value>>, String> {
+        let mut args = args;
+        args.code = args.code.replace("\r\n", "\n");
         let code_sha256 = columbus_shared::canon::sha256_hex(args.code.as_bytes());
         let request = json!({"name": args.name, "code_sha256": code_sha256,
             "test": {"inputs": args.test.inputs, "params": args.test.params}});
@@ -1423,6 +1427,12 @@ mod tests {
         assert!(build(&a).is_err());
         let mut a = good();
         a.code.push_str("\n# ---- Added by Columbus\n");
+        assert!(build(&a).is_err());
+        // Windows line ends are line ends; a lone carriage return is refused.
+        let mut a = good();
+        a.code = "def run(ctx):\r\n    return {}\r\n".into();
+        assert!(!build(&a).unwrap().entry.contains('\r'));
+        a.code = "def run(ctx):\r    return {}\n".into();
         assert!(build(&a).is_err());
     }
 
