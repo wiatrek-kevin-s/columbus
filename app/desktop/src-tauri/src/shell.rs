@@ -254,8 +254,8 @@ pub struct ShellInfo {
     policy: Value,
     places: Places,
     confirm_with: String,
-    /// Workflows are not built yet: no runner is set up.
-    runner: &'static str,
+    /// A debug build (tests): the page may show a test frame.
+    debug: bool,
     sessions: usize,
 }
 
@@ -300,7 +300,7 @@ pub async fn shell_info() -> Result<ShellInfo, String> {
             }),
             places: places_from(&live),
             confirm_with: settings::confirm_with().to_string(),
-            runner: "not set up",
+            debug: cfg!(debug_assertions),
             sessions: live.len(),
         }
     })

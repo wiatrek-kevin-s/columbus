@@ -1192,7 +1192,7 @@ pub struct Found {
 /// model wrote, and the tool steps), case-insensitively.
 #[tauri::command]
 pub async fn chats_search(app: AppHandle, query: String) -> Result<Vec<Found>, String> {
-    let q = query.trim().to_lowercase();
+    let q = query.trim().to_string();
     if q.is_empty() || q.chars().count() > 200 {
         return Ok(vec![]);
     }
@@ -1242,18 +1242,24 @@ pub async fn chats_search(app: AppHandle, query: String) -> Result<Vec<Found>, S
     .map_err(|e| e.to_string())
 }
 
-/// Where `q` (already lower case) is in `text`, compared character by
-/// character in lower case, as positions in `text`'s own characters: a
-/// character that lowercases to several (`İ`) still maps back to itself.
+/// One character as search compares it: lower case, one letter at a time
+/// (so a word's last Σ is σ on both sides, never the final ς of only one).
+fn fold_char(c: char) -> impl Iterator<Item = char> {
+    c.to_lowercase().map(|l| if l == 'ς' { 'σ' } else { l })
+}
+
+/// Where `q` is in `text`, compared as [`fold_char`] folds them, as
+/// positions in `text`'s own characters: a character that lowercases to
+/// several (`İ`) still maps back to itself.
 fn find_folded(text: &str, q: &str) -> Option<(usize, usize)> {
-    let want: Vec<char> = q.chars().collect();
+    let want: Vec<char> = q.chars().flat_map(fold_char).collect();
     if want.is_empty() {
         return None;
     }
     let mut lower = Vec::new();
     let mut owner = Vec::new();
     for (i, c) in text.chars().enumerate() {
-        for l in c.to_lowercase() {
+        for l in fold_char(c) {
             lower.push(l);
             owner.push(i);
         }
@@ -1407,6 +1413,14 @@ mod tests {
             assert!(server_ok(&d.join(exe), Some(&chats)).is_err());
         }
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_greek_word_is_found_whatever_its_last_sigma() {
+        let t = "Η ΟΔΟΣ ΑΘΗΝΩΝ ήταν κλειστή· η οδός άνοιξε";
+        assert!(snippet(t, "ΟΔΟΣ").is_some());
+        assert!(snippet(t, "οδοσ").is_some());
+        assert!(snippet(t, "Οδός").is_some());
     }
 
     #[test]
