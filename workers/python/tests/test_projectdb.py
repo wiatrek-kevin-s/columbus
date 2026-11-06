@@ -348,6 +348,119 @@ class ProjectDbTests(unittest.TestCase):
         e = pdb.execute({"path": self.db, "max_mb": 0.0001, "sql": "ANALYZE small"})
         self.assertEqual(e["statements"][0]["type"], "ANALYZE")
 
+    BIG = "md5(range::VARCHAR) || md5((range + 1)::VARCHAR)"
+
+    def test_the_cap_holds_for_short_calls_loads_and_reused_space(self):
+        pdb.create({"path": self.db})
+        # Too short for the watcher (under half a second): the check before
+        # COMMIT stops it.
+        with self.assertRaises(pdb.ProjectDbError) as cm:
+            pdb.execute({"path": self.db, "max_mb": 10, "sql": f"CREATE TABLE a AS SELECT {self.BIG} AS h FROM range(400000)"})
+        self.assertIn("nothing in it was kept", str(cm.exception))
+        self.assertEqual(self.tables(), [])
+        # A load is held to the cap too, and committed only when it fits.
+        big = os.path.join(self.ws, "big.csv")
+        with open(big, "w", newline="", encoding="utf-8") as f:
+            wr = csv.writer(f)
+            wr.writerow(["k", "h"])
+            for i in range(300_000):
+                wr.writerow([i, f"{i:032x}{i * 7919:032x}"])
+        with self.assertRaises(pdb.ProjectDbError):
+            pdb.load({"path": self.db, "source": big, "table": "b", "types": "text", "max_mb": 5})
+        self.assertEqual(self.tables(), [])
+        r = pdb.load({"path": self.db, "source": big, "table": "b", "types": "text", "max_mb": 200})
+        self.assertLessEqual(r["used_bytes"], 200 * 1024 * 1024)
+        # Space freed by DROP and filled again counts: a cap near what is
+        # held now refuses a second copy, though the file has room for it.
+        held = r["used_bytes"] / 1024 / 1024
+        pdb.execute({"path": self.db, "max_mb": 1000, "sql": "CREATE TABLE c AS SELECT * FROM b; DROP TABLE c"})
+        with self.assertRaises(pdb.ProjectDbError):
+            pdb.execute({"path": self.db, "max_mb": held * 1.5, "sql": "CREATE TABLE d AS SELECT * FROM b"})
+        self.assertEqual(self.tables(), ["b"])
+
+    def test_freeing_space_over_the_cap_is_not_stopped(self):
+        pdb.create({"path": self.db})
+        pdb.execute({"path": self.db, "max_mb": 1000, "sql": f"CREATE TABLE t AS SELECT {self.BIG} AS s FROM range(1200000)"})
+        w = "md5(" * 12 + "s" + ")" * 12
+        e = pdb.execute({"path": self.db, "max_mb": 10, "sql": f"DELETE FROM t WHERE {w} < 'f'"})
+        self.assertEqual(e["statements"][0]["type"], "DELETE")
+        e = pdb.execute({"path": self.db, "max_mb": 10, "sql": "ANALYZE t; DROP TABLE t"})
+        self.assertEqual([s["type"] for s in e["statements"]], ["ANALYZE", "DROP"])
+        pdb.execute({"path": self.db, "max_mb": 1000, "sql": "CREATE TABLE small AS SELECT range AS i FROM range(1000)"})
+        e = pdb.execute({"path": self.db, "max_mb": 0.0001, "sql": "ANALYZE small"})
+        self.assertEqual(e["statements"][0]["type"], "ANALYZE")
+
+    def test_non_ascii_text_does_not_shift_the_name_checks(self):
+        self.load()
+        q2 = "''"
+        for pad in ["Peñasco", "éééééééééééééééééééé", "🌵🌵🌵", "東京都千代田区", "𝔊𝔦𝔖 𐍈"]:
+            for sql in [f"SELECT '{pad}' AS pad, * FROM query('SELECT 42')",
+                        f"SELECT '{pad}' AS pad, current_setting('temp_directory')",
+                        f"SELECT '{pad}' AS pad, * FROM json_execute_serialized_sql(json_serialize_sql('SELECT 42'))",
+                        f"SELECT '{pad}' AS pad, error(parcel_id || '{q2}') FROM parcels",
+                        f'SELECT "{pad}", write_log(1) FROM (SELECT 1 AS "{pad}")']:
+                with self.assertRaises(pdb.ProjectDbError, msg=sql) as cm:
+                    self.q(sql)
+                self.assertIn("refused", str(cm.exception), sql)
+            for sql in [f"CREATE TABLE x AS SELECT '{pad}' AS p, * FROM enable_logging()",
+                        f"CREATE /* {pad} */ SECRET s (TYPE s3)"]:
+                with self.assertRaises(pdb.ProjectDbError, msg=sql):
+                    pdb.execute({"path": self.db, "sql": sql})
+            # Ordinary names after non-ASCII text still work.
+            r = self.q(f"SELECT '{pad}' AS place, count(*) AS n FROM parcels")
+            self.assertEqual(r["rows"][0][1], 500)
+
+    def test_built_in_views_that_show_settings_are_refused(self):
+        self.load()
+        for sql in ["SELECT * FROM pg_settings", "SELECT * FROM pg_catalog.pg_settings", "SELECT * FROM duckdb_databases",
+                    "SELECT * FROM main.duckdb_databases", "SELECT * FROM pragma_database_list", "SELECT * FROM duckdb_logs",
+                    "SELECT * FROM pg_prepared_statements", "SELECT * FROM duckdb_settings", "SELECT * FROM shapefile_meta('x')"]:
+            with self.assertRaises(pdb.ProjectDbError, msg=sql) as cm:
+                self.q(sql)
+            self.assertIn("refused", str(cm.exception), sql)
+        self.assertEqual(self.q("SELECT count(*) FROM duckdb_tables()")["rows_read"], 1)
+
+    def test_errors_at_commit_are_scrubbed(self):
+        self.load()
+        sql = ("CREATE TABLE v (a VARCHAR); INSERT INTO v SELECT 'Alice Secret' FROM parcels LIMIT 2; "
+               "CREATE UNIQUE INDEX vi ON v(a)")
+        for rr, cls_only in ((0, True), (5, False)):
+            with self.assertRaises(pdb.ProjectDbError) as cm:
+                pdb.execute({"path": self.db, "sql": sql, "return_rows": rr})
+            text = str(cm.exception)
+            self.assertNotIn("Alice", text)
+            self.assertEqual("details withheld: this session may not see rows" in text, cls_only, text)
+        # Nothing raw leaves any action: a missing file, bad parameters.
+        for call in [lambda: pdb.describe({"path": os.path.join(self.tmp.name, "nope.duckdb")}),
+                     lambda: pdb.load({"path": self.db, "source": self.owners, "table": "t", "primary_key": "x"}),
+                     lambda: pdb.query({"path": self.db, "sql": "SELECT 1", "max_rows": "many", "output_stem": "x"})]:
+            with self.assertRaises(pdb.ProjectDbError):
+                call()
+
+    def test_stored_values_never_come_back_as_names_when_rows_are_hidden(self):
+        self.load()
+        pdb.execute({"path": self.db, "sql": "CREATE TABLE o AS SELECT parcel_id, 'Owner ' || parcel_id AS owner, acres FROM parcels LIMIT 3"})
+        with self.assertRaises(pdb.ProjectDbError):
+            self.q("PIVOT o ON owner USING sum(acres)", return_rows=0)
+        self.assertEqual(self.q("PIVOT o ON owner IN ('Owner 00000') USING sum(acres)", return_rows=0)["rows_read"], 3)
+        with self.assertRaises(pdb.ProjectDbError):
+            pdb.execute({"path": self.db, "return_rows": 0, "sql": "CREATE TYPE leak AS ENUM (SELECT owner FROM o)"})
+        # Where rows may be seen an ENUM may come from data, but describe
+        # and query types never list its values.
+        pdb.execute({"path": self.db, "sql": "CREATE TYPE leak AS ENUM (SELECT owner FROM o); CREATE TABLE lt (c leak)"})
+        cols = {t["name"]: t["columns"] for t in pdb.describe({"path": self.db, "return_rows": 0})["tables"]}
+        self.assertEqual(cols["lt"][0]["type"], "ENUM")
+        r = self.q("SELECT c FROM lt", return_rows=0)
+        self.assertNotIn("Owner", str(r["types"]))
+
+    def test_coordinates_stay_out_of_the_summary_when_rows_are_hidden(self):
+        self.load()
+        r = self.q("SELECT * FROM parcels", return_rows=0, crs="EPSG:2277")
+        self.assertIsNone(r["summary"]["extent"])
+        self.assertTrue(all("detail" not in c for c in r["checks"]))
+        r = self.q("SELECT * FROM parcels", return_rows=5, crs="EPSG:2277")
+        self.assertIsNotNone(r["summary"]["extent"])
+
     def test_query_usability(self):
         self.load()
         # A statement ending in a comment.

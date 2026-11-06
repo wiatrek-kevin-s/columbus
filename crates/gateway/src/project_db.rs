@@ -265,7 +265,57 @@ fn read_sidecar(db: &Db) -> Result<Option<Sidecar>, String> {
 /// the same project database may have added labels meanwhile, and a label,
 /// a fingerprint, a fail or truncation is never dropped by a write. The
 /// merged record is left in `side`.
+/// A lock file beside the record, held from reading the record on disk to
+/// renaming the new one into place, so two sessions (two processes) never
+/// interleave. Made with create-new; one older than `STALE` (a session
+/// that died holding it) is taken over.
+struct RecordLock(PathBuf);
+
+const LOCK: &str = "columbus-project.lock";
+const STALE: Duration = Duration::from_secs(30);
+
+impl RecordLock {
+    fn acquire(dir: &Path) -> Result<RecordLock, String> {
+        let path = dir.join(LOCK);
+        let until = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let made =
+                crate::safefs::Dir::open_beneath(dir, &[], false).and_then(|d| d.create_file(LOCK));
+            match made {
+                Ok(_) => return Ok(RecordLock(path)),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    let stale = std::fs::symlink_metadata(&path)
+                        .ok()
+                        .and_then(|m| m.modified().ok())
+                        .and_then(|t| t.elapsed().ok())
+                        .is_some_and(|age| age > STALE);
+                    if stale {
+                        let _ = std::fs::remove_file(&path);
+                        continue;
+                    }
+                }
+                Err(e) => {
+                    return Err(format!(
+                        "the project database's record cannot be locked: {e}"
+                    ))
+                }
+            }
+            if std::time::Instant::now() >= until {
+                return Err("another session is writing this project database's record; try again in a moment".into());
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+}
+
+impl Drop for RecordLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
 fn write_sidecar(db: &Db, side: &mut Sidecar) -> Result<(), String> {
+    let _lock = RecordLock::acquire(&db.dir)?;
     if let Ok(Some(disk)) = read_sidecar(db) {
         merge_record(side, disk);
     }
@@ -317,6 +367,11 @@ fn merge_record(side: &mut Sidecar, disk: Sidecar) {
         (a, b) => a.or(b),
     };
     side.truncated |= disk.truncated;
+    // Tables another session loaded meanwhile (a table this one dropped is
+    // taken out again by execute, which lists what is there).
+    for (t, r) in disk.tables {
+        side.tables.entry(t).or_insert(r);
+    }
     for f in disk.inherited {
         if !side.inherited.contains(&f) {
             side.inherited.push(f);
@@ -395,7 +450,12 @@ impl Gateway {
     /// After the worker returns: the record as it is now on disk (another
     /// session may have loaded more meanwhile), its labels on the session
     /// and on what this call answers.
-    fn relabel(&self, db: &Db, side: &mut Sidecar) {
+    ///
+    /// Withheld if the merged record no longer passes (a conflict between
+    /// two sessions, or labels the settings in force do not cover); a
+    /// conflict found here is written back so every session sees it.
+    fn relabel(&self, db: &Db, side: &mut Sidecar) -> Result<(), String> {
+        let had = side.conflict.is_some();
         if let Ok(Some(disk)) = read_sidecar(db) {
             merge_record(side, disk);
         }
@@ -403,6 +463,15 @@ impl Gateway {
             self.state.flow.add(l.clone());
         }
         self.track_db(db, side);
+        if !had && side.conflict.is_some() {
+            let _ = write_sidecar(db, side);
+        }
+        match withheld(&self.state.settings(), side) {
+            Some(why) => Err(format!(
+                "this project database is now withheld: {why}. Ask the person whether to delete it (action delete) and build it again"
+            )),
+            None => Ok(()),
+        }
     }
 
     /// The database's size after a write, and a warning once what it holds
@@ -514,7 +583,11 @@ impl Gateway {
                     "tables": side.as_ref().map(|s| s.tables.keys().cloned().collect::<Vec<_>>()),
                     "labels": side.as_ref().map(|s| s.labels.clone()),
                     "description": side.as_ref().and_then(|s| s.description.clone()),
-                    "withheld": side.as_ref().and_then(|s| withheld(&settings, s)),
+                    "withheld": match &side {
+                        Some(s) => withheld(&settings, s),
+                        None if db.file.exists() => Some("its file is there without Columbus's record of what it holds".to_string()),
+                        None => None,
+                    },
                 }));
             }
         }
@@ -625,6 +698,13 @@ impl Gateway {
         }
         let mut side = match (side, create) {
             (Some(s), _) => s,
+            (None, _) if db.file.exists() => {
+                return Err(self.deny(
+                    &ctx,
+                    rec,
+                    format!("the {scope} project database {name:?} is withheld: its file is there without Columbus's record of what it holds (its data labels), so nothing is known about where its data came from. Ask the person whether to delete it (action delete) and build it again"),
+                ))
+            }
             (None, true) => Sidecar {
                 name: name.clone(),
                 scope: scope.clone(),
@@ -873,7 +953,13 @@ impl Gateway {
             ))),
         );
         let reply = self.project_worker("project_db_load", p).await;
-        self.relabel(&db, side);
+        if let Err(why) = self.relabel(&db, side) {
+            return Err(self.worker_failed(
+                ctx,
+                rec,
+                format!("{why} (what this call did was kept)"),
+            ));
+        }
         let reply = match reply {
             Ok(r) => r,
             Err(e) => return Err(self.worker_failed(ctx, rec, e)),
@@ -996,7 +1082,13 @@ impl Gateway {
         let prov = crate::server::new_prov_id();
         let started = Local::now();
         let reply = self.project_worker("project_db_execute", p).await;
-        self.relabel(&db, side);
+        if let Err(why) = self.relabel(&db, side) {
+            return Err(self.worker_failed(
+                ctx,
+                rec,
+                format!("{why} (what this call did was kept)"),
+            ));
+        }
         let reply = match reply {
             Ok(r) => r,
             Err(e) => {
@@ -1127,7 +1219,19 @@ impl Gateway {
         p.insert("crs".into(), json!(crs));
         let started = Local::now();
         let reply = self.project_worker("project_db_query", p).await;
-        self.relabel(&db, side);
+        if let Err(why) = self.relabel(&db, side) {
+            if let Some(out) = reply
+                .as_ref()
+                .ok()
+                .and_then(|r| r.get("output_path"))
+                .and_then(Value::as_str)
+            {
+                if std::path::Path::new(out).starts_with(self.state.sandbox.root()) {
+                    let _ = std::fs::remove_file(out);
+                }
+            }
+            return Err(self.worker_failed(ctx, rec, why));
+        }
         let reply = match reply {
             Ok(r) => r,
             Err(e) => {
@@ -1216,7 +1320,6 @@ impl Gateway {
             }
         }
         checks.extend(checks_from(reply.get("checks")));
-        self.relabel(&db, side);
         let labels = self.state.flow.labels_for(std::slice::from_ref(&db.file));
         let inherit = crate::providers::Inheritance {
             fails: side.inherited.clone(),
@@ -1295,7 +1398,9 @@ impl Gateway {
         let reply = self
             .project_worker("project_db_describe", self.worker_params(&db))
             .await;
-        self.relabel(&db, side);
+        if let Err(why) = self.relabel(&db, side) {
+            return Err(self.worker_failed(ctx, rec, why));
+        }
         let mut reply = match reply {
             Ok(r) => r,
             Err(e) => return Err(self.worker_failed(ctx, rec, e)),
@@ -1461,11 +1566,39 @@ mod tests {
             .unwrap()
             .contains("two different settings"));
         assert_eq!(mine.fingerprints["connection:a"], "1");
+        // Tables another session recorded are kept.
+        let mut other = record(&[], &[]);
+        other.tables.insert(
+            "roads".into(),
+            TableRecord {
+                rows: 5,
+                ..Default::default()
+            },
+        );
+        merge_record(&mut mine, other);
+        assert_eq!(mine.tables["roads"].rows, 5);
         // Another database's record is never merged.
         let mut x = record(&[], &[]);
         let mut y = record(&["connection:z"], &[]);
         y.name = "q".into();
         merge_record(&mut x, y);
         assert!(x.labels.is_empty());
+    }
+
+    #[test]
+    fn the_record_lock_is_exclusive_and_released() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = RecordLock::acquire(dir.path()).unwrap();
+        assert!(dir.path().join(LOCK).exists());
+        drop(a);
+        assert!(!dir.path().join(LOCK).exists());
+        let _b = RecordLock::acquire(dir.path()).unwrap();
+        // A second holder waits; from another thread it gets the lock only
+        // once the first lets go.
+        let p = dir.path().to_path_buf();
+        let t = std::thread::spawn(move || RecordLock::acquire(&p).is_ok());
+        std::thread::sleep(Duration::from_millis(200));
+        drop(_b);
+        assert!(t.join().unwrap());
     }
 }

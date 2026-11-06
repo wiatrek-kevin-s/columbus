@@ -500,3 +500,56 @@ async fn a_project_database_kept_for_later_follows_the_settings() {
     assert!(listed["result"]["result"]["databases"][0]["withheld"].is_string());
     c.cancel().await.unwrap();
 }
+
+#[tokio::test]
+async fn a_database_file_without_its_record_is_withheld() {
+    let Some(py) = python() else {
+        eprintln!("skipped: needs Python with geopandas, pyogrio, shapely and duckdb");
+        return;
+    };
+    let (_dir, root, _gpkg) = setup(&py);
+    let person = Person::default();
+    person.accept.store(true, Ordering::SeqCst);
+    let c = start(&root, &py, person.clone()).await;
+    let parcels = layer(
+        &call(
+            &c,
+            "query_features",
+            json!({"connection": "county", "dataset": "parcels", "fields": ["parcel_id"]}),
+        )
+        .await,
+    );
+    ok(&pdb(
+        &c,
+        json!({"action": "create", "db": "lost", "scope": "project"}),
+    )
+    .await);
+    ok(&pdb(&c, json!({"action": "load", "db": "lost", "scope": "project", "layer": parcels, "table": "parcels"})).await);
+    let folder = root.join("workspaces/projects/lost");
+    std::fs::remove_file(folder.join("columbus-project.json")).unwrap();
+    // Neither used nor made fresh (which would drop its labels): withheld.
+    for args in [
+        json!({"action": "describe", "db": "lost", "scope": "project"}),
+        json!({"action": "query", "db": "lost", "scope": "project", "sql": "SELECT count(*) FROM parcels"}),
+        json!({"action": "create", "db": "lost", "scope": "project"}),
+    ] {
+        let e = err(&pdb(&c, args).await);
+        assert!(
+            e.contains("withheld") && e.contains("without Columbus's record"),
+            "{e}"
+        );
+    }
+    let listed = ok(&pdb(&c, json!({"action": "list"})).await);
+    assert!(listed["result"]["result"]["databases"][0]["withheld"]
+        .as_str()
+        .unwrap()
+        .contains("without"));
+    // The person can still delete it.
+    ok(&pdb(
+        &c,
+        json!({"action": "delete", "db": "lost", "scope": "project"}),
+    )
+    .await);
+    assert!(!folder.exists());
+    c.cancel().await.unwrap();
+}

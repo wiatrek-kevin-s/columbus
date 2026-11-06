@@ -1960,6 +1960,8 @@ def _projectdb(fn: str):
             return getattr(pdb, fn)(params)
         except pdb.ProjectDbError as e:
             raise WorkerError(INVALID_PARAMS, str(e)) from None
+        except Exception as e:  # noqa: BLE001 - never pass raw text on: it may hold stored values
+            raise WorkerError(ENGINE_ERROR, f"the project database action failed ({type(e).__name__})") from None
 
     return run
 

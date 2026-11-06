@@ -49,7 +49,15 @@ from typing import Any
 from columbus_plugin import readonly_uri
 
 FETCH = 2000
-INSERT_BATCH = 50_000
+# Rows per INSERT when loading: two of DuckDB's row groups (122,880 rows)
+# where the columns allow, so DuckDB writes them to the file, compressed,
+# during the transaction (and the size cap sees them), instead of holding
+# the whole load in memory until COMMIT. Fewer for wide tables.
+ROW_GROUP = 122_880
+
+
+def _insert_batch(ncols: int) -> int:
+    return max(50_000, min(2 * ROW_GROUP, 5_000_000 // max(1, ncols)))
 NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,62}$")
 
 # Statement kinds `execute` runs; everything else is refused.
@@ -64,7 +72,7 @@ QUERY_TYPES = {"SELECT", "EXPLAIN"}
 # (E'' escapes and $$ quotes included), comments and quoted names are read
 # as DuckDB reads them.
 _DENY_NAMES = re.compile(
-    r"(?i)(read_\w+|\w+_scan|\w+_scan_\w+|glob|sniff_csv|parquet_\w+|st_read\w*|st_drivers|"
+    r"(?i)(read_\w+|\w+_scan|\w+_scan_\w+|glob|sniff_csv|parquet_\w+|st_read\w*|st_drivers|shapefile_\w+|"
     r"query|query_table|getenv|load_extension|duckdb_secrets|which_secret|"
     r"current_setting|duckdb_settings|duckdb_extensions|duckdb_databases|duckdb_memory|"
     r"duckdb_temporary_files|duckdb_external_file_cache|duckdb_variables|getvariable|"
@@ -72,10 +80,17 @@ _DENY_NAMES = re.compile(
     r"write_log|parse_duckdb_log_message|"
     r"json_execute_serialized_sql|json_deserialize_sql|json_serialize_sql|json_serialize_plan|"
     r"verify_serializer|disable_verify_serializer|duckdb_prepared_statements|"
-    r"checkpoint|force_checkpoint|enable_profiling|disable_profiling|python_map_function|"
+    r"checkpoint|force_checkpoint|enable_profiling|disable_profiling|enable_profile|disable_profile|pragma_\w+|metadata_info|python_map_function|"
     # error() raises its argument as the error text: a way to carry stored
     # values out in a message.
     r"error)")
+# Built-in views and table functions that show settings, paths, logs,
+# databases, memory or prepared SQL, refused wherever they are named, with
+# or without a call and schema-qualified or not.
+_DENY_BARE = re.compile(
+    r"(?i)(duckdb_(databases|logs\w*|log_contexts|settings|extensions|memory|temporary_files|secrets|secret_types|"
+    r"variables|prepared_statements|external_file_cache|optimizers|approx_database_count|connection_count)|"
+    r"pragma_\w+|pg_settings|pg_prepared_statements|pg_database|which_secret)")
 _WORD = re.compile(r"[A-Za-z_\u0080-\uffff][\w$]*")
 # One token at the end of a statement, for telling that the tokenizer read
 # all of it (it stops early on syntax it does not know, such as U&"…").
@@ -187,7 +202,9 @@ def _open(path: str, memory_mb: int, create: bool = False, read_only: bool = Fal
         except duckdb.Error:
             spatial = False  # signature or version mismatch: work without it
     try:
-        for setting in ("python_enable_replacements = false", "python_scan_all_frames = false"):
+        # The progress bar never: it prints to stdout, the worker's protocol
+        # channel.
+        for setting in ("enable_progress_bar = false", "python_enable_replacements = false", "python_scan_all_frames = false"):
             try:
                 con.execute("SET " + setting)
             except duckdb.Error:
@@ -247,6 +264,37 @@ def _msg(e: Exception) -> str:
     return first
 
 
+def _scrub(e: BaseException) -> str:
+    """Any error, as safe to pass on as _msg makes it: a DuckDB error
+    scrubbed, anything else by its class only."""
+    try:
+        import duckdb
+
+        if isinstance(e, duckdb.Error):
+            return _msg(e)
+    except ImportError:
+        pass
+    return f"{type(e).__name__} (details withheld)"
+
+
+def _action(fn):
+    """One wrapper per action: the session's return_rows decides how much an
+    error may say, and no exception leaves an action unscrubbed."""
+    import functools
+
+    @functools.wraps(fn)
+    def run(params: dict[str, Any]) -> dict[str, Any]:
+        _set_details(params if isinstance(params, dict) else {})
+        try:
+            return fn(params)
+        except ProjectDbError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            raise ProjectDbError(f"the {fn.__name__} failed: {_scrub(e)}") from None
+
+    return run
+
+
 def db_bytes(path: str) -> int:
     """The project database's size on disk: the file, its write-ahead log
     and the engine's spill folder."""
@@ -274,6 +322,18 @@ def used_bytes(con) -> int:
         _n, _size, block, _total, used, _free, wal, *_ = con.execute("SELECT * FROM pragma_database_size()").fetchone()
         return int(block) * int(used) + _parse_bytes(wal)
     except Exception:  # noqa: BLE001 - fall back to the file
+        return 0
+
+
+def pending_bytes(con) -> int:
+    """Data an open transaction holds in memory and has not written to the
+    file yet (DuckDB writes it at COMMIT): counted at its in-memory size,
+    which is more than it takes once compressed on disk, so the cap is never
+    underestimated."""
+    try:
+        r = con.execute("SELECT coalesce(sum(memory_usage_bytes), 0) FROM duckdb_memory() WHERE tag = 'IN_MEMORY_TABLE'").fetchone()
+        return int(r[0] or 0)
+    except Exception:  # noqa: BLE001
         return 0
 
 
@@ -306,70 +366,156 @@ def _check_size(con, max_mb: Any, what: str) -> int:
     return used
 
 
-class _SizeGuard:
-    """Interrupts the connection (which rolls the call back) once what the
-    call has added on disk, the spill folder included, would take the
-    database past the cap. Checked twice a second: a burst between two
-    looks can pass the cap briefly before it is stopped."""
+def _tmp_bytes(path: str) -> int:
+    total = 0
+    for dirpath, _dirs, files in os.walk(path + ".tmp"):
+        for f in files:
+            try:
+                total += os.path.getsize(os.path.join(dirpath, f))
+            except OSError:
+                pass
+    return total
 
-    def __init__(self, con, path: str, max_mb: Any, used: int):
+
+class _SizeGuard:
+    """Keeps a call inside the size cap. A watcher on a second connection to
+    the same database reads its used blocks (those of the call's open
+    transaction included, so space freed by DROP and filled again counts)
+    and the spill folder four times a second, and interrupts the call when
+    it goes over; before COMMIT the watcher is stopped and joined (so no
+    interrupt can land during the commit) and the total is checked once
+    more on the call's own connection, so a call too short to be watched,
+    or an interrupt that arrived between two statements, is caught there.
+
+    ``mode``: ``grow`` (the total may not pass the cap), ``free`` (a batch
+    that only frees space: it may not grow the database beyond where it
+    started, with some slack for the bookkeeping a DELETE writes), or
+    ``spill`` (a read-only query: only its spill folder is limited)."""
+
+    def __init__(self, con, path: str, max_mb: Any, mode: str = "grow"):
         self.fired = False
         self.cap = _cap_bytes(max_mb)
         self.path = path
         self.con = con
-        self.used = used
+        self.mode = mode
         self.stop = threading.Event()
-        self.thread = threading.Thread(target=self._watch, name="project-db-size", daemon=True)
+        self.lock = threading.Lock()
+        self.cur = None
+        self.thread = None
+        self.used0 = used_bytes(con) if self.cap is not None and mode != "spill" else 0
+        self.pending0 = pending_bytes(con) if self.cap is not None and mode != "spill" else 0
+        self.tmp0 = _tmp_bytes(path) if self.cap is not None else 0
+        self.limit = None
+        if self.cap is not None:
+            if mode == "free":
+                base = max(self.cap, self.used0 + self.tmp0)
+                self.limit = base + max(64 << 20, base // 4)
+            else:
+                self.limit = self.cap
+
+    def total(self, con=None) -> int:
+        """What the database would take if the call committed now: its used
+        blocks (the open transaction's included), what the transaction
+        still holds in memory, and the spill folder."""
+        if self.mode == "spill":
+            return _tmp_bytes(self.path)
+        c = con if con is not None else self.cur
+        return used_bytes(c) + max(0, pending_bytes(c) - self.pending0) + _tmp_bytes(self.path)
+
+    def over(self, con=None) -> bool:
+        return self.limit is not None and self.total(con) > self.limit
 
     def _watch(self):
-        start = db_bytes(self.path)
-        while not self.stop.wait(0.5):
-            if self.used + max(0, db_bytes(self.path) - start) > self.cap:
-                self.fired = True
-                try:
-                    self.con.interrupt()
-                except Exception:  # noqa: BLE001
-                    pass
+        while not self.stop.wait(0.25):
+            try:
+                hit = self.over()
+            except Exception:  # noqa: BLE001 - the final check still runs
+                continue
+            if hit:
+                with self.lock:
+                    if self.stop.is_set():
+                        return
+                    self.fired = True
+                    try:
+                        self.con.interrupt()
+                    except Exception:  # noqa: BLE001
+                        pass
                 return
 
+    def finish(self) -> None:
+        """Stop the watcher and wait for it: no interrupt after this."""
+        with self.lock:
+            self.stop.set()
+        if self.thread is not None:
+            self.thread.join()
+            self.thread = None
+        if self.cur is not None:
+            try:
+                self.cur.close()
+            except Exception:  # noqa: BLE001
+                pass
+            self.cur = None
+
+    def before_commit(self) -> None:
+        """Raises (the caller rolls back) when the call went over."""
+        self.finish()
+        if self.fired or self.over(self.con):
+            self.fired = True
+            raise ProjectDbError(self.message())
+
     def message(self) -> str:
-        return (f"the call was stopped and nothing in it was kept: it would have taken the project database past the "
-                f"organization's cap of {self.cap / 1024 / 1024:,.0f} MB (policy project_db.max_mb, the spill folder included). "
+        what = {"free": "it would have grown the project database, which is already over",
+                "spill": "its spill folder would have passed"}.get(self.mode, "it would have taken the project database past")
+        return (f"the call was stopped and nothing in it was kept: {what} the organization's cap of "
+                f"{(self.cap or 0) / 1024 / 1024:,.0f} MB (policy project_db.max_mb, the spill folder included). "
                 "Load or build less at once, DROP TABLE what is no longer needed, or start a new database")
 
     def __enter__(self):
-        if self.cap is not None:
+        if self.limit is not None:
+            self.cur = self.con.cursor()
+            self.thread = threading.Thread(target=self._watch, name="project-db-size", daemon=True)
             self.thread.start()
         return self
 
     def __exit__(self, *exc):
-        self.stop.set()
+        self.finish()
         return False
 
 
 class _Deadline:
-    """Interrupts the connection when the time limit passes."""
+    """Interrupts the connection when the time limit passes, unless it was
+    cancelled first (before a COMMIT, which must not be interrupted)."""
 
     def __init__(self, con, seconds: float):
         self.fired = False
         self.seconds = seconds
+        self.lock = threading.Lock()
+        self.done = False
 
         def fire():
-            self.fired = True
-            try:
-                con.interrupt()
-            except Exception:  # noqa: BLE001
-                pass
+            with self.lock:
+                if self.done:
+                    return
+                self.fired = True
+                try:
+                    con.interrupt()
+                except Exception:  # noqa: BLE001
+                    pass
 
         self.timer = threading.Timer(max(1.0, seconds), fire)
         self.timer.daemon = True
+
+    def cancel(self) -> None:
+        with self.lock:
+            self.done = True
+        self.timer.cancel()
 
     def __enter__(self):
         self.timer.start()
         return self
 
     def __exit__(self, *exc):
-        self.timer.cancel()
+        self.cancel()
         return False
 
 
@@ -384,6 +530,20 @@ def _words(sql: str) -> list[tuple[str, bool]]:
     except Exception:  # noqa: BLE001
         raise ProjectDbError("the statement could not be read for checking, so it is refused") from None
     significant = (duckdb.token_type.identifier, duckdb.token_type.keyword)
+    # The tokenizer's offsets count UTF-8 bytes; the text is read by
+    # characters. Map every byte offset to its character.
+    if sql.isascii():
+        toks = [(start, typ) for start, typ in toks]
+    else:
+        at = [0] * (len(sql.encode("utf-8")) + 1)
+        b = 0
+        for i, ch in enumerate(sql):
+            n = len(ch.encode("utf-8"))
+            for k in range(n):
+                at[b + k] = i
+            b += n
+        at[b] = len(sql)
+        toks = [(at[min(start, b)], typ) for start, typ in toks]
     out: list[tuple[str, bool]] = []
     for k, (start, typ) in enumerate(toks):
         if typ not in significant:
@@ -417,13 +577,20 @@ def _words(sql: str) -> list[tuple[str, bool]]:
     return out
 
 
+def _enum_from_query(words: list[tuple[str, bool]]) -> bool:
+    for k, (w, call) in enumerate(words[:-1]):
+        if call and w.lower() == "enum" and words[k + 1][0].lower() in ("select", "from", "with", "values", "table"):
+            return True
+    return False
+
+
 def _first_words(words: list[tuple[str, bool]], n: int) -> list[str]:
     return [w.lower() for w, _ in words[:n]]
 
 
 def _denied_call(words: list[tuple[str, bool]]) -> str | None:
     for w, call in words:
-        if call and _DENY_NAMES.fullmatch(w):
+        if (call and _DENY_NAMES.fullmatch(w)) or _DENY_BARE.fullmatch(w):
             return w
     return None
 
@@ -449,6 +616,9 @@ def check_statements(con, sql: str, allowed: set[str], pivot: bool = False) -> l
             and not any(st.query.strip() for st in parsed)):
         words = _words(sql)
         if _first_words(words, 1) in (["pivot"], ["unpivot"]):
+            if not _DETAILS.get():
+                raise ProjectDbError("statement 1 is refused: a PIVOT without an IN list names its columns after stored "
+                                     "values, which this session may not see (return_rows is 0); list the values with IN (...)")
             bad = _denied_call(words)
             if bad:
                 raise ProjectDbError(f"statement 1 is refused: {bad}() {denied}")
@@ -479,6 +649,9 @@ def check_statements(con, sql: str, allowed: set[str], pivot: bool = False) -> l
         bad = _denied_call(words)
         if bad:
             raise ProjectDbError(f"statement {i + 1} is refused: {bad}() {denied}")
+        if not _DETAILS.get() and _enum_from_query(words):
+            raise ProjectDbError(f"statement {i + 1} is refused: an ENUM built from a query names its values after stored "
+                                 "values, which this session may not see (return_rows is 0)")
         if kind == "EXPLAIN":
             # EXPLAIN ANALYZE runs what it explains: only a SELECT may be inside.
             inner = _EXPLAIN.sub("", text, count=1)
@@ -497,6 +670,7 @@ def check_statements(con, sql: str, allowed: set[str], pivot: bool = False) -> l
 # ---------- actions ----------
 
 
+@_action
 def create(params: dict[str, Any]) -> dict[str, Any]:
     _set_details(params)
     path = _plain_path(params.get("path"))
@@ -565,6 +739,7 @@ def _wkb(blob) -> bytes | None:
     return raw[8 + env:]
 
 
+@_action
 def load(params: dict[str, Any]) -> dict[str, Any]:
     """Stream a workspace layer into a table, in batches, in one
     transaction. ``mode``: create (the table must not exist), replace or
@@ -599,7 +774,7 @@ def load(params: dict[str, Any]) -> dict[str, Any]:
     started = time.monotonic()
     try:
         used = _check_size(con, max_mb, "loading more")
-        with _Deadline(con, timeout) as dl, _SizeGuard(con, path, max_mb, used) as sg:
+        with _Deadline(con, timeout) as dl, _SizeGuard(con, path, max_mb, "grow") as sg:
             try:
                 con.execute("BEGIN TRANSACTION")
                 exists = con.execute(
@@ -626,6 +801,7 @@ def load(params: dict[str, Any]) -> dict[str, Any]:
                 select = ", ".join(
                     (f"ST_GeomFromWKB({_qi(c)})" if c == geom else _qi(c)) + f" AS {_qi(c)}" for c in names)
                 insert = f"INSERT INTO {_qi(table)} SELECT {select} FROM columbus_batch"
+                insert_batch = _insert_batch(len(names))
                 rows = 0
 
                 def push(batch):
@@ -656,7 +832,7 @@ def load(params: dict[str, Any]) -> dict[str, Any]:
                                 if gi is not None:
                                     r[gi] = _wkb(r[gi])
                                 batch.append(r)
-                            if len(batch) >= INSERT_BATCH:
+                            if len(batch) >= insert_batch:
                                 push(batch)
                                 batch = []
                         push(batch)
@@ -670,7 +846,7 @@ def load(params: dict[str, Any]) -> dict[str, Any]:
                         batch = []
                         for r in reader:
                             batch.append([(r[i] if i < len(r) and r[i] != "" else None) for i in idx])
-                            if len(batch) >= INSERT_BATCH:
+                            if len(batch) >= insert_batch:
                                 push(batch)
                                 batch = []
                         push(batch)
@@ -681,12 +857,23 @@ def load(params: dict[str, Any]) -> dict[str, Any]:
                     con.execute(f"COMMENT ON TABLE {_qi(table)} IS {_lit(comment[:2000])}")
                 if geom and crs:
                     con.execute(f"COMMENT ON COLUMN {_qi(table)}.{_qi(geom)} IS {_lit('CRS ' + crs)}")
-                con.execute("COMMIT")
+                # No interrupt may land during the commit: stop the timer and
+                # the watcher first, then check the size once more.
+                dl.cancel()
+                if dl.fired:
+                    raise ProjectDbError(f"loading took longer than {timeout:g} s and was stopped; nothing was loaded")
+                sg.before_commit()
+                try:
+                    con.execute("COMMIT")
+                except Exception as e:  # noqa: BLE001
+                    raise ProjectDbError(f"the commit failed, so nothing in this call was kept: {_scrub(e)}") from None
             except BaseException as e:
                 try:
                     con.execute("ROLLBACK")
                 except Exception:  # noqa: BLE001
                     pass
+                if isinstance(e, ProjectDbError):
+                    raise
                 if sg.fired:
                     raise ProjectDbError(sg.message()) from None
                 if dl.fired:
@@ -721,13 +908,22 @@ def _infer_csv_types(con, table: str, names: list[str], pk: list[str]) -> None:
                 break
 
 
+def _type_name(t: Any) -> Any:
+    """A column type as shown: an ENUM without its values (they can come
+    from stored data)."""
+    if isinstance(t, str):
+        return re.sub(r"(?is)\bENUM\s*\(.*\)", "ENUM", t)
+    return t
+
+
 def _columns(con, table: str) -> list[dict[str, Any]]:
-    return [{"name": r[0], "type": r[1], "nullable": bool(r[2]), "comment": r[3]} for r in con.execute(
+    return [{"name": r[0], "type": _type_name(r[1]), "nullable": bool(r[2]), "comment": r[3]} for r in con.execute(
         "SELECT column_name, data_type, is_nullable, comment FROM duckdb_columns() "
         "WHERE database_name = current_database() AND schema_name = 'main' AND table_name = ? ORDER BY column_index",
         [table]).fetchall()]
 
 
+@_action
 def execute(params: dict[str, Any]) -> dict[str, Any]:
     """DDL and DML in the project database, all statements in one
     transaction. Returns each statement's kind and the rows it changed."""
@@ -740,13 +936,17 @@ def execute(params: dict[str, Any]) -> dict[str, Any]:
         stmts = check_statements(con, params.get("sql"), EXECUTE_TYPES)
         # Over the size cap, only statements that free or tidy space run.
         frees = all(st["type"] in ("DROP", "DELETE", "VACUUM", "ANALYZE") for st in stmts)
-        used = used_bytes(con) if frees else _check_size(con, max_mb, "anything but DROP, DELETE, VACUUM and ANALYZE")
+        if not frees:
+            _check_size(con, max_mb, "anything but DROP, DELETE, VACUUM and ANALYZE")
         started = time.monotonic()
         done = []
-        with _Deadline(con, timeout) as dl, _SizeGuard(con, path, max_mb, used) as sg:
+        with _Deadline(con, timeout) as dl, _SizeGuard(con, path, max_mb, "free" if frees else "grow") as sg:
             try:
                 con.execute("BEGIN TRANSACTION")
                 for st in stmts:
+                    # An interrupt that arrived between two statements.
+                    if sg.fired:
+                        raise ProjectDbError(sg.message())
                     try:
                         cur = con.execute(st["sql"])
                     except Exception as e:  # noqa: BLE001
@@ -766,9 +966,16 @@ def execute(params: dict[str, Any]) -> dict[str, Any]:
                         except Exception:  # noqa: BLE001
                             changed = None
                     done.append({**st, "rows": changed})
-                if sg.fired:
-                    raise ProjectDbError(sg.message())
-                con.execute("COMMIT")
+                # No interrupt may land during the commit: stop the timer and
+                # the watcher first, then check the size once more.
+                dl.cancel()
+                if dl.fired:
+                    raise ProjectDbError(f"the statements ran past {timeout:g} s and were stopped; nothing in this call was kept")
+                sg.before_commit()
+                try:
+                    con.execute("COMMIT")
+                except Exception as e:  # noqa: BLE001
+                    raise ProjectDbError(f"the commit failed, so nothing in this call was kept: {_scrub(e)}") from None
             except BaseException:
                 try:
                     con.execute("ROLLBACK")
@@ -792,6 +999,7 @@ def _cell(v: Any) -> Any:
     return str(v)
 
 
+@_action
 def query(params: dict[str, Any]) -> dict[str, Any]:
     """One SELECT on the project database, its rows written as a layer
     (GeoPackage when it has a GEOMETRY column, CSV otherwise) in batches as
@@ -825,7 +1033,7 @@ def query(params: dict[str, Any]) -> dict[str, Any]:
                 or _first_words(_words(sql), 1) in (["describe"], ["show"], ["summarize"]))
         # The newline ends a -- comment the statement may end with.
         run = sql if bare else f"SELECT * FROM ({sql}\n) AS columbus_q LIMIT {max_rows + 1}"
-        with _Deadline(con, timeout) as dl, _SizeGuard(con, path, params.get("max_mb"), used_bytes(con)) as sg:
+        with _Deadline(con, timeout) as dl, _SizeGuard(con, path, params.get("max_mb"), "spill") as sg:
             try:
                 cur = con.execute(run)
                 desc = cur.description or []
@@ -882,14 +1090,22 @@ def query(params: dict[str, Any]) -> dict[str, Any]:
                     raise ProjectDbError(f"the query failed: {_msg(e)}") from None
                 raise
         summary = stream.summary()
+        checks = stream.checks("The result")
+        if not _DETAILS.get():
+            # Coordinates are stored values too: no extent, no examples.
+            summary["extent"] = None
+            for c in checks:
+                c.pop("detail", None)
+        types = [_type_name(t) for t in types]
         return {"columns": attr_cols + ([columns[gi]] if gi is not None else []), "types": types, "rows": shown, "rows_read": n,
                 "rows_returned": len(shown), "hit_read_limit": hit, "output_path": out, "summary": summary,
-                "checks": stream.checks("The result"), "statement": stmts[0], "spatial": spatial,
+                "checks": checks, "statement": stmts[0], "spatial": spatial,
                 "seconds": round(time.monotonic() - started, 3)}
     finally:
         con.close()
 
 
+@_action
 def describe(params: dict[str, Any]) -> dict[str, Any]:
     """Tables and views with their columns, keys, indexes, comments and
     exact row counts."""
