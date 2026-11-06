@@ -36,6 +36,32 @@ pub(crate) const NEEDS_YOU: &str = "needs you:";
 /// destination (`flows`: `to: [ai:anthropic]`).
 pub const REVIEW_TOOL: &str = "workflow_review";
 pub const REVIEW_DESTINATION: &str = "ai:anthropic";
+/// Anthropic is also an outside service: rules an organization wrote for
+/// every connected server (`to: [server:*]`) cover the review too.
+const REVIEW_AS_SERVER: &str = "server:anthropic";
+
+/// The flow rules' answer for sending data with these labels to the AI
+/// review: the stricter of the answers for `ai:anthropic` and for
+/// `server:anthropic`.
+fn review_flow(
+    rules: &[columbus_shared::policy::FlowRule],
+    labels: &std::collections::BTreeSet<String>,
+) -> columbus_flow::FlowDecision {
+    use columbus_flow::FlowDecision as D;
+    let rank = |d: &D| match d {
+        D::Deny { .. } => 3,
+        D::Approve { rule: Some(_), .. } => 2,
+        D::Approve { rule: None, .. } => 1,
+        D::Allow => 0,
+    };
+    let a = columbus_flow::evaluate_to(rules, labels, REVIEW_DESTINATION);
+    let b = columbus_flow::evaluate_to(rules, labels, REVIEW_AS_SERVER);
+    if rank(&b) > rank(&a) {
+        b
+    } else {
+        a
+    }
+}
 
 /// The name the runner's calls carry in the audit log.
 pub const RUNNER: &str = "columbus-runner";
@@ -110,7 +136,7 @@ impl Gateway {
             }
             for c in &w.scope.connections {
                 let labels = std::iter::once(columbus_flow::connection_label(c)).collect();
-                match columbus_flow::evaluate_to(&policy.flows, &labels, REVIEW_DESTINATION) {
+                match review_flow(&policy.flows, &labels) {
                     columbus_flow::FlowDecision::Deny { .. } => problems.push(format!(
                         "it has an AI review, and a flow rule forbids sending data from {c} to {REVIEW_DESTINATION}"
                     )),
@@ -344,18 +370,27 @@ pub async fn run_cli_with(id: &str, scheduled: bool, python: Option<&str>) -> an
     let state = std::sync::Arc::new(state);
     // Whatever blocks, the run ends: at its time limit and two minutes, it
     // records that it stopped there and exits (its lock goes with it).
+    // Its engine processes are ended too.
+    progress(&record);
     {
-        let base = record.clone();
         let dir = run_dir.clone();
         let w = workflow.clone();
         let limit = Duration::from_secs(u64::from(workflow.run_minutes()) * 60 + 120);
         std::thread::spawn(move || {
             std::thread::sleep(limit);
-            let mut r = base;
+            let Ok(latest) = PROGRESS.lock() else {
+                std::process::exit(1)
+            };
+            // The run's own record is already written: nothing to do.
+            if FINISHED.load(std::sync::atomic::Ordering::SeqCst) {
+                return;
+            }
+            let mut r = latest.clone();
             r["status"] = json!("stopped_at_limit");
             r["finished"] = json!(Local::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, false));
             r["reason"] = json!("the run did not finish in its time limit, so it was stopped");
             let _ = write_run(&dir, &r, Some(&w));
+            crate::worker::end_all();
             std::process::exit(1);
         });
     }
@@ -379,6 +414,7 @@ pub async fn run_cli_with(id: &str, scheduled: bool, python: Option<&str>) -> an
         &tools_now,
     )
     .await;
+    progress(&record);
     let status = match status {
         Ok(s) if s == "succeeded" || s == "succeeded_with_warnings" => {
             // The AI review, if any: a review that cannot run leaves the
@@ -394,6 +430,7 @@ pub async fn run_cli_with(id: &str, scheduled: bool, python: Option<&str>) -> an
                 }
                 None => s,
             };
+            progress(&record);
             deliver(&client, &workflow, &run, &mut record, deadline)
                 .await
                 .unwrap_or_else(|s| s)
@@ -405,7 +442,13 @@ pub async fn run_cli_with(id: &str, scheduled: bool, python: Option<&str>) -> an
     let _ = client.cancel().await;
     server.abort();
     let code = finish(&mut record, &status, None);
-    write_run(&run_dir, &record, Some(&workflow))?;
+    {
+        // Held while the record is written, so the time-limit watch either
+        // writes first or not at all.
+        let _held = PROGRESS.lock();
+        FINISHED.store(true, std::sync::atomic::Ordering::SeqCst);
+        write_run(&run_dir, &record, Some(&workflow))?;
+    }
     prune(workflow.keep_runs());
     eprintln!("{id}: {status} (run {run})");
     Ok(code)
@@ -574,6 +617,16 @@ fn summary_of(out: &Value) -> String {
 
 /// Run the steps in order; Ok(status) when every step ran, Err(status)
 /// when the run stopped.
+/// The run's record as far as it has got, for the time-limit watch.
+static PROGRESS: std::sync::Mutex<Value> = std::sync::Mutex::new(Value::Null);
+static FINISHED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn progress(record: &Value) {
+    if let Ok(mut p) = PROGRESS.lock() {
+        *p = record.clone();
+    }
+}
+
 async fn run_steps(
     client: &Client,
     workflow: &Workflow,
@@ -648,6 +701,16 @@ async fn run_steps(
                 push(record, step);
                 return Err("failed".into());
             }
+        }
+        {
+            // If the run is stopped at its limit during this step, its
+            // record says so.
+            let mut r = record.clone();
+            let mut running = step.clone();
+            running["status"] = json!("stopped");
+            running["error"] = json!("it was still running at the run's time limit");
+            push(&mut r, running);
+            progress(&r);
         }
         let (ok, out, text) = call(client, &tool, args, left).await;
         step["finished"] = json!(Local::now().to_rfc3339());
@@ -740,12 +803,14 @@ async fn review(
     let return_rows = policy.return_rows.unwrap_or(500).clamp(1, 500);
     let mut labels = std::collections::BTreeSet::new();
     let mut flow_decision = None;
+    let mut refused = false;
     let result: Result<(), String> = async {
         if !policy.tool_allowed(REVIEW_TOOL) {
+            refused = true;
             return Err(format!("organization policy does not allow an AI review ({REVIEW_TOOL})"));
         }
         // The data's labels, and the organization's rules on sending it to the AI.
-        for c in &state.scope.connections {
+        for c in state.scope.connections.iter().filter(|c| !c.starts_with('\u{0}')) {
             labels.insert(columbus_flow::connection_label(c));
         }
         for step in &r.reads {
@@ -759,17 +824,19 @@ async fn review(
         // the person's approval, and approving the workflow was that: what
         // it sends, and to whom, is in what they approved. A rule that asks
         // for an approval each time cannot be met by a run.
-        match columbus_flow::evaluate_to(&policy.flows, &labels, REVIEW_DESTINATION) {
+        match review_flow(&policy.flows, &labels) {
             columbus_flow::FlowDecision::Allow => flow_decision = Some("allow"),
             columbus_flow::FlowDecision::Approve { rule: None, .. } => {
                 flow_decision = Some("approved_with_workflow")
             }
             columbus_flow::FlowDecision::Approve { .. } => {
                 flow_decision = Some("approve");
+                refused = true;
                 return Err(format!("a flow rule needs a person's approval to send this data to {REVIEW_DESTINATION}, and a run never waits for one"));
             }
             columbus_flow::FlowDecision::Deny { .. } => {
                 flow_decision = Some("deny");
+                refused = true;
                 return Err(format!("a flow rule forbids sending this data to {REVIEW_DESTINATION}"));
             }
         }
@@ -828,7 +895,7 @@ async fn review(
         // does not wait long for that.
         let wait = deadline
             .saturating_duration_since(Instant::now())
-            .min(Duration::from_secs(30));
+            .min(Duration::from_secs(120));
         let key = tokio::time::timeout(wait, tokio::task::spawn_blocking(api_key))
             .await
             .map_err(|_| "the API key could not be read without you (on a Mac, start the workflow once with Run now and choose Always Allow)".to_string())?
@@ -930,7 +997,9 @@ async fn review(
         tool: "workflow_review".into(),
         rows: out["rows_sent"].as_u64(),
         decision: if result.is_ok() {
-            "allow".into()
+            "allowed".into()
+        } else if refused {
+            "denied".into()
         } else {
             "error".into()
         },

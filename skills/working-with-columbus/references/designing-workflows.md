@@ -96,8 +96,9 @@ report, marked as the AI's. The AI's flags never change the run's status: they a
 the person to read, not checks. If it cannot run (no key, the service is busy, an answer that
 was cut off or not in the form asked for), the run still delivers its results, marked "AI
 review did not run"; it never reads as "nothing flagged". The organization can turn reviews off
-(`deny_tools: [workflow_review]`) or keep a connection's data from the AI with a flow rule to
-`ai:anthropic`; a workflow with a review is then refused when you propose it. Write criteria a
+(`deny_tools: [workflow_review]`, or a `tools` allowlist without it) or keep a connection's data
+from the AI with a flow rule (to `ai:anthropic`, or to every outside service, `server:*`); a
+workflow with a review is then refused when you propose it. Write criteria a
 careful colleague could apply from the rows alone, and ask only for the fields the criteria
 need.
 

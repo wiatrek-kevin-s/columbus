@@ -567,6 +567,22 @@ async fn a_review_that_is_not_whole_or_not_allowed_never_reads_as_an_all_clear()
     assert_eq!(r.is_error, Some(true));
     assert!(err(&r).contains("forbids"), "{}", err(&r));
     c.cancel().await.unwrap();
+    // A rule written for every outside service covers the AI review too.
+    env.policy("allow_workflows: true\nflows:\n  - { from: [\"connection:crashes\"], to: [\"server:*\"], action: deny }\n");
+    let (rec, n) = run_review(&env, 200, good.clone()).await;
+    assert_eq!(rec["review"]["status"], "did_not_run", "{rec}");
+    assert_eq!(n, 0, "nothing was sent to the AI");
+    let audit: String = std::fs::read_dir(env.root.join("audit"))
+        .unwrap()
+        .flatten()
+        .map(|e| std::fs::read_to_string(e.path()).unwrap_or_default())
+        .collect();
+    assert!(
+        audit
+            .lines()
+            .any(|l| l.contains("workflow_review") && l.contains("\"denied\"")),
+        "a refusal is audited as denied"
+    );
     // A rule asking for an approval each time: a run cannot wait for one.
     env.policy("allow_workflows: true\nflows:\n  - { from: [\"connection:*\"], to: [\"ai:*\"], action: approve }\n");
     let (rec, n) = run_review(&env, 200, good).await;

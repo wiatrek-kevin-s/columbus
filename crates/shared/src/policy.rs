@@ -492,7 +492,9 @@ pub enum FlowAction {
 
 /// `from` holds labels (`connection:roads-prod`, `connection:*`); `to`
 /// holds destinations (`server:drive`, `server:*`, export folders as
-/// `folder:<id>` or `folder:*`, and `*` for every destination).
+/// `folder:<id>` or `folder:*`, a workflow's AI review as `ai:anthropic` or
+/// `ai:*`, and `*` for every destination). A rule for `server:*` covers the
+/// AI review too: Anthropic is an outside service.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FlowRule {
     pub from: Vec<String>,

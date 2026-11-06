@@ -114,8 +114,43 @@ struct Running {
     group: Option<u32>,
 }
 
+/// Every engine process running now (its id, and whether it leads a
+/// process group), so a run that must stop at once can end them.
+static LIVE: std::sync::Mutex<Vec<(u32, bool)>> = std::sync::Mutex::new(Vec::new());
+
+/// End every engine process this program started (and, for a process
+/// group's leader, all it started). For a run stopping at its time limit,
+/// which exits without the usual clean-up.
+pub fn end_all() {
+    let live = LIVE.lock().map(|l| l.clone()).unwrap_or_default();
+    for (pid, group) in live {
+        if pid <= 1 {
+            continue;
+        }
+        #[cfg(unix)]
+        unsafe {
+            libc::kill(
+                if group { -(pid as i32) } else { pid as i32 },
+                libc::SIGKILL,
+            );
+        }
+        #[cfg(windows)]
+        {
+            let _ = group;
+            use std::os::windows::process::CommandExt;
+            let _ = std::process::Command::new("taskkill")
+                .args(["/F", "/T", "/PID", &pid.to_string()])
+                .creation_flags(0x0800_0000)
+                .status();
+        }
+    }
+}
+
 impl Drop for Running {
     fn drop(&mut self) {
+        if let (Some(pid), Ok(mut l)) = (self.child.id(), LIVE.lock()) {
+            l.retain(|(p, _)| *p != pid);
+        }
         #[cfg(unix)]
         if let Some(pid) = self.group {
             if pid > 1 {
@@ -255,6 +290,9 @@ impl Worker {
         } else {
             None
         };
+        if let (Some(pid), Ok(mut live)) = (child.id(), LIVE.lock()) {
+            live.push((pid, group.is_some()));
+        }
         Ok(Running {
             child,
             stdin,

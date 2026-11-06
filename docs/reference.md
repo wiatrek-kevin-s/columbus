@@ -133,6 +133,8 @@ Jobs the person wants run again without waiting for them: the assistant proposes
 - **A run never waits for a person.** Any call that would need an approval is refused at once ("needs you") and the run stops there; an export to a folder that isn't `granted` is such a call.
 - **Records:** each run writes `run.json` and a Markdown report under `workflows/runs/<id>/`; its calls are in the audit log as client `columbus-runner`. Runs are kept per `keep_runs` (with their workspaces).
 - **Policy:** `allow_workflows: true` turns them on (off by default); off stops every installed one at once and refuses `propose_workflow`.
+- **The optional AI review** sends a capped number of result rows (only the fields the workflow names) and its criteria to Anthropic with the person's API key; the model has no tools. Approving the workflow, whose description says what is sent and to whom, is the person's approval for it. The organization controls it as a tool, `workflow_review` (`deny_tools`, or leave it off a `tools` allowlist), and as a flow destination, `ai:anthropic` (a `flows` rule to `ai:*`, `server:*` or `*` covers it). A rule that denies, or that asks for an approval each time, refuses a workflow with a review when it is proposed, and stops the review (but not the rest of the run) if the rule is added later. The audit log records each review: who, model, rows sent, labels, never the rows.
+- **Time limit:** a run stops at `run_minutes`; if anything blocks past that and two minutes more, the run is recorded as stopped at its limit (naming the step that was running), its engine processes are ended and it exits.
 
 ### Map snapshots
 
