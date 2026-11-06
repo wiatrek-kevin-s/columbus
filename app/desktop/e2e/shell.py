@@ -139,7 +139,7 @@ def main():
         frame = WebDriverWait(d, 40).until(EC.presence_of_element_located((By.CSS_SELECTOR, ".outpanel iframe")))
         assert frame.get_attribute("sandbox") == "allow-scripts allow-same-origin", frame.get_attribute("sandbox")
         src = frame.get_attribute("src")
-        assert src.startswith(f"http://127.0.0.1:{port}/#t="), src
+        assert src.startswith(f"http://127.0.0.1:{port}/embed#t="), src
         d.switch_to.frame(frame)
         # The companion page signed in with its view link and shows the layer.
         WebDriverWait(d, 40).until(lambda drv: "tracts" in drv.execute_script("return document.body.textContent"))
@@ -204,9 +204,19 @@ def main():
         wait.until(lambda drv: "tracts" in text(drv, "#notes-list"))
         click(d, By.CSS_SELECTOR, "#notes-list li")
         wait.until(lambda drv: "NAME: the tract's name" in text(drv, "main"))
+        # Changed after the person read it (as an assistant allowed to edit
+        # draft notes could): nothing is marked.
+        note.write_text(NOTE.replace("the tract's name", "changed behind your back"))
+        click(d, By.XPATH, "//button[normalize-space()='Mark reviewed']")
+        wait.until(lambda drv: "changed after you read it" in text(drv, "main"))
+        assert "status: draft" in note.read_text()
+        # Read again, then marked: only the status word changes.
+        click(d, By.CSS_SELECTOR, "#notes-list li")
+        wait.until(lambda drv: "changed behind your back" in text(drv, "main"))
         click(d, By.XPATH, "//button[normalize-space()='Mark reviewed']")
         wait.until(lambda drv: "status: reviewed" in note.read_text())
-        assert "status: draft" not in note.read_text() and "NAME: the tract's name" in note.read_text()
+        want = NOTE.replace("the tract's name", "changed behind your back").replace("status: draft", "status: reviewed")
+        assert note.read_text() == want, note.read_text()
 
         # Ctrl+K opens the search.
         d.execute_script("document.dispatchEvent(new KeyboardEvent('keydown', {key: 'k', ctrlKey: true}))")

@@ -462,12 +462,7 @@ fn send_signed(
     path: &str,
     body: &[u8],
 ) -> Result<(u16, Value), String> {
-    use columbus_shared::proof;
-    let sig = proof::prove(
-        &p.key,
-        proof::APP,
-        &[p.challenge.as_bytes(), proof::body_hash(body).as_bytes()],
-    );
+    let sig = columbus_shared::proof::app_proof(&p.key, "POST", path, &p.challenge, body);
     let header = format!("{}.{sig}", p.challenge);
     post_local(s.port, path, &[("X-Columbus-Test", &header)], body)
 }
@@ -1263,7 +1258,7 @@ pub(crate) fn confirm_with() -> &'static str {
 }
 
 /// The person at the keyboard confirms a change that loosens access.
-fn confirm(what: &str) -> Result<(), String> {
+pub(crate) fn confirm(what: &str) -> Result<(), String> {
     #[cfg(debug_assertions)]
     if let Ok(v) = std::env::var("COLUMBUS_APP_TEST_CONFIRM") {
         return if v == "allow" {

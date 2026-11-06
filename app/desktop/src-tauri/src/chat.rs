@@ -174,15 +174,83 @@ pub async fn chat_save_settings(
     if !MODELS.iter().any(|(m, _)| *m == model) {
         return Err("unknown model".into());
     }
+    let wanted = server.filter(|v| !v.trim().is_empty()).map(PathBuf::from);
+    let old = load(&app);
+    let chats = chats_dir(&app);
+    // The server is the program the chat starts: pointing it elsewhere is
+    // confirmed by the person at the keyboard, like any widening setting.
+    let server =
+        tauri::async_runtime::spawn_blocking(move || -> Result<Option<PathBuf>, String> {
+            let Some(w) = wanted else { return Ok(None) };
+            let w = server_ok(&w, chats.as_deref())?;
+            let now = self::server(&old).and_then(|p| p.canonicalize().ok());
+            if now.as_ref() != Some(&w) {
+                crate::settings::confirm(&format!(
+                    "let the app's chat start {} as Columbus's server",
+                    w.display()
+                ))?;
+            }
+            Ok(Some(w))
+        })
+        .await
+        .map_err(|e| e.to_string())??;
     let s = Settings {
         model: Some(model),
-        server: server.filter(|v| !v.trim().is_empty()).map(PathBuf::from),
+        server,
     };
     let p = settings_path(&app).ok_or("no settings folder")?;
     if let Some(d) = p.parent() {
         std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
     }
     std::fs::write(p, serde_json::to_vec_pretty(&s).unwrap_or_default()).map_err(|e| e.to_string())
+}
+
+/// A server the chat may start: an existing file named `columbus-mcp`
+/// (`columbus-mcp.exe` on Windows), by its full path, and not in a folder
+/// an assistant or a session writes to (workspaces, notes, chats).
+pub(crate) fn server_ok(p: &Path, chats: Option<&Path>) -> Result<PathBuf, String> {
+    let exe = if cfg!(windows) {
+        "columbus-mcp.exe"
+    } else {
+        "columbus-mcp"
+    };
+    if !p.is_absolute() {
+        return Err("give the server's full path".into());
+    }
+    let name_ok = p
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.eq_ignore_ascii_case(exe));
+    if !name_ok {
+        return Err(format!("the server is the program named {exe}"));
+    }
+    let full = p
+        .canonicalize()
+        .map_err(|_| format!("{} is not there", p.display()))?;
+    if !full.is_file() {
+        return Err(format!("{} is not a file", p.display()));
+    }
+    let full_name_ok = full
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.eq_ignore_ascii_case(exe));
+    if !full_name_ok {
+        return Err(format!("the server is the program named {exe}"));
+    }
+    let mut keep_out = crate::shell::session_folders();
+    keep_out.extend(chats.map(Path::to_path_buf));
+    for d in keep_out {
+        if let Ok(d) = d.canonicalize() {
+            if full.starts_with(&d) {
+                return Err(format!(
+                    "{} is in {}, a folder your assistant's sessions write to; use the Columbus folder you unpacked",
+                    full.display(),
+                    d.display()
+                ));
+            }
+        }
+    }
+    Ok(full)
 }
 
 #[tauri::command]
@@ -290,6 +358,11 @@ pub async fn chat_start(app: AppHandle, st: State<'_, ChatState>) -> Result<Star
     let srv = server(&s).ok_or(
         "Columbus's server was not found. Unpack the Columbus folder (see the install guide), or set its place in Settings.",
     )?;
+    // Whatever wrote the settings file, only a Columbus server is started.
+    let chats = chats_dir(&app);
+    let srv = tauri::async_runtime::spawn_blocking(move || server_ok(&srv, chats.as_deref()))
+        .await
+        .map_err(|e| e.to_string())??;
     let key = tauri::async_runtime::spawn_blocking(read_key)
         .await
         .ok()
@@ -459,7 +532,7 @@ async fn end(app: &AppHandle, st: &ChatState) {
 /// its start).
 const MAX_TRANSCRIPT: u64 = 8 * 1024 * 1024;
 
-fn chats_dir(app: &AppHandle) -> Option<PathBuf> {
+pub(crate) fn chats_dir(app: &AppHandle) -> Option<PathBuf> {
     #[cfg(debug_assertions)]
     if let Some(d) = std::env::var_os("COLUMBUS_APP_CHATS").filter(|v| !v.is_empty()) {
         return Some(PathBuf::from(d));
@@ -528,14 +601,30 @@ fn record(app: &AppHandle, v: &serde_json::Value) {
         return;
     };
     line.push('\n');
+    let _ = append_plain(&path, line.as_bytes());
+}
+
+/// Append to a transcript that is a plain file (never through a link),
+/// creating it new if it is not there yet.
+fn append_plain(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let mut o = std::fs::OpenOptions::new();
-    o.create(true).append(true);
+    match std::fs::symlink_metadata(path) {
+        Ok(m) if m.file_type().is_file() => {
+            o.append(true);
+        }
+        Ok(_) => {
+            return Err(std::io::Error::other(
+                "a transcript that is not a plain file",
+            ))
+        }
+        Err(_) => {
+            o.write(true).create_new(true);
+        }
+    }
     // What was said and shown may hold data: this account's alone.
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
-    if let Ok(mut f) = o.open(&path) {
-        let _ = f.write_all(line.as_bytes());
-    }
+    o.open(path)?.write_all(bytes)
 }
 
 /// The time now as RFC 3339 in UTC (no clock crate needed).
@@ -721,14 +810,7 @@ pub async fn chats_search(app: AppHandle, query: String) -> Result<Vec<Found>, S
                     .map(String::from)
             }));
             for t in texts {
-                let lower = t.to_lowercase();
-                if let Some(at) = lower.find(&q) {
-                    let chars: Vec<char> = t.chars().collect();
-                    let start_char = lower[..at].chars().count();
-                    let from = start_char.saturating_sub(40);
-                    let to = (start_char + q.chars().count() + 60).min(chars.len());
-                    let mut snip: String = chars[from..to].iter().collect();
-                    snip = snip.split_whitespace().collect::<Vec<_>>().join(" ");
+                if let Some(snip) = snippet(&t, &q) {
                     out.push(Found {
                         id: id.clone(),
                         title: s.title.clone(),
@@ -749,6 +831,38 @@ pub async fn chats_search(app: AppHandle, query: String) -> Result<Vec<Found>, S
     .map_err(|e| e.to_string())
 }
 
+/// Where `q` (already lower case) is in `text`, compared character by
+/// character in lower case, as positions in `text`'s own characters: a
+/// character that lowercases to several (`İ`) still maps back to itself.
+fn find_folded(text: &str, q: &str) -> Option<(usize, usize)> {
+    let want: Vec<char> = q.chars().collect();
+    if want.is_empty() {
+        return None;
+    }
+    let mut lower = Vec::new();
+    let mut owner = Vec::new();
+    for (i, c) in text.chars().enumerate() {
+        for l in c.to_lowercase() {
+            lower.push(l);
+            owner.push(i);
+        }
+    }
+    let at = lower
+        .windows(want.len())
+        .position(|w| w == want.as_slice())?;
+    Some((owner[at], owner[at + want.len() - 1] + 1))
+}
+
+/// A few words around the first match of `q` in `text`, as plain text.
+fn snippet(text: &str, q: &str) -> Option<String> {
+    let (start, end) = find_folded(text, q)?;
+    let chars: Vec<char> = text.chars().collect();
+    let from = start.saturating_sub(40);
+    let to = (end + 60).min(chars.len());
+    let snip: String = chars[from..to].iter().collect();
+    Some(snip.split_whitespace().collect::<Vec<_>>().join(" "))
+}
+
 /// Rename a saved chat (a title line is added; the rest stays).
 #[tauri::command]
 pub async fn chat_rename(app: AppHandle, id: String, title: String) -> Result<(), String> {
@@ -758,16 +872,11 @@ pub async fn chat_rename(app: AppHandle, id: String, title: String) -> Result<()
     }
     let dir = chats_dir(&app).ok_or("no folder for chats")?;
     let path = dir.join(format!("{id}.jsonl"));
-    if !path.is_file() {
+    if !std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_file()) {
         return Err("there is no such chat".into());
     }
     let line = serde_json::json!({"kind": "title", "text": title, "ts": now_rfc3339()});
-    let mut f = std::fs::OpenOptions::new()
-        .append(true)
-        .open(&path)
-        .map_err(|e| e.to_string())?;
-    f.write_all(format!("{line}\n").as_bytes())
-        .map_err(|e| e.to_string())
+    append_plain(&path, format!("{line}\n").as_bytes()).map_err(|e| e.to_string())
 }
 
 /// Delete a saved chat's transcript (not the chat running now).
@@ -794,6 +903,61 @@ pub async fn chat_delete(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_columbus_server_outside_session_folders_is_started() {
+        let d = std::env::temp_dir().join(format!("columbus-server-test-{}", std::process::id()));
+        let good = d.join("Columbus");
+        let chats = d.join("chats");
+        std::fs::create_dir_all(&good).unwrap();
+        std::fs::create_dir_all(&chats).unwrap();
+        let exe = if cfg!(windows) {
+            "columbus-mcp.exe"
+        } else {
+            "columbus-mcp"
+        };
+        std::fs::write(good.join(exe), "").unwrap();
+        std::fs::write(good.join("other.exe"), "").unwrap();
+        std::fs::write(chats.join(exe), "").unwrap();
+        assert!(server_ok(&good.join(exe), Some(&chats)).is_ok());
+        assert!(server_ok(&good.join("other.exe"), Some(&chats)).is_err());
+        assert!(
+            server_ok(Path::new(exe), Some(&chats)).is_err(),
+            "a relative path"
+        );
+        assert!(server_ok(&good.join("missing").join(exe), Some(&chats)).is_err());
+        assert!(
+            server_ok(&chats.join(exe), Some(&chats)).is_err(),
+            "inside a folder sessions write"
+        );
+        #[cfg(unix)]
+        {
+            // A link named like the server, to another program.
+            std::os::unix::fs::symlink(good.join("other.exe"), d.join(exe)).unwrap();
+            assert!(server_ok(&d.join(exe), Some(&chats)).is_err());
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn search_snippets_survive_characters_that_lowercase_to_several() {
+        // `İ` lowercases to two characters; `ẞ` and `Ω` change too.
+        let t = "İİİİİİİİİİ Straße district ẞ Ω İstanbul route";
+        assert!(snippet(t, "istanbul").is_none(), "İ is i plus a dot, not i");
+        let s = snippet(t, &"İstanbul".to_lowercase()).unwrap();
+        assert!(s.contains("İstanbul"), "{s}");
+        assert!(snippet(t, "route").unwrap().ends_with("route"));
+        assert!(snippet(t, "ω").unwrap().contains('Ω'));
+        let long = format!("{}{}", "İ".repeat(500), "match here");
+        assert!(snippet(&long, "match").unwrap().contains("match here"));
+        assert!(snippet("abc", "").is_none());
+        assert!(snippet("", "a").is_none());
+        // Every place a match can start, in a string of such characters.
+        let odd = "İaİbİ";
+        for q in ["a", "b", "i̇", "i̇a", "bi̇"] {
+            let _ = snippet(odd, q);
+        }
+    }
 
     #[test]
     fn chat_ids_are_plain() {

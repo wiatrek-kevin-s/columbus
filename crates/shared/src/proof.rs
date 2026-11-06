@@ -55,9 +55,26 @@ pub fn same(a: &str, b: &str) -> bool {
 pub const HELLO: &str = "columbus-test-hello";
 /// The server's answer to the app's challenge.
 pub const SERVER: &str = "columbus-test-server";
-/// The app's proof for one test request (over the server's challenge and
-/// the request body's SHA-256).
-pub const APP: &str = "columbus-test-app";
+/// The app's proof for one signed request: over the method, the path, the
+/// server's challenge and the request body's SHA-256 (see [`app_proof`]),
+/// so a proof for one endpoint is good for no other.
+pub const APP: &str = "columbus-app-request-v2";
+
+/// The app's proof for `method path` with `body`, over the server's
+/// single-use `challenge`. The Columbus app makes it, the session checks it;
+/// both use this function, so they agree.
+pub fn app_proof(key: &str, method: &str, path: &str, challenge: &str, body: &[u8]) -> String {
+    prove(
+        key,
+        APP,
+        &[
+            method.as_bytes(),
+            path.as_bytes(),
+            challenge.as_bytes(),
+            body_hash(body).as_bytes(),
+        ],
+    )
+}
 
 pub fn body_hash(body: &[u8]) -> String {
     hex(&Sha256::digest(body))
@@ -91,5 +108,21 @@ mod tests {
         assert_ne!(p, prove("j", APP, &[b"a", b"b"]));
         assert_ne!(p, prove("k", APP, &[b"ab"]));
         assert!(same(&p, &prove("k", APP, &[b"a", b"b"])));
+    }
+}
+
+#[cfg(test)]
+mod app_proof_tests {
+    use super::*;
+
+    #[test]
+    fn a_proof_names_its_method_and_path() {
+        let a = app_proof("k", "POST", "/api/app-view", "c", b"{}");
+        assert_eq!(a, app_proof("k", "POST", "/api/app-view", "c", b"{}"));
+        assert_ne!(a, app_proof("k", "POST", "/api/app-approvals", "c", b"{}"));
+        assert_ne!(a, app_proof("k", "GET", "/api/app-view", "c", b"{}"));
+        assert_ne!(a, app_proof("k", "POST", "/api/app-view", "d", b"{}"));
+        assert_ne!(a, app_proof("k", "POST", "/api/app-view", "c", b"{ }"));
+        assert_ne!(a, app_proof("j", "POST", "/api/app-view", "c", b"{}"));
     }
 }

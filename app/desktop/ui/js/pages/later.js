@@ -2,6 +2,7 @@
 // says honestly what it will do and that it is coming; none shows made-up
 // data.
 import { h, store, pageHead, coming, ago, plural, clientName } from "../core.js";
+import { liveSession } from "./chats.js";
 
 function page(main, title, lede, ...content) {
   const p = h("div", { class: "page" }, pageHead(title, lede), h("div", { class: "scroll" }, h("div", { class: "pad stack" }, ...content)));
@@ -11,8 +12,8 @@ function page(main, title, lede, ...content) {
 export function projects(main) {
   const list = h("ul", { class: "list" });
   for (const c of store.chats) list.append(h("li", { class: "clickable", onclick: () => { location.hash = `#/chats/c/${encodeURIComponent(c.id)}`; } }, h("div", { class: "text" }, h("b", {}, c.title), h("span", { class: "where" }, `Chat in this app · ${ago(c.updated)}`))));
-  for (const s of store.sessions.filter((x) => x.client !== "Columbus app")) list.append(h("li", { class: "clickable", onclick: () => { location.hash = `#/chats/s/${encodeURIComponent(s.session)}`; } }, h("div", { class: "text" }, h("b", {}, `${clientName(s.client)} session`), h("span", { class: "where" }, "Running now"))));
-  const n = store.chats.length + store.sessions.filter((x) => x.client !== "Columbus app").length;
+  for (const s of store.sessions.filter((x) => x.session !== liveSession())) list.append(h("li", { class: "clickable", onclick: () => { location.hash = `#/chats/s/${encodeURIComponent(s.session)}`; } }, h("div", { class: "text" }, h("b", {}, `${clientName(s.client)} session`), h("span", { class: "where" }, "Running now"))));
+  const n = store.chats.length + store.sessions.filter((x) => x.session !== liveSession()).length;
   page(main, "Projects", "A project is a piece of work: its instructions, chats, documents and the data its chats may use.",
     h("section", { class: "card" }, h("div", { class: "hd" }, h("h2", {}, "Unfiled"), h("span", { class: "muted small" }, plural(n, "chat"))),
       h("div", { class: "bd flush" }, n ? list : h("p", { class: "pad muted" }, "No chats yet."))),

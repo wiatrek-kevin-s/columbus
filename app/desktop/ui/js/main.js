@@ -272,7 +272,19 @@ store.on((k) => {
   }
 });
 
+// Tests only: a debug build may open the window with a test page to show
+// in the same sandboxed frame as a session's page (e2e/frame_ipc.py). The
+// window's navigation guard and its policy still apply to it.
+function testFrame() {
+  const src = new URLSearchParams(location.search).get("test-frame");
+  if (!src || !/^http:\/\/127\.0\.0\.1:\d+\/embed$/.test(src.split("#")[0])) return;
+  const f = h("iframe", { id: "test-frame", title: "Test page", sandbox: "allow-scripts allow-same-origin", referrerpolicy: "no-referrer" });
+  f.src = src;
+  document.body.append(f);
+}
+
 async function boot() {
+  testFrame();
   try {
     const p = await invoke("prefs_get");
     store.prefs = p;

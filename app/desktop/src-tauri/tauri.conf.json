@@ -10,7 +10,7 @@
     "withGlobalTauri": true,
     "windows": [],
     "security": {
-      "csp": "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src ipc: http://ipc.localhost; frame-src http://127.0.0.1:*; child-src http://127.0.0.1:*; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'",
+      "csp": "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src ipc: http://ipc.localhost; frame-src http://127.0.0.1:*/embed; child-src http://127.0.0.1:*/embed; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'",
       "freezePrototype": true
     }
   },

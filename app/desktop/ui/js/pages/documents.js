@@ -75,24 +75,32 @@ async function notes(body) {
     for (const [k, v] of [["Connection", n.connection], ["Owner", n.owner], ["Last confirmed", n.last_confirmed], ["Changed", when(n.modified)], ["File", n.path]]) if (v) dl.append(h("dt", {}, k), h("dd", {}, String(v)));
     bd.append(dl);
     const err = h("p", { class: "error-text", role: "alert", hidden: true });
+    // The note first; "Mark reviewed" only once the person can read it, and
+    // it marks exactly what they read (its hash), nothing changed since.
+    let read;
+    try {
+      read = await invoke("note_read", { path: n.path });
+    } catch (e) {
+      bd.append(el("p", "error-text", String(e)));
+      draw();
+      return;
+    }
+    if (open !== n) return;
     if (n.status === "draft") {
       bd.append(h("div", { class: "row wrap" },
         button("Mark reviewed", "primary", async () => {
           showError(err, null);
           try {
-            await invoke("note_mark_reviewed", { path: n.path });
+            await invoke("note_mark_reviewed", { path: n.path, sha256: read.sha256 });
             toast(`Marked reviewed: ${n.title || n.path}. Your assistant can no longer change it.`);
             await load();
             const again = data.notes.find((x) => x.path === n.path);
             if (again) show(again);
           } catch (e) { showError(err, e); }
         }),
-        h("span", { class: "small muted" }, "Check what it says first. Once reviewed, your assistant can no longer change this note; you still can, in the file.")), err);
+        h("span", { class: "small muted" }, "Check what it says below first. Once reviewed, your assistant can no longer change this note; you still can, in the file.")), err);
     }
-    try {
-      const text = await invoke("note_read", { path: n.path });
-      bd.append(el("pre", "box", text));
-    } catch (e) { bd.append(el("p", "error-text", String(e))); }
+    bd.append(el("pre", "box", read.text));
     draw();
   };
   const load = async () => {

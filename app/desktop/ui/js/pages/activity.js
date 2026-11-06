@@ -2,7 +2,7 @@
 // only: requests from other AI apps are decided in that app or on the
 // browser page the session opens), the audit log (read only, with the
 // chain check) and the exports it records.
-import { h, el, invoke, store, button, pageHead, timeLeft, when, ago, plural, clientName, monthName, emptyState, toast } from "../core.js";
+import { h, el, invoke, store, button, pageHead, timeLeft, when, ago, plural, clientName, monthName, emptyState, toast, size } from "../core.js";
 import { openBrowser, waitingCount, describe, otherInbox } from "./chats.js";
 
 export async function render(main, rest) {
@@ -92,7 +92,8 @@ function audit(page) {
   const prev = button("Newer", "sm", () => { q.offset = Math.max(0, q.offset - q.limit); load(); });
   const next = button("Older", "sm", () => { q.offset += q.limit; load(); });
   const where = h("p", { class: "small muted wrap-any" });
-  const body = h("div", { class: "pad stack" }, filters, result,
+  const skippedNote = h("p", { class: "notice warn", role: "status", hidden: true });
+  const body = h("div", { class: "pad stack" }, filters, result, skippedNote,
     h("section", { class: "card" }, h("table", { class: "t" }, h("thead", {}, h("tr", {}, h("th", {}, "Time"), h("th", {}, "App"), h("th", {}, "Tool"), h("th", {}, "What"), h("th", {}, "Decision"), h("th", {}, "Line"))), tbody)),
     h("div", { class: "pager" }, count, prev, next), where);
   page.append(h("div", { class: "scroll" }, body));
@@ -124,7 +125,9 @@ function audit(page) {
       count.textContent = `${from.toLocaleString()}–${(r.offset + r.lines.length).toLocaleString()} of ${r.matching.toLocaleString()}${r.matching !== r.total ? ` matching (${r.total.toLocaleString()} lines)` : ""}, newest first`;
       prev.disabled = r.offset === 0;
       next.disabled = r.offset + r.lines.length >= r.matching;
-      where.textContent = `In ${r.dir}. Lines record a hash of each request, never the rows.`;
+      where.textContent = `In ${r.dir}. Lines record a hash of each request, never the rows.${r.skipped_lines ? ` This month is too large to read whole here: its first ${Number(r.skipped_lines).toLocaleString()} lines (${size(r.skipped_bytes)}) are not shown. Verify still checks every line.` : ""}`;
+      skippedNote.hidden = !r.skipped_lines;
+      skippedNote.textContent = r.skipped_lines ? `Showing the newest lines of a large month: the first ${Number(r.skipped_lines).toLocaleString()} lines (${size(r.skipped_bytes)}) are not read here.` : "";
     } catch (e) {
       tbody.replaceChildren(h("tr", {}, h("td", { colspan: "6", class: "error-text" }, String(e))));
     }

@@ -53,8 +53,10 @@
 //! for its output panel straight to the app (no `columbus://` hop another
 //! program could catch), and `POST /api/app-approvals` lists the requests
 //! waiting, view only, optionally opening the browser page that decides.
-//! The companion page may be framed by the app's own pages only
-//! (`frame-ancestors`, [`APP_FRAME_ANCESTORS`]), and a framed page never
+//! Only the `/embed` copy of the companion page (where `/api/app-view`
+//! links point) may be framed, by the app's own pages only
+//! (`frame-ancestors`, [`APP_FRAME_ANCESTORS`]); `/`, which an approve link
+//! opens, and every other answer refuse all framing. A framed page never
 //! decides approvals.
 //!
 //! Honest limits, documented for IT: an agent that can run programs as the
@@ -524,6 +526,7 @@ impl ApprovalsPage {
                 });
                 let app = Router::new()
                     .route("/", get(page))
+                    .route("/embed", get(embed))
                     .route("/api/session", post(exchange))
                     .route("/api/approvals", get(list))
                     .route("/api/approvals/{id}", post(decide))
@@ -705,19 +708,16 @@ async fn page(State(s): State<Arc<Shared>>, h: HeaderMap) -> Response<Body> {
     if !host_ok(&h, &s) {
         return status(StatusCode::FORBIDDEN, "wrong host");
     }
-    if let Some(index) = s
-        .ui_dir
-        .as_ref()
-        .filter(|_| s.companion.is_some())
-        .and_then(|d| std::fs::read_to_string(d.join("index.html")).ok())
-    {
+    if let Some(index) = ui_index(&s) {
         let mut r = Response::new(Body::from(index));
         r.headers_mut().insert(
             header::CONTENT_TYPE,
             HeaderValue::from_static("text/html; charset=utf-8"),
         );
         let basemap = s.companion.as_ref().is_some_and(|c| c.basemap_allowed());
-        return harden_for_app_frame(r, ui_csp(basemap));
+        // The page that can decide approvals (with an approve link): never
+        // in a frame.
+        return harden(r, Some(ui_csp(basemap, false)));
     }
     let nonce = uuid::Uuid::new_v4().simple().to_string();
     let html = PAGE.replace("{{NONCE}}", &nonce);
@@ -731,6 +731,34 @@ async fn page(State(s): State<Arc<Shared>>, h: HeaderMap) -> Response<Body> {
          img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
     );
     harden(r, Some(csp))
+}
+
+/// The companion window's page, if its files are installed.
+fn ui_index(s: &Shared) -> Option<String> {
+    s.ui_dir
+        .as_ref()
+        .filter(|_| s.companion.is_some())
+        .and_then(|d| std::fs::read_to_string(d.join("index.html")).ok())
+}
+
+/// `GET /embed`: the same window, for the Columbus app's output panel
+/// (`/api/app-view` links here). Only this path may be framed, and only by
+/// the app's own pages ([`APP_FRAME_ANCESTORS`]); a framed page never
+/// decides approvals (App.tsx), and its links carry view tokens only.
+async fn embed(State(s): State<Arc<Shared>>, h: HeaderMap) -> Response<Body> {
+    if !host_ok(&h, &s) {
+        return status(StatusCode::FORBIDDEN, "wrong host");
+    }
+    let Some(index) = ui_index(&s) else {
+        return status(StatusCode::NOT_FOUND, "not found");
+    };
+    let mut r = Response::new(Body::from(index));
+    r.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/html; charset=utf-8"),
+    );
+    let basemap = s.companion.as_ref().is_some_and(|c| c.basemap_allowed());
+    harden_for_app_frame(r, ui_csp(basemap, true))
 }
 
 #[derive(Deserialize)]
@@ -876,8 +904,14 @@ pub(crate) const APP_FRAME_ANCESTORS: &str =
 /// from this server, and, when organization policy allows the basemap,
 /// tiles, glyphs and sprites from one public host (OpenFreeMap; the window
 /// works without them). MapLibre's worker is its own file or a blob.
-/// Framed only by the Columbus app (see [`APP_FRAME_ANCESTORS`]).
-pub(crate) fn ui_csp(basemap: bool) -> String {
+/// `framed`: the `/embed` copy, which the Columbus app's own pages may
+/// frame (see [`APP_FRAME_ANCESTORS`]); everywhere else, no frame at all.
+pub(crate) fn ui_csp(basemap: bool, framed: bool) -> String {
+    let ancestors = if framed {
+        APP_FRAME_ANCESTORS
+    } else {
+        "'none'"
+    };
     let tiles = if basemap {
         " https://tiles.openfreemap.org"
     } else {
@@ -886,7 +920,7 @@ pub(crate) fn ui_csp(basemap: bool) -> String {
     format!(
         "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'{tiles}; \
          img-src 'self' data: blob:{tiles}; font-src 'self'; worker-src 'self' blob:; \
-         base-uri 'none'; form-action 'none'; frame-ancestors {APP_FRAME_ANCESTORS}"
+         base-uri 'none'; form-action 'none'; frame-ancestors {ancestors}"
     )
 }
 
@@ -979,8 +1013,15 @@ async fn test_hello(State(s): State<Arc<Shared>>, h: HeaderMap) -> Response<Body
 
 /// The request carries the app's proof (`X-Columbus-Test: <challenge>.<proof>`):
 /// one of this server's unused challenges from `/api/test-hello`, and an
-/// HMAC over it and the exact body with the key only this account can read.
-fn signed_by_app(h: &HeaderMap, s: &Shared, body: &[u8]) -> Result<(), Box<Response<Body>>> {
+/// HMAC over the method, this endpoint's path, the challenge and the exact
+/// body, with the key only this account can read ([`proof::app_proof`]), so
+/// a proof made for one endpoint is refused by every other.
+fn signed_by_app(
+    h: &HeaderMap,
+    s: &Shared,
+    path: &str,
+    body: &[u8],
+) -> Result<(), Box<Response<Body>>> {
     use columbus_shared::proof;
     from_app(h, s)?;
     let refused = || Box::new(status(StatusCode::FORBIDDEN, "refused"));
@@ -997,11 +1038,7 @@ fn signed_by_app(h: &HeaderMap, s: &Shared, body: &[u8]) -> Result<(), Box<Respo
             .position(|(k, at)| proof::same(k, challenge) && at.elapsed() < CHALLENGE_TTL);
         found.map(|i| c.swap_remove(i)).is_some()
     };
-    let want = proof::prove(
-        &s.test_key,
-        proof::APP,
-        &[challenge.as_bytes(), proof::body_hash(body).as_bytes()],
-    );
+    let want = proof::app_proof(&s.test_key, "POST", path, challenge, body);
     if !fresh || !proof::same(given, &want) {
         return Err(refused());
     }
@@ -1021,7 +1058,7 @@ async fn draft_notes(
     h: HeaderMap,
     body: axum::body::Bytes,
 ) -> Response<Body> {
-    if let Err(r) = signed_by_app(&h, &s, &body) {
+    if let Err(r) = signed_by_app(&h, &s, "/api/draft-notes", &body) {
         return *r;
     }
     let Some(companion) = s.companion.clone() else {
@@ -1060,7 +1097,7 @@ async fn test_connection(
     h: HeaderMap,
     body: axum::body::Bytes,
 ) -> Response<Body> {
-    if let Err(r) = signed_by_app(&h, &s, &body) {
+    if let Err(r) = signed_by_app(&h, &s, "/api/test-connection", &body) {
         return *r;
     }
     let Some(companion) = s.companion.clone() else {
@@ -1125,7 +1162,7 @@ async fn app_approvals(
     h: HeaderMap,
     body: axum::body::Bytes,
 ) -> Response<Body> {
-    if let Err(r) = signed_by_app(&h, &s, &body) {
+    if let Err(r) = signed_by_app(&h, &s, "/api/app-approvals", &body) {
         return *r;
     }
     let req = if body.is_empty() {
@@ -1174,7 +1211,7 @@ async fn app_view(
     h: HeaderMap,
     body: axum::body::Bytes,
 ) -> Response<Body> {
-    if let Err(r) = signed_by_app(&h, &s, &body) {
+    if let Err(r) = signed_by_app(&h, &s, "/api/app-view", &body) {
         return *r;
     }
     let has_window = s
@@ -1190,7 +1227,7 @@ async fn app_view(
     match s.view_token() {
         Ok(t) => json_response(
             StatusCode::OK,
-            json!({"url": format!("{}/#t={t}", s.origin())}),
+            json!({"url": format!("{}/embed#t={t}", s.origin())}),
         ),
         Err(e) => status(StatusCode::TOO_MANY_REQUESTS, &e),
     }
@@ -1366,9 +1403,12 @@ async fn asset(
         .insert(header::CONTENT_TYPE, HeaderValue::from_static(kind));
     // A script may run as a worker, which follows the policy it was served
     // with, not the page's: the map's worker fetches the basemap tiles.
-    let csp = kind
-        .starts_with("text/javascript")
-        .then(|| ui_csp(s.companion.as_ref().is_some_and(|c| c.basemap_allowed())));
+    let csp = kind.starts_with("text/javascript").then(|| {
+        ui_csp(
+            s.companion.as_ref().is_some_and(|c| c.basemap_allowed()),
+            false,
+        )
+    });
     let mut r = harden(r, csp);
     // Built file names carry a content hash; they never change.
     r.headers_mut().insert(
@@ -1409,16 +1449,19 @@ mod tests {
     #[test]
     fn only_the_app_may_frame_the_window() {
         for basemap in [false, true] {
-            let csp = ui_csp(basemap);
-            let fa: Vec<&str> = csp
-                .split(';')
-                .map(str::trim)
-                .filter(|d| d.starts_with("frame-ancestors"))
-                .collect();
+            let fa = |framed| {
+                ui_csp(basemap, framed)
+                    .split(';')
+                    .map(str::trim)
+                    .filter(|d| d.starts_with("frame-ancestors"))
+                    .map(String::from)
+                    .collect::<Vec<_>>()
+            };
             assert_eq!(
-                fa,
+                fa(true),
                 ["frame-ancestors tauri://localhost http://tauri.localhost https://tauri.localhost"]
             );
+            assert_eq!(fa(false), ["frame-ancestors 'none'"]);
         }
     }
 

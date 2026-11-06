@@ -86,6 +86,17 @@ fn places() -> Places {
     places_from(&settings::live_all())
 }
 
+/// The folders sessions (and so assistants) write to: their workspaces and
+/// the person's notes, by default and as running sessions say.
+pub(crate) fn session_folders() -> Vec<PathBuf> {
+    let mut out = vec![];
+    for p in [places_from(&[]), places()] {
+        out.push(PathBuf::from(p.workspaces));
+        out.push(PathBuf::from(p.notes));
+    }
+    out
+}
+
 /// A relative path inside `root`, with no way out of it: plain names only
 /// (no `..`, no drive or root), and once resolved, still inside `root`
 /// (a link that leads elsewhere is refused).
@@ -124,14 +135,26 @@ fn read_head(path: &Path) -> Option<String> {
     Some(String::from_utf8_lossy(&buf).into_owned())
 }
 
-fn read_text(path: &Path) -> Result<String, String> {
+/// A whole file's bytes, refused if longer than [`MAX_TEXT`]: what is shown
+/// (or changed) is never a cut-off part of it.
+fn read_whole(path: &Path) -> Result<Vec<u8>, String> {
     use std::io::Read;
     let f = std::fs::File::open(path).map_err(|e| e.to_string())?;
-    let mut s = String::new();
-    f.take(MAX_TEXT)
-        .read_to_string(&mut s)
-        .map_err(|_| "not a text file".to_string())?;
-    Ok(s)
+    let mut buf = Vec::new();
+    f.take(MAX_TEXT + 1)
+        .read_to_end(&mut buf)
+        .map_err(|e| e.to_string())?;
+    if buf.len() as u64 > MAX_TEXT {
+        return Err(format!(
+            "this file is larger than {} KB, too large to show here: open it in an editor",
+            MAX_TEXT / 1024
+        ));
+    }
+    Ok(buf)
+}
+
+fn read_text(path: &Path) -> Result<String, String> {
+    String::from_utf8(read_whole(path)?).map_err(|_| "not a text file".to_string())
 }
 
 /// Files under `root` (no links followed), relative paths with `/`.
@@ -420,7 +443,7 @@ pub async fn session_page(app: AppHandle, session: String) -> Result<String, Str
         }
         let url = v["url"].as_str().ok_or("the session gave no page")?;
         // Only that session's own page, on this computer.
-        let want = format!("http://127.0.0.1:{}/#t=", s.port);
+        let want = format!("http://127.0.0.1:{}/embed#t=", s.port);
         let token = url.strip_prefix(&want).ok_or("the session gave another page")?;
         if token.len() != 64 || !token.bytes().all(|b| b.is_ascii_hexdigit()) {
             return Err("the session gave another page".into());
@@ -605,21 +628,65 @@ fn month_ok(m: &str) -> bool {
             .all(|(i, b)| i == 4 || b.is_ascii_digit())
 }
 
-fn audit_lines(path: &Path) -> Vec<Value> {
-    use std::io::{BufRead, Read};
-    let Ok(f) = std::fs::File::open(path) else {
-        return vec![];
+/// A month's lines, numbered as in the file. A month larger than
+/// [`MAX_AUDIT_BYTES`] is read from its end, so the newest lines are always
+/// there; how much was skipped is said (`Skipped`).
+fn audit_lines(path: &Path) -> (Vec<Value>, Skipped) {
+    use std::io::{BufRead, Read, Seek, SeekFrom};
+    let none = (vec![], Skipped::default());
+    let Ok(mut f) = std::fs::File::open(path) else {
+        return none;
     };
-    std::io::BufReader::new(f.take(MAX_AUDIT_BYTES))
-        .lines()
-        .map_while(Result::ok)
+    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+    let from = len.saturating_sub(MAX_AUDIT_BYTES);
+    // Count the lines before the part that is read, for their numbers.
+    let mut before = 0usize;
+    let mut cut_line = false;
+    if from > 0 {
+        let mut head = std::io::BufReader::new((&mut f).take(from));
+        let mut last = b'\n';
+        loop {
+            let buf = match head.fill_buf() {
+                Ok(b) if !b.is_empty() => b,
+                _ => break,
+            };
+            before += buf.iter().filter(|&&b| b == b'\n').count();
+            last = *buf.last().unwrap_or(&b'\n');
+            let n = buf.len();
+            head.consume(n);
+        }
+        cut_line = last != b'\n';
+        if f.seek(SeekFrom::Start(from)).is_err() {
+            return none;
+        }
+    }
+    let mut lines = std::io::BufReader::new(f).lines().map_while(Result::ok);
+    let mut first = before + 1;
+    if cut_line {
+        // The rest of a line that started before the part read.
+        let _ = lines.next();
+        first += 1;
+    }
+    let out: Vec<Value> = lines
         .enumerate()
         .filter_map(|(i, l)| {
             let mut v: Value = serde_json::from_str(&l).ok()?;
-            v["line"] = json!(i + 1);
+            v["line"] = json!(first + i);
             Some(v)
         })
-        .collect()
+        .collect();
+    let skipped = Skipped {
+        bytes: from,
+        lines: first - 1,
+    };
+    (out, skipped)
+}
+
+/// What a large month's reading left out, at its start.
+#[derive(Default, Clone, Copy)]
+struct Skipped {
+    bytes: u64,
+    lines: usize,
 }
 
 fn months(dir: &Path) -> Vec<(String, u64)> {
@@ -710,7 +777,7 @@ pub async fn audit_page(query: AuditQuery) -> Result<Value, String> {
             None => ms.first().map(|(m, _)| m.clone()),
         };
         let limit = query.limit.unwrap_or(100).clamp(1, 500);
-        let all = month
+        let (all, skipped) = month
             .as_ref()
             .map(|m| audit_lines(&dir.join(format!("{m}.jsonl"))))
             .unwrap_or_default();
@@ -754,6 +821,9 @@ pub async fn audit_page(query: AuditQuery) -> Result<Value, String> {
             "matching": matching.len(),
             "offset": query.offset,
             "lines": matching.iter().skip(query.offset).take(limit).collect::<Vec<_>>(),
+            // A month too large to read whole: its oldest lines are left out.
+            "skipped_lines": skipped.lines,
+            "skipped_bytes": skipped.bytes,
             "clients": distinct("client"),
             "tools": distinct("tool"),
             "decisions": distinct("decision"),
@@ -791,6 +861,7 @@ pub async fn exports_list() -> Result<Vec<Value>, String> {
         let mut out = vec![];
         for (m, _) in months(&dir).iter().take(6) {
             for v in audit_lines(&dir.join(format!("{m}.jsonl")))
+                .0
                 .into_iter()
                 .rev()
             {
@@ -842,50 +913,88 @@ pub async fn notes_list() -> Result<Value, String> {
     .map_err(|e| e.to_string())
 }
 
+/// A note's text, and the SHA-256 of its exact bytes: "Mark reviewed"
+/// names that hash, so it marks only the note the person read.
 #[tauri::command]
-pub async fn note_read(path: String) -> Result<String, String> {
+pub async fn note_read(path: String) -> Result<Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let f = inside(Path::new(&places().notes), &path)?;
-        read_text(&f)
+        let bytes = read_whole(&f)?;
+        let sha256 = columbus_shared::canon::sha256_hex(&bytes);
+        let text = String::from_utf8(bytes).map_err(|_| "not a text file".to_string())?;
+        Ok(json!({"text": text, "sha256": sha256}))
     })
     .await
     .map_err(|e| e.to_string())?
 }
 
-/// The note with `status: draft` set to `status: reviewed` in its front
-/// matter; None if it is not a draft.
+/// The note with its front matter's `status: draft` set to `reviewed`:
+/// only that word changes (a comment after it and the line ending stay,
+/// and so does every other byte). None if it is not a draft.
 pub(crate) fn reviewed(text: &str) -> Option<String> {
-    let mut lines: Vec<&str> = text.split('\n').collect();
-    if lines.first().map(|l| l.trim()) != Some("---") {
+    let mut lines = text.split_inclusive('\n');
+    let first = lines.next()?;
+    if first.trim() != "---" {
         return None;
     }
-    let end = lines.iter().skip(1).position(|l| l.trim() == "---")? + 1;
-    let at = (1..end).find(|&i| {
-        lines[i]
-            .strip_prefix("status:")
-            .is_some_and(|v| v.split('#').next().unwrap_or("").trim() == "draft")
-    })?;
-    let line = "status: reviewed";
-    lines[at] = line;
-    Some(lines.join("\n"))
+    let mut offset = first.len();
+    for line in lines {
+        if line.trim() == "---" {
+            return None;
+        }
+        if let Some(rest) = line.strip_prefix("status:") {
+            let lead = rest.len() - rest.trim_start().len();
+            let value = rest.trim_start();
+            let word_end = value
+                .find(|c: char| c.is_whitespace() || c == '#')
+                .unwrap_or(value.len());
+            if &value[..word_end] != "draft" {
+                return None;
+            }
+            let at = offset + "status:".len() + lead;
+            let mut out = String::with_capacity(text.len() + 3);
+            out.push_str(&text[..at]);
+            out.push_str("reviewed");
+            out.push_str(&text[at + "draft".len()..]);
+            return Some(out);
+        }
+        offset += line.len();
+    }
+    None
 }
 
 /// Mark one of the person's own notes reviewed. Their own file, their own
 /// decision: an assistant can no longer change a reviewed note, so this
-/// only narrows what it may do, and needs no confirmation.
+/// only narrows what it may do, and needs no confirmation. `sha256` is the
+/// hash `note_read` gave of what the person read: if the file changed since
+/// (an assistant allowed to change draft notes may have), nothing is marked.
 #[tauri::command]
-pub async fn note_mark_reviewed(path: String) -> Result<(), String> {
+pub async fn note_mark_reviewed(path: String, sha256: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         let f = inside(Path::new(&places().notes), &path)?;
-        if f.extension().is_none_or(|e| e != "md") {
-            return Err("not a note".into());
-        }
-        let before = read_text(&f)?;
-        let after = reviewed(&before).ok_or("this note is not a draft")?;
-        settings::write_atomic(&f, &after)
+        mark_reviewed(&f, &sha256)
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+fn mark_reviewed(f: &Path, sha256: &str) -> Result<(), String> {
+    if f.extension().is_none_or(|e| e != "md") {
+        return Err("not a note".into());
+    }
+    let changed =
+        || "the note changed after you read it; nothing was marked. Read it again".to_string();
+    let bytes = read_whole(f)?;
+    if !columbus_shared::proof::same(&columbus_shared::canon::sha256_hex(&bytes), sha256) {
+        return Err(changed());
+    }
+    let before = String::from_utf8(bytes).map_err(|_| "not a text file".to_string())?;
+    let after = reviewed(&before).ok_or("this note is not a draft")?;
+    // Once more just before writing: still the note the person read.
+    if read_whole(f).ok().as_deref() != Some(before.as_bytes()) {
+        return Err(changed());
+    }
+    settings::write_atomic(f, &after)
 }
 
 /// The organization's context pack: its entries, read only here.
@@ -1022,8 +1131,49 @@ mod tests {
             reviewed(t).unwrap(),
             "---\nid: roads.routes\nstatus: reviewed\nowner: me\n---\n\nstatus: draft in the body\n"
         );
+        // A comment and Windows line endings stay as they were.
+        assert_eq!(
+            reviewed("---\r\nstatus:  draft   # set reviewed\r\n---\r\nx\r\n").unwrap(),
+            "---\r\nstatus:  reviewed   # set reviewed\r\n---\r\nx\r\n"
+        );
         assert!(reviewed("---\nstatus: reviewed\n---\n").is_none());
+        assert!(reviewed("---\nstatus: drafty\n---\n").is_none());
+        assert!(reviewed("---\ntitle: x\n---\nstatus: draft\n").is_none());
         assert!(reviewed("no front matter\nstatus: draft\n").is_none());
+    }
+
+    #[test]
+    fn marking_reviewed_needs_the_note_the_person_read() {
+        let d = std::env::temp_dir().join(format!("columbus-review-test-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let f = d.join("n.md");
+        let text = "---\nstatus: draft\n---\n\nbody\n";
+        std::fs::write(&f, text).unwrap();
+        let seen = columbus_shared::canon::sha256_hex(text.as_bytes());
+        // Changed after it was read: refused, untouched.
+        std::fs::write(&f, "---\nstatus: draft\n---\n\nother body\n").unwrap();
+        assert!(mark_reviewed(&f, &seen).unwrap_err().contains("changed"));
+        assert!(std::fs::read_to_string(&f)
+            .unwrap()
+            .contains("status: draft"));
+        // As read: marked.
+        std::fs::write(&f, text).unwrap();
+        mark_reviewed(&f, &seen).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&f).unwrap(),
+            "---\nstatus: reviewed\n---\n\nbody\n"
+        );
+        // Larger than can be shown whole: refused, never cut short.
+        let big = format!(
+            "---\nstatus: draft\n---\n{}",
+            "x".repeat(MAX_TEXT as usize + 10)
+        );
+        std::fs::write(&f, &big).unwrap();
+        let h = columbus_shared::canon::sha256_hex(big.as_bytes());
+        assert!(mark_reviewed(&f, &h).unwrap_err().contains("too large"));
+        assert_eq!(std::fs::read_to_string(&f).unwrap().len(), big.len());
+        assert!(read_text(&f).is_err());
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
@@ -1050,6 +1200,37 @@ mod tests {
         assert!(!tail.is_empty() && tail.len() < 50);
         assert_eq!(tail.last().unwrap()["tool"], "t49");
         assert_eq!(audit_recent(&d, 3).len(), 3);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_large_month_shows_its_newest_lines_numbered_as_in_the_file() {
+        let d = std::env::temp_dir().join(format!("columbus-audit-big-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let f = d.join("2026-11.jsonl");
+        let line = |i: usize| format!("{{\"tool\":\"t{i}\",\"pad\":\"{}\"}}\n", "x".repeat(1000));
+        let n = (MAX_AUDIT_BYTES as usize / 1000) + 2000;
+        let mut text = String::with_capacity(n * 1030);
+        for i in 1..=n {
+            text.push_str(&line(i));
+        }
+        std::fs::write(&f, &text).unwrap();
+        let (lines, skipped) = audit_lines(&f);
+        assert!(skipped.bytes > 0 && skipped.lines > 0);
+        let last = lines.last().unwrap();
+        assert_eq!(last["tool"], format!("t{n}"));
+        assert_eq!(last["line"], n);
+        // Numbers match the file, from the first line shown.
+        let first = &lines[0];
+        let k = first["line"].as_u64().unwrap() as usize;
+        assert_eq!(first["tool"], format!("t{k}"));
+        assert_eq!(skipped.lines, k - 1);
+        assert_eq!(lines.len(), n - skipped.lines);
+        // A small month: everything, nothing skipped.
+        std::fs::write(&f, line(1) + &line(2)).unwrap();
+        let (lines, skipped) = audit_lines(&f);
+        assert_eq!((lines.len(), skipped.lines, skipped.bytes), (2, 0, 0));
+        assert_eq!(lines[1]["line"], 2);
         let _ = std::fs::remove_dir_all(&d);
     }
 

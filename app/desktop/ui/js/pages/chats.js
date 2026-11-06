@@ -49,8 +49,10 @@ export function recent(n) {
   return out.slice(0, n);
 }
 
+// The app's own chat is known by the session id its start returned, never
+// by the name a client gives itself (any client could call itself so).
 function otherSessions() {
-  return store.sessions.filter((s) => s.session !== live.session && s.client !== "Columbus app");
+  return store.sessions.filter((s) => s.session !== live.session);
 }
 
 let refreshFns = null;

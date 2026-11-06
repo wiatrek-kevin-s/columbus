@@ -201,21 +201,29 @@ fn ask_for_window(port: u16) -> Result<(), String> {
     }
 }
 
-/// The main window's pages: the app's own files only, and the local pages
-/// of sessions it was given a link to (`allow_frame`), which it shows in a
-/// sandboxed frame. Navigation events for frames arrive here too on macOS
+/// The main window's pages: the app's own files only, and the `/embed`
+/// page of sessions it was given a link to (`allow_frame`), which it shows
+/// in a sandboxed frame. Navigation events for frames arrive here too on macOS
 /// and Linux; the frame cannot navigate the window itself (its sandbox has
 /// no top navigation), and the window's own script never does.
 fn main_page(app: &AppHandle, url: &tauri::Url) -> bool {
+    let ports = app
+        .try_state::<Frames>()
+        .map(|f| f.0.lock().expect("frames").clone())
+        .unwrap_or_default();
+    page_allowed(url, &ports)
+}
+
+/// The rule of [`main_page`], given the ports of sessions that handed the
+/// app a link.
+fn page_allowed(url: &tauri::Url, ports: &std::collections::HashSet<u16>) -> bool {
     if app_page(url) || url.as_str() == "about:blank" {
         return true;
     }
     url.scheme() == "http"
         && url.host_str() == Some("127.0.0.1")
-        && url.port().is_some_and(|p| {
-            app.try_state::<Frames>()
-                .is_some_and(|f| f.0.lock().expect("frames").contains(&p))
-        })
+        && url.path() == "/embed"
+        && url.port().is_some_and(|p| ports.contains(&p))
 }
 
 /// Ports of sessions whose page the main window may show in its frame.
@@ -231,12 +239,44 @@ pub(crate) fn allow_frame(app: &AppHandle, port: u16) {
 /// The main window: 1280 x 800, at least 1024 x 680 (design 4.4).
 fn main_window(app: &AppHandle) -> tauri::Result<tauri::WebviewWindow> {
     let handle = app.clone();
-    WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+    #[allow(unused_mut)]
+    let mut page = "index.html".to_string();
+    // Tests only (debug builds): show a page of the test's own in the
+    // window's frame, as a session's page would be, to check that a framed
+    // page cannot reach the app (e2e/frame_ipc.py).
+    #[cfg(debug_assertions)]
+    if let Some(u) = std::env::var("COLUMBUS_APP_TEST_FRAME")
+        .ok()
+        .and_then(|u| Url::parse(&u).ok())
+        .filter(|u| {
+            u.scheme() == "http" && u.host_str() == Some("127.0.0.1") && u.path() == "/embed"
+        })
+    {
+        if let Some(port) = u.port() {
+            allow_frame(app, port);
+            let q: String = url_escape(u.as_str());
+            page = format!("index.html?test-frame={q}");
+        }
+    }
+    WebviewWindowBuilder::new(app, "main", WebviewUrl::App(page.into()))
         .on_navigation(move |u| main_page(&handle, u))
         .title("Columbus")
         .inner_size(1280.0, 800.0)
         .min_inner_size(1024.0, 680.0)
         .build()
+}
+
+/// A URL as one query value (tests only).
+#[cfg(debug_assertions)]
+fn url_escape(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (b as char).to_string()
+            }
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
 }
 
 /// Open (or bring forward) one of the classic windows: today's session
@@ -492,4 +532,72 @@ fn main() {
                 let _ = std::fs::remove_file(live_dir().join("app.json"));
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_main_window_goes_only_to_its_pages_and_the_sessions_embed_page() {
+        let ports: std::collections::HashSet<u16> = [40123].into_iter().collect();
+        let ok = |u: &str| page_allowed(&Url::parse(u).unwrap(), &ports);
+        assert!(ok("tauri://localhost/index.html"));
+        assert!(ok("http://tauri.localhost/index.html"));
+        assert!(ok("http://127.0.0.1:40123/embed#t=abc"));
+        assert!(!ok("http://127.0.0.1:40123/#t=abc"), "the approvals page");
+        assert!(!ok("http://127.0.0.1:40123/embed/x"));
+        assert!(
+            !ok("http://127.0.0.1:40999/embed#t=abc"),
+            "a session that gave no link"
+        );
+        assert!(!ok("http://localhost:40123/embed"));
+        assert!(!ok("https://example.org/embed"));
+        assert!(!ok("http://evil.localhost/"));
+    }
+
+    /// No capability names a remote origin, so no page other than the
+    /// app's own (the companion page in the main window's frame included)
+    /// can call the app's commands.
+    #[test]
+    fn no_capability_reaches_remote_pages() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("capabilities");
+        let mut seen = 0;
+        for e in std::fs::read_dir(&dir).unwrap().flatten() {
+            let text = std::fs::read_to_string(e.path()).unwrap();
+            let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+            assert!(
+                v.get("remote").is_none(),
+                "{} has a remote entry",
+                e.path().display()
+            );
+            assert!(
+                !text.contains("\"urls\""),
+                "{} names URLs",
+                e.path().display()
+            );
+            let windows = v["windows"].as_array().unwrap();
+            assert!(
+                !windows
+                    .iter()
+                    .any(|w| w == "*" || w.as_str().is_some_and(|w| w.starts_with("session-"))),
+                "{}: {windows:?}",
+                e.path().display()
+            );
+            assert!(v.get("webviews").is_none());
+            seen += 1;
+        }
+        assert!(seen >= 3);
+        // And the frame is limited by the window's own policy too.
+        let conf: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        let csp = conf["app"]["security"]["csp"].as_str().unwrap();
+        assert!(csp.contains("frame-src http://127.0.0.1:*/embed;"), "{csp}");
+        assert!(csp.contains("script-src 'self';"), "{csp}");
+        assert!(conf["app"]
+            .get("security")
+            .unwrap()
+            .get("dangerousDisableAssetCspModification")
+            .is_none());
+    }
 }

@@ -498,6 +498,19 @@ async fn send_to(
     key: Option<&str>,
     origin: Option<&str>,
 ) -> (u16, Value) {
+    send_as(port, path, path, body, key, origin).await
+}
+
+/// As `send_to`, with the proof made for `signed_for` (another endpoint, to
+/// check a proof is good for its own path only).
+async fn send_as(
+    port: u16,
+    path: &str,
+    signed_for: &str,
+    body: &Value,
+    key: Option<&str>,
+    origin: Option<&str>,
+) -> (u16, Value) {
     use columbus_shared::proof;
     let http = reqwest::Client::new();
     let base = format!("http://127.0.0.1:{port}");
@@ -526,11 +539,7 @@ async fn send_to(
         // The session proves it holds the key before anything is sent.
         let want = proof::prove(k, proof::SERVER, &[mine.as_bytes()]);
         assert!(proof::same(h["proof"].as_str().unwrap(), &want));
-        let sig = proof::prove(
-            k,
-            proof::APP,
-            &[challenge.as_bytes(), proof::body_hash(&bytes).as_bytes()],
-        );
+        let sig = proof::app_proof(k, "POST", signed_for, &challenge, &bytes);
         req = req.header("X-Columbus-Test", format!("{challenge}.{sig}"));
     }
     if let Some(o) = origin {
@@ -647,11 +656,7 @@ async fn the_settings_window_can_test_a_connection_before_saving_it() {
             .unwrap();
         let ch = h["challenge"].as_str().unwrap();
         let signed = serde_json::to_vec(&good).unwrap();
-        let sig = proof::prove(
-            &key,
-            proof::APP,
-            &[ch.as_bytes(), proof::body_hash(&signed).as_bytes()],
-        );
+        let sig = proof::app_proof(&key, "POST", "/api/test-connection", ch, &signed);
         let other =
             serde_json::to_vec(&json!({"connection": spec("new", &gpkg, "roads*")})).unwrap();
         let post = |body: Vec<u8>| {
@@ -748,7 +753,7 @@ async fn the_app_gets_view_links_and_waiting_requests_over_the_signed_channel() 
     let (code, v) = send_to(port, "/api/app-view", &json!({}), k, None).await;
     assert_eq!(code, 200, "{v}");
     let url = v["url"].as_str().unwrap();
-    let token = url.strip_prefix(&format!("{own}/#t=")).unwrap();
+    let token = url.strip_prefix(&format!("{own}/embed#t=")).unwrap();
     assert_eq!(token.len(), 64, "{url}");
     let r = reqwest::Client::new()
         .post(format!("{own}/api/session"))
@@ -767,14 +772,42 @@ async fn the_app_gets_view_links_and_waiting_requests_over_the_signed_channel() 
     assert_eq!(v["pending"], json!([]), "{v}");
     assert_eq!(v["opened"], json!(false), "{v}");
 
+    // A proof is good for the endpoint it was made for only.
+    assert_eq!(
+        send_as(
+            port,
+            "/api/app-view",
+            "/api/app-approvals",
+            &json!({}),
+            k,
+            None
+        )
+        .await
+        .0,
+        403
+    );
+    assert_eq!(
+        send_as(
+            port,
+            "/api/app-approvals",
+            "/api/test-connection",
+            &json!({}),
+            k,
+            None
+        )
+        .await
+        .0,
+        403
+    );
     // Without the key's proof, or from a web page (this one included): refused.
     for path in ["/api/app-view", "/api/app-approvals"] {
         assert_eq!(send_to(port, path, &json!({}), None, None).await.0, 403);
         assert_eq!(send_to(port, path, &json!({}), k, Some(&own)).await.0, 403);
     }
 
-    // The window may be framed by the app's own pages only.
-    let r = reqwest::get(format!("{own}/")).await.unwrap();
+    // Only the /embed copy may be framed, by the app's own pages only; the
+    // page an approve link opens (/) and everything else refuse any frame.
+    let r = reqwest::get(format!("{own}/embed")).await.unwrap();
     let csp = r.headers()["content-security-policy"]
         .to_str()
         .unwrap()
@@ -786,10 +819,12 @@ async fn the_app_gets_view_links_and_waiting_requests_over_the_signed_channel() 
         "{csp}"
     );
     assert!(r.headers().get("x-frame-options").is_none());
-    // Its data is not: every API answer still refuses any frame.
-    let r = reqwest::get(format!("{own}/api/state")).await.unwrap();
-    assert_eq!(r.headers()["x-frame-options"], "DENY");
-
+    for path in ["/", "/api/state"] {
+        let r = reqwest::get(format!("{own}{path}")).await.unwrap();
+        assert_eq!(r.headers()["x-frame-options"], "DENY", "{path}");
+        let csp = r.headers()["content-security-policy"].to_str().unwrap();
+        assert!(csp.contains("frame-ancestors 'none'"), "{path}: {csp}");
+    }
     // Each audit line names the session that wrote it.
     let audit = audit_text(&root);
     let session = live["session"].as_str().unwrap();
