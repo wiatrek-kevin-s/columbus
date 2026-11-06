@@ -96,6 +96,12 @@ pub enum Event {
         summary: String,
         fails: u32,
         warns: u32,
+        /// The result's provenance record, when it made data.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        provenance: Option<String>,
+        /// The layer or file it made, as a workspace handle.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        handle: Option<String>,
     },
     /// The session's server asks the person; answer with [`Answer`].
     /// `summary` is the server's own description; `code`, when present, was
@@ -479,11 +485,11 @@ impl Chat {
                     name: name.clone(),
                     input: input.clone(),
                 });
-                let (text, is_error, summary, fails, warns) = tokio::select! {
+                let (text, is_error, summary, fails, warns, made) = tokio::select! {
                     r = self.call_tool(&name, input) => r,
                     _ = cancel.cancelled() => (
                         "Stopped by the person while this was running.".to_string(),
-                        true, "stopped".to_string(), 0, 0,
+                        true, "stopped".to_string(), 0, 0, Made::default(),
                     ),
                 };
                 self.ui.event(Event::ToolFinished {
@@ -493,6 +499,8 @@ impl Chat {
                     summary,
                     fails,
                     warns,
+                    provenance: made.provenance,
+                    handle: made.handle,
                 });
                 results.push(tool_result(&id, &text, is_error));
             }
@@ -566,7 +574,7 @@ impl Chat {
         }
     }
 
-    async fn call_tool(&self, name: &str, input: Value) -> (String, bool, String, u32, u32) {
+    async fn call_tool(&self, name: &str, input: Value) -> (String, bool, String, u32, u32, Made) {
         let mut p = CallToolRequestParams::new(name.to_string());
         if let Value::Object(m) = input {
             p = p.with_arguments(m);
@@ -593,11 +601,16 @@ impl Chat {
                 } else {
                     result_summary(r.structured_content.as_ref())
                 };
-                (cut(&text), is_error, summary, fails, warns)
+                let made = if is_error {
+                    Made::default()
+                } else {
+                    made(r.structured_content.as_ref())
+                };
+                (cut(&text), is_error, summary, fails, warns, made)
             }
             Err(e) => {
                 let t = format!("the tool call failed: {e}");
-                (t.clone(), true, first_line(&t, 160), 0, 0)
+                (t.clone(), true, first_line(&t, 160), 0, 0, Made::default())
             }
         }
     }
@@ -661,6 +674,38 @@ fn count_checks(v: &Value) -> (u32, u32) {
         }
     }
     c
+}
+
+/// What a result made, for the chat's provenance link.
+#[derive(Debug, Default)]
+struct Made {
+    provenance: Option<String>,
+    handle: Option<String>,
+}
+
+/// The provenance record and layer a result names, if any. Plain ids only:
+/// anything else is ignored.
+fn made(v: Option<&Value>) -> Made {
+    let plain = |s: &str| {
+        !s.is_empty()
+            && s.len() <= 200
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || "_-./:".contains(c))
+    };
+    let Some(v) = v else {
+        return Made::default();
+    };
+    Made {
+        provenance: v["provenance"]
+            .as_str()
+            .filter(|s| plain(s))
+            .map(String::from),
+        handle: v["result"]["layer"]["handle"]
+            .as_str()
+            .or(v["result"]["handle"].as_str())
+            .filter(|s| plain(s))
+            .map(String::from),
+    }
 }
 
 /// A few plain words about a result: rows, the layer made, the status.

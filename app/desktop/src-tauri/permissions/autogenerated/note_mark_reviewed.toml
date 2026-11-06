@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-note-mark-reviewed"
+description = "Enables the note_mark_reviewed command without any pre-configured scope."
+commands.allow = ["note_mark_reviewed"]
+
+[[permission]]
+identifier = "deny-note-mark-reviewed"
+description = "Denies the note_mark_reviewed command without any pre-configured scope."
+commands.deny = ["note_mark_reviewed"]

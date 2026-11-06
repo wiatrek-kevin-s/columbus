@@ -1268,9 +1268,15 @@ impl Gateway {
             return;
         }
         let p = &self.state.paths;
+        // Where this session keeps what the person's app shows (folders
+        // only, no secrets): its audit log, workspaces, notes and pack.
         let settings = json!({
             "policy": p.policy.display().to_string(),
             "connections": p.connections.display().to_string(),
+            "audit": p.audit.display().to_string(),
+            "workspaces": p.workspaces.display().to_string(),
+            "notes": crate::notes::notes_dir(p).display().to_string(),
+            "context": p.context.display().to_string(),
         });
         if let Err(e) = self.state.page.start_live(settings).await {
             tracing::warn!("companion window unavailable: {e}");
@@ -1290,6 +1296,7 @@ impl Gateway {
     ) -> Result<(), String> {
         rec.user = self.state.user.clone();
         rec.client = client_name(ctx);
+        rec.session = Some(self.state.session.clone());
         self.state
             .audit
             .append(&rec)

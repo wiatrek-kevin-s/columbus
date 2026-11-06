@@ -1,12 +1,16 @@
-"""The chat window, end to end on Linux through WebDriver (tauri-driver and
-WebKitWebDriver, under xvfb and a D-Bus session).
+"""The app's own chat, in the main window, end to end on Linux through
+WebDriver (tauri-driver and WebKitWebDriver, under xvfb and a D-Bus
+session).
 
 A stand-in for the AI service plays a scripted conversation: whoami, a
-query, then an export of the layer the query made. The test opens the chat
-from the session list, sends a message, waits for the approval prompt the
-server raises for the export, allows it after its one-second guard, and
-checks the export landed and the reply was shown. A debug build of the app
-reads the API key and the service address from the environment.
+query, then an export of the layer the query made. The test opens a new
+chat from the main window, sends a message, waits for the approval prompt
+the server raises for the export, allows it after its one-second guard,
+and checks the export landed and the reply was shown; then a script
+(declined, its code in its own box) and a stop while a prompt waits. The
+chat is saved: it is listed and found by its content, and its transcript
+reads back. A debug build of the app reads the API key and the service
+address from the environment.
 
     dbus-run-session -- xvfb-run -a python app/desktop/e2e/chat.py \\
         target/debug/columbus-mcp app/desktop/src-tauri/target/debug/columbus-desktop
@@ -99,7 +103,8 @@ def main():
                COLUMBUS_WORKSPACES=str(root / "ws"), COLUMBUS_AUDIT_DIR=str(root / "audit"),
                COLUMBUS_LIVE_DIR=str(root / "live"),
                COLUMBUS_WORKER=str(REPO / "workers/python/columbus_worker.py"), COLUMBUS_PYTHON=sys.executable,
-               COLUMBUS_APPROVALS_BROWSER="none", XDG_CONFIG_HOME=str(root / "config"))
+               COLUMBUS_APPROVALS_BROWSER="none", XDG_CONFIG_HOME=str(root / "config"),
+               XDG_DATA_HOME=str(root / "data"), COLUMBUS_UI_DIR=str(REPO / "app/ui/dist"))
     driver_proc = subprocess.Popen(["tauri-driver"], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     time.sleep(2)
     opts = webdriver.common.options.ArgOptions()
@@ -108,14 +113,12 @@ def main():
     d = webdriver.Remote("http://127.0.0.1:4444", options=opts)
     try:
         wait = WebDriverWait(d, 60)
-        wait.until(EC.element_to_be_clickable((By.ID, "chat"))).click()
-        wait.until(lambda drv: len(drv.window_handles) > 1)
-        main = d.current_window_handle
-        d.switch_to.window([h for h in d.window_handles if h != main][0])
-        box = wait.until(EC.presence_of_element_located((By.ID, "text")))
-        # With a key and a server, settings stay closed.
-        wait.until(lambda drv: drv.execute_script("return document.getElementById('key-state').textContent").strip() != "")
-        assert drv_hidden(d, "settings"), "settings open although a key and the server are set"
+        wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "a.btn.primary[href='#/chats/new']"))).click()
+        box = wait.until(EC.visibility_of_element_located((By.ID, "text")))
+        # With a key and the server found, the chat says nothing about setup.
+        wait.until(lambda drv: drv.execute_script("return document.querySelector('.chat-empty') !== null"))
+        time.sleep(1)
+        assert "No AI is connected" not in d.find_element(By.ID, "log").text
         box.send_keys("Export the tracts to my outbox.")
         d.find_element(By.ID, "send").click()
 
@@ -132,7 +135,10 @@ def main():
         d.save_screenshot(str(OUT / "chat-done.png"))
         logtext = d.find_element(By.ID, "log").text
         assert "Allowed once." in logtext, logtext
-        assert 'Querying "tracts" on "tiger"' in logtext, logtext
+        # Tool steps fold into one line per turn; the steps are inside.
+        steps = d.execute_script("return document.getElementById('log').textContent")
+        assert 'Querying "tracts" on "tiger"' in steps, steps
+        assert d.find_elements(By.CSS_SELECTOR, "#log details.steps"), "steps fold into a line"
         assert (root / "outbox" / "tracts.gpkg").exists(), "the export happened"
         # The model never saw the key in a message, and only Columbus tools.
         key, first = SEEN[0]
@@ -174,10 +180,42 @@ def main():
         d.find_element(By.ID, "stop").click()
         WebDriverWait(d, 20).until(lambda drv: "No longer waiting" in card.text)
         assert not card.find_elements(By.TAG_NAME, "button"), "no live buttons after Stop"
-        # The chat's own session is in the app's list, marked as in use.
-        d.switch_to.window(main)
-        WebDriverWait(d, 20).until(lambda drv: "Used just now" in drv.find_element(By.ID, "sessions").text)
-        d.save_screenshot(str(OUT / "sessions.png"))
+        # The output panel shows the chat's own session's page.
+        frame = WebDriverWait(d, 40).until(EC.presence_of_element_located((By.CSS_SELECTOR, "#chatview .outpanel iframe")))
+        d.switch_to.frame(frame)
+        WebDriverWait(d, 40).until(lambda drv: "tracts" in drv.execute_script("return document.body.textContent"))
+        d.switch_to.default_content()
+        d.save_screenshot(str(OUT / "chat-panel.png"))
+
+        # The chat is saved: listed under Chats, found by what was said.
+        d.execute_script("location.hash = '#/chats'")
+        WebDriverWait(d, 20).until(lambda drv: "Export the tracts to my outbox." in drv.execute_script("return document.querySelector('main').textContent"))
+        search = d.find_element(By.CSS_SELECTOR, "input[aria-label='Search chats']")
+        search.send_keys("Exported 2 tracts")
+        WebDriverWait(d, 20).until(lambda drv: "Exported 2 tracts" in drv.execute_script("return document.querySelector('main').textContent"))
+        saved = list((root / "data").rglob("chats/*.jsonl"))
+        assert len(saved) == 1, saved
+        lines = [json.loads(x) for x in saved[0].read_text().splitlines()]
+        kinds = [x["kind"] for x in lines]
+        assert kinds[0] == "meta" and "you" in kinds and "approval" in kinds and "answer" in kinds, kinds
+        assert not any("sk-ant" in json.dumps(x) for x in lines), "the key is never in a transcript"
+        # A new chat ends this one; the saved one reads back, and cannot be continued.
+        d.execute_script("location.hash = '#/chats/new'")
+        WebDriverWait(d, 10).until(EC.element_to_be_clickable((By.ID, "new"))).click()
+        try:
+            WebDriverWait(d, 30).until(lambda drv: drv.execute_script("return document.getElementById('chat-title').textContent") == "New chat")
+        except Exception:
+            d.save_screenshot(str(OUT / "chat-new-failed.png"))
+            raise SystemExit("New chat did not start a new chat: " + d.execute_script("return location.hash + ' | ' + document.getElementById('chat-title').textContent"))
+        cid = saved[0].stem
+        d.execute_script(f"location.hash = '#/chats/c/{cid}'")
+        try:
+            WebDriverWait(d, 20).until(lambda drv: "Exported 2 tracts" in drv.find_element(By.ID, "saved-log").text)
+        except Exception:
+            d.save_screenshot(str(OUT / "chat-saved-failed.png"))
+            raise SystemExit("the saved chat did not read back: " + d.execute_script("return location.hash + ' | ' + document.querySelector('main').textContent.slice(0, 400)"))
+        assert "cannot continue" in d.find_element(By.ID, "saved-log").text
+        d.save_screenshot(str(OUT / "chat-saved.png"))
         print("desktop chat e2e: ok")
     finally:
         d.quit()

@@ -91,6 +91,7 @@ impl Companion {
         let _ = s.audit.append(&columbus_shared::audit::AuditRecord {
             user: s.user.clone(),
             client: "columbus-app (settings)".into(),
+            session: Some(s.session.clone()),
             tool: "settings.test_connection".into(),
             connection: conn,
             decision: decision.into(),

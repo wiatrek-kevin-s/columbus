@@ -94,6 +94,7 @@ async fn start_with(
                 .env("COLUMBUS_WORKSPACES", root.join("workspaces"))
                 .env("COLUMBUS_AUDIT_DIR", root.join("audit"))
                 .env("COLUMBUS_LIVE_DIR", root.join("live"))
+                .env("COLUMBUS_UI_DIR", root.join("ui"))
                 .env("COLUMBUS_WORKER", &worker)
                 .env("COLUMBUS_PYTHON", &py)
                 .env("COLUMBUS_LOG", "warn")
@@ -487,6 +488,29 @@ async fn announced(root: &Path) -> (u16, String) {
 /// Ask for a challenge, check the session's proof, then send `body` with
 /// the app's proof, as the Columbus app does. `key` None sends no proof.
 async fn send(port: u16, body: &Value, key: Option<&str>, origin: Option<&str>) -> (u16, Value) {
+    send_to(port, "/api/test-connection", body, key, origin).await
+}
+
+async fn send_to(
+    port: u16,
+    path: &str,
+    body: &Value,
+    key: Option<&str>,
+    origin: Option<&str>,
+) -> (u16, Value) {
+    send_as(port, path, path, body, key, origin).await
+}
+
+/// As `send_to`, with the proof made for `signed_for` (another endpoint, to
+/// check a proof is good for its own path only).
+async fn send_as(
+    port: u16,
+    path: &str,
+    signed_for: &str,
+    body: &Value,
+    key: Option<&str>,
+    origin: Option<&str>,
+) -> (u16, Value) {
     use columbus_shared::proof;
     let http = reqwest::Client::new();
     let base = format!("http://127.0.0.1:{port}");
@@ -508,18 +532,14 @@ async fn send(port: u16, body: &Value, key: Option<&str>, origin: Option<&str>) 
     let challenge = h["challenge"].as_str().unwrap().to_string();
     let bytes = serde_json::to_vec(body).unwrap();
     let mut req = http
-        .post(format!("{base}/api/test-connection"))
+        .post(format!("{base}{path}"))
         .header("Content-Type", "application/json")
         .body(bytes.clone());
     if let Some(k) = key {
         // The session proves it holds the key before anything is sent.
         let want = proof::prove(k, proof::SERVER, &[mine.as_bytes()]);
         assert!(proof::same(h["proof"].as_str().unwrap(), &want));
-        let sig = proof::prove(
-            k,
-            proof::APP,
-            &[challenge.as_bytes(), proof::body_hash(&bytes).as_bytes()],
-        );
+        let sig = proof::app_proof(k, "POST", signed_for, &challenge, &bytes);
         req = req.header("X-Columbus-Test", format!("{challenge}.{sig}"));
     }
     if let Some(o) = origin {
@@ -636,11 +656,7 @@ async fn the_settings_window_can_test_a_connection_before_saving_it() {
             .unwrap();
         let ch = h["challenge"].as_str().unwrap();
         let signed = serde_json::to_vec(&good).unwrap();
-        let sig = proof::prove(
-            &key,
-            proof::APP,
-            &[ch.as_bytes(), proof::body_hash(&signed).as_bytes()],
-        );
+        let sig = proof::app_proof(&key, "POST", "/api/test-connection", ch, &signed);
         let other =
             serde_json::to_vec(&json!({"connection": spec("new", &gpkg, "roads*")})).unwrap();
         let post = |body: Vec<u8>| {
@@ -694,6 +710,130 @@ async fn the_settings_window_can_test_a_connection_before_saving_it() {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
     assert!(gone, "the key file outlived its session");
+}
+
+#[tokio::test]
+async fn the_app_gets_view_links_and_waiting_requests_over_the_signed_channel() {
+    let Some(py) = python() else {
+        eprintln!("skipped: needs Python with geopandas, pyogrio and shapely");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let root: PathBuf = dir.path().to_path_buf();
+    std::fs::create_dir_all(root.join("connections")).unwrap();
+    std::fs::create_dir_all(root.join("ui")).unwrap();
+    put(
+        &root.join("ui/index.html"),
+        "<!doctype html><title>window</title>",
+    );
+    put(&root.join("policy.yaml"), "connection_types: [gpkg]\n");
+    let c = start_with(&root, &py, Person::default(), true).await;
+    let _ = call(&c, "list_connections", json!({})).await;
+    let (port, key) = announced(&root).await;
+    let k = Some(key.as_str());
+    let own = format!("http://127.0.0.1:{port}");
+
+    // The live file says where this session keeps what the app shows.
+    let live: Value = std::fs::read_dir(root.join("live"))
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .find(|p| {
+            p.extension().and_then(|x| x.to_str()) == Some("json") && !p.ends_with("app.json")
+        })
+        .map(|p| serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap())
+        .unwrap();
+    assert_eq!(
+        live["settings"]["audit"],
+        json!(root.join("audit").display().to_string())
+    );
+    assert!(live["settings"]["notes"].is_string(), "{live}");
+
+    // A view link, handed to the app itself.
+    let (code, v) = send_to(port, "/api/app-view", &json!({}), k, None).await;
+    assert_eq!(code, 200, "{v}");
+    let url = v["url"].as_str().unwrap();
+    let token = url.strip_prefix(&format!("{own}/embed#t=")).unwrap();
+    assert_eq!(token.len(), 64, "{url}");
+    let r = reqwest::Client::new()
+        .post(format!("{own}/api/session"))
+        .header("Origin", &own)
+        .json(&json!({"launch": token}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let s: Value = r.json().await.unwrap();
+    assert_eq!(s["scope"], json!("view"), "the app's panel can only look");
+
+    // Requests waiting: none yet, view only.
+    let (code, v) = send_to(port, "/api/app-approvals", &json!({}), k, None).await;
+    assert_eq!(code, 200, "{v}");
+    assert_eq!(v["pending"], json!([]), "{v}");
+    assert_eq!(v["opened"], json!(false), "{v}");
+
+    // A proof is good for the endpoint it was made for only.
+    assert_eq!(
+        send_as(
+            port,
+            "/api/app-view",
+            "/api/app-approvals",
+            &json!({}),
+            k,
+            None
+        )
+        .await
+        .0,
+        403
+    );
+    assert_eq!(
+        send_as(
+            port,
+            "/api/app-approvals",
+            "/api/test-connection",
+            &json!({}),
+            k,
+            None
+        )
+        .await
+        .0,
+        403
+    );
+    // Without the key's proof, or from a web page (this one included): refused.
+    for path in ["/api/app-view", "/api/app-approvals"] {
+        assert_eq!(send_to(port, path, &json!({}), None, None).await.0, 403);
+        assert_eq!(send_to(port, path, &json!({}), k, Some(&own)).await.0, 403);
+    }
+
+    // Only the /embed copy may be framed, by the app's own pages only; the
+    // page an approve link opens (/) and everything else refuse any frame.
+    let r = reqwest::get(format!("{own}/embed")).await.unwrap();
+    let csp = r.headers()["content-security-policy"]
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        csp.contains(
+            "frame-ancestors tauri://localhost http://tauri.localhost https://tauri.localhost"
+        ),
+        "{csp}"
+    );
+    assert!(r.headers().get("x-frame-options").is_none());
+    for path in ["/", "/api/state"] {
+        let r = reqwest::get(format!("{own}{path}")).await.unwrap();
+        assert_eq!(r.headers()["x-frame-options"], "DENY", "{path}");
+        let csp = r.headers()["content-security-policy"].to_str().unwrap();
+        assert!(csp.contains("frame-ancestors 'none'"), "{path}: {csp}");
+    }
+    // Each audit line names the session that wrote it.
+    let audit = audit_text(&root);
+    let session = live["session"].as_str().unwrap();
+    assert!(
+        audit.lines().any(|l| l.contains("\"list_connections\"")
+            && l.contains(&format!("\"session\":\"{session}\""))),
+        "{audit}"
+    );
+    c.cancel().await.unwrap();
 }
 
 #[tokio::test]

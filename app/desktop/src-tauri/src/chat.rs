@@ -1,14 +1,17 @@
-//! The chat window's side of the app: settings, the API key in the
-//! operating system's credential store, and one chat at a time driving its
-//! own Columbus session (see the `columbus-chat` crate).
+//! The chat's side of the app: settings, the API key in the operating
+//! system's credential store, and one chat at a time driving its own
+//! Columbus session (see the `columbus-chat` crate). The chat lives in the
+//! main window (`MAIN`); each chat's transcript is kept in the app's data
+//! folder (`chats/<id>.jsonl`) so chats can be listed and searched.
 //!
-//! Only the window labelled `chat` may call these commands
-//! (capabilities/main.json), and events go to that window only. The API key
-//! never reaches a web page: the window can set it, ask whether one is set,
-//! or clear it, but not read it.
+//! Only the main window may call these commands (capabilities/main.json),
+//! and events go to that window only. The API key never reaches a web
+//! page: the window can set it, ask whether one is set, or clear it, but
+//! not read it.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use columbus_chat::{Answer, Cancel, Chat, Config, Event, Prompt, Ui, MODELS};
@@ -16,6 +19,8 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::{oneshot, Mutex};
 
+/// The window the chat lives in.
+pub const MAIN: &str = "main";
 const KEY_SERVICE: &str = "columbus-app";
 const KEY_ACCOUNT: &str = "anthropic-api-key";
 
@@ -31,6 +36,8 @@ pub struct ChatState {
     pending: std::sync::Mutex<HashMap<u64, oneshot::Sender<Answer>>>,
     /// Prompt ids, never reused while the app runs.
     next_prompt: std::sync::atomic::AtomicU64,
+    /// The current chat's transcript file.
+    transcript: std::sync::Mutex<Option<PathBuf>>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Default)]
@@ -48,7 +55,7 @@ fn settings_path(app: &AppHandle) -> Option<PathBuf> {
         .map(|d| d.join("settings.json"))
 }
 
-fn load(app: &AppHandle) -> Settings {
+pub(crate) fn load(app: &AppHandle) -> Settings {
     settings_path(app)
         .and_then(|p| std::fs::read_to_string(p).ok())
         .and_then(|t| serde_json::from_str(&t).ok())
@@ -77,7 +84,7 @@ fn default_server() -> Option<PathBuf> {
     c.into_iter().find(|p| p.is_file())
 }
 
-fn server(s: &Settings) -> Option<PathBuf> {
+pub(crate) fn server(s: &Settings) -> Option<PathBuf> {
     s.server
         .clone()
         .filter(|p| p.is_file())
@@ -108,7 +115,7 @@ fn store() -> Result<(), String> {
     }
 }
 
-fn read_key() -> Option<String> {
+pub(crate) fn read_key() -> Option<String> {
     // Development and tests only.
     #[cfg(debug_assertions)]
     if let Ok(k) = std::env::var("COLUMBUS_APP_API_KEY") {
@@ -167,15 +174,83 @@ pub async fn chat_save_settings(
     if !MODELS.iter().any(|(m, _)| *m == model) {
         return Err("unknown model".into());
     }
+    let wanted = server.filter(|v| !v.trim().is_empty()).map(PathBuf::from);
+    let old = load(&app);
+    let chats = chats_dir(&app);
+    // The server is the program the chat starts: pointing it elsewhere is
+    // confirmed by the person at the keyboard, like any widening setting.
+    let server =
+        tauri::async_runtime::spawn_blocking(move || -> Result<Option<PathBuf>, String> {
+            let Some(w) = wanted else { return Ok(None) };
+            let w = server_ok(&w, chats.as_deref())?;
+            let now = self::server(&old).and_then(|p| p.canonicalize().ok());
+            if now.as_ref() != Some(&w) {
+                crate::settings::confirm(&format!(
+                    "let the app's chat start {} as Columbus's server",
+                    w.display()
+                ))?;
+            }
+            Ok(Some(w))
+        })
+        .await
+        .map_err(|e| e.to_string())??;
     let s = Settings {
         model: Some(model),
-        server: server.filter(|v| !v.trim().is_empty()).map(PathBuf::from),
+        server,
     };
     let p = settings_path(&app).ok_or("no settings folder")?;
     if let Some(d) = p.parent() {
         std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
     }
     std::fs::write(p, serde_json::to_vec_pretty(&s).unwrap_or_default()).map_err(|e| e.to_string())
+}
+
+/// A server the chat may start: an existing file named `columbus-mcp`
+/// (`columbus-mcp.exe` on Windows), by its full path, and not in a folder
+/// an assistant or a session writes to (workspaces, notes, chats).
+pub(crate) fn server_ok(p: &Path, chats: Option<&Path>) -> Result<PathBuf, String> {
+    let exe = if cfg!(windows) {
+        "columbus-mcp.exe"
+    } else {
+        "columbus-mcp"
+    };
+    if !p.is_absolute() {
+        return Err("give the server's full path".into());
+    }
+    let name_ok = p
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.eq_ignore_ascii_case(exe));
+    if !name_ok {
+        return Err(format!("the server is the program named {exe}"));
+    }
+    let full = p
+        .canonicalize()
+        .map_err(|_| format!("{} is not there", p.display()))?;
+    if !full.is_file() {
+        return Err(format!("{} is not a file", p.display()));
+    }
+    let full_name_ok = full
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.eq_ignore_ascii_case(exe));
+    if !full_name_ok {
+        return Err(format!("the server is the program named {exe}"));
+    }
+    let mut keep_out = crate::shell::session_folders();
+    keep_out.extend(chats.map(Path::to_path_buf));
+    for d in keep_out {
+        if let Ok(d) = d.canonicalize() {
+            if full.starts_with(&d) {
+                return Err(format!(
+                    "{} is in {}, a folder your assistant's sessions write to; use the Columbus folder you unpacked",
+                    full.display(),
+                    d.display()
+                ));
+            }
+        }
+    }
+    Ok(full)
 }
 
 #[tauri::command]
@@ -216,7 +291,8 @@ struct WindowUi {
 
 impl Ui for WindowUi {
     fn event(&self, e: Event) {
-        let _ = self.app.emit_to("chat", "chat-event", e);
+        record(&self.app, &serde_json::to_value(&e).unwrap_or_default());
+        let _ = self.app.emit_to(MAIN, "chat-event", e);
     }
     fn approve(&self, p: Prompt) -> (u64, oneshot::Receiver<Answer>) {
         let (tx, rx) = oneshot::channel();
@@ -229,22 +305,20 @@ impl Ui for WindowUi {
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
             + 1;
         // No window to ask in: decline rather than wait unseen.
-        let Some(w) = self.app.get_webview_window("chat") else {
+        let Some(w) = self.app.get_webview_window(MAIN) else {
             let _ = tx.send(Answer::Decline);
             return (id, rx);
         };
         st.pending.lock().expect("pending").insert(id, tx);
-        let _ = self.app.emit_to(
-            "chat",
-            "chat-event",
-            Event::Approval {
-                id,
-                title: p.title,
-                summary: p.summary,
-                code: p.code,
-                offer_always: p.offer_always,
-            },
-        );
+        let e = Event::Approval {
+            id,
+            title: p.title,
+            summary: p.summary,
+            code: p.code,
+            offer_always: p.offer_always,
+        };
+        record(&self.app, &serde_json::to_value(&e).unwrap_or_default());
+        let _ = self.app.emit_to(MAIN, "chat-event", e);
         let _ = w.unminimize();
         let _ = w.set_focus();
         (id, rx)
@@ -253,9 +327,9 @@ impl Ui for WindowUi {
         if let Some(st) = self.app.try_state::<ChatState>() {
             st.pending.lock().expect("pending").remove(&id);
         }
-        let _ = self
-            .app
-            .emit_to("chat", "chat-event", Event::ApprovalGone { id });
+        let e = Event::ApprovalGone { id };
+        record(&self.app, &serde_json::to_value(&e).unwrap_or_default());
+        let _ = self.app.emit_to(MAIN, "chat-event", e);
     }
 }
 
@@ -263,6 +337,8 @@ impl Ui for WindowUi {
 pub struct Started {
     session: Option<String>,
     tools: usize,
+    /// The transcript's id, under which the chat is listed.
+    chat: Option<String>,
 }
 
 /// Start a chat (its own Columbus session) if none is running.
@@ -275,12 +351,18 @@ pub async fn chat_start(app: AppHandle, st: State<'_, ChatState>) -> Result<Star
         return Ok(Started {
             session: st.session.lock().expect("session").clone(),
             tools: 0,
+            chat: current_id(&st),
         });
     }
     let s = load(&app);
     let srv = server(&s).ok_or(
         "Columbus's server was not found. Unpack the Columbus folder (see the install guide), or set its place in Settings.",
     )?;
+    // Whatever wrote the settings file, only a Columbus server is started.
+    let chats = chats_dir(&app);
+    let srv = tauri::async_runtime::spawn_blocking(move || server_ok(&srv, chats.as_deref()))
+        .await
+        .map_err(|e| e.to_string())??;
     let key = tauri::async_runtime::spawn_blocking(read_key)
         .await
         .ok()
@@ -305,9 +387,12 @@ pub async fn chat_start(app: AppHandle, st: State<'_, ChatState>) -> Result<Star
     let chat = Chat::start(cfg, Arc::new(WindowUi { app: app.clone() }), cancel)
         .await
         .map_err(|e| e.to_string())?;
+    let session = chat.session().map(String::from);
+    let id = new_transcript(&app, &st, session.as_deref(), &cfg_model(&app));
     let started = Started {
-        session: chat.session().map(String::from),
+        session,
         tools: chat.tool_count(),
+        chat: id,
     };
     *st.session.lock().expect("session") = started.session.clone();
     *slot = Some(Arc::new(Mutex::new(chat)));
@@ -331,11 +416,12 @@ pub async fn chat_send(
         .await
         .clone()
         .ok_or("the chat has not started")?;
+    record(&app, &serde_json::json!({"kind": "you", "text": text}));
     let cancel = st.cancel.lock().expect("cancel").clone();
     tauri::async_runtime::spawn(async move {
         let Ok(mut c) = chat.try_lock() else {
             let _ = app.emit_to(
-                "chat",
+                MAIN,
                 "chat-event",
                 Event::Error {
                     text: "a reply is still in progress".into(),
@@ -361,12 +447,14 @@ fn stop(app: &AppHandle, st: &ChatState) {
     let drained: Vec<_> = st.pending.lock().expect("pending").drain().collect();
     for (id, tx) in drained {
         let _ = tx.send(Answer::Decline);
-        let _ = app.emit_to("chat", "chat-event", Event::ApprovalGone { id });
+        record(app, &serde_json::json!({"kind": "approval_gone", "id": id}));
+        let _ = app.emit_to(MAIN, "chat-event", Event::ApprovalGone { id });
     }
 }
 
 #[tauri::command]
 pub async fn chat_answer(
+    app: AppHandle,
     st: State<'_, ChatState>,
     id: u64,
     decision: String,
@@ -383,6 +471,15 @@ pub async fn chat_answer(
         .remove(&id)
         .ok_or("that request is no longer waiting")?;
     let _ = tx.send(answer);
+    let decided = match answer {
+        Answer::AllowOnce => "allow_once",
+        Answer::AlwaysThisSession => "always_this_session",
+        Answer::Decline => "decline",
+    };
+    record(
+        &app,
+        &serde_json::json!({"kind": "answer", "id": id, "decision": decided}),
+    );
     Ok(())
 }
 
@@ -393,7 +490,7 @@ pub async fn chat_end(app: AppHandle, st: State<'_, ChatState>) -> Result<(), St
     Ok(())
 }
 
-/// End the chat when its window closes: nothing runs unseen.
+/// End the chat when the main window closes: nothing runs unseen.
 pub fn on_chat_window_closed(app: &AppHandle) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
@@ -407,13 +504,490 @@ async fn end(app: &AppHandle, st: &ChatState) {
     stop(app, st);
     let chat = st.chat.lock().await.take();
     *st.session.lock().expect("session") = None;
+    *st.transcript.lock().expect("transcript") = None;
     if let Some(c) = chat {
         // A reply still holding the chat stops at the cancel; close the
-        // session once it lets go.
-        let m = c.lock().await;
-        drop(m);
-        if let Ok(m) = Arc::try_unwrap(c) {
-            m.into_inner().close().await;
+        // session once it lets go, in the background: the chat is already
+        // ended for the window (a new one can start), and closing a
+        // session can take a while.
+        tauri::async_runtime::spawn(async move {
+            let m = c.lock().await;
+            drop(m);
+            if let Ok(m) = Arc::try_unwrap(c) {
+                m.into_inner().close().await;
+            }
+        });
+    }
+}
+
+// ---------- Transcripts ----------
+//
+// One JSON line per event, in `chats/<id>.jsonl` under the app's data
+// folder: the person's messages, the model's words, tool steps, approval
+// prompts and answers, exactly as the window showed them. Plain files the
+// person owns; deleting one deletes the chat. Nothing here is sent
+// anywhere.
+
+/// Most bytes of one transcript the app reads back (a very long chat shows
+/// its start).
+const MAX_TRANSCRIPT: u64 = 8 * 1024 * 1024;
+
+pub(crate) fn chats_dir(app: &AppHandle) -> Option<PathBuf> {
+    #[cfg(debug_assertions)]
+    if let Some(d) = std::env::var_os("COLUMBUS_APP_CHATS").filter(|v| !v.is_empty()) {
+        return Some(PathBuf::from(d));
+    }
+    app.path().app_data_dir().ok().map(|d| d.join("chats"))
+}
+
+/// A transcript id: `c` + time + random, letters, digits and `-` only.
+pub(crate) fn id_ok(id: &str) -> bool {
+    id.len() >= 8
+        && id.len() <= 64
+        && id.starts_with('c')
+        && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+}
+
+fn cfg_model(app: &AppHandle) -> String {
+    load(app).model.unwrap_or_else(|| MODELS[0].0.to_string())
+}
+
+fn current_id(st: &ChatState) -> Option<String> {
+    st.transcript
+        .lock()
+        .expect("transcript")
+        .as_ref()
+        .and_then(|p| p.file_stem())
+        .and_then(|s| s.to_str())
+        .map(String::from)
+}
+
+fn new_transcript(
+    app: &AppHandle,
+    st: &ChatState,
+    session: Option<&str>,
+    model: &str,
+) -> Option<String> {
+    let dir = chats_dir(app)?;
+    std::fs::create_dir_all(&dir).ok()?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let id = format!("c{now}-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+    let path = dir.join(format!("{id}.jsonl"));
+    *st.transcript.lock().expect("transcript") = Some(path);
+    record(
+        app,
+        &serde_json::json!({"kind": "meta", "id": id, "session": session, "model": model}),
+    );
+    Some(id)
+}
+
+/// Append one event to the current transcript, with the time. A transcript
+/// that cannot be written is skipped: the chat goes on.
+fn record(app: &AppHandle, v: &serde_json::Value) {
+    let Some(st) = app.try_state::<ChatState>() else {
+        return;
+    };
+    let Some(path) = st.transcript.lock().expect("transcript").clone() else {
+        return;
+    };
+    let mut v = v.clone();
+    if let Some(m) = v.as_object_mut() {
+        m.insert("ts".into(), serde_json::json!(now_rfc3339()));
+    }
+    let Ok(mut line) = serde_json::to_string(&v) else {
+        return;
+    };
+    line.push('\n');
+    let _ = append_plain(&path, line.as_bytes());
+}
+
+/// Append to a transcript that is a plain file (never through a link),
+/// creating it new if it is not there yet.
+fn append_plain(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let mut o = std::fs::OpenOptions::new();
+    match std::fs::symlink_metadata(path) {
+        Ok(m) if m.file_type().is_file() => {
+            o.append(true);
         }
+        Ok(_) => {
+            return Err(std::io::Error::other(
+                "a transcript that is not a plain file",
+            ))
+        }
+        Err(_) => {
+            o.write(true).create_new(true);
+        }
+    }
+    // What was said and shown may hold data: this account's alone.
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
+    o.open(path)?.write_all(bytes)
+}
+
+/// The time now as RFC 3339 in UTC (no clock crate needed).
+pub(crate) fn now_rfc3339() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let days = secs.div_euclid(86_400);
+    let rem = secs.rem_euclid(86_400);
+    // Civil from days (Howard Hinnant's algorithm).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!(
+        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
+        rem / 3600,
+        rem % 3600 / 60,
+        rem % 60
+    )
+}
+
+fn read_lines(path: &Path) -> Vec<serde_json::Value> {
+    use std::io::{BufRead, Read};
+    let Ok(f) = std::fs::File::open(path) else {
+        return vec![];
+    };
+    std::io::BufReader::new(f.take(MAX_TRANSCRIPT))
+        .lines()
+        .map_while(Result::ok)
+        .filter_map(|l| serde_json::from_str(&l).ok())
+        .collect()
+}
+
+#[derive(Serialize)]
+pub struct ChatSummary {
+    id: String,
+    title: String,
+    session: Option<String>,
+    model: Option<String>,
+    started: Option<String>,
+    updated: Option<String>,
+    messages: usize,
+    /// Projects are not built yet: every chat is unfiled.
+    project: Option<String>,
+    live: bool,
+}
+
+fn summary(id: &str, lines: &[serde_json::Value], live: bool) -> ChatSummary {
+    let meta = lines.iter().find(|l| l["kind"] == "meta");
+    let title = lines
+        .iter()
+        .rev()
+        .find(|l| l["kind"] == "title")
+        .and_then(|l| l["text"].as_str())
+        .or_else(|| {
+            lines
+                .iter()
+                .find(|l| l["kind"] == "you")
+                .and_then(|l| l["text"].as_str())
+        })
+        .map(|t| {
+            let t = t.split_whitespace().collect::<Vec<_>>().join(" ");
+            if t.chars().count() > 70 {
+                format!("{}…", t.chars().take(70).collect::<String>())
+            } else {
+                t
+            }
+        })
+        .unwrap_or_else(|| "New chat".into());
+    ChatSummary {
+        id: id.to_string(),
+        title,
+        session: meta.and_then(|m| m["session"].as_str()).map(String::from),
+        model: meta.and_then(|m| m["model"].as_str()).map(String::from),
+        started: lines
+            .first()
+            .and_then(|l| l["ts"].as_str())
+            .map(String::from),
+        updated: lines
+            .last()
+            .and_then(|l| l["ts"].as_str())
+            .map(String::from),
+        messages: lines.iter().filter(|l| l["kind"] == "you").count(),
+        project: None,
+        live,
+    }
+}
+
+/// The saved chats, newest first.
+#[tauri::command]
+pub async fn chats_list(
+    app: AppHandle,
+    st: State<'_, ChatState>,
+) -> Result<Vec<ChatSummary>, String> {
+    let current = current_id(&st);
+    let Some(dir) = chats_dir(&app) else {
+        return Ok(vec![]);
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut out = vec![];
+        for e in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let p = e.path();
+            let Some(id) = p
+                .file_name()
+                .and_then(|n| n.to_str())
+                .and_then(|n| n.strip_suffix(".jsonl"))
+                .filter(|id| id_ok(id))
+            else {
+                continue;
+            };
+            let lines = read_lines(&p);
+            if !lines.iter().any(|l| l["kind"] == "you") && current.as_deref() != Some(id) {
+                continue;
+            }
+            out.push(summary(id, &lines, current.as_deref() == Some(id)));
+        }
+        out.sort_by(|a, b| b.updated.cmp(&a.updated));
+        out
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// One saved chat, every line as the window showed it.
+#[tauri::command]
+pub async fn chat_transcript(app: AppHandle, id: String) -> Result<Vec<serde_json::Value>, String> {
+    if !id_ok(&id) {
+        return Err("not a chat".into());
+    }
+    let dir = chats_dir(&app).ok_or("no folder for chats")?;
+    tauri::async_runtime::spawn_blocking(move || read_lines(&dir.join(format!("{id}.jsonl"))))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[derive(Serialize)]
+pub struct Found {
+    id: String,
+    title: String,
+    updated: Option<String>,
+    /// A few words around the first match, as plain text.
+    snippet: String,
+}
+
+/// Search the saved chats' titles and content (what the person and the
+/// model wrote, and the tool steps), case-insensitively.
+#[tauri::command]
+pub async fn chats_search(app: AppHandle, query: String) -> Result<Vec<Found>, String> {
+    let q = query.trim().to_lowercase();
+    if q.is_empty() || q.chars().count() > 200 {
+        return Ok(vec![]);
+    }
+    let Some(dir) = chats_dir(&app) else {
+        return Ok(vec![]);
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut out = vec![];
+        for e in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let p = e.path();
+            let Some(id) = p
+                .file_name()
+                .and_then(|n| n.to_str())
+                .and_then(|n| n.strip_suffix(".jsonl"))
+                .filter(|id| id_ok(id))
+                .map(String::from)
+            else {
+                continue;
+            };
+            let lines = read_lines(&p);
+            let s = summary(&id, &lines, false);
+            let texts = std::iter::once(s.title.clone()).chain(lines.iter().filter_map(|l| {
+                ["text", "summary", "name", "title"]
+                    .iter()
+                    .find_map(|k| l[*k].as_str())
+                    .map(String::from)
+            }));
+            for t in texts {
+                if let Some(snip) = snippet(&t, &q) {
+                    out.push(Found {
+                        id: id.clone(),
+                        title: s.title.clone(),
+                        updated: s.updated.clone(),
+                        snippet: snip,
+                    });
+                    break;
+                }
+            }
+            if out.len() >= 50 {
+                break;
+            }
+        }
+        out.sort_by(|a, b| b.updated.cmp(&a.updated));
+        out
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// Where `q` (already lower case) is in `text`, compared character by
+/// character in lower case, as positions in `text`'s own characters: a
+/// character that lowercases to several (`İ`) still maps back to itself.
+fn find_folded(text: &str, q: &str) -> Option<(usize, usize)> {
+    let want: Vec<char> = q.chars().collect();
+    if want.is_empty() {
+        return None;
+    }
+    let mut lower = Vec::new();
+    let mut owner = Vec::new();
+    for (i, c) in text.chars().enumerate() {
+        for l in c.to_lowercase() {
+            lower.push(l);
+            owner.push(i);
+        }
+    }
+    let at = lower
+        .windows(want.len())
+        .position(|w| w == want.as_slice())?;
+    Some((owner[at], owner[at + want.len() - 1] + 1))
+}
+
+/// A few words around the first match of `q` in `text`, as plain text.
+fn snippet(text: &str, q: &str) -> Option<String> {
+    let (start, end) = find_folded(text, q)?;
+    let chars: Vec<char> = text.chars().collect();
+    let from = start.saturating_sub(40);
+    let to = (end + 60).min(chars.len());
+    let snip: String = chars[from..to].iter().collect();
+    Some(snip.split_whitespace().collect::<Vec<_>>().join(" "))
+}
+
+/// Rename a saved chat (a title line is added; the rest stays).
+#[tauri::command]
+pub async fn chat_rename(app: AppHandle, id: String, title: String) -> Result<(), String> {
+    let title = title.split_whitespace().collect::<Vec<_>>().join(" ");
+    if !id_ok(&id) || title.is_empty() || title.chars().count() > 120 {
+        return Err("give a title of at most 120 characters".into());
+    }
+    let dir = chats_dir(&app).ok_or("no folder for chats")?;
+    let path = dir.join(format!("{id}.jsonl"));
+    if !std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_file()) {
+        return Err("there is no such chat".into());
+    }
+    let line = serde_json::json!({"kind": "title", "text": title, "ts": now_rfc3339()});
+    append_plain(&path, format!("{line}\n").as_bytes()).map_err(|e| e.to_string())
+}
+
+/// Delete a saved chat's transcript (not the chat running now).
+#[tauri::command]
+pub async fn chat_delete(
+    app: AppHandle,
+    st: State<'_, ChatState>,
+    id: String,
+) -> Result<(), String> {
+    if !id_ok(&id) {
+        return Err("not a chat".into());
+    }
+    if current_id(&st).as_deref() == Some(id.as_str()) {
+        return Err("this chat is running; start a new chat first".into());
+    }
+    let dir = chats_dir(&app).ok_or("no folder for chats")?;
+    let path = dir.join(format!("{id}.jsonl"));
+    if std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink()) {
+        return Err("not a chat".into());
+    }
+    std::fs::remove_file(&path).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_a_columbus_server_outside_session_folders_is_started() {
+        let d = std::env::temp_dir().join(format!("columbus-server-test-{}", std::process::id()));
+        let good = d.join("Columbus");
+        let chats = d.join("chats");
+        std::fs::create_dir_all(&good).unwrap();
+        std::fs::create_dir_all(&chats).unwrap();
+        let exe = if cfg!(windows) {
+            "columbus-mcp.exe"
+        } else {
+            "columbus-mcp"
+        };
+        std::fs::write(good.join(exe), "").unwrap();
+        std::fs::write(good.join("other.exe"), "").unwrap();
+        std::fs::write(chats.join(exe), "").unwrap();
+        assert!(server_ok(&good.join(exe), Some(&chats)).is_ok());
+        assert!(server_ok(&good.join("other.exe"), Some(&chats)).is_err());
+        assert!(
+            server_ok(Path::new(exe), Some(&chats)).is_err(),
+            "a relative path"
+        );
+        assert!(server_ok(&good.join("missing").join(exe), Some(&chats)).is_err());
+        assert!(
+            server_ok(&chats.join(exe), Some(&chats)).is_err(),
+            "inside a folder sessions write"
+        );
+        #[cfg(unix)]
+        {
+            // A link named like the server, to another program.
+            std::os::unix::fs::symlink(good.join("other.exe"), d.join(exe)).unwrap();
+            assert!(server_ok(&d.join(exe), Some(&chats)).is_err());
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn search_snippets_survive_characters_that_lowercase_to_several() {
+        // `İ` lowercases to two characters; `ẞ` and `Ω` change too.
+        let t = "İİİİİİİİİİ Straße district ẞ Ω İstanbul route";
+        assert!(snippet(t, "istanbul").is_none(), "İ is i plus a dot, not i");
+        let s = snippet(t, &"İstanbul".to_lowercase()).unwrap();
+        assert!(s.contains("İstanbul"), "{s}");
+        assert!(snippet(t, "route").unwrap().ends_with("route"));
+        assert!(snippet(t, "ω").unwrap().contains('Ω'));
+        let long = format!("{}{}", "İ".repeat(500), "match here");
+        assert!(snippet(&long, "match").unwrap().contains("match here"));
+        assert!(snippet("abc", "").is_none());
+        assert!(snippet("", "a").is_none());
+        // Every place a match can start, in a string of such characters.
+        let odd = "İaİbİ";
+        for q in ["a", "b", "i̇", "i̇a", "bi̇"] {
+            let _ = snippet(odd, q);
+        }
+    }
+
+    #[test]
+    fn chat_ids_are_plain() {
+        assert!(id_ok("c1762380000-ab12cd34"));
+        assert!(!id_ok("../c1762380000"));
+        assert!(!id_ok("c1762/../x"));
+        assert!(!id_ok("x1762380000-ab"));
+        assert!(!id_ok("c1"));
+    }
+
+    #[test]
+    fn times_are_rfc3339() {
+        let t = now_rfc3339();
+        assert_eq!(t.len(), 20, "{t}");
+        assert!(t.ends_with('Z') && t.as_bytes()[10] == b'T', "{t}");
+    }
+
+    #[test]
+    fn a_chat_is_titled_by_its_first_message_or_a_rename() {
+        let lines = vec![
+            serde_json::json!({"kind": "meta", "session": "s1", "ts": "2026-11-05T10:00:00Z"}),
+            serde_json::json!({"kind": "you", "text": "Which   datasets\ncan I use?", "ts": "2026-11-05T10:00:01Z"}),
+        ];
+        let s = summary("c1-x", &lines, false);
+        assert_eq!(s.title, "Which datasets can I use?");
+        assert_eq!(s.messages, 1);
+        let mut more = lines.clone();
+        more.push(
+            serde_json::json!({"kind": "title", "text": "Datasets", "ts": "2026-11-05T10:01:00Z"}),
+        );
+        assert_eq!(summary("c1-x", &more, false).title, "Datasets");
     }
 }

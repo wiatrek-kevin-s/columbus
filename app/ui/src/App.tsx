@@ -10,6 +10,19 @@ const POLL_MS = 2000;
 
 type Phase = "starting" | "ready" | "no-link" | "used" | "ended";
 
+// Shown inside the Columbus app's output panel (the server lets only the
+// app's own pages frame this one). A framed page never decides approvals,
+// whatever its link: the app shows them and opens the browser page.
+const FRAMED = (() => {
+  try {
+    return window.self !== window.top;
+  } catch {
+    return true;
+  }
+})();
+const APP_ORIGINS = ["tauri://localhost", "http://tauri.localhost", "https://tauri.localhost"];
+type EmbedView = "map" | "table" | "split";
+
 function size(b: number): string {
   if (b < 1024) return `${b} B`;
   if (b < 1024 * 1024) return `${(b / 1024).toFixed(0)} KB`;
@@ -103,6 +116,30 @@ export function App() {
       /* the choice is not remembered */
     }
   };
+  const [embedView, setEmbedView] = useState<EmbedView>("split");
+  const basemapSet = useRef(false);
+  // The app's layout and preferences: plain values, only from the app's
+  // own page that frames this one.
+  useEffect(() => {
+    if (!FRAMED) return;
+    const on = (e: MessageEvent) => {
+      if (e.source !== window.parent || !APP_ORIGINS.includes(e.origin)) return;
+      const d = e.data as { type?: unknown; view?: unknown; basemap?: unknown; theme?: unknown } | null;
+      if (!d || d.type !== "columbus-embed") return;
+      if (d.view === "map" || d.view === "table" || d.view === "split") setEmbedView(d.view);
+      if (typeof d.basemap === "boolean" && !basemapSet.current) {
+        basemapSet.current = true;
+        setBasemapState(d.basemap);
+      }
+      if (d.theme === "light" || d.theme === "dark") document.documentElement.dataset.theme = d.theme;
+      else if (d.theme === "system") delete document.documentElement.dataset.theme;
+    };
+    window.addEventListener("message", on);
+    // Nothing secret: only that the page is ready for the app's choices.
+    window.parent.postMessage({ type: "columbus-embed-ready" }, "*");
+    return () => window.removeEventListener("message", on);
+  }, []);
+  const canDecide = currentScope() === "approve" && !FRAMED;
   const [reviewing, setReviewing] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const seen = useRef(new Set<string>());
@@ -263,7 +300,7 @@ export function App() {
   }
 
   return (
-    <div className="app">
+    <div className={FRAMED ? `app embedded v-${embedView}` : "app"}>
       <header className="top">
         <h1>Columbus</h1>
         <div className="session">
@@ -350,9 +387,17 @@ export function App() {
         </aside>
 
         <main className="work">
-          {pending.length > 0 && (
+          {FRAMED && overview?.basemap_allowed && (
+            <div className="embed-bar">
+              <label className="switch" title="Street basemap from OpenFreeMap. When on, the area in view is sent to that site to fetch map tiles.">
+                <input type="checkbox" checked={basemap} onChange={(e) => setBasemap(e.target.checked)} />
+                Basemap
+              </label>
+            </div>
+          )}
+          {pending.length > 0 && !FRAMED && (
             <section className="approvals" aria-live="assertive" aria-label="Requests waiting for your decision">
-              {currentScope() === "view" && (
+              {!canDecide && (
                 <div className="review">
                   <p>
                     {pending.length === 1 ? "A request is" : `${pending.length} requests are`} waiting for your decision.
@@ -368,7 +413,7 @@ export function App() {
                   key={a.id}
                   a={a}
                   busy={!!busy[a.id]}
-                  onDecide={currentScope() === "approve" ? (d) => decide(a.id, d) : undefined}
+                  onDecide={canDecide ? (d) => decide(a.id, d) : undefined}
                 />
               ))}
             </section>

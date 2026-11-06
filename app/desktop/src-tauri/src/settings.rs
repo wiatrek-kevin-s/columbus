@@ -1,9 +1,11 @@
-//! The Settings window: the person's connections, the organization's
-//! switches for edits, scripts and personal tools, and the person's own
-//! tools, edited here instead of in files.
+//! Settings: the person's connections, the organization's switches for
+//! edits, scripts and personal tools, and the person's own tools, edited
+//! in the app instead of in files (the main window's Connections, Tools
+//! and Settings › Organization pages, and the classic settings window).
 //!
 //! The assistant has no way to change these: settings are never a tool,
-//! and only this window may call these commands (capabilities/settings.json).
+//! and only the app's own windows may call these commands
+//! (capabilities/main.json, capabilities/settings.json).
 //! Anything that loosens access (a new connection, read-write, more
 //! datasets, a removed row filter, edits, scripts or personal tools turned
 //! on, a tool installed) is confirmed
@@ -163,7 +165,7 @@ fn scan(dir: &Path) -> Vec<(PathBuf, Result<Connection, String>)> {
     out
 }
 
-fn writable(path: &Path) -> bool {
+pub(crate) fn writable(path: &Path) -> bool {
     if path.exists() {
         std::fs::OpenOptions::new().append(true).open(path).is_ok()
     } else {
@@ -230,19 +232,22 @@ fn state() -> SettingsState {
     }
 }
 
-/// A running session that reads this window's connections folder.
-struct LiveSession {
-    port: u16,
-    /// Its key for connection tests; sessions from before 0.6 have none
+/// A running Columbus session, as its live file announces it.
+pub(crate) struct LiveSession {
+    pub(crate) session: String,
+    pub(crate) port: u16,
+    /// Its key for the signed channel; sessions from before 0.6 have none
     /// (and do not pick up changed settings either).
-    key: Option<String>,
-    last_used: Option<String>,
-    started: Option<String>,
+    pub(crate) key: Option<String>,
+    pub(crate) last_used: Option<String>,
+    pub(crate) started: Option<String>,
+    pub(crate) user: Option<String>,
+    /// The settings files and folders the session reads (no secrets).
+    pub(crate) settings: Value,
 }
 
-/// The running sessions reading `dir`, the one in use first.
-fn sessions_here(dir: &Path) -> Vec<LiveSession> {
-    let mine = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+/// Every running session that answers, the one in use first.
+pub(crate) fn live_all() -> Vec<LiveSession> {
     let mut out = vec![];
     let Ok(entries) = std::fs::read_dir(crate::live_dir()) else {
         return out;
@@ -259,16 +264,10 @@ fn sessions_here(dir: &Path) -> Vec<LiveSession> {
         else {
             continue;
         };
-        let Some(c) = v["settings"]["connections"].as_str() else {
-            continue;
-        };
-        let theirs = Path::new(c)
-            .canonicalize()
-            .unwrap_or_else(|_| PathBuf::from(c));
         let Some(port) = v["port"].as_u64().and_then(|p| u16::try_from(p).ok()) else {
             continue;
         };
-        if theirs != mine || port < 1024 || !crate::answers(port) {
+        if port < 1024 || !crate::answers(port) {
             continue;
         }
         let key = std::fs::read_to_string(p.with_extension("key"))
@@ -277,10 +276,13 @@ fn sessions_here(dir: &Path) -> Vec<LiveSession> {
             .filter(|k| k.len() == 64 && k.bytes().all(|b| b.is_ascii_hexdigit()));
         let s = |k: &str| v[k].as_str().map(String::from);
         out.push(LiveSession {
+            session: s("session").unwrap_or_default(),
             port,
             key,
             last_used: s("last_used"),
             started: s("started"),
+            user: s("user"),
+            settings: v["settings"].clone(),
         });
     }
     out.sort_by(|a, b| {
@@ -289,6 +291,22 @@ fn sessions_here(dir: &Path) -> Vec<LiveSession> {
             .then_with(|| b.started.cmp(&a.started))
     });
     out
+}
+
+/// The running sessions reading `dir`, the one in use first.
+fn sessions_here(dir: &Path) -> Vec<LiveSession> {
+    let mine = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+    live_all()
+        .into_iter()
+        .filter(|s| {
+            s.settings["connections"].as_str().is_some_and(|c| {
+                Path::new(c)
+                    .canonicalize()
+                    .unwrap_or_else(|_| PathBuf::from(c))
+                    == mine
+            })
+        })
+        .collect()
 }
 
 /// Ask a running session to try the connection in the form, exactly as it
@@ -362,65 +380,96 @@ pub async fn settings_draft_notes(id: String) -> Result<Value, String> {
 /// request goes with the app's proof over the session's challenge and the
 /// exact body. The key is never sent.
 fn signed_post(dir: &Path, path: &str, body: &[u8], what: &str) -> Result<(u16, Value), String> {
-    use columbus_shared::proof;
     let sessions = sessions_here(dir);
     if sessions.is_empty() {
         return Err(format!("No Columbus session is running to {what} with. Open Claude desktop (it starts Columbus), then try again."));
     }
     let mut last = format!("The Columbus running now is too old to {what}. Update the Columbus extension in Claude desktop, then try again.");
     for s in &sessions {
-        let Some(key) = &s.key else { continue };
-        // From the operating system's secure random source.
-        let mine = format!(
-            "{}{}",
-            uuid::Uuid::new_v4().simple(),
-            uuid::Uuid::new_v4().simple()
-        );
-        let hello_header = format!(
-            "{mine}.{}",
-            proof::prove(key, proof::HELLO, &[mine.as_bytes()])
-        );
-        let (code, hello) = match post_local(
-            s.port,
-            "/api/test-hello",
-            &[("X-Columbus-Test-Hello", &hello_header)],
-            b"",
-        ) {
-            Ok(v) => v,
-            Err(e) => {
-                last = e;
-                continue;
-            }
-        };
-        let (Some(challenge), Some(theirs)) =
-            (hello["challenge"].as_str(), hello["proof"].as_str())
-        else {
-            last = format!("The Columbus session did not answer ({code}).");
-            continue;
-        };
-        if code != 200
-            || !proof::same(
-                theirs,
-                &proof::prove(key, proof::SERVER, &[mine.as_bytes()]),
-            )
-        {
-            last = "A program on this computer answered for Columbus but could not prove it is your Columbus session, so nothing was sent to it.".into();
-            continue;
+        match hello(s) {
+            // The first session that proves itself gets the request, and
+            // its answer is final (a slow draft is never sent twice).
+            Ok(proven) => return send_signed(s, &proven, path, body),
+            Err(e) => last = e,
         }
-        let sig = proof::prove(
-            key,
-            proof::APP,
-            &[challenge.as_bytes(), proof::body_hash(body).as_bytes()],
-        );
-        let header = format!("{challenge}.{sig}");
-        return post_local(s.port, path, &[("X-Columbus-Test", &header)], body);
     }
     Err(last)
 }
 
+/// POST `body` to `path` on one running session over the signed channel
+/// (see [`signed_post`]).
+pub(crate) fn signed_post_to(
+    s: &LiveSession,
+    path: &str,
+    body: &[u8],
+) -> Result<(u16, Value), String> {
+    let proven = hello(s)?;
+    send_signed(s, &proven, path, body)
+}
+
+/// A session that proved it holds its key: the key and its challenge.
+struct Proven {
+    key: String,
+    challenge: String,
+}
+
+/// The first half of the signed channel: the session proves it holds the
+/// key in its `live/<session>.key` and gives a challenge.
+fn hello(s: &LiveSession) -> Result<Proven, String> {
+    use columbus_shared::proof;
+    let Some(key) = &s.key else {
+        return Err("The Columbus running in this session is too old for this. Update the Columbus extension in your AI app, then try again.".into());
+    };
+    // From the operating system's secure random source.
+    let mine = format!(
+        "{}{}",
+        uuid::Uuid::new_v4().simple(),
+        uuid::Uuid::new_v4().simple()
+    );
+    let hello_header = format!(
+        "{mine}.{}",
+        proof::prove(key, proof::HELLO, &[mine.as_bytes()])
+    );
+    let (code, hello) = post_local(
+        s.port,
+        "/api/test-hello",
+        &[("X-Columbus-Test-Hello", &hello_header)],
+        b"",
+    )?;
+    let (Some(challenge), Some(theirs)) = (hello["challenge"].as_str(), hello["proof"].as_str())
+    else {
+        return Err(format!("The Columbus session did not answer ({code})."));
+    };
+    if code != 200
+        || !proof::same(
+            theirs,
+            &proof::prove(key, proof::SERVER, &[mine.as_bytes()]),
+        )
+    {
+        return Err("A program on this computer answered for Columbus but could not prove it is your Columbus session, so nothing was sent to it.".into());
+    }
+    Ok(Proven {
+        key: key.clone(),
+        challenge: challenge.to_string(),
+    })
+}
+
+/// The request itself, with the app's proof over the challenge and the
+/// exact body. The key is never sent.
+fn send_signed(
+    s: &LiveSession,
+    p: &Proven,
+    path: &str,
+    body: &[u8],
+) -> Result<(u16, Value), String> {
+    let sig = columbus_shared::proof::app_proof(&p.key, "POST", path, &p.challenge, body);
+    let header = format!("{}.{sig}", p.challenge);
+    post_local(s.port, path, &[("X-Columbus-Test", &header)], body)
+}
+
 /// A small HTTP/1.1 POST to a session's page on this computer, waiting at
 /// most a minute in all for its answer (a database can be slow to answer).
-fn post_local(
+pub(crate) fn post_local(
     port: u16,
     path: &str,
     headers: &[(&str, &str)],
@@ -665,7 +714,7 @@ static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// Write a file whole (a fresh temporary file beside it, flushed to disk),
 /// then move it into place, keeping the old file's permissions. A link is
 /// not followed: the window will not change a file that lives elsewhere.
-fn write_atomic(path: &Path, text: &str) -> Result<(), String> {
+pub(crate) fn write_atomic(path: &Path, text: &str) -> Result<(), String> {
     use std::io::Write;
     let show = |e: std::io::Error| format!("{}: {e}", path.display());
     if std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
@@ -1094,7 +1143,7 @@ pub async fn settings_tools() -> Result<ToolsState, String> {
 
 /// The organization policy as the server reads it now (its defaults where
 /// there is no file; a file that does not read allows nothing extra).
-fn policy_now() -> OrgPolicy {
+pub(crate) fn policy_now() -> OrgPolicy {
     let path = paths::policy_file();
     if path.exists() {
         OrgPolicy::load(&path).unwrap_or_default()
@@ -1198,7 +1247,7 @@ pub async fn settings_pick(app: tauri::AppHandle, kind: String) -> Result<Option
         .map(|p| p.display().to_string()))
 }
 
-fn confirm_with() -> &'static str {
+pub(crate) fn confirm_with() -> &'static str {
     if cfg!(target_os = "macos") {
         "Touch ID or your Mac password"
     } else if cfg!(windows) {
@@ -1209,7 +1258,7 @@ fn confirm_with() -> &'static str {
 }
 
 /// The person at the keyboard confirms a change that loosens access.
-fn confirm(what: &str) -> Result<(), String> {
+pub(crate) fn confirm(what: &str) -> Result<(), String> {
     #[cfg(debug_assertions)]
     if let Ok(v) = std::env::var("COLUMBUS_APP_TEST_CONFIRM") {
         return if v == "allow" {

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-approvals-inbox"
+description = "Enables the approvals_inbox command without any pre-configured scope."
+commands.allow = ["approvals_inbox"]
+
+[[permission]]
+identifier = "deny-approvals-inbox"
+description = "Denies the approvals_inbox command without any pre-configured scope."
+commands.deny = ["approvals_inbox"]
