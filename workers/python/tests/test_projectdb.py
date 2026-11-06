@@ -7,6 +7,7 @@ Skipped when DuckDB or the GIS engine is not installed.
 
 import csv
 import os
+import re
 import sys
 import tempfile
 import unittest
@@ -285,6 +286,67 @@ class ProjectDbTests(unittest.TestCase):
                     "CALL enable_logging()"]:
             with self.assertRaises(pdb.ProjectDbError, msg=sql):
                 pdb.execute({"path": self.db, "sql": sql})
+
+    def test_escape_strings_and_serialized_sql_cannot_hide_a_call(self):
+        self.load()
+        for sql in ["SELECT E'\\'', error(string_agg(parcel_id, ',')), '' FROM parcels",
+                    "SELECT E'\\'', current_setting('temp_directory'), ''",
+                    "SELECT E'\\'', 1, '' FROM query('SELECT 42')",
+                    "SELECT $$ x $$, error('x')",
+                    "SELECT json_execute_serialized_sql(json_serialize_sql('SELECT 42'))",
+                    "SELECT * FROM json_execute_serialized_sql(json_serialize_sql('SELECT 42'))",
+                    "SELECT json_deserialize_sql(json_serialize_sql('SELECT 1'))",
+                    "SELECT error /* hidden */ ('x')",
+                    "SELECT main.\"error\"('x')",
+                    "SELECT write_log('x')", "SELECT * FROM checkpoint()", "SELECT * FROM duckdb_databases()"]:
+            with self.assertRaises(pdb.ProjectDbError, msg=sql) as cm:
+                self.q(sql)
+            self.assertIn("refused", str(cm.exception), sql)
+        with self.assertRaises(pdb.ProjectDbError):
+            pdb.execute({"path": self.db, "sql": "CREATE TABLE x AS SELECT E'\\'', error(parcel_id), '' FROM parcels"})
+        # A statement the tokenizer cannot read to its end is refused.
+        with self.assertRaises(pdb.ProjectDbError) as cm:
+            pdb._words('SELECT U&"d\\0061ta", error(1)')
+        self.assertIn("cannot check", str(cm.exception))
+        # Names in quoted identifiers and strings are read as DuckDB reads them.
+        self.assertEqual(pdb._denied_call(pdb._words('SELECT "a""b(" FROM t')), None)
+        self.assertEqual(pdb._denied_call(pdb._words("SELECT 'error(' AS x")), None)
+        self.assertEqual(self.q("SELECT 'read_csv(' AS x, E'\\'' AS y")["rows_read"], 1)
+
+    def test_error_text_hides_quoted_and_numeric_values(self):
+        self.load()
+        pdb.execute({"path": self.db, "sql": "CREATE TABLE people AS SELECT parcel_id, 'Ann \"Doe\" Smith' || parcel_id AS name, acres FROM parcels"})
+        for sql in [
+            "CREATE TABLE x AS SELECT name::JSON::INT FROM people",
+            "CREATE TABLE x AS SELECT ('0x' || hex(left(name, 8)))::UBIGINT::INT FROM people",
+            "CREATE TABLE x AS SELECT (acres * 1000003)::TINYINT FROM people WHERE acres > 3",
+            "CREATE TABLE x AS SELECT (parcel_id || '\"q\"')::JSON::INT FROM people",
+        ]:
+            with self.assertRaises(pdb.ProjectDbError, msg=sql) as cm:
+                pdb.execute({"path": self.db, "sql": sql})
+            text = str(cm.exception)
+            self.assertNotIn("Doe", text, sql)
+            self.assertNotIn("Smith", text, sql)
+            self.assertIsNone(re.search(r"[0-9]{3,}", text), f"{sql}: {text}")
+        # With return_rows 0 the session may not see rows: only the class.
+        with self.assertRaises(pdb.ProjectDbError) as cm:
+            pdb.execute({"path": self.db, "return_rows": 0, "sql": "CREATE TABLE x AS SELECT name::INT FROM people"})
+        self.assertIn("Conversion Error (details withheld", str(cm.exception))
+        self.assertNotIn("Ann", str(cm.exception))
+
+    def test_the_size_cap_holds_during_the_work(self):
+        pdb.create({"path": self.db})
+        with self.assertRaises(pdb.ProjectDbError) as cm:
+            pdb.execute({"path": self.db, "memory_mb": 256, "max_mb": 20, "sql":
+                         "CREATE TABLE big AS SELECT range AS i, md5(range::VARCHAR) || md5((range + 1)::VARCHAR) AS h FROM range(3000000)"})
+        self.assertIn("stopped and nothing in it was kept", str(cm.exception))
+        self.assertEqual(self.tables(), [])
+        # The space it took is reused: a later small table still fits.
+        e = pdb.execute({"path": self.db, "max_mb": 20, "sql": "CREATE TABLE small AS SELECT range AS i FROM range(1000)"})
+        self.assertLess(e["used_bytes"], 20 * 1024 * 1024)
+        # Over the cap, ANALYZE still runs like DROP and DELETE.
+        e = pdb.execute({"path": self.db, "max_mb": 0.0001, "sql": "ANALYZE small"})
+        self.assertEqual(e["statements"][0]["type"], "ANALYZE")
 
     def test_query_usability(self):
         self.load()

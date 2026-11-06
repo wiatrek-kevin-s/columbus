@@ -144,6 +144,10 @@ pub(crate) struct Sidecar {
     pub inherited: Vec<InheritedFail>,
     #[serde(default)]
     pub history: Vec<Value>,
+    /// Set when two writers recorded different settings for the same
+    /// connection: the database is withheld from then on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conflict: Option<String>,
 }
 
 /// One project database, resolved.
@@ -206,6 +210,9 @@ pub(crate) fn connection_fingerprint(
 /// holds, or a narrower project could read a database built under a wider
 /// one.
 pub(crate) fn withheld(settings: &crate::config::Settings, side: &Sidecar) -> Option<String> {
+    if let Some(c) = &side.conflict {
+        return Some(c.clone());
+    }
     for l in side.labels.iter().filter(|l| l.starts_with("connection:")) {
         let now = connection_fingerprint(settings, l);
         if now.is_none() {
@@ -260,22 +267,7 @@ fn read_sidecar(db: &Db) -> Result<Option<Sidecar>, String> {
 /// merged record is left in `side`.
 fn write_sidecar(db: &Db, side: &mut Sidecar) -> Result<(), String> {
     if let Ok(Some(disk)) = read_sidecar(db) {
-        if disk.name == side.name && disk.scope == side.scope {
-            side.labels.extend(disk.labels);
-            for (l, f) in disk.fingerprints {
-                side.fingerprints.entry(l).or_insert(f);
-            }
-            side.hidden = match (side.hidden.take(), disk.hidden) {
-                (Some(a), Some(b)) => Some(a.into_iter().filter(|f| b.contains(f)).collect()),
-                (a, b) => a.or(b),
-            };
-            side.truncated |= disk.truncated;
-            for f in disk.inherited {
-                if !side.inherited.contains(&f) {
-                    side.inherited.push(f);
-                }
-            }
-        }
+        merge_record(side, disk);
     }
     let text = serde_json::to_string_pretty(side).map_err(|e| e.to_string())?;
     let tmp = db.dir.join(format!("{SIDECAR}.new"));
@@ -290,6 +282,46 @@ fn write_sidecar(db: &Db, side: &mut Sidecar) -> Result<(), String> {
         f.sync_all().map_err(|e| e.to_string())?;
     }
     std::fs::rename(&tmp, db.sidecar_path()).map_err(|e| e.to_string())
+}
+
+/// Fold the record on disk (written by another session meanwhile) into
+/// ours: labels, fails and truncation are never dropped, hidden fields are
+/// intersected, and two different fingerprints for one connection withhold
+/// the database rather than keep either.
+fn merge_record(side: &mut Sidecar, disk: Sidecar) {
+    if disk.name != side.name || disk.scope != side.scope {
+        return;
+    }
+    side.labels.extend(disk.labels);
+    for (l, f) in disk.fingerprints {
+        match side.fingerprints.get(&l) {
+            Some(mine) if *mine != f => {
+                side.conflict.get_or_insert_with(|| {
+                    format!(
+                        "data from {} was loaded into it under two different settings (by two sessions)",
+                        l.trim_start_matches("connection:")
+                    )
+                });
+            }
+            Some(_) => {}
+            None => {
+                side.fingerprints.insert(l, f);
+            }
+        }
+    }
+    if side.conflict.is_none() {
+        side.conflict = disk.conflict;
+    }
+    side.hidden = match (side.hidden.take(), disk.hidden) {
+        (Some(a), Some(b)) => Some(a.into_iter().filter(|f| b.contains(f)).collect()),
+        (a, b) => a.or(b),
+    };
+    side.truncated |= disk.truncated;
+    for f in disk.inherited {
+        if !side.inherited.contains(&f) {
+            side.inherited.push(f);
+        }
+    }
 }
 
 /// Delete a project database's folder and everything in it.
@@ -360,24 +392,42 @@ impl Gateway {
         self.state.flow.record_file(&db.file, &side.labels);
     }
 
-    /// The database's size after a write, and a warning once it is over the
-    /// organization's cap (further loads and changes are then refused).
+    /// After the worker returns: the record as it is now on disk (another
+    /// session may have loaded more meanwhile), its labels on the session
+    /// and on what this call answers.
+    fn relabel(&self, db: &Db, side: &mut Sidecar) {
+        if let Ok(Some(disk)) = read_sidecar(db) {
+            merge_record(side, disk);
+        }
+        for l in &side.labels {
+            self.state.flow.add(l.clone());
+        }
+        self.track_db(db, side);
+    }
+
+    /// The database's size after a write, and a warning once what it holds
+    /// is over the organization's cap (further loads and changes are then
+    /// refused).
     fn size_check(&self, reply: &Value) -> Option<Check> {
         let bytes = reply.get("bytes").and_then(Value::as_u64)?;
+        let used = reply
+            .get("used_bytes")
+            .and_then(Value::as_u64)
+            .unwrap_or(bytes);
         let cap = self.state.policy().project_db.max_mb.max(1);
-        let mb = bytes / (1024 * 1024);
+        let (mb, on_disk) = (used / (1024 * 1024), bytes / (1024 * 1024));
         if mb > cap {
             Some(Check {
                 id: "project_db.size".into(),
                 severity: Severity::Warn,
-                message: format!("The project database is now {mb} MB, over the organization's cap of {cap} MB: further loads and changes are refused until space is freed"),
-                detail: Some(json!({"bytes": bytes, "max_mb": cap})),
-                fix: Some("Drop tables or delete rows no longer needed (execute with DROP or DELETE still runs), or start a new database".into()),
+                message: format!("The project database now holds {mb} MB ({on_disk} MB on disk), over the organization's cap of {cap} MB: further loads and changes are refused until space is freed"),
+                detail: Some(json!({"used_bytes": used, "bytes": bytes, "max_mb": cap})),
+                fix: Some("DROP TABLE what is no longer needed (DROP frees its space for reuse; DELETE frees little, and the file does not shrink), or start a new database".into()),
             })
         } else {
             Some(Check::info(
                 "project_db.size",
-                format!("The project database is {mb} MB (cap {cap} MB)"),
+                format!("The project database holds {mb} MB ({on_disk} MB on disk; cap {cap} MB)"),
             ))
         }
     }
@@ -402,6 +452,11 @@ impl Gateway {
         );
         m.insert("max_mb".into(), json!(p.project_db.max_mb.max(1)));
         m.insert("timeout_s".into(), json!(p.read_limits().max_seconds()));
+        // 0: the session may not see rows, so errors say only their class.
+        m.insert(
+            "return_rows".into(),
+            json!(p.return_rows.unwrap_or(500).min(500)),
+        );
         m
     }
 
@@ -617,8 +672,8 @@ impl Gateway {
                 self.project_db_execute(&ctx, rec, db, &mut side, &args)
                     .await
             }
-            "query" => self.project_db_query(&ctx, rec, db, &side, &args).await,
-            _ => self.project_db_describe(&ctx, rec, db, &side).await,
+            "query" => self.project_db_query(&ctx, rec, db, &mut side, &args).await,
+            _ => self.project_db_describe(&ctx, rec, db, &mut side).await,
         }
     }
 }
@@ -702,7 +757,7 @@ impl Gateway {
                 severity: Severity::Info,
                 message: "DuckDB's spatial extension is not installed beside the engine, so geometry is stored and returned but spatial SQL functions (ST_Intersects, ST_Area…) are not available; use vector_op on query results instead".into(),
                 detail: None,
-                fix: Some("pip install the duckdb-extension-spatial version matching DuckDB (requirements-gis.txt)".into()),
+                fix: Some("pip install --require-hashes --no-deps --only-binary :all: -r workers/python/requirements-projectdb.txt in the engine environment".into()),
             });
         }
         answer("create", &db, result, &side.labels, checks, None)
@@ -817,7 +872,9 @@ impl Gateway {
                 Local::now().format("%Y-%m-%d")
             ))),
         );
-        let reply = match self.project_worker("project_db_load", p).await {
+        let reply = self.project_worker("project_db_load", p).await;
+        self.relabel(&db, side);
+        let reply = match reply {
             Ok(r) => r,
             Err(e) => return Err(self.worker_failed(ctx, rec, e)),
         };
@@ -938,7 +995,9 @@ impl Gateway {
         p.insert("sql".into(), json!(sql));
         let prov = crate::server::new_prov_id();
         let started = Local::now();
-        let reply = match self.project_worker("project_db_execute", p).await {
+        let reply = self.project_worker("project_db_execute", p).await;
+        self.relabel(&db, side);
+        let reply = match reply {
             Ok(r) => r,
             Err(e) => {
                 // Refused or failed: nothing in the batch was kept.
@@ -1020,7 +1079,7 @@ impl Gateway {
         ctx: &RequestContext<RoleServer>,
         mut rec: AuditRecord,
         db: Db,
-        side: &Sidecar,
+        side: &mut Sidecar,
         args: &ProjectDbArgs,
     ) -> Answer {
         let Some(sql) = args.sql.clone().filter(|s| !s.trim().is_empty()) else {
@@ -1067,7 +1126,9 @@ impl Gateway {
         p.insert("output_stem".into(), json!(stem));
         p.insert("crs".into(), json!(crs));
         let started = Local::now();
-        let reply = match self.project_worker("project_db_query", p).await {
+        let reply = self.project_worker("project_db_query", p).await;
+        self.relabel(&db, side);
+        let reply = match reply {
             Ok(r) => r,
             Err(e) => {
                 let e = if e.contains("no CRS is known") && crss.len() > 1 {
@@ -1155,6 +1216,7 @@ impl Gateway {
             }
         }
         checks.extend(checks_from(reply.get("checks")));
+        self.relabel(&db, side);
         let labels = self.state.flow.labels_for(std::slice::from_ref(&db.file));
         let inherit = crate::providers::Inheritance {
             fails: side.inherited.clone(),
@@ -1228,15 +1290,13 @@ impl Gateway {
         ctx: &RequestContext<RoleServer>,
         rec: AuditRecord,
         db: Db,
-        side: &Sidecar,
+        side: &mut Sidecar,
     ) -> Answer {
-        for l in &side.labels {
-            self.state.flow.add(l.clone());
-        }
-        let mut reply = match self
+        let reply = self
             .project_worker("project_db_describe", self.worker_params(&db))
-            .await
-        {
+            .await;
+        self.relabel(&db, side);
+        let mut reply = match reply {
             Ok(r) => r,
             Err(e) => return Err(self.worker_failed(ctx, rec, e)),
         };
@@ -1357,5 +1417,55 @@ fn trim(h: &mut Vec<Value>) {
     if h.len() > HISTORY {
         let extra = h.len() - HISTORY;
         h.drain(..extra);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn record(labels: &[&str], prints: &[(&str, &str)]) -> Sidecar {
+        Sidecar {
+            name: "p".into(),
+            scope: "project".into(),
+            labels: labels.iter().map(|l| l.to_string()).collect(),
+            fingerprints: prints
+                .iter()
+                .map(|(l, f)| (l.to_string(), f.to_string()))
+                .collect(),
+            hidden: Some(vec!["*_ssn".into(), "owner_*".into()]),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_merge_keeps_every_label_and_withholds_on_a_conflict() {
+        let mut mine = record(&["connection:a"], &[("connection:a", "1")]);
+        let mut disk = record(&["connection:b"], &[("connection:b", "2")]);
+        disk.truncated = true;
+        disk.hidden = Some(vec!["*_ssn".into()]);
+        merge_record(&mut mine, disk);
+        assert_eq!(
+            mine.labels.iter().cloned().collect::<Vec<_>>(),
+            ["connection:a", "connection:b"]
+        );
+        assert_eq!(mine.fingerprints.len(), 2);
+        assert!(mine.truncated && mine.conflict.is_none());
+        assert_eq!(mine.hidden, Some(vec!["*_ssn".to_string()]));
+        // The same connection under two different settings: withheld.
+        let other = record(&["connection:a"], &[("connection:a", "9")]);
+        merge_record(&mut mine, other);
+        assert!(mine
+            .conflict
+            .as_deref()
+            .unwrap()
+            .contains("two different settings"));
+        assert_eq!(mine.fingerprints["connection:a"], "1");
+        // Another database's record is never merged.
+        let mut x = record(&[], &[]);
+        let mut y = record(&["connection:z"], &[]);
+        y.name = "q".into();
+        merge_record(&mut x, y);
+        assert!(x.labels.is_empty());
     }
 }

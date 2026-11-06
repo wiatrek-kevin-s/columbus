@@ -26,4 +26,6 @@ pip = "*"
 # `pixi run project-db`, which installs them hash-checked from
 # workers/python/requirements-projectdb.txt.
 [tasks]
-project-db = "python -m pip install --require-hashes --no-deps --only-binary :all: -r ../../workers/python/requirements-projectdb.txt"
+# Works from the repository (packaging/engine) and from a release
+# (engine/ beside workers/).
+project-db = '''python -c "import os, subprocess, sys; r = next((p for p in ('../workers/python/requirements-projectdb.txt', '../../workers/python/requirements-projectdb.txt') if os.path.isfile(p)), None); r or sys.exit('requirements-projectdb.txt not found'); sys.exit(subprocess.call([sys.executable, '-m', 'pip', 'install', '--require-hashes', '--no-deps', '--only-binary', ':all:', '-r', r]))"'''
