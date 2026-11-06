@@ -153,14 +153,19 @@ def main():
         (OUT / f"frame_ipc-{sys.platform}.json").write_text(json.dumps(REPORT, indent=2))
         bad = [k for k, v in REPORT["results"].items() if "RESOLVED" in v or "connections_dir" in v]
         assert not bad, f"FAIL: the frame reached the app: {bad}: {REPORT['results']}"
-        assert REPORT["tauri"] == "undefined", REPORT
         assert not list((root / "connections").iterdir()), "FAIL: a connection was written from the frame"
         assert (root / "policy.yaml").read_text() == policy_before
         after = prefs.read_bytes() if prefs and prefs.exists() else None
         assert after == before, f"FAIL: the frame changed the app's preferences ({prefs})"
-        if sys.platform != "win32":
+        if sys.platform == "win32":
+            # wry injects Tauri's scripts into frames here: each call must
+            # have been refused by Tauri's origin check.
+            for k in ("invoke settings_state", "invoke save_connection", "invoke prefs_set"):
+                v = REPORT["results"][k]
+                assert v == "no invoke" or v.startswith("refused"), f"FAIL: {k}: {v}"
+        else:
             # Tauri's scripts are injected into the main frame only here.
-            assert REPORT["internals"] == "undefined", REPORT
+            assert REPORT["internals"] == "undefined" and REPORT["tauri"] == "undefined", REPORT
         print(f"frame IPC e2e ({sys.platform}): ok")
     finally:
         app.terminate()
