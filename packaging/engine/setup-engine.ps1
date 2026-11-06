@@ -21,6 +21,8 @@ $root = Split-Path -Parent $here
 $venv = Join-Path $here "venv"
 $req = Join-Path $root "workers\python\requirements-gis.txt"
 $db = Join-Path $root "workers\python\requirements-db.txt"
+# Hash-pinned, installed on their own (see the file).
+$pdb = Join-Path $root "workers\python\requirements-projectdb.txt"
 
 if (-not $Python) {
     $py = Get-Command py -ErrorAction SilentlyContinue
@@ -36,11 +38,14 @@ $vpy = Join-Path $venv "Scripts\python.exe"
 & $vpy -m pip install --upgrade pip
 if ($Wheels) {
     & $vpy -m pip install --no-index --find-links $Wheels -r $req -r $db
+    & $vpy -m pip install --no-index --find-links $Wheels --require-hashes --no-deps --only-binary :all: -r $pdb
 } else {
     & $vpy -m pip install -r $req -r $db
+    & $vpy -m pip install --require-hashes --no-deps --only-binary :all: -r $pdb
 }
 & $vpy -c "import geopandas, pyogrio, shapely, pyproj, rasterio; print('engine ready: GDAL', pyogrio.__gdal_version_string__)"
-& $vpy -c "import duckdb, duckdb_extension_spatial; print('project databases ready: DuckDB', duckdb.__version__, 'with the spatial extension')"
+# The spatial extension is found as a file; its package is never imported.
+& $vpy -I -c "import importlib.util, os, duckdb; s = importlib.util.find_spec('duckdb_extension_spatial'); p = s and os.path.join(os.path.dirname(s.origin), 'extensions', 'v' + duckdb.__version__, 'spatial.duckdb_extension'); print('project databases ready: DuckDB', duckdb.__version__, 'with the spatial extension' if p and os.path.isfile(p) else 'WITHOUT the spatial extension (spatial SQL functions unavailable)')"
 & $vpy -c "import psycopg, oracledb, pyodbc; print('database drivers ready: oracledb', oracledb.__version__, '(thin mode), pyodbc', pyodbc.version)"
 $odbc = & $vpy -c "import pyodbc; print('ODBC Driver 18 for SQL Server' in pyodbc.drivers())"
 if ($odbc -ne "True") {

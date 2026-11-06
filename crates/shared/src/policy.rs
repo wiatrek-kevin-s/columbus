@@ -287,10 +287,19 @@ pub struct ProjectDbPolicy {
     /// work spills to disk in the database's own folder.
     #[serde(default = "project_db_memory")]
     pub memory_mb: u64,
+    /// Most disk one project database may take, in MiB: its file and the
+    /// engine's spill folder each. Over it, loads and changes other than
+    /// DROP, DELETE and VACUUM are refused.
+    #[serde(default = "project_db_max")]
+    pub max_mb: u64,
 }
 
 fn project_db_memory() -> u64 {
     2048
+}
+
+fn project_db_max() -> u64 {
+    20480
 }
 
 impl Default for ProjectDbPolicy {
@@ -298,6 +307,7 @@ impl Default for ProjectDbPolicy {
         ProjectDbPolicy {
             enabled: true,
             memory_mb: project_db_memory(),
+            max_mb: project_db_max(),
         }
     }
 }

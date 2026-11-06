@@ -1,0 +1,29 @@
+# Project databases (project_db): DuckDB and its spatial extension, pinned
+# by version and by the SHA-256 of each wheel. Install on its own, so every
+# wheel is checked and nothing else is pulled in:
+#
+#   python -m pip install --require-hashes --no-deps --only-binary :all: -r workers/python/requirements-projectdb.txt
+#
+# Wheels: CPython 3.12 and 3.13 on Windows x64, macOS arm64 and Linux x64.
+#
+# duckdb-extension-spatial is a community package (not DuckDB Labs') that
+# carries DuckDB Labs' own signed spatial.duckdb_extension for this exact
+# DuckDB version. Columbus never imports the package (its __init__.py never
+# runs): the worker finds the file with importlib.util.find_spec, and DuckDB
+# checks the binary's signature when it loads it (unsigned extensions are
+# refused). The extension is never downloaded at run time. Without it,
+# project databases still work; only the spatial SQL functions are missing.
+# To move to a new DuckDB version, change both versions and every hash
+# (from https://pypi.org/project/duckdb/#files and
+# https://pypi.org/project/duckdb-extension-spatial/#files).
+duckdb==1.5.5 \
+    --hash=sha256:ddfbdb096c11d51ee22492397d342c90a82e62c5d09961477895934d0a25372f \
+    --hash=sha256:f0b88535a5d86fdd63dba6ea02ab68c003dfb9e4892b11256ef24c4da208baae \
+    --hash=sha256:7a6d2d11859d82a936ebdcb30ce3d8a1cbb3e990bff05c12abb9b54c44fa7bd1 \
+    --hash=sha256:6826504277dba513c0c5d71d828456c94d729c9d2482f94b2e289f90a9167e28 \
+    --hash=sha256:49c963d9469373d7aba8d750d9ea565ab823e94166efed953f184dd9b169b98c \
+    --hash=sha256:078e6a60dd8eedde5832f45422ca5c4a6b8c837aeabd8a56ca0b7d933f588053
+duckdb-extension-spatial==1.5.5 \
+    --hash=sha256:27acd886f6e6f1d6abd45d255dfafb94b6d8fa832572d26274e7fcab71a474a1 \
+    --hash=sha256:157d877e00be6c5d1d40e134d4b2e3fd2d84e72562da1ca2c1ddd0bcea5cead2 \
+    --hash=sha256:736dbe75cd9d7f7a05d4920b02439f9d441945c81a56128911371fad2b3a5611

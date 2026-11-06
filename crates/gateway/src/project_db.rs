@@ -196,6 +196,15 @@ pub(crate) fn connection_fingerprint(
 
 /// Why the settings in force no longer cover what the database holds, if
 /// they do not.
+///
+/// It compares what decides which data a connection gives: the connection
+/// itself (a fingerprint of everything but its description and mode), its
+/// type being allowed, and the hidden fields. Sessions have no project
+/// scope or data groups of their own yet (`State::scope` is always the
+/// default); once they do, this must also check that the scope and data
+/// groups in force still cover each connection and dataset the database
+/// holds, or a narrower project could read a database built under a wider
+/// one.
 pub(crate) fn withheld(settings: &crate::config::Settings, side: &Sidecar) -> Option<String> {
     for l in side.labels.iter().filter(|l| l.starts_with("connection:")) {
         let now = connection_fingerprint(settings, l);
@@ -245,7 +254,29 @@ fn read_sidecar(db: &Db) -> Result<Option<Sidecar>, String> {
         .map_err(|e| format!("the project database's record ({SIDECAR}) cannot be read: {e}"))
 }
 
-fn write_sidecar(db: &Db, side: &Sidecar) -> Result<(), String> {
+/// Write the record, merged with the one on disk: another session using
+/// the same project database may have added labels meanwhile, and a label,
+/// a fingerprint, a fail or truncation is never dropped by a write. The
+/// merged record is left in `side`.
+fn write_sidecar(db: &Db, side: &mut Sidecar) -> Result<(), String> {
+    if let Ok(Some(disk)) = read_sidecar(db) {
+        if disk.name == side.name && disk.scope == side.scope {
+            side.labels.extend(disk.labels);
+            for (l, f) in disk.fingerprints {
+                side.fingerprints.entry(l).or_insert(f);
+            }
+            side.hidden = match (side.hidden.take(), disk.hidden) {
+                (Some(a), Some(b)) => Some(a.into_iter().filter(|f| b.contains(f)).collect()),
+                (a, b) => a.or(b),
+            };
+            side.truncated |= disk.truncated;
+            for f in disk.inherited {
+                if !side.inherited.contains(&f) {
+                    side.inherited.push(f);
+                }
+            }
+        }
+    }
     let text = serde_json::to_string_pretty(side).map_err(|e| e.to_string())?;
     let tmp = db.dir.join(format!("{SIDECAR}.new"));
     let _ = std::fs::remove_file(&tmp);
@@ -329,6 +360,38 @@ impl Gateway {
         self.state.flow.record_file(&db.file, &side.labels);
     }
 
+    /// The database's size after a write, and a warning once it is over the
+    /// organization's cap (further loads and changes are then refused).
+    fn size_check(&self, reply: &Value) -> Option<Check> {
+        let bytes = reply.get("bytes").and_then(Value::as_u64)?;
+        let cap = self.state.policy().project_db.max_mb.max(1);
+        let mb = bytes / (1024 * 1024);
+        if mb > cap {
+            Some(Check {
+                id: "project_db.size".into(),
+                severity: Severity::Warn,
+                message: format!("The project database is now {mb} MB, over the organization's cap of {cap} MB: further loads and changes are refused until space is freed"),
+                detail: Some(json!({"bytes": bytes, "max_mb": cap})),
+                fix: Some("Drop tables or delete rows no longer needed (execute with DROP or DELETE still runs), or start a new database".into()),
+            })
+        } else {
+            Some(Check::info(
+                "project_db.size",
+                format!("The project database is {mb} MB (cap {cap} MB)"),
+            ))
+        }
+    }
+
+    fn project_db_lock(&self, dir: &Path) -> std::sync::Arc<tokio::sync::Mutex<()>> {
+        self.state
+            .project_db_locks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(dir.to_path_buf())
+            .or_default()
+            .clone()
+    }
+
     fn worker_params(&self, db: &Db) -> serde_json::Map<String, Value> {
         let p = self.state.policy();
         let mut m = serde_json::Map::new();
@@ -337,6 +400,7 @@ impl Gateway {
             "memory_mb".into(),
             json!(p.project_db.memory_mb.clamp(64, 65536)),
         );
+        m.insert("max_mb".into(), json!(p.project_db.max_mb.max(1)));
         m.insert("timeout_s".into(), json!(p.read_limits().max_seconds()));
         m
     }
@@ -491,6 +555,10 @@ impl Gateway {
             Ok(d) => d,
             Err(e) => return Err(self.deny(&ctx, rec, e)),
         };
+        // One action at a time on a database in this session, from reading
+        // its record to writing it back.
+        let lock = self.project_db_lock(&db.dir);
+        let _held = lock.lock().await;
         let side = match read_sidecar(&db) {
             Ok(s) => s,
             Err(e) => return Err(self.deny(&ctx, rec, e)),
@@ -531,6 +599,12 @@ impl Gateway {
                 rec,
                 format!("this project database is withheld: {why}. Ask the person whether to delete it (action delete) and build it again"),
             ));
+        }
+        // Every action from here opens the database, and what it says (a
+        // result, a count, an error message quoting a value) comes from
+        // what was loaded: the session carries its labels first.
+        for l in &side.labels {
+            self.state.flow.add(l.clone());
         }
         if db.file.exists() || !create {
             self.track_db(&db, &side);
@@ -609,7 +683,7 @@ impl Gateway {
             Err(e) => return Err(self.worker_failed(ctx, rec, e)),
         };
         side.history.push(json!({"at": now(), "action": "create"}));
-        if let Err(e) = write_sidecar(&db, &side) {
+        if let Err(e) = write_sidecar(&db, &mut side) {
             return Err(self.worker_failed(ctx, rec, e));
         }
         self.track_db(&db, &side);
@@ -785,6 +859,7 @@ impl Gateway {
             "project_db.loaded",
             format!("{rows} rows loaded into {table}"),
         )];
+        checks.extend(self.size_check(&reply));
         if meta.truncated {
             side.truncated = true;
             checks.push(Check {
@@ -792,7 +867,7 @@ impl Gateway {
                 severity: Severity::Warn,
                 message: format!("{handle} was cut off at a row limit when it was made, so {table} holds only part of the data, and so does everything built from this database"),
                 detail: None,
-                fix: Some("Narrow the original query with where or bbox so it is complete, or raise the limit in policy, then load again with mode replace".into()),
+                fix: Some("Make a complete result (narrow it with where or bbox, split it, or ask for a raised limit), then build a new project database from complete results: this one stays marked as partial, even if the table is loaded again".into()),
             });
         }
         for f in &meta.inherited {
@@ -902,10 +977,11 @@ impl Gateway {
         side.history.push(json!({"at": now(), "action": "execute", "statements": stmts.iter().map(|s| s.get("type")).collect::<Vec<_>>(), "provenance": prov}));
         trim(&mut side.history);
         write_sidecar(&db, side)?;
-        let checks = vec![Check::info(
+        let mut checks = vec![Check::info(
             "project_db.statements",
             format!("{n} statement(s) run in one transaction"),
         )];
+        checks.extend(self.size_check(&reply));
         self.provenance(
             ctx,
             Prov {
@@ -921,6 +997,7 @@ impl Gateway {
         let result = json!({
             "statements": stmts.iter().map(|s| json!({"index": s.get("index"), "type": s.get("type"), "rows": s.get("rows")})).collect::<Vec<_>>(),
             "seconds": reply.get("seconds"),
+            "bytes": reply.get("bytes"),
         });
         answer("execute", &db, result, &side.labels, checks, Some(prov))
     }
@@ -1064,7 +1141,7 @@ impl Gateway {
                 severity: Severity::Warn,
                 message: "A table in this project database was loaded from a result cut off at a row limit, so this result may cover only part of the data".into(),
                 detail: None,
-                fix: Some("Load that table again from a complete result (mode replace)".into()),
+                fix: Some("Build a new project database from complete results; once anything cut off was loaded, this one stays marked as partial".into()),
             });
         }
         if let Some(c) = &crs {

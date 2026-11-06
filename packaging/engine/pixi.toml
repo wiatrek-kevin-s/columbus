@@ -19,8 +19,11 @@ psycopg = ">=3.2"
 oracledb = ">=2.0"
 pyodbc = ">=5.1,<6"
 
-# Project databases: DuckDB and its spatial extension from PyPI, at the same
-# exact version (see workers/python/requirements-gis.txt).
-[pypi-dependencies]
-duckdb = "==1.5.5"
-duckdb-extension-spatial = "==1.5.5"
+pip = "*"
+
+# Project databases: DuckDB and its spatial extension are not taken from
+# PyPI by pixi (it cannot pin wheel hashes here); after `pixi install`, run
+# `pixi run project-db`, which installs them hash-checked from
+# workers/python/requirements-projectdb.txt.
+[tasks]
+project-db = "python -m pip install --require-hashes --no-deps --only-binary :all: -r ../../workers/python/requirements-projectdb.txt"

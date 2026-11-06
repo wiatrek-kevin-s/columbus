@@ -32,6 +32,8 @@ limits:
 project_db:
   enabled: true
   memory_mb: 2048      # engine memory per call; beyond it work spills to disk
+  max_mb: 20480        # most disk one database (and its spill folder) may take;
+                       # over it, loads and changes other than DROP/DELETE are refused
 
 return_rows: 500       # rows sent to the AI provider per call (500 is the maximum)
 

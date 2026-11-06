@@ -94,9 +94,13 @@ sessions). Every answer has `action`, `db`, `scope`, `status` ("done" or
 Refused in every statement: ATTACH, DETACH, COPY, EXPORT and IMPORT DATABASE, INSTALL,
 LOAD, SET, RESET, USE, PRAGMA, CALL, PREPARE, transaction statements, CREATE SECRET, and
 functions that read files, other databases, settings or SQL as text (`read_*`, `*_scan`,
-`glob`, `ST_Read*`, `query`, `query_table`, `current_setting`). Policy `project_db:
-{enabled, memory_mb}` turns the tool off or sets the engine's memory (default 2048 MB;
-beyond it, work spills to the database's own folder).
+`glob`, `ST_Read*`, `query`, `query_table`, `current_setting`, `error`, the logging
+functions). `query` and `describe` open the database read-only; EXPLAIN may only wrap a
+SELECT; a PIVOT goes to `query`. Policy `project_db: {enabled, memory_mb, max_mb}` turns
+the tool off, sets the engine's memory (default 2048 MB; beyond it, work spills to the
+database's own folder) and caps a database's size (default 20,480 MB; over it, only
+DROP, DELETE and VACUUM run). `load` and `execute` report `bytes` and a
+`project_db.size` check.
 
 ## Other providers, outputs and approvals
 

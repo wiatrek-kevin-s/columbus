@@ -249,6 +249,13 @@ async fn a_project_database_joins_governed_tables_and_keeps_their_labels() {
     assert!(!cols.contains("owner_ssn"), "{cols}");
     let r = ok(&pdb(&c, json!({"action": "load", "db": "county", "layer": assessor, "table": "assessor", "primary_key": ["parcel_id"]})).await);
     assert_eq!(r["result"]["result"]["rows"], 1000);
+    let ids: Vec<&str> = r["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["id"].as_str().unwrap())
+        .collect();
+    assert!(ids.contains(&"project_db.size"), "{ids:?}");
 
     // Schema work in one call, with no approval.
     let asked = person.asked.load(Ordering::SeqCst);
@@ -308,6 +315,17 @@ async fn a_project_database_joins_governed_tables_and_keeps_their_labels() {
         d["result"]["result"]["indexes"][0]["name"],
         "assessor_parcel"
     );
+
+    // A query cannot change the database, EXPLAIN ANALYZE included.
+    for sql in [
+        "EXPLAIN ANALYZE DROP TABLE land_use",
+        "EXPLAIN ANALYZE DELETE FROM parcels",
+    ] {
+        let e = err(&pdb(&c, json!({"action": "query", "db": "county", "sql": sql})).await);
+        assert!(e.contains("only of a SELECT"), "{sql}: {e}");
+    }
+    let n = ok(&pdb(&c, json!({"action": "query", "db": "county", "sql": "SELECT (SELECT count(*) FROM land_use) + (SELECT count(*) FROM parcels) AS n"})).await);
+    assert_eq!(n["result"]["result"]["rows"], json!([[1807]]));
 
     // Nothing outside the file: refused, audited, and nothing kept.
     let outside = root
@@ -417,6 +435,18 @@ async fn a_project_database_kept_for_later_follows_the_settings() {
     let c = start(&root, &py, Person::default()).await;
     let who = ok(&call(&c, "whoami", json!({})).await);
     assert_eq!(who["result"]["labels"], json!([]));
+    // Even a statement that fails reads the data: its error could quote a
+    // value. The session carries the database's labels, and the message
+    // does not quote the value.
+    let e = err(&pdb(
+        &c,
+        json!({"action": "execute", "db": "review", "scope": "project",
+        "sql": "CREATE TABLE ids AS SELECT CAST(parcel_id AS INTEGER) AS n FROM parcels"}),
+    )
+    .await);
+    assert!(e.contains("Conversion Error") && !e.contains("P0"), "{e}");
+    let who = ok(&call(&c, "whoami", json!({})).await);
+    assert_eq!(who["result"]["labels"], json!(["connection:county"]));
     let q = ok(&pdb(&c, json!({"action": "query", "db": "review", "scope": "project", "sql": "SELECT count(*) AS n FROM parcels"})).await);
     assert_eq!(q["result"]["labels"], json!(["connection:county"]));
     let who = ok(&call(&c, "whoami", json!({})).await);

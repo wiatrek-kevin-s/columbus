@@ -500,6 +500,9 @@ pub struct State {
     pub edits: crate::edit_tools::ChangeSets,
     /// Project databases this session has opened: folder -> database file.
     pub project_dbs: std::sync::Mutex<std::collections::BTreeMap<PathBuf, PathBuf>>,
+    /// One project_db action at a time per database folder.
+    pub project_db_locks:
+        std::sync::Mutex<std::collections::HashMap<PathBuf, Arc<tokio::sync::Mutex<()>>>>,
     pub session: String,
     pub user: String,
     pub notes: Vec<String>,
@@ -665,6 +668,7 @@ impl State {
             scripts: tokio::sync::Mutex::new(()),
             edits: Default::default(),
             project_dbs: Default::default(),
+            project_db_locks: Default::default(),
             paths,
             fixed: startup_only(&policy),
             live: std::sync::Mutex::new(Live {

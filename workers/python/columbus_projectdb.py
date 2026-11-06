@@ -21,6 +21,12 @@ carries, and the audit. This module enforces the rest inside the engine:
   exactly one SELECT (DESCRIBE, SUMMARIZE, SHOW and EXPLAIN included).
   Functions that read files or run SQL given as text are refused by name
   as well, before DuckDB sees them.
+- ``query`` and ``describe`` open the file read-only, so DuckDB itself
+  refuses any change they might make (EXPLAIN ANALYZE runs what it
+  explains, so EXPLAIN may only wrap a SELECT as well).
+- Error messages keep only their first line and, unless they are about a
+  name, nothing quoted in them: a conversion or key error can quote a
+  stored value.
 - A batch of statements runs in one transaction: all of it or none.
 - Each call has a time limit (the connection is interrupted) and a memory
   limit; work beyond memory spills into the database's own ``.tmp``
@@ -55,8 +61,22 @@ QUERY_TYPES = {"SELECT", "EXPLAIN"}
 _DENY_FUNCTIONS = re.compile(
     r"(?i)\b(read_\w+|\w+_scan|\w+_scan_\w+|glob|sniff_csv|parquet_\w+|st_read\w*|st_drivers|"
     r"query|query_table|getenv|load_extension|duckdb_secrets|which_secret|"
-    r"current_setting|duckdb_settings|duckdb_extensions)\s*\(")
+    r"current_setting|duckdb_settings|duckdb_extensions|"
+    r"enable_logging|disable_logging|truncate_duckdb_logs|duckdb_logs\w*|"
+    # error() raises its argument as the error text: a way to carry stored
+    # values out in a message.
+    r"error)\s*\(")
+# Checked on the statement with comments and quotes removed, so
+# `CREATE /*x*/ SECRET` is caught too.
 _SECRET = re.compile(r"(?i)^\s*create\s+(or\s+replace\s+)?((persistent|temporary|temp)\s+)?secret\b")
+_PIVOT = re.compile(r"(?i)^\s*(pivot|unpivot)\b")
+_EXPLAIN = re.compile(r"(?is)^\s*explain\s+(analy[sz]e\s+)?(\([^)]*\)\s*)?")
+
+# DuckDB error classes whose messages name things in the statement (a
+# column, a table, a function), not stored values: kept as they are. Other
+# messages (conversion, constraint, out of range, invalid input…) can quote
+# a value, so anything quoted in them is removed.
+_NAME_ERRORS = ("Parser Error", "Binder Error", "Catalog Error", "Syntax Error", "Permission Error")
 
 
 class ProjectDbError(Exception):
@@ -70,7 +90,7 @@ def _duckdb():
         return duckdb
     except ImportError as e:
         raise ProjectDbError(
-            f"project databases need DuckDB in the engine environment (pip install -r workers/python/requirements-gis.txt): {e}"
+            f"project databases need DuckDB in the engine environment (pip install --require-hashes --no-deps --only-binary :all: -r workers/python/requirements-projectdb.txt): {e}"
         ) from None
 
 
@@ -110,9 +130,12 @@ def _plain_path(path: Any) -> str:
     return path
 
 
-def _open(path: str, memory_mb: int, create: bool = False):
+def _open(path: str, memory_mb: int, create: bool = False, read_only: bool = False, max_mb: int | None = None):
     """A locked connection to the project database at ``path`` (and whether
-    the spatial functions are loaded)."""
+    the spatial functions are loaded). ``read_only`` for query and describe:
+    DuckDB itself then refuses every change, whatever a statement does
+    (EXPLAIN ANALYZE of a DELETE included). ``max_mb`` caps the disk the
+    engine may spill to."""
     duckdb = _duckdb()
     path = _plain_path(path)
     if not create and not os.path.isfile(path):
@@ -130,8 +153,10 @@ def _open(path: str, memory_mb: int, create: bool = False):
         "extension_directory": ext_dir,
         "threads": str(max(1, min(8, os.cpu_count() or 1))),
     }
+    if max_mb:
+        config["max_temp_directory_size"] = f"{max(64, int(max_mb))}MB"
     try:
-        con = duckdb.connect(path, config=config)
+        con = duckdb.connect(path, read_only=read_only, config=config)
     except duckdb.Error as e:
         raise ProjectDbError(f"could not open the project database: {_msg(e)}") from None
     spatial = False
@@ -166,7 +191,44 @@ def _qi(name: str) -> str:
 
 
 def _msg(e: Exception) -> str:
-    return str(e).strip().splitlines()[0][:500] if str(e).strip() else type(e).__name__
+    """A DuckDB error, safe to pass on: its first line only and, unless it
+    is about a name in the statement, nothing quoted in it (a value from the
+    data could be)."""
+    text = str(e).strip()
+    if not text:
+        return type(e).__name__
+    first = text.splitlines()[0][:500]
+    if not first.startswith(_NAME_ERRORS):
+        first = re.sub(r'"(?:[^"]|"")*"|\'(?:[^\']|\'\')*\'', '"…"', first)
+        # A message with no quotes at all may still be a value (error()
+        # is refused, but other functions raise their input as is).
+        kind, sep, _rest = first.partition(":")
+        if sep and kind.endswith("Error") and "…" not in first and kind.startswith("Invalid Input"):
+            first = f"{kind}: (details withheld: they may hold stored values)"
+    return first
+
+
+def db_bytes(path: str) -> int:
+    """The project database's size on disk: the file and its write-ahead log."""
+    path = _plain_path(path)
+    total = 0
+    for p in (path, path + ".wal"):
+        try:
+            total += os.path.getsize(p)
+        except OSError:
+            pass
+    return total
+
+
+def _check_size(path: str, max_mb: Any, what: str) -> None:
+    if not max_mb:
+        return
+    size = db_bytes(path)
+    if size > int(max_mb) * 1024 * 1024:
+        raise ProjectDbError(
+            f"the project database is {size / 1024 / 1024:,.0f} MB, over the organization's cap of {int(max_mb):,} MB "
+            f"(policy project_db.max_mb), so {what} is refused. Drop or delete what is no longer needed "
+            "(execute with DROP TABLE or DELETE still runs), or start a new database")
 
 
 class _Deadline:
@@ -230,17 +292,33 @@ def _strip_literals(sql: str) -> str:
                 out.append(c)
                 i += 1
         elif c == '"':
-            out.append(" ")
-            i += 1
+            # A quoted identifier, "" inside it included: its name stays
+            # (so "read_csv"( is still seen as a call), quote marks in it
+            # do not start a literal.
+            j = i + 1
+            name = []
+            while j < n:
+                if sql[j] == '"' and j + 1 < n and sql[j + 1] == '"':
+                    name.append('"')
+                    j += 2
+                    continue
+                if sql[j] == '"':
+                    break
+                name.append(sql[j])
+                j += 1
+            out.append("".join(name).replace("'", " ").replace('"', " "))
+            i = j + 1
         else:
             out.append(c)
             i += 1
     return "".join(out)
 
 
-def check_statements(con, sql: str, allowed: set[str]) -> list[dict[str, Any]]:
+def check_statements(con, sql: str, allowed: set[str], pivot: bool = False) -> list[dict[str, Any]]:
     """The statements in ``sql`` as DuckDB parses them, each checked:
-    [{index, type, sql}]. Raises with the first refused one."""
+    [{index, type, sql}]. Raises with the first refused one. With ``pivot``,
+    a PIVOT that DuckDB expands into helper statements (a CREATE TYPE and a
+    SELECT, with no text of their own) comes back as one SELECT."""
     duckdb = _duckdb()
     if not isinstance(sql, str) or not sql.strip():
         raise ProjectDbError("sql is required")
@@ -250,11 +328,27 @@ def check_statements(con, sql: str, allowed: set[str]) -> list[dict[str, Any]]:
         parsed = con.extract_statements(sql)
     except duckdb.Error as e:
         raise ProjectDbError(f"the SQL does not parse: {_msg(e)}") from None
+    kinds = [str(st.type).split(".")[-1] for st in parsed]
+    if (pivot and len(parsed) > 1 and _PIVOT.match(_strip_literals(sql))
+            and kinds[-1] == "SELECT" and all(k == "CREATE" for k in kinds[:-1])
+            and not any(st.query.strip() for st in parsed)):
+        m = _DENY_FUNCTIONS.search(_strip_literals(sql))
+        if m:
+            raise ProjectDbError(f"statement 1 is refused: {m.group(1)}() reads files, other databases, settings or SQL given as text, "
+                                 "or raises stored values as errors, which a project database does not allow")
+        return [{"index": 1, "type": "SELECT", "sql": sql.strip(), "pivot": True}]
     out = []
     for i, st in enumerate(parsed):
-        kind = str(st.type).split(".")[-1]
+        kind = kinds[i]
         text = st.query.strip()
-        if kind not in allowed:
+        if not text:
+            raise ProjectDbError(f"statement {i + 1} is refused: it cannot be read on its own (a PIVOT goes to action query, alone)")
+        stripped = _strip_literals(text)
+        if kind == "VACUUM" and re.match(r"(?i)^\s*analy[sz]e\b", stripped):
+            kind = "ANALYZE"
+        if kind == "ANALYZE" and "VACUUM" in allowed:
+            pass
+        elif kind not in allowed:
             what = {"ATTACH": "attaching other databases", "DETACH": "detaching databases", "COPY": "COPY to or from files",
                     "COPY_DATABASE": "copying databases", "EXPORT": "exporting the database to files", "LOAD": "installing or loading extensions",
                     "PRAGMA": "PRAGMA statements", "SET": "changing settings", "VARIABLE_SET": "changing settings",
@@ -263,12 +357,21 @@ def check_statements(con, sql: str, allowed: set[str]) -> list[dict[str, Any]]:
                     "EXPLAIN": "EXPLAIN here (use action query)"}.get(kind, f"{kind} statements")
             raise ProjectDbError(f"statement {i + 1} is refused: a project database does not allow {what}. "
                                  f"Allowed here: {', '.join(sorted(allowed))}")
-        if _SECRET.search(text):
+        if _SECRET.search(stripped):
             raise ProjectDbError(f"statement {i + 1} is refused: secrets are not allowed in a project database")
-        m = _DENY_FUNCTIONS.search(_strip_literals(text))
+        m = _DENY_FUNCTIONS.search(stripped)
         if m:
             raise ProjectDbError(f"statement {i + 1} is refused: {m.group(1)}() reads files, other databases, settings or SQL given as text, "
-                                 "which a project database does not allow; load data with action load instead")
+                                 "or raises stored values as errors, which a project database does not allow; load data with action load instead")
+        if kind == "EXPLAIN":
+            # EXPLAIN ANALYZE runs what it explains: only a SELECT may be inside.
+            inner = _EXPLAIN.sub("", text, count=1)
+            try:
+                inside = con.extract_statements(inner)
+            except duckdb.Error:
+                inside = []
+            if len(inside) != 1 or str(inside[0].type).split(".")[-1] != "SELECT":
+                raise ProjectDbError(f"statement {i + 1} is refused: EXPLAIN is allowed only of a SELECT")
         out.append({"index": i + 1, "type": kind, "sql": text})
     if not out:
         raise ProjectDbError("sql holds no statement")
@@ -373,7 +476,9 @@ def load(params: dict[str, Any]) -> dict[str, Any]:
     if missing:
         raise ProjectDbError(f"primary_key names columns the layer does not have: {', '.join(missing)}")
     timeout = float(params.get("timeout_s") or 120)
-    con, spatial = _open(path, int(params.get("memory_mb") or 2048))
+    max_mb = params.get("max_mb")
+    _check_size(path, max_mb, "loading more")
+    con, spatial = _open(path, int(params.get("memory_mb") or 2048), max_mb=max_mb)
     started = time.monotonic()
     try:
         with _Deadline(con, timeout) as dl:
@@ -475,7 +580,7 @@ def load(params: dict[str, Any]) -> dict[str, Any]:
         described = _columns(con, table)
     finally:
         con.close()
-    return {"table": table, "rows": rows, "columns": described, "geometry_column": geom, "crs": crs,
+    return {"table": table, "rows": rows, "columns": described, "geometry_column": geom, "crs": crs, "bytes": db_bytes(path),
             "hidden_columns": hidden, "primary_key": pk, "spatial": spatial, "seconds": round(time.monotonic() - started, 3)}
 
 
@@ -506,9 +611,13 @@ def execute(params: dict[str, Any]) -> dict[str, Any]:
     transaction. Returns each statement's kind and the rows it changed."""
     path = _plain_path(params.get("path"))
     timeout = float(params.get("timeout_s") or 120)
-    con, spatial = _open(path, int(params.get("memory_mb") or 2048))
+    max_mb = params.get("max_mb")
+    con, spatial = _open(path, int(params.get("memory_mb") or 2048), max_mb=max_mb)
     try:
         stmts = check_statements(con, params.get("sql"), EXECUTE_TYPES)
+        # Over the size cap, only statements that free space still run.
+        if not all(st["type"] in ("DROP", "DELETE", "VACUUM") for st in stmts):
+            _check_size(path, max_mb, "anything but DROP, DELETE and VACUUM")
         started = time.monotonic()
         done = []
         with _Deadline(con, timeout) as dl:
@@ -539,9 +648,9 @@ def execute(params: dict[str, Any]) -> dict[str, Any]:
                 except Exception:  # noqa: BLE001
                     pass
                 raise
-        return {"statements": done, "spatial": spatial, "seconds": round(time.monotonic() - started, 3)}
     finally:
         con.close()
+    return {"statements": done, "spatial": spatial, "seconds": round(time.monotonic() - started, 3), "bytes": db_bytes(path)}
 
 
 def _cell(v: Any) -> Any:
@@ -571,19 +680,20 @@ def query(params: dict[str, Any]) -> dict[str, Any]:
         raise ProjectDbError("output_stem is required")
     timeout = float(params.get("timeout_s") or 120)
     crs = g.crs_from_spec({"code": params["crs"]}) if params.get("crs") else None
-    con, spatial = _open(path, int(params.get("memory_mb") or 2048))
+    con, spatial = _open(path, int(params.get("memory_mb") or 2048), read_only=True, max_mb=params.get("max_mb"))
     stream = None
     started = time.monotonic()
     try:
-        stmts = check_statements(con, params.get("sql"), QUERY_TYPES)
+        stmts = check_statements(con, params.get("sql"), QUERY_TYPES, pivot=True)
         if len(stmts) != 1:
             raise ProjectDbError("query takes exactly one SELECT; use execute for statements that change the database")
         sql = stmts[0]["sql"].rstrip().rstrip(";")
         # A limit around the query, so the engine never builds more rows than
         # can be written; statements that cannot be wrapped run as they are
         # and are cut off while fetching.
-        bare = stmts[0]["type"] == "EXPLAIN" or re.match(r"(?is)^\s*(describe|show|summarize|pivot|unpivot)\b", sql)
-        run = sql if bare else f"SELECT * FROM ({sql}) AS columbus_q LIMIT {max_rows + 1}"
+        bare = stmts[0]["type"] == "EXPLAIN" or stmts[0].get("pivot") or re.match(r"(?is)^\s*(describe|show|summarize)\b", _strip_literals(sql))
+        # The newline ends a -- comment the statement may end with.
+        run = sql if bare else f"SELECT * FROM ({sql}\n) AS columbus_q LIMIT {max_rows + 1}"
         with _Deadline(con, timeout) as dl:
             try:
                 cur = con.execute(run)
@@ -651,7 +761,7 @@ def describe(params: dict[str, Any]) -> dict[str, Any]:
     """Tables and views with their columns, keys, indexes, comments and
     exact row counts."""
     path = _plain_path(params.get("path"))
-    con, spatial = _open(path, int(params.get("memory_mb") or 2048))
+    con, spatial = _open(path, int(params.get("memory_mb") or 2048), read_only=True)
     try:
         tables = []
         for name, comment, has_pk in con.execute(
