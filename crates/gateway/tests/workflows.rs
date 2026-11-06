@@ -461,6 +461,37 @@ async fn an_ai_review_reads_its_rows_and_nothing_else() {
     );
 }
 
+/// A stand-in for the AI service that streams its answer (server-sent
+/// events), as the real one does when asked to.
+async fn ai_stream_stand_in(text: &str) -> String {
+    use axum::routing::post;
+    let t = serde_json::to_string(text).unwrap();
+    let body = format!(
+        "event: message_start\ndata: {{\"type\":\"message_start\",\"message\":{{\"role\":\"assistant\",\"content\":[],\"usage\":{{\"input_tokens\":5}}}}}}\n\n\
+event: content_block_start\ndata: {{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{{\"type\":\"text\",\"text\":\"\"}}}}\n\n\
+event: content_block_delta\ndata: {{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{{\"type\":\"text_delta\",\"text\":{t}}}}}\n\n\
+event: content_block_stop\ndata: {{\"type\":\"content_block_stop\",\"index\":0}}\n\n\
+event: message_delta\ndata: {{\"type\":\"message_delta\",\"delta\":{{\"stop_reason\":\"end_turn\"}},\"usage\":{{\"output_tokens\":7}}}}\n\n\
+event: message_stop\ndata: {{\"type\":\"message_stop\"}}\n\n"
+    );
+    let app = axum::Router::new().route(
+        "/v1/messages",
+        post(move || {
+            let body = body.clone();
+            async move {
+                (
+                    [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+                    body,
+                )
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    format!("http://{addr}")
+}
+
 /// Run crash-check against a stand-in AI that answers `answer` with
 /// `status`; the run's record and how many calls the stand-in had.
 async fn run_review(env: &Env, status: u16, answer: Value) -> (Value, usize) {
@@ -526,6 +557,32 @@ async fn a_review_that_is_not_whole_or_not_allowed_never_reads_as_an_all_clear()
         "usage": {"input_tokens": 1, "output_tokens": 1}, "stop_reason": "end_turn"});
     let (rec, _) = run_review(&env, 200, good.clone()).await;
     assert_eq!(rec["review"]["status"], "done", "{rec}");
+
+    // A streamed answer is read whole.
+    let base = ai_stream_stand_in("{\"summary\": \"streamed ok\", \"flagged\": []}").await;
+    let vars = env.vars();
+    let w = env.workflows();
+    let rec = tokio::task::spawn_blocking(move || {
+        StdCommand::new(env!("CARGO_BIN_EXE_columbus-mcp"))
+            .args(["workflow", "run", "crash-check"])
+            .envs(vars)
+            .envs([
+                ("COLUMBUS_WORKFLOW_API_BASE", base.as_str()),
+                ("COLUMBUS_WORKFLOW_API_KEY", "sk-test"),
+            ])
+            .output()
+            .unwrap();
+        let latest = wf::list_runs(&w, "crash-check", 1)[0]["run"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        wf::read_run(&w, "crash-check", &latest).unwrap().0
+    })
+    .await
+    .unwrap();
+    assert_eq!(rec["review"]["status"], "done", "{rec}");
+    assert_eq!(rec["review"]["summary"], "streamed ok", "{rec}");
+    assert_eq!(rec["review"]["tokens"]["output"], 7, "{rec}");
 
     // The organization turns the review off after it was approved: nothing is sent.
     env.policy("allow_workflows: true\ndeny_tools: [workflow_review]\n");

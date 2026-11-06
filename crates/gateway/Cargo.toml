@@ -40,11 +40,12 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 rpassword = "7"
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json", "query"] }
+# The streamed-reply reader, for a workflow's AI review.
+columbus-chat = { path = "../chat" }
 # Registry downloads; TLS comes from the same features rmcp enables.
 reqwest = { version = "0.13", default-features = false }
 
 [dev-dependencies]
-columbus-chat = { path = "../chat" }
 reqwest = { version = "0.13", default-features = false, features = ["json"] }
 tempfile.workspace = true
 rmcp = { workspace = true, features = ["client", "transport-child-process", "transport-streamable-http-server"] }

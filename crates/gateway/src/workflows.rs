@@ -904,7 +904,10 @@ async fn review(
             Some("high" | "xhigh" | "max") => 32_000,
             _ => 8_000,
         };
+        // Streamed: bytes keep coming while the model thinks, so a long
+        // review is not cut off by a proxy waiting on an idle connection.
         let mut body = json!({
+            "stream": true,
             "model": model,
             "max_tokens": max_tokens,
             "system": REVIEW_SYSTEM,
@@ -928,8 +931,19 @@ async fn review(
             .await
             .map_err(|_| "the AI service could not be reached".to_string())?;
         let code = resp.status();
-        let bytes = resp.bytes().await.map_err(|_| "the reply was cut off".to_string())?;
-        let v: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+        let streamed = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|t| t.starts_with("text/event-stream"));
+        let v: Value = if code.is_success() && streamed {
+            columbus_chat::read_stream(resp)
+                .await
+                .map_err(|e| e.to_string())?
+        } else {
+            let bytes = resp.bytes().await.map_err(|_| "the reply was cut off".to_string())?;
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null)
+        };
         if !code.is_success() {
             return Err(format!(
                 "the AI service answered {}: {}",
@@ -1076,6 +1090,8 @@ fn push_delivery(record: &mut Value, d: Value) {
     if let Some(a) = record["deliveries"].as_array_mut() {
         a.push(d);
     }
+    // A run stopped at its limit after this still says what was delivered.
+    progress(record);
 }
 
 /// `run.json` and `report.md`, written whole.

@@ -759,7 +759,7 @@ const MAX_STREAM: usize = 32 * 1024 * 1024;
 
 /// A streamed reply (server-sent events) put together as the whole message
 /// the service would have answered without streaming.
-async fn read_stream(mut r: reqwest::Response) -> Result<Value> {
+pub async fn read_stream(mut r: reqwest::Response) -> Result<Value> {
     let mut buf: Vec<u8> = Vec::new();
     let mut seen = 0usize;
     let mut s = Assembly::default();
