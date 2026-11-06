@@ -77,7 +77,9 @@ Columbus adds the lines that connect `run` to it; leave out `if __name__ == "__m
 - **Nothing at import time**: the top level holds only a docstring, imports, functions,
   classes and names given plain values (numbers, text, `True`/`False`/`None`, and lists,
   tuples, sets and dicts of them: `METRES = {"mile": 1609.344}`). No calls, loops or `if`
-  there; the work goes in `run`. Class bodies hold only a docstring, methods and plain
+  there; the work goes in `run`. That includes the usual one-liners: write
+  `log = logging.getLogger("my-tool")` and `crs = pyproj.CRS.from_epsg(3081)` inside
+  `run(ctx)` (or a helper it calls), not at the top. Class bodies hold only a docstring, methods and plain
   values; no metaclass or class keywords, base classes by name only. Default values are
   plain values (use `None` and set the real default inside), annotations only name types.
 - **Reads as it runs**: names in plain ASCII (no look-alike letters); each top-level name
@@ -85,7 +87,8 @@ Columbus adds the lines that connect `run` to it; leave out `if __name__ == "__m
   helpers only `staticmethod`, `classmethod`, `property`, `dataclasses.dataclass`,
   `functools.cache` or `functools.lru_cache`; no Python special attributes or names
   (`__code__`, `__globals__`, `__dict__`, `__builtins__`... `__init__` and `__name__` are
-  fine), no `getattr`/`setattr`/`globals()`, no `sys.modules`, frames, `inspect`,
+  fine), no `getattr`/`setattr`/`eval`/`exec`/`globals()` (called or passed along), no
+  `from x import *` (name each import), no `sys.modules`, frames, `inspect`,
   `builtins`, `__main__`, `types` or `gc`; no coding declaration (`# coding: ...`) or
   byte-order mark; at most 2,000 lines, no more than 5 blank lines or 40 comment lines in
   a row.

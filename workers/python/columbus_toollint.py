@@ -163,6 +163,10 @@ class _Lint(ast.NodeVisitor):
         mod = node.module or ""
         self._module(node, mod)
         for a in node.names:
+            if a.name == "*":
+                # It binds names the reader cannot see, `run` among them.
+                self.err(node, "tool.import", f"from {mod or '.'} import *: name each thing you import, so the reader sees every name the tool uses")
+                continue
             full = f"{mod}.{a.name}" if mod else a.name
             if mod == "os" and (a.name in OS_CALLS or a.name in OS_ATTRS):
                 self.err(node, "tool.environment" if a.name in OS_ATTRS | {"getenv", "getenvb", "putenv", "unsetenv"} else "tool.process",
@@ -196,6 +200,10 @@ class _Lint(ast.NodeVisitor):
             self.err(node, "tool.introspection", f"{node.id}: a tool may not use Python's special names")
         if node.id == "__file__":
             self.warn(node, "tool.file", "__file__: a tool should not read its own folder")
+        # Refused builtins, called or passed along (map(eval, ...),
+        # functools.reduce(getattr, ...)).
+        if isinstance(node.ctx, ast.Load) and node.id in REFUSED_CALLS and node.id not in self.aliases:
+            self.err(node, "tool.call", f"{node.id}(): a tool may not use {REFUSED_CALLS[node.id]}")
         target = self.aliases.get(node.id)
         if target in ("os.environ", "os.environb"):
             self.err(node, "tool.environment", "environ: a tool may not read environment variables")
@@ -204,8 +212,6 @@ class _Lint(ast.NodeVisitor):
     def visit_Call(self, node: ast.Call) -> None:
         f = node.func
         name = self._resolve(f)
-        if isinstance(f, ast.Name) and f.id in REFUSED_CALLS and f.id not in self.aliases:
-            self.err(node, "tool.call", f"{f.id}(): a tool may not use {REFUSED_CALLS[f.id]}")
         if name.startswith("os.") and name[3:] in OS_CALLS:
             rule = "tool.environment" if name[3:] in ("getenv", "getenvb", "putenv", "unsetenv") else "tool.process"
             self.err(node, rule, f"{name}(): a tool may not read the environment, start programs or change the file system outside its outputs")

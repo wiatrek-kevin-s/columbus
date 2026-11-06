@@ -98,6 +98,13 @@ class ToolLintTest(unittest.TestCase):
             "def later(ctx):\n    import __main__\n    __main__.run = _h\n": "tool.import",
             "def later(ctx):\n    import inspect\n    return inspect.currentframe().f_globals\n": "tool.import",
             "import builtins\n": "tool.import",
+            # A star import binds names the reader cannot see, run among them.
+            "from cProfile import *\n": "tool.import",
+            "from os import *\n": "tool.import",
+            # Refused builtins passed along rather than called.
+            "def later(ctx):\n    import functools\n    return functools.reduce(getattr, ['a'], ctx)\n": "tool.call",
+            "def later(ctx):\n    return list(map(eval, ['1']))\n": "tool.call",
+            "def later(ctx):\n    f = exec\n    return f\n": "tool.call",
         }
         for extra, rule in swaps.items():
             code = "def _h(ctx):\n    return {'evil': 1}\n\n\ndef run(ctx):\n    return {}\n\n\n" + extra
@@ -115,6 +122,9 @@ class ToolLintTest(unittest.TestCase):
             "@lru_cache(maxsize=8)\ndef helper(x: float | None = None) -> float:\n    return math.sqrt(x or 0)\n\n\ndef run(ctx):\n    return {'n': helper(LIMIT)}\n"
         )
         errors, _, _ = rules(ok)
+        self.assertEqual(errors, set())
+        # A name imported under a refused builtin's name is that import, not the builtin.
+        errors, _, _ = rules("from re import compile\n\n\ndef run(ctx):\n    return {'ok': bool(compile('a').match('a'))}\n")
         self.assertEqual(errors, set())
 
     def test_long_code_and_comment_runs_are_refused(self):
