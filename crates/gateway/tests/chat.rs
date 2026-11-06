@@ -415,6 +415,130 @@ async fn the_model_sees_a_map_snapshot_as_a_picture() {
     chat.close().await;
 }
 
+/// A reply as the AI service streams it: each text and tool input split
+/// across events.
+fn sse_of(msg: &Value) -> String {
+    let mut out = String::new();
+    let mut ev = |t: &str, v: Value| out.push_str(&format!("event: {t}\ndata: {v}\n\n"));
+    ev(
+        "message_start",
+        json!({"type": "message_start", "message": {"id": "m", "role": "assistant", "model": "x", "content": [], "usage": {"input_tokens": 10}}}),
+    );
+    for (i, b) in msg["content"].as_array().unwrap().iter().enumerate() {
+        match b["type"].as_str().unwrap() {
+            "text" => {
+                ev(
+                    "content_block_start",
+                    json!({"type": "content_block_start", "index": i, "content_block": {"type": "text", "text": ""}}),
+                );
+                let t = b["text"].as_str().unwrap();
+                let (x, y) = t.split_at(t.len() / 2);
+                for part in [x, y] {
+                    ev(
+                        "content_block_delta",
+                        json!({"type": "content_block_delta", "index": i, "delta": {"type": "text_delta", "text": part}}),
+                    );
+                }
+            }
+            "tool_use" => {
+                ev(
+                    "content_block_start",
+                    json!({"type": "content_block_start", "index": i, "content_block": {"type": "tool_use", "id": b["id"], "name": b["name"], "input": {}}}),
+                );
+                let j = b["input"].to_string();
+                let (x, y) = j.split_at(j.len() / 2);
+                for part in [x, y] {
+                    ev(
+                        "content_block_delta",
+                        json!({"type": "content_block_delta", "index": i, "delta": {"type": "input_json_delta", "partial_json": part}}),
+                    );
+                }
+            }
+            _ => unreachable!(),
+        }
+        ev(
+            "content_block_stop",
+            json!({"type": "content_block_stop", "index": i}),
+        );
+        ev("ping", json!({"type": "ping"}));
+    }
+    ev(
+        "message_delta",
+        json!({"type": "message_delta", "delta": {"stop_reason": msg["stop_reason"]}, "usage": {"output_tokens": 5}}),
+    );
+    ev("message_stop", json!({"type": "message_stop"}));
+    out
+}
+
+#[tokio::test]
+async fn a_streamed_reply_is_put_together_whole() {
+    let Some(py) = python() else {
+        return;
+    };
+    let (_dir, root) = setup(&py);
+    let script: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(vec![
+        tool_use(
+            "q",
+            "query_features",
+            json!({"connection": "tiger", "dataset": "tracts"}),
+        ),
+        json!({"content": [{"type": "text", "text": "Two tracts, both in Texas."}], "stop_reason": "end_turn"}),
+    ]));
+    let seen: Arc<Mutex<Vec<Value>>> = Arc::default();
+    let (sc, sn) = (script.clone(), seen.clone());
+    let app = Router::new().route(
+        "/v1/messages",
+        post(move |Json(body): Json<Value>| {
+            let (sc, sn) = (sc.clone(), sn.clone());
+            async move {
+                sn.lock().unwrap().push(body);
+                let next = sc.lock().unwrap().remove(0);
+                ([("content-type", "text/event-stream")], sse_of(&next))
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let ui = Arc::new(TestUi {
+        events: Mutex::default(),
+        prompts: Mutex::default(),
+        withdrawn: Mutex::default(),
+        answer: Answer::Decline,
+    });
+    let mut chat = Chat::start(
+        config(&root, &py, format!("http://{addr}")),
+        ui.clone(),
+        Cancel::default(),
+    )
+    .await
+    .unwrap();
+    chat.send("how many tracts?", &Cancel::default())
+        .await
+        .unwrap();
+    let seen = seen.lock().unwrap().clone();
+    assert_eq!(seen[0]["stream"], true, "asked for a stream");
+    // The tool ran with its arguments put back together from the pieces.
+    let result = seen[1]["messages"].as_array().unwrap().last().unwrap()["content"][0].clone();
+    assert_eq!(result["type"], "tool_result", "{result}");
+    assert_ne!(result["is_error"], true, "{result}");
+    let said: Vec<String> = ui
+        .events
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|e| match e {
+            Event::Text { text } => Some(text.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        said.iter().any(|t| t == "Two tracts, both in Texas."),
+        "{said:?}"
+    );
+    chat.close().await;
+}
+
 #[tokio::test]
 async fn script_code_reaches_the_window_apart_from_the_servers_words() {
     let Some(py) = python() else {

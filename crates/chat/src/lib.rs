@@ -401,8 +401,9 @@ impl Chat {
         }
         // No redirects: the key header would follow them to another host.
         let http = reqwest::Client::builder()
-            // High effort can think for minutes before answering.
-            .timeout(Duration::from_secs(900))
+            // A streamed reply may take long in all; each read waits at
+            // most a few minutes (see read_stream).
+            .timeout(Duration::from_secs(3600))
             .redirect(reqwest::redirect::Policy::none())
             .build()?;
         Ok(Chat {
@@ -589,6 +590,9 @@ impl Chat {
         if !self.cfg.effort.is_empty() {
             body["output_config"] = json!({"effort": self.cfg.effort});
         }
+        // Streamed: bytes keep arriving while the model thinks, so a long
+        // reply is not cut off by a proxy waiting for an idle connection.
+        body["stream"] = json!(true);
         let url = format!("{}/v1/messages", self.cfg.api_base.trim_end_matches('/'));
         let mut tries = 0;
         loop {
@@ -603,6 +607,14 @@ impl Chat {
                 .await
                 .map_err(|e| anyhow!("could not reach the AI service: {}", plain(&e)))?;
             let code = r.status();
+            let streamed = r
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .is_some_and(|t| t.starts_with("text/event-stream"));
+            if code.is_success() && streamed {
+                return read_stream(r).await;
+            }
             let v: Value = r.json().await.unwrap_or(Value::Null);
             if code.is_success() {
                 return Ok(v);
@@ -729,6 +741,156 @@ impl Chat {
 
     pub async fn close(self) {
         let _ = self.client.cancel().await;
+    }
+}
+
+/// Most bytes of one streamed reply kept.
+const MAX_STREAM: usize = 32 * 1024 * 1024;
+
+/// A streamed reply (server-sent events) put together as the whole message
+/// the service would have answered without streaming.
+async fn read_stream(mut r: reqwest::Response) -> Result<Value> {
+    let mut buf: Vec<u8> = Vec::new();
+    let mut seen = 0usize;
+    let mut s = Assembly::default();
+    loop {
+        let chunk = tokio::time::timeout(Duration::from_secs(180), r.chunk())
+            .await
+            .map_err(|_| anyhow!("the AI service stopped sending in the middle of a reply"))?
+            .map_err(|e| anyhow!("the reply was cut off: {}", plain(&e)))?;
+        let Some(chunk) = chunk else { break };
+        seen += chunk.len();
+        if seen > MAX_STREAM {
+            bail!("the reply was larger than Columbus takes");
+        }
+        buf.extend_from_slice(&chunk);
+        while let Some(end) = find_event_end(&buf) {
+            let event: Vec<u8> = buf.drain(..end).collect();
+            for line in String::from_utf8_lossy(&event).lines() {
+                if let Some(data) = line.strip_prefix("data:") {
+                    if let Ok(v) = serde_json::from_str::<Value>(data.trim_start()) {
+                        if s.take(v)? {
+                            return Ok(s.message());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if s.started {
+        Ok(s.message())
+    } else {
+        bail!("the AI service sent no reply")
+    }
+}
+
+/// Where the first event in `buf` ends (after its blank line).
+fn find_event_end(buf: &[u8]) -> Option<usize> {
+    let a = buf.windows(2).position(|w| w == b"\n\n").map(|i| i + 2);
+    let b = buf.windows(4).position(|w| w == b"\r\n\r\n").map(|i| i + 4);
+    match (a, b) {
+        (Some(x), Some(y)) => Some(x.min(y)),
+        (x, y) => x.or(y),
+    }
+}
+
+#[derive(Default)]
+struct Assembly {
+    started: bool,
+    message: Value,
+    blocks: Vec<Value>,
+    json: Vec<String>,
+}
+
+impl Assembly {
+    /// One event; true when the message is complete.
+    fn take(&mut self, v: Value) -> Result<bool> {
+        let at = |v: &Value| v["index"].as_u64().map(|i| i as usize);
+        match v["type"].as_str().unwrap_or("") {
+            "message_start" => {
+                self.started = true;
+                self.message = v["message"].clone();
+            }
+            "content_block_start" => {
+                let Some(i) = at(&v) else { return Ok(false) };
+                if i > 1000 {
+                    bail!("the reply had too many parts");
+                }
+                while self.blocks.len() <= i {
+                    self.blocks.push(Value::Null);
+                    self.json.push(String::new());
+                }
+                self.blocks[i] = v["content_block"].clone();
+            }
+            "content_block_delta" => {
+                let Some(i) = at(&v).filter(|i| *i < self.blocks.len()) else {
+                    return Ok(false);
+                };
+                let d = &v["delta"];
+                let b = &mut self.blocks[i];
+                let append = |b: &mut Value, k: &str, t: &str| {
+                    let now = b[k].as_str().unwrap_or("").to_string();
+                    b[k] = json!(now + t);
+                };
+                match d["type"].as_str().unwrap_or("") {
+                    "text_delta" => append(b, "text", d["text"].as_str().unwrap_or("")),
+                    "thinking_delta" => append(b, "thinking", d["thinking"].as_str().unwrap_or("")),
+                    "signature_delta" => {
+                        append(b, "signature", d["signature"].as_str().unwrap_or(""))
+                    }
+                    "input_json_delta" => {
+                        self.json[i].push_str(d["partial_json"].as_str().unwrap_or(""))
+                    }
+                    _ => {}
+                }
+            }
+            "content_block_stop" => {
+                let Some(i) = at(&v).filter(|i| *i < self.blocks.len()) else {
+                    return Ok(false);
+                };
+                if self.blocks[i]["type"] == "tool_use"
+                    || self.blocks[i]["type"] == "server_tool_use"
+                {
+                    let j = std::mem::take(&mut self.json[i]);
+                    self.blocks[i]["input"] = if j.trim().is_empty() {
+                        json!({})
+                    } else {
+                        serde_json::from_str(&j).unwrap_or(json!({}))
+                    };
+                }
+            }
+            "message_delta" => {
+                for (k, x) in v["delta"].as_object().into_iter().flatten() {
+                    self.message[k] = x.clone();
+                }
+                if let Some(u) = v["usage"].as_object() {
+                    for (k, x) in u {
+                        self.message["usage"][k] = x.clone();
+                    }
+                }
+            }
+            "message_stop" => return Ok(true),
+            "error" => bail!(
+                "the AI service answered: {}",
+                v["error"]["message"].as_str().unwrap_or("an error")
+            ),
+            _ => {}
+        }
+        Ok(false)
+    }
+
+    fn message(&mut self) -> Value {
+        let mut m = std::mem::take(&mut self.message);
+        if !m.is_object() {
+            m = json!({});
+        }
+        m["content"] = Value::Array(
+            std::mem::take(&mut self.blocks)
+                .into_iter()
+                .filter(|b| !b.is_null())
+                .collect(),
+        );
+        m
     }
 }
 
