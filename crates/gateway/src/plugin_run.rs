@@ -166,7 +166,10 @@ impl Gateway {
                 }
                 (
                     ParamSpec::String {
-                        choices, default, ..
+                        choices,
+                        format,
+                        default,
+                        ..
                     },
                     v,
                 ) => {
@@ -178,6 +181,21 @@ impl Gateway {
                     let Some(s) = s else {
                         return Err(self.deny(ctx, rec, format!("{name} must be text")));
                     };
+                    if let Some(f) = format {
+                        if !f.accepts(&s) {
+                            return Err(self.deny(
+                                ctx,
+                                rec,
+                                format!(
+                                    "{name} must be {}",
+                                    match f {
+                                        crate::plugins::TextFormat::FieldName => "a field name (letters, digits and _, at most 64)",
+                                        crate::plugins::TextFormat::Label => "a short label (letters, digits, spaces and - _ . , : / # & +, at most 80)",
+                                    }
+                                ),
+                            ));
+                        }
+                    }
                     if choices.as_ref().is_some_and(|c| !c.contains(&s)) {
                         return Err(self.deny(
                             ctx,

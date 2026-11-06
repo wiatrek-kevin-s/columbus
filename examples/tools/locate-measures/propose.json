@@ -20,7 +20,7 @@
     }
   },
   "params": {
-    "route_field": {"type": "string", "description": "The routes field holding the route id", "default": "RTE_ID"},
+    "route_field": {"type": "string", "format": "field_name", "description": "The routes field holding the route id", "default": "RTE_ID"},
     "measure_unit": {"type": "string", "description": "Unit of the measures written", "enum": ["mile", "foot", "kilometre", "metre"], "default": "mile"},
     "max_distance": {"type": "number", "description": "Farthest a point may be from a route and still be located", "unit": "foot", "default": 100, "min": 0, "max": 5280}
   },

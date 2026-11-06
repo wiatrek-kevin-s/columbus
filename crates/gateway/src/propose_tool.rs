@@ -147,6 +147,11 @@ pub struct ParamDecl {
     /// Allowed values, for strings.
     #[serde(default, rename = "enum")]
     pub choices: Option<Vec<String>>,
+    /// For strings without `enum`: `field_name` or `label`. Every text
+    /// parameter has one or the other, so nothing given at run time can be
+    /// code, an expression or a template.
+    #[serde(default)]
+    pub format: Option<crate::plugins::TextFormat>,
     /// May be left out (with no default).
     #[serde(default)]
     pub optional: bool,
@@ -429,6 +434,18 @@ fn param_spec(problems: &mut Vec<String>, name: &str, p: &ParamDecl) -> ParamSpe
             if p.unit.is_some() {
                 problems.push(format!("{what}: a unit is for numbers"));
             }
+            match (&p.choices, p.format) {
+                (None, None) => problems.push(format!(
+                    "{what}: text needs either enum (the allowed values) or format: field_name (a column name) or label (a short label or code), so what is passed at run time can never be code or an expression"
+                )),
+                (Some(_), Some(_)) => problems.push(format!("{what}: give enum or format, not both")),
+                _ => {}
+            }
+            if let (Some(f), Some(Value::String(d))) = (p.format, &p.default) {
+                if !f.accepts(d) {
+                    problems.push(format!("{what}: the default does not have the format"));
+                }
+            }
             if let Some(c) = &p.choices {
                 if c.is_empty() || c.len() > 50 {
                     problems.push(format!("{what}: enum needs 1 to 50 values"));
@@ -452,6 +469,7 @@ fn param_spec(problems: &mut Vec<String>, name: &str, p: &ParamDecl) -> ParamSpe
             }
             ParamSpec::String {
                 choices: p.choices.clone(),
+                format: p.format,
                 default,
                 optional: p.optional,
                 description: Some(p.description.clone()),
@@ -1482,6 +1500,22 @@ mod tests {
         ] {
             assert!(p.contains(want), "missing {want:?} in:\n{p}");
         }
+        // Text parameters need enum or a format, never free text.
+        let text = |v: Value| -> ParamDecl { serde_json::from_value(v).unwrap() };
+        let mut a = good();
+        a.params.insert(
+            "where".into(),
+            text(json!({"type": "string", "description": "Which rows to keep"})),
+        );
+        let p = build(&a).err().unwrap().join("\n");
+        assert!(p.contains("needs either enum"), "{p}");
+        let mut a = good();
+        a.params.insert(
+            "route_field".into(),
+            text(json!({"type": "string", "format": "field_name", "description": "The route id field", "default": "a > 1 or b"})),
+        );
+        let p = build(&a).err().unwrap().join("\n");
+        assert!(p.contains("does not have the format"), "{p}");
         let mut a = good();
         a.code = "def run(ctx):\n    x = 1 # \u{202E}\n".into();
         assert!(build(&a).is_err());

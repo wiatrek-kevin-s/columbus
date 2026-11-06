@@ -46,6 +46,53 @@ pub struct FieldSpec {
     pub description: Option<String>,
 }
 
+/// The shapes a text parameter may take when it is not one of a fixed list:
+/// enough for field names and labels, never for code, expressions or
+/// templates (no brackets, braces, quotes, `@`, `%`, `$`, backslashes or
+/// line breaks).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TextFormat {
+    /// A field or column name: letters, digits and `_`, starting with a
+    /// letter or `_`, at most 64 characters.
+    FieldName,
+    /// A short label or code (a route id, a title): letters, digits,
+    /// spaces and `-_.,:/#&+` , at most 80 characters.
+    Label,
+}
+
+impl TextFormat {
+    pub fn pattern(self) -> &'static str {
+        match self {
+            TextFormat::FieldName => "^[A-Za-z_][A-Za-z0-9_]{0,63}$",
+            TextFormat::Label => "^[A-Za-z0-9 _.,:/#&+-]{0,80}$",
+        }
+    }
+
+    pub fn max_len(self) -> usize {
+        match self {
+            TextFormat::FieldName => 64,
+            TextFormat::Label => 80,
+        }
+    }
+
+    /// Whether `s` has this shape.
+    pub fn accepts(self, s: &str) -> bool {
+        let ok_char = |c: char, first: bool| match self {
+            TextFormat::FieldName => {
+                c == '_' || c.is_ascii_alphabetic() || (!first && c.is_ascii_digit())
+            }
+            TextFormat::Label => c.is_ascii_alphanumeric() || " _.,:/#&+-".contains(c),
+        };
+        let n = s.chars().count();
+        let size_ok = match self {
+            TextFormat::FieldName => (1..=64).contains(&n),
+            TextFormat::Label => n <= 80,
+        };
+        size_ok && s.chars().enumerate().all(|(i, c)| ok_char(c, i == 0))
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum ParamSpec {
@@ -88,6 +135,9 @@ pub enum ParamSpec {
     String {
         #[serde(default, rename = "enum")]
         choices: Option<Vec<String>>,
+        /// The shape the text must have, when it is not one of `enum`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        format: Option<TextFormat>,
         #[serde(default)]
         default: Option<String>,
         /// No default, and may be left out.
@@ -498,6 +548,7 @@ pub fn input_schema(t: &PluginTool) -> Value {
             }
             ParamSpec::String {
                 choices,
+                format,
                 default,
                 optional,
                 ..
@@ -505,6 +556,10 @@ pub fn input_schema(t: &PluginTool) -> Value {
                 let mut s = json!({"type": "string"});
                 if let Some(c) = choices {
                     s["enum"] = json!(c);
+                }
+                if let Some(f) = format {
+                    s["pattern"] = json!(f.pattern());
+                    s["maxLength"] = json!(f.max_len());
                 }
                 if let Some(d) = default {
                     s["default"] = json!(d);
@@ -1454,5 +1509,52 @@ tools:
             load().status(load().get("contoso.lrs-check").unwrap()),
             PluginStatus::Changed { .. }
         ));
+    }
+}
+
+#[cfg(test)]
+mod text_format_tests {
+    use super::TextFormat;
+
+    #[test]
+    fn text_formats_accept_only_their_shape() {
+        for ok in ["RTE_ID", "_x", "route2"] {
+            assert!(TextFormat::FieldName.accepts(ok), "{ok}");
+        }
+        for bad in [
+            "",
+            "2x",
+            "a b",
+            "a.b",
+            "os.system",
+            "x'",
+            "a>1",
+            &"a".repeat(65),
+            "é",
+        ] {
+            assert!(!TextFormat::FieldName.accepts(bad), "{bad}");
+        }
+        for ok in [
+            "IH0035",
+            "US 290 W",
+            "District 14: north/south #2 & 3 - final",
+            "",
+        ] {
+            assert!(TextFormat::Label.accepts(ok), "{ok}");
+        }
+        for bad in [
+            "{0.x}",
+            "a@b",
+            "a > 1",
+            "x'y",
+            "a\nb",
+            "100%",
+            "$x",
+            "a\\b",
+            "(x)",
+            &"a".repeat(81),
+        ] {
+            assert!(!TextFormat::Label.accepts(bad), "{bad}");
+        }
     }
 }

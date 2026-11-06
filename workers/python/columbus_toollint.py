@@ -73,6 +73,8 @@ ESCAPE_ATTRS = {"os", "_os", "sys", "_sys", "posix", "nt", "builtins", "bltns", 
 # Parts of allowed packages that load native code, start programs, read
 # from outside the tool's inputs or import modules named in text.
 REFUSED_SUBMODULES = {"numpy.ctypeslib", "numpy.f2py", "numpy.distutils", "numpy.testing", "pandas.io.clipboard",
+                      "pandas.compat", "numpy.lib.npyio", "numpy.lib.format", "networkx.drawing.nx_pydot",
+                      "networkx.drawing.nx_agraph", "pyproj.sync", "pyproj.network", "pandas.io.formats.style",
                       "pandas.io.clipboards", "pandas.util", "pandas.testing", "logging.handlers", "logging.config",
                       "scipy.weave", "networkx.utils.backends"}
 # Methods refused by name on any object: the clipboard (other programs,
@@ -108,14 +110,41 @@ REFUSED_SYS = {"sys.modules", "sys._getframe", "sys.settrace", "sys.setprofile",
 # getattr), refused wherever they are named.
 REFUSED_NAMES = {"operator.attrgetter", "operator.methodcaller", "string.Formatter", "logging.config",
                  "pandas.eval", "typing.ForwardRef", "typing.get_type_hints", "functools.singledispatch",
-                 "pandas.options", "pandas.set_option", "pandas.option_context", "pandas.read_clipboard"}
+                 "pandas.options", "pandas.set_option", "pandas.option_context", "pandas.read_clipboard",
+                 "scipy.LowLevelCallable"}
+# Attribute names refused on any object: pandas Styler's template engine.
+TEMPLATE_ATTRS = {"from_custom_template", "env", "loader", "template_html", "template_latex", "template_string"}
+# Text that names a keyword which makes a library load code or pickles,
+# refused anywhere (as a dict key for ** unpacking).
+REFUSED_KEYWORD_TEXT = {"backend", "allow_pickle"}
 # Library settings: any attribute whose name is about configuration,
 # backends, data folders or the network, on any object (nx.config,
 # rasterio.env.setenv, pyproj.datadir.set_data_dir, pd.plotting.plot_params).
-SETTINGS_ATTR = re.compile(r"(config|backend|setenv|defenv|from_defaults|data_dir|network|plot_params|^options$|^drivers$)", re.I)
+_SETTINGS_NAMES = {
+    "config", "configs", "get_config", "set_config", "show_config", "backend", "backends", "set_backend",
+    "setenv", "defenv", "delenv", "getenv", "from_defaults", "set_gdal_config", "get_gdal_config", "del_gdal_config",
+    "set_data_dir", "append_data_dir", "get_data_dir", "set_network_enabled", "is_network_enabled",
+    "set_ca_bundle_path", "plot_params", "options", "set_proj_data_search_path", "set_use_global_context",
+    "set_option", "option_context",
+}
+
+
+class _Names:
+    """Exact names (a field called `network` or `config_name` is fine)."""
+
+    def search(self, name: str) -> bool:
+        return name in _SETTINGS_NAMES
+
+
+SETTINGS_ATTR = _Names()
 # GDAL settings can change where GDAL loads plugins and data from: rasterio
 # and fiona's Env take no settings in a tool.
-ENV_CALLS = {"rasterio.Env", "rasterio.env.Env", "fiona.Env", "fiona.env.Env"}
+ENV_CALLS = {"rasterio.Env", "rasterio.env.Env", "fiona.Env", "fiona.env.Env", "rasterio.drivers", "fiona.drivers"}
+# Callables that may only be called in place, never passed around, so the
+# checks on their arguments always apply (q = gdf.query; q(text)).
+CALL_ONLY_ATTRS = {"query", "eval"}
+# Calls whose positional arguments reach a refused setting.
+POSITIONAL_LIMITS = {"load": 2, "hist": 2, "boxplot": 2, "hist_series": 2, "hist_frame": 2, "boxplot_frame": 2}
 # Modules whose objects may only be used as `module.thing`, never passed
 # around under another name (o = os; o.system(...)).
 DIRECT_ONLY = {"os", "sys", "shutil", "operator", "string", "io", "logging", "functools", "pathlib", "tempfile"}
@@ -262,6 +291,14 @@ class _Lint(ast.NodeVisitor):
             self.err(node, "tool.private", f".{node.attr}: a tool may use only the public parts of other objects (no names starting with _)")
         if any(full == r or full.startswith(r + ".") for r in REFUSED_SUBMODULES):
             self.err(node, "tool.import", f"{full}: this part of {_root(full)} loads native code, starts programs or loads modules named in text")
+        if node.attr in TEMPLATE_ATTRS:
+            self.err(node, "tool.settings", f".{node.attr}: a tool may not use template engines (they run code)")
+        parent = self.parents.get(id(node))
+        is_func = isinstance(parent, ast.Call) and parent.func is node
+        if node.attr in CALL_ONLY_ATTRS and not is_func:
+            self.err(node, "tool.eval", f".{node.attr}: call it in place with a fixed expression; do not pass it around")
+        if full in ENV_CALLS and not is_func:
+            self.err(node, "tool.settings", f"{full}: call it in place (with no settings); do not pass it around or subclass it")
         if SETTINGS_ATTR.search(node.attr):
             self.err(node, "tool.settings", f".{node.attr}: a tool may not read or change a library's settings, backends, data folders or network use")
         if node.attr in REFUSED_METHODS:
@@ -291,6 +328,10 @@ class _Lint(ast.NodeVisitor):
         if node.id in REFUSED_CALLS and node.id not in self.top_imports:
             self.err(node, "tool.call", f"{node.id}: this is the name of a Python built-in a tool may not use ({REFUSED_CALLS[node.id]}); give anything of your own another name")
         target = self.aliases.get(node.id)
+        if isinstance(node.ctx, ast.Load) and target in ENV_CALLS:
+            parent = self.parents.get(id(node))
+            if not (isinstance(parent, ast.Call) and parent.func is node):
+                self.err(node, "tool.settings", f"{node.id} ({target}): call it in place (with no settings); do not pass it around or subclass it")
         if isinstance(node.ctx, ast.Load) and target:
             if any(target == r or target.startswith(r + ".") for r in REFUSED_NAMES):
                 self.err(node, "tool.introspection", f"{node.id} ({target}): a tool may not reach attributes or code by a name written as text")
@@ -316,9 +357,15 @@ class _Lint(ast.NodeVisitor):
             text = _const_str(expr) if expr is not None else None
             if text is None or "@" in text or "__" in text:
                 self.err(node, "tool.eval", f".{f.attr}(): only a fixed expression written in the tool, with no @names, is allowed; filter with a mask instead (gdf[gdf[field] > value])")
+        attr = f.attr if isinstance(f, ast.Attribute) else (f.id if isinstance(f, ast.Name) else "")
+        limit = POSITIONAL_LIMITS.get(attr) or POSITIONAL_LIMITS.get(name.rsplit(".", 1)[-1])
+        if limit is not None and len(node.args) > limit:
+            self.err(node, "tool.call", f"{attr}(): give arguments after the first {limit} as keywords, so settings like allow_pickle and backend can be checked")
         if name in ENV_CALLS and (node.args or node.keywords):
             self.err(node, "tool.settings", f"{name}(...): a tool may not change GDAL's settings; use {name}() with no arguments if you need it at all")
         for k in node.keywords:
+            if k.arg is None and not isinstance(k.value, ast.Name):
+                self.err(node, "tool.call", "**{...}: write the keywords out, or unpack a plain name (**profile)")
             if k.arg == "backend":
                 self.err(node, "tool.settings", "backend=: a library loads the module this names; leave it at its default")
             if k.arg == "allow_pickle" and not (isinstance(k.value, ast.Constant) and k.value.value is False):
@@ -348,6 +395,8 @@ class _Lint(ast.NodeVisitor):
                 v = v.decode("utf-8", "replace")
             except Exception:  # noqa: BLE001
                 v = ""
+        if isinstance(v, str) and v in REFUSED_KEYWORD_TEXT and id(node) not in self.docstrings:
+            self.err(node, "tool.settings", f"{v!r}: this names a setting that loads code or pickles; leave it at its default")
         if isinstance(v, str) and id(node) not in self.docstrings:
             bad = [m for m in DUNDER_IN_TEXT.findall(v) if m not in DUNDERS_OK]
             if bad:
@@ -530,8 +579,15 @@ def _top_level(tree: ast.Module, lint: _Lint) -> None:
             lint.visit(node)
         else:
             lint.local_names.update(_bound_names(node))
+    plain_imports: set[str] = set()
     for i, node in enumerate(tree.body):
+        # `import rasterio` and `import rasterio.features` bind one name.
+        plain = isinstance(node, ast.Import) and all(a.asname is None for a in node.names)
         for name in _bound_names(node):
+            if plain and name in plain_imports:
+                continue
+            if plain:
+                plain_imports.add(name)
             if name in bound:
                 lint.err(node, "tool.redefined", f"{name} is bound more than once at the top level (lines {bound[name]} and {node.lineno}); a reader sees one, Python uses the last")
             else:

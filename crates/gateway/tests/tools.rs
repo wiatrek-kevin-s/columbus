@@ -566,6 +566,13 @@ async fn propose_test_install_run_and_remove_a_personal_tool() {
         "{card}"
     );
 
+    // What is passed at run time must have the parameter's shape: a field
+    // name, never an expression.
+    let mut odd = args.clone();
+    odd["args"]["route_field"] = json!("RTE_ID or 1 == 1");
+    let e = err(&call(&c, "run_tool", odd).await);
+    assert!(e.contains("must be a field name"), "{e}");
+
     let r = ok(&call(&c, "run_tool", args.clone()).await);
     assert_eq!(r["result"]["status"], "done", "{r}");
     // Nothing of the run is left for the next one: no folder of its own, no

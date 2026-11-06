@@ -149,9 +149,14 @@ start points first); calibrated LRS measures (this measures length along the lin
 
 - `unit` for every number (required): `foot`, `mile`, `metre`, `degree`, `count`, `ratio`.
   Name the unit in the parameter when it helps (`max_distance` in `foot`).
-- `default` for anything with a sensible one; `min` and `max`; `enum` for a fixed set of
-  strings (`measure_unit: [mile, foot, kilometre, metre]`); `optional: true` for one that may
-  be left out with no default.
+- `default` for anything with a sensible one; `min` and `max`; `optional: true` for one that
+  may be left out with no default.
+- **Every text parameter** has either `enum` (a fixed set: `measure_unit: [mile, foot,
+  kilometre, metre]`) or a `format`: `field_name` (a column name: letters, digits and `_`)
+  or `label` (a short label or code, such as a route id: letters, digits, spaces and
+  `- _ . , : / # & +`, up to 80). Nothing else is accepted, so what another assistant passes
+  at run time is data, never code, an expression or a template. Use field names as
+  `gdf[field]`, never inside a `.query()` text.
 
 **`outputs`**: `kind` `layer` (GeoPackage), `table` (CSV) or `report` (JSON), with a
 `description`, and for layers `geometry` and `crs` (`"same as routes"`). List the `fields`
@@ -263,7 +268,7 @@ shortened:
                "geometry": "point", "crs": "any (reprojected to the routes' CRS)"}
   },
   "params": {
-    "route_field": {"type": "string", "description": "The routes field holding the route id", "default": "RTE_ID"},
+    "route_field": {"type": "string", "format": "field_name", "description": "The routes field holding the route id", "default": "RTE_ID"},
     "measure_unit": {"type": "string", "description": "Unit of the measures written", "enum": ["mile", "foot", "kilometre", "metre"], "default": "mile"},
     "max_distance": {"type": "number", "description": "Farthest a point may be from a route and still be located", "unit": "foot", "default": 100, "min": 0, "max": 5280}
   },

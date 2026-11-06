@@ -182,6 +182,20 @@ class ToolLintTest(unittest.TestCase):
             "import pyproj\n\n\ndef later(ctx):\n    pyproj.network.set_network_enabled(True)\n": "tool.settings",
             "from pyproj.datadir import set_data_dir\n": "tool.import",
             "import zipfile._path\n": "tool.private",
+            "import pandas as pd\n\n\ndef later(ctx):\n    return pd.compat.pickle_compat\n": "tool.import",
+            "import numpy as np\n\n\ndef later(ctx):\n    return np.load(ctx.input_file('a'), None, True)\n": "tool.call",
+            "import numpy as np\n\n\ndef later(ctx):\n    return np.lib.format\n": "tool.import",
+            "def later(ctx, df):\n    return df.plot(**{'kind': 'line'})\n": "tool.call",
+            "def later(ctx, df):\n    kw = {'backend': 'x'}\n    return df.plot(**kw)\n": "tool.settings",
+            "def later(ctx, s):\n    return s.hist(None, None, None, None, None, None, None, None, None, 'x')\n": "tool.call",
+            "import rasterio\n\n\ndef later(ctx):\n    e = rasterio.Env\n    return e\n": "tool.settings",
+            "from rasterio import Env\n\n\nclass E(Env):\n    pass\n": "tool.settings",
+            "def later(ctx, gdf):\n    q = gdf.query\n    return q\n": "tool.eval",
+            "def later(ctx, gdf):\n    return list(map(gdf.eval, ['a']))\n": "tool.eval",
+            "import rasterio\n\n\ndef later(ctx):\n    rasterio.env.set_proj_data_search_path('x')\n": "tool.settings",
+            "def later(ctx, df):\n    return df.style.env\n": "tool.settings",
+            "import scipy\n\n\ndef later(ctx):\n    return scipy.LowLevelCallable\n": "tool.introspection",
+            "import networkx.drawing.nx_pydot\n": "tool.import",
             "import numpy as np\n\n\ndef later(ctx):\n    return np.ctypeslib\n": "tool.introspection",
             "import logging.handlers\n": "tool.import",
             "import pandas as pd\n\n\ndef later(ctx):\n    return pd.read_clipboard()\n": "tool.settings",
@@ -195,6 +209,14 @@ class ToolLintTest(unittest.TestCase):
             self.assertIn(rule, rules(code)[0], extra)
         # Allowed: zipfile for a zipped shapefile, rasterio.Env() with no settings.
         ok = "import zipfile\nimport rasterio\n\n\ndef run(ctx):\n    with rasterio.Env():\n        pass\n    with zipfile.ZipFile(ctx.output_path('z'), 'w') as z:\n        z.writestr('a.txt', 'x')\n    return {}\n"
+        self.assertEqual(rules(ok)[0], set())
+        # Ordinary names that only look like settings, and a package imported
+        # with one of its parts, are fine.
+        ok = ("import rasterio\nimport rasterio.features\nimport networkx as nx\nimport geopandas as gpd\n\n\ndef run(ctx):\n    gdf = gpd.read_file(ctx.input_file('a'))\n"
+              "    rows = [r.network for r in gdf.itertuples()]\n    ids = gdf['network_id']\n    cfg = {'config_name': 1}\n"
+              "    profile = {'driver': 'GTiff'}\n    path = nx.shortest_path(nx.Graph(), 1, 1)\n"
+              "    with rasterio.open(ctx.output_path('o'), 'w', **profile) as dst:\n        pass\n"
+              "    shapes = rasterio.features.shapes\n    return {'n': len(rows), 'p': path, 'ids': list(ids), 'c': cfg, 's': shapes}\n")
         self.assertEqual(rules(ok)[0], set())
 
     def test_expressions_given_as_text_are_refused(self):
