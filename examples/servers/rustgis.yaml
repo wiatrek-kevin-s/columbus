@@ -19,11 +19,16 @@ transport:
   # --yes lets its tools read and write files. Confined (below), the only
   # files it can reach are in its own folder: the copies Columbus hands it
   # and the files it is asked to write. --no-plugins: no third-party code.
+  # --yes also turns on its download tools: level A, below, is what keeps
+  # them from reaching anything.
   args: [mcp, --yes, --no-plugins]
 trust: standard
-# Level B: reads and writes only its own folder, no network. Tools that
-# would fetch web tiles or data fail rather than reach out.
-confinement: { level: B, folders: [], hosts: [] }
+# Level A: its own folder only, and no network at all (level B would allow
+# the internet). Tools that would fetch web tiles or data fail rather than
+# reach out. Files handed to it follow the organization's flow rules for
+# server:rustgis; with no rule, a server at level A may read them without
+# asking each time.
+confinement: { level: A }
 tools:
   search_tools:    { risk: read }
   describe_tool:   { risk: read }
@@ -35,6 +40,9 @@ tools:
   search_docs:     { risk: read }
   read_doc:        { risk: read, output: untrusted }
   view_map:        { risk: read }
+  # run_tool reaches every RustGIS tool, so approving this server approves
+  # the tools of that RustGIS version: review a new version before
+  # updating, as its tool list can change without run_tool's schema doing so.
   # Commands cover opening, saving and plugin actions: off until reviewed
   # one by one.
   search_commands: { allow: false }

@@ -2356,8 +2356,34 @@ impl Gateway {
         // Rule 3: data labels and organization flow rules.
         let labels = self.state.flow.labels_for(&prepared.files);
         rec.labels = labels.iter().cloned().collect();
-        let decision =
+        let mut decision =
             columbus_flow::evaluate(&self.state.policy().flows, &labels, ns, rule.outbound());
+        // Files handed over leave the workspace for the server, whatever the
+        // tool's risk: the organization's rules for that server apply. A
+        // server with no network (level A) may read them without a person's
+        // approval; any other needs one, as an outbound tool does.
+        if !prepared.copies.is_empty() && matches!(decision, columbus_flow::FlowDecision::Allow) {
+            let to = columbus_flow::evaluate_to(
+                &self.state.policy().flows,
+                &labels,
+                &format!("server:{ns}"),
+            );
+            let offline = p.loaded.manifest.is_local()
+                && p
+                    .loaded
+                    .manifest
+                    .confinement
+                    .as_ref()
+                    .and_then(|c| c.level)
+                    .unwrap_or(columbus_broker::manifest::Level::A)
+                    == columbus_broker::manifest::Level::A;
+            decision = match to {
+                columbus_flow::FlowDecision::Approve { rule: None, .. } if offline => {
+                    columbus_flow::FlowDecision::Allow
+                }
+                other => other,
+            };
+        }
         rec.flow_decision = Some(decision.label().into());
         if let columbus_flow::FlowDecision::Deny { labels, rule: i } = &decision {
             return Err(self.deny(

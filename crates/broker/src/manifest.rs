@@ -258,6 +258,15 @@ impl ServerManifest {
                 return Err("remote servers must use https:// (http:// only on loopback)".into());
             }
         }
+        for (tool, r) in &self.tools {
+            for (arg, role) in &r.args {
+                if arg == "*" && *role != ArgRole::Path {
+                    return Err(format!(
+                        "tools.{tool}.args: \"*\" can only be path (workspace files anywhere in the arguments)"
+                    ));
+                }
+            }
+        }
         Ok(())
     }
 

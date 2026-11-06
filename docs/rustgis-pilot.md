@@ -4,7 +4,7 @@
 
 ## What is in place
 
-- **A manifest**, [`examples/servers/rustgis.yaml`](../examples/servers/rustgis.yaml). It turns on the reading and geoprocessing tools and keeps `run_command` (opening, saving, plugin actions) off. It runs RustGIS confined at level B: it can read and write only its own folder, with no network.
+- **A manifest**, [`examples/servers/rustgis.yaml`](../examples/servers/rustgis.yaml). It turns on the reading and geoprocessing tools and keeps `run_command` (opening, saving, plugin actions) off. It runs RustGIS confined at level A: it can read and write only its own folder, with no network at all (`--yes` turns on its file and download tools; confinement is what keeps them inside). Files handed to it follow the organization's flow rules for `server:rustgis` whatever the tool's risk; with no rule, a server at level A may read them without an approval each time.
 - **Files in.** The manifest gives `run_tool` the role `"*": path`. Any `ws://` handle in its parameters, however nested, is copied into RustGIS's folder once the call is allowed. RustGIS gets that path and never sees the workspace.
 - **Files back.** In a parameter, `out://slope.tif` asks RustGIS to write that file in its own folder. After the call, Columbus copies it into the workspace, carrying the data labels of what RustGIS was given. It does this only if the file is a plain file (never a link) and at most 512 MB, and it records the file's hash and provenance. The assistant gets back a `ws://` handle.
 - **Review and pinning as for any server.** `columbus-mcp servers review rustgis`, then `approve`. A RustGIS update that changes a tool's definition switches that tool off until it is approved again.
@@ -15,8 +15,9 @@ Tests: `crates/gateway/tests/server_files.rs` uses a stand-in server with a `run
 
 1. **RustGIS's real parameters.** RustGIS's documentation does not give `run_tool`'s argument schema. We have not yet confirmed with a running copy that its tools take input and output file paths in `params`, as opposed to layer names in its in-memory project. If they take layer names, inputs need loading first, which is a `run_command` (off here), or the `--data` flag at start.
 2. **Using what comes back.** Files from a connected server are untrusted, so Columbus's GIS tools, exports and personal tools do not open them today. For this pilot that means a RustGIS result can be listed and read as rows (`read_features`) but not exported or processed further. Opening them would need a decision. One option: a reviewer-set manifest switch for confined servers, so their files are opened like an engine plugin's. That widens what reaches GDAL, so it needs a security review first.
-3. **Confinement on each platform.** Level B on macOS and Windows has to be checked against how RustGIS starts (it is a desktop app with a CLI).
-4. **Checks.** RustGIS outputs have no Columbus checks yet. If item 2 is settled, `verify` can run on them, or they can be checked as they come back.
+3. **Confinement on each platform.** Level A on macOS and Windows has to be checked against how RustGIS starts (it is a desktop app with a CLI).
+4. **One schema for a thousand tools.** Review pins `run_tool`'s definition, not the tools it reaches, so a RustGIS update can add tools without Columbus seeing a change. Review a new RustGIS version before updating it.
+5. **Checks.** RustGIS outputs have no Columbus checks yet. If item 2 is settled, `verify` can run on them, or they can be checked as they come back.
 
 ## Next
 

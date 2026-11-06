@@ -370,6 +370,13 @@ impl Handover {
             Value::String(s) if s.starts_with(OUTPUT_SCHEME) => {
                 *v = self.slot(at, &s.clone(), server_dir)?;
             }
+            // A file is passed only as a handle (copied) or an out:// name;
+            // a path of the computer's is never passed through unchecked.
+            Value::String(s) if looks_like_path(s) => {
+                return Err(format!(
+                    "argument {at:?} looks like a file path; pass a workspace file as a ws:// handle, or name a file to write as out://<name>"
+                ));
+            }
             Value::Array(a) => {
                 for (i, x) in a.iter_mut().enumerate() {
                     self.walk(
@@ -398,6 +405,17 @@ impl Handover {
         }
         Ok(())
     }
+}
+
+/// An absolute path (`/x`, `\\server\share`, `C:\x`, `~/x`) or a
+/// `file:` URL, for the arguments of a tool whose files are handed over.
+fn looks_like_path(s: &str) -> bool {
+    let b = s.as_bytes();
+    s.starts_with('/')
+        || s.starts_with('\\')
+        || s.starts_with("~/")
+        || s.to_ascii_lowercase().starts_with("file:")
+        || (b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/'))
 }
 
 /// Make the folder a server writes its asked-for files in (walked from the
