@@ -108,7 +108,9 @@ struct Running {
     stdout: Lines<BufReader<ChildStdout>>,
     next_id: u64,
     /// A plugin started as the leader of its own process group (Unix):
-    /// everything it started is ended with it.
+    /// everything it started is ended with it. (Windows: the launcher's job
+    /// object does this, and this stays None.)
+    #[cfg_attr(not(unix), allow(dead_code))]
     group: Option<u32>,
 }
 
