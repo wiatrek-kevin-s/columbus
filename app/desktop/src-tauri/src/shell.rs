@@ -963,6 +963,25 @@ pub(crate) fn reviewed(text: &str) -> Option<String> {
     None
 }
 
+/// The note's front matter as YAML, as the server reads it.
+fn yaml_front(text: &str) -> Option<serde_yaml::Mapping> {
+    let t = text.replace("\r\n", "\n");
+    let rest = t.strip_prefix("---\n")?;
+    let end = rest.find("\n---")?;
+    serde_yaml::from_str(&rest[..end]).ok()
+}
+
+fn same_but_status(before: &str, after: &str) -> bool {
+    let (Some(mut b), Some(mut a)) = (yaml_front(before), yaml_front(after)) else {
+        return false;
+    };
+    let key = serde_yaml::Value::from("status");
+    let (sb, sa) = (b.remove(&key), a.remove(&key));
+    sb.as_ref().and_then(|v| v.as_str()) == Some("draft")
+        && sa.as_ref().and_then(|v| v.as_str()) == Some("reviewed")
+        && a == b
+}
+
 /// Mark one of the person's own notes reviewed. Their own file, their own
 /// decision: an assistant can no longer change a reviewed note, so this
 /// only narrows what it may do, and needs no confirmation. `sha256` is the
@@ -990,6 +1009,11 @@ fn mark_reviewed(f: &Path, sha256: &str) -> Result<(), String> {
     }
     let before = String::from_utf8(bytes).map_err(|_| "not a text file".to_string())?;
     let after = reviewed(&before).ok_or("this note is not a draft")?;
+    // Read both as the server reads them (YAML): the only difference must
+    // be the status, draft before and reviewed after.
+    if !same_but_status(&before, &after) {
+        return Err("this note's front matter is unusual, so it was not marked; mark it reviewed by editing the file".into());
+    }
     // Once more just before writing: still the note the person read.
     if read_whole(f).ok().as_deref() != Some(before.as_bytes()) {
         return Err(changed());
@@ -1173,6 +1197,14 @@ mod tests {
         assert!(mark_reviewed(&f, &h).unwrap_err().contains("too large"));
         assert_eq!(std::fs::read_to_string(&f).unwrap().len(), big.len());
         assert!(read_text(&f).is_err());
+        // A status: line inside a multi-line value is not the note's status:
+        // refused, so the app never says "reviewed" while the server reads
+        // a draft.
+        let tricky = "---\ntitle: \"a\nstatus: draft\n b\"\nstatus: draft\n---\n\nbody\n";
+        std::fs::write(&f, tricky).unwrap();
+        let h = columbus_shared::canon::sha256_hex(tricky.as_bytes());
+        assert!(mark_reviewed(&f, &h).unwrap_err().contains("unusual"));
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), tricky);
         let _ = std::fs::remove_dir_all(&d);
     }
 

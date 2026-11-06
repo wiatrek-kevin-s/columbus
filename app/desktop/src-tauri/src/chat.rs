@@ -72,6 +72,8 @@ fn default_server() -> Option<PathBuf> {
         "columbus-mcp"
     };
     let mut c = Vec::new();
+    // Test builds only: the app's end-to-end tests point at the server they built.
+    #[cfg(debug_assertions)]
     if let Some(p) = std::env::var_os("COLUMBUS_SERVER").filter(|v| !v.is_empty()) {
         c.push(PathBuf::from(p));
     }
@@ -81,7 +83,7 @@ fn default_server() -> Option<PathBuf> {
     if let Some(h) = home {
         c.push(h.join("Columbus").join(exe));
     }
-    c.into_iter().find(|p| p.is_file())
+    c.into_iter().find_map(|p| server_ok(&p, None).ok())
 }
 
 pub(crate) fn server(s: &Settings) -> Option<PathBuf> {
@@ -205,6 +207,18 @@ pub async fn chat_save_settings(
     std::fs::write(p, serde_json::to_vec_pretty(&s).unwrap_or_default()).map_err(|e| e.to_string())
 }
 
+/// A Windows path to another computer (`\\server\share\...`) or a device
+/// path (`\\.\...`). A normal path like `C:\Columbus\...` is fine, including
+/// the `\\?\C:\...` form Windows gives back after canonicalizing.
+fn on_network_share(p: &Path) -> bool {
+    use std::path::{Component, Prefix};
+    matches!(
+        p.components().next(),
+        Some(Component::Prefix(x))
+            if matches!(x.kind(), Prefix::UNC(..) | Prefix::VerbatimUNC(..) | Prefix::DeviceNS(..))
+    )
+}
+
 /// A server the chat may start: an existing file named `columbus-mcp`
 /// (`columbus-mcp.exe` on Windows), by its full path, and not in a folder
 /// an assistant or a session writes to (workspaces, notes, chats).
@@ -216,6 +230,9 @@ pub(crate) fn server_ok(p: &Path, chats: Option<&Path>) -> Result<PathBuf, Strin
     };
     if !p.is_absolute() {
         return Err("give the server's full path".into());
+    }
+    if on_network_share(p) {
+        return Err("the server must be on this computer, not a network share".into());
     }
     let name_ok = p
         .file_name()
@@ -229,6 +246,9 @@ pub(crate) fn server_ok(p: &Path, chats: Option<&Path>) -> Result<PathBuf, Strin
         .map_err(|_| format!("{} is not there", p.display()))?;
     if !full.is_file() {
         return Err(format!("{} is not a file", p.display()));
+    }
+    if on_network_share(&full) {
+        return Err("the server must be on this computer, not a network share".into());
     }
     let full_name_ok = full
         .file_name()
@@ -623,7 +643,12 @@ fn append_plain(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     }
     // What was said and shown may hold data: this account's alone.
     #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        o.mode(0o600);
+        // A link put there between the check above and here is refused too.
+        o.custom_flags(libc::O_NOFOLLOW);
+    }
     o.open(path)?.write_all(bytes)
 }
 
@@ -902,6 +927,24 @@ pub async fn chat_delete(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(windows)]
+    #[test]
+    fn a_server_on_a_network_share_is_refused() {
+        use std::path::Path;
+        assert!(super::on_network_share(Path::new(
+            r"\\host\share\columbus-mcp.exe"
+        )));
+        assert!(super::on_network_share(Path::new(
+            r"\\?\UNC\host\share\columbus-mcp.exe"
+        )));
+        assert!(!super::on_network_share(Path::new(
+            r"C:\Columbus\columbus-mcp.exe"
+        )));
+        assert!(!super::on_network_share(Path::new(
+            r"\\?\C:\Columbus\columbus-mcp.exe"
+        )));
+    }
+
     use super::*;
 
     #[test]

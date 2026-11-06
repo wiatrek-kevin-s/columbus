@@ -30,6 +30,9 @@ keyring-core = "1"
 uuid = { version = "1", features = ["v4"] }
 
 # The API key lives in the operating system's credential store.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 apple-native-keyring-store = { version = "1", features = ["keychain"] }
 [target.'cfg(windows)'.dependencies]
