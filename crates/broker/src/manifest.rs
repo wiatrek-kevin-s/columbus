@@ -111,6 +111,10 @@ pub enum ArgRole {
     Url,
     Dataset,
     FileHandle,
+    /// A file the server is asked to write: the value names it
+    /// (`slope.tif` or `out://slope.tif`); the server gets a path in its own
+    /// folder, and the file comes back to the workspace after the call.
+    OutputFile,
 }
 
 #[derive(

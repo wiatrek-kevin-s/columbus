@@ -264,6 +264,201 @@ pub struct PreparedArgs {
     /// allowed (source, destination, the hash the approval saw): a confined
     /// server can read and write only its own folder.
     pub copies: Vec<(PathBuf, PathBuf, Option<String>)>,
+    /// Files the server is asked to write, taken into the workspace after
+    /// the call.
+    pub outputs: Vec<OutputSlot>,
+}
+
+/// In arguments, `out://<name>` asks a connected server to write a file
+/// (where the manifest says files may go: `args: { "*": path }` or an
+/// `output_file` argument).
+pub const OUTPUT_SCHEME: &str = "out://";
+/// Files handed over or asked for in one call's nested arguments, at most.
+const MAX_CALL_FILES: usize = 32;
+
+/// A file a connected server is asked to write: the name the model gave
+/// it, and where in the server's own folder it is written.
+#[derive(Debug, Clone)]
+pub struct OutputSlot {
+    pub name: String,
+    pub dir: PathBuf,
+    pub file: String,
+}
+
+#[derive(Default)]
+struct Handover {
+    files: Vec<PathBuf>,
+    bound: Vec<Value>,
+    later: Vec<(PathBuf, Option<String>)>,
+    copies: Vec<(PathBuf, PathBuf, Option<String>)>,
+    outputs: Vec<OutputSlot>,
+}
+
+impl Handover {
+    /// A workspace file the server reads: it gets its own copy, made once
+    /// the call is allowed; it never sees the workspace itself.
+    fn hand_in(
+        &mut self,
+        name: &str,
+        text: &str,
+        session: &str,
+        sandbox: &Sandbox,
+        server_dir: &Path,
+    ) -> Result<Value, String> {
+        if self.copies.len() + self.outputs.len() >= MAX_CALL_FILES {
+            return Err(format!("a call takes at most {MAX_CALL_FILES} files"));
+        }
+        let p = resolve_handle(session, sandbox, text)?;
+        self.bound.push(digest_path(name, text, &p));
+        let sha = columbus_shared::canon::sha256_file(&p).ok().map(|(h, _)| h);
+        self.later.push((p.clone(), sha.clone()));
+        self.files.push(p.clone());
+        let base = p
+            .file_name()
+            .map(|f| f.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "file".into());
+        let dst = server_dir
+            .join("in")
+            .join(format!("{}-{base}", &uuid::Uuid::new_v4().simple().to_string()[..8]));
+        self.copies.push((p, dst.clone(), sha));
+        Ok(Value::String(dst.display().to_string()))
+    }
+
+    /// A file the server is asked to write, in its own folder's `out`.
+    fn slot(&mut self, name: &str, text: &str, server_dir: &Path) -> Result<Value, String> {
+        let want = text.strip_prefix(OUTPUT_SCHEME).unwrap_or(text);
+        if !crate::export_tools::valid_name(want) || !want.contains('.') {
+            return Err(format!(
+                "argument {name:?} names the file to write: a plain name with an extension, such as out://slope.tif"
+            ));
+        }
+        if self.outputs.iter().any(|o| o.name == want) {
+            return Err(format!("{want} is asked for twice in one call"));
+        }
+        if self.copies.len() + self.outputs.len() >= MAX_CALL_FILES {
+            return Err(format!("a call takes at most {MAX_CALL_FILES} files"));
+        }
+        let dir = server_dir.join("out");
+        let file = format!("{}-{want}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+        let path = dir.join(&file);
+        self.outputs.push(OutputSlot {
+            name: want.to_string(),
+            dir,
+            file,
+        });
+        Ok(Value::String(path.display().to_string()))
+    }
+
+    /// Every `ws://` handle and `out://` name anywhere in `v`.
+    fn walk(
+        &mut self,
+        v: &mut Value,
+        at: &str,
+        depth: usize,
+        session: &str,
+        sandbox: &Sandbox,
+        server_dir: &Path,
+    ) -> Result<(), String> {
+        if depth > 8 {
+            return Err("the arguments are nested too deeply".into());
+        }
+        match v {
+            Value::String(s) if s.starts_with(HANDLE_SCHEME) => {
+                *v = self.hand_in(at, &s.clone(), session, sandbox, server_dir)?;
+            }
+            Value::String(s) if s.starts_with(OUTPUT_SCHEME) => {
+                *v = self.slot(at, &s.clone(), server_dir)?;
+            }
+            Value::Array(a) => {
+                for (i, x) in a.iter_mut().enumerate() {
+                    self.walk(x, &format!("{at}[{i}]"), depth + 1, session, sandbox, server_dir)?;
+                }
+            }
+            Value::Object(m) => {
+                for (k, x) in m.iter_mut() {
+                    self.walk(x, &format!("{at}.{k}"), depth + 1, session, sandbox, server_dir)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+}
+
+/// Make the folder a server writes its asked-for files in (walked from the
+/// workspace root, never following a link).
+pub fn make_output_dirs(root: &Path, slots: &[OutputSlot]) -> Result<(), String> {
+    for s in slots {
+        let comps = crate::safefs::below(root, &s.dir).map_err(|e| e.to_string())?;
+        let comps: Vec<&str> = comps.iter().map(String::as_str).collect();
+        crate::safefs::Dir::open_beneath(root, &comps, true)
+            .map_err(|e| format!("could not make the server's output folder: {e}"))?;
+    }
+    Ok(())
+}
+
+/// A file a server wrote as asked, copied into the workspace.
+pub struct TakenOutput {
+    pub name: String,
+    pub path: PathBuf,
+    pub sha256: String,
+    pub bytes: u64,
+}
+
+/// Copy the files a server was asked to write into `results` (plain files
+/// only, opened without following links, within the size limits); the
+/// rest, with the reason, are listed as not taken.
+pub fn take_outputs(
+    root: &Path,
+    slots: &[OutputSlot],
+    results: &Path,
+    prefix: &str,
+) -> (Vec<TakenOutput>, Vec<String>) {
+    let mut taken = Vec::new();
+    let mut skipped = Vec::new();
+    let mut total = 0u64;
+    for s in slots {
+        let src = crate::safefs::below(root, &s.dir)
+            .and_then(|comps| {
+                let comps: Vec<&str> = comps.iter().map(String::as_str).collect();
+                crate::safefs::Dir::open_beneath(root, &comps, false)
+            })
+            .and_then(|d| d.open_file(&s.file));
+        let src = match src {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                skipped.push(format!("{} (the server did not write it)", s.name));
+                continue;
+            }
+            Err(e) => {
+                skipped.push(format!("{} ({e}; only a plain file is taken)", s.name));
+                continue;
+            }
+        };
+        if let Err(e) = std::fs::create_dir_all(results) {
+            skipped.push(format!("{} (could not make the results folder: {e})", s.name));
+            continue;
+        }
+        let room = crate::script_tools::MAX_TOTAL_BYTES.saturating_sub(total);
+        let to = results.join(format!("{prefix}-{}", s.name));
+        match crate::script_tools::take_output(
+            src,
+            &to,
+            room.min(crate::script_tools::MAX_OUTPUT_BYTES),
+        ) {
+            Ok((sha256, bytes)) => {
+                total += bytes;
+                taken.push(TakenOutput {
+                    name: s.name.clone(),
+                    path: to,
+                    sha256,
+                    bytes,
+                });
+            }
+            Err(e) => skipped.push(format!("{} ({e})", s.name)),
+        }
+    }
+    (taken, skipped)
 }
 
 /// Create `to` (failing if anything is there, including a link), copy
@@ -358,11 +553,16 @@ pub fn prepare_args(
     extra_hosts: &[String],
     server_dir: &Path,
 ) -> Result<PreparedArgs, String> {
-    let mut copies = Vec::new();
-    let mut files = Vec::new();
-    let mut bound = Vec::new();
-    let mut later = Vec::new();
+    let mut h = Handover::default();
+    // `"*": path`: every workspace handle anywhere in the arguments is
+    // handed over as the server's own copy, and every `out://` name is a
+    // file it is asked to write (for tools whose parameters are nested or
+    // vary, such as a geoprocessing runner's).
+    let wild = rule.args.get("*") == Some(&ArgRole::Path);
     for (name, role) in &rule.args {
+        if name == "*" {
+            continue;
+        }
         let Some(value) = args.get(name).cloned() else {
             continue;
         };
@@ -373,8 +573,8 @@ pub fn prepare_args(
             ArgRole::FileHandle => {
                 let path = resolve_handle(session, sandbox, text)?;
                 let bytes = std::fs::read(&path).map_err(|e| format!("cannot read {text}: {e}"))?;
-                bound.push(digest(name, text, &bytes));
-                files.push(path);
+                h.bound.push(digest(name, text, &bytes));
+                h.files.push(path);
                 match String::from_utf8(bytes) {
                     Ok(s) => Value::String(s),
                     Err(e) => Value::String(base64::engine::general_purpose::STANDARD.encode(e.into_bytes())),
@@ -382,19 +582,9 @@ pub fn prepare_args(
             }
             ArgRole::Path => {
                 if text.starts_with(HANDLE_SCHEME) {
-                    // The server gets its own copy, made once the call is
-                    // allowed; it never sees the workspace itself.
-                    let p = resolve_handle(session, sandbox, text)?;
-                    bound.push(digest_path(name, text, &p));
-                    let sha = columbus_shared::canon::sha256_file(&p).ok().map(|(h, _)| h);
-                    later.push((p.clone(), sha.clone()));
-                    files.push(p.clone());
-                    let base = p.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_else(|| "file".into());
-                    let dst = server_dir
-                        .join("in")
-                        .join(format!("{}-{base}", &uuid::Uuid::new_v4().simple().to_string()[..8]));
-                    copies.push((p.clone(), dst.clone(), sha));
-                    Value::String(dst.display().to_string())
+                    h.hand_in(name, text, session, sandbox, server_dir)?
+                } else if text.starts_with(OUTPUT_SCHEME) {
+                    h.slot(name, text, server_dir)?
                 } else if !Path::new(text).is_absolute() {
                     // A relative path names a file in the server's own folder.
                     if Path::new(text)
@@ -422,10 +612,10 @@ pub fn prepare_args(
                             "argument {name:?} is a folder; tools that send data out or write take single files, so each one can be checked and approved"
                         ));
                     }
-                    bound.push(digest_path(name, text, &p));
-                    later.push((p.clone(), columbus_shared::canon::sha256_file(&p).ok().map(|(h, _)| h)));
+                    h.bound.push(digest_path(name, text, &p));
+                    h.later.push((p.clone(), columbus_shared::canon::sha256_file(&p).ok().map(|(d, _)| d)));
                     if p.is_file() {
-                        files.push(p.clone());
+                        h.files.push(p.clone());
                     }
                     Value::String(p.display().to_string())
                 }
@@ -438,6 +628,7 @@ pub fn prepare_args(
                 }
                 value
             }
+            ArgRole::OutputFile => h.slot(name, text, server_dir)?,
             ArgRole::Dataset => {
                 return Err(format!(
                     "argument {name:?} is a dataset; connected servers cannot read governed datasets. \
@@ -447,12 +638,21 @@ pub fn prepare_args(
         };
         args.insert(name.clone(), replacement);
     }
+    if wild {
+        for (name, v) in args.iter_mut() {
+            if rule.args.contains_key(name) {
+                continue;
+            }
+            h.walk(v, name, 0, session, sandbox, server_dir)?;
+        }
+    }
     Ok(PreparedArgs {
         args,
-        files,
-        bound,
-        recheck: later,
-        copies,
+        files: h.files,
+        bound: h.bound,
+        recheck: h.later,
+        copies: h.copies,
+        outputs: h.outputs,
     })
 }
 

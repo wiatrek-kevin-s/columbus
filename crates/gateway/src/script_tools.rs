@@ -52,8 +52,8 @@ const DEFAULT_TIMEOUT: u64 = 120;
 const STREAM_CAP: usize = 64 * 1024;
 /// Files taken from `out/`, and their sizes.
 const MAX_OUTPUTS: usize = 50;
-const MAX_OUTPUT_BYTES: u64 = 512 * 1024 * 1024;
-const MAX_TOTAL_BYTES: u64 = 1024 * 1024 * 1024;
+pub(crate) const MAX_OUTPUT_BYTES: u64 = 512 * 1024 * 1024;
+pub(crate) const MAX_TOTAL_BYTES: u64 = 1024 * 1024 * 1024;
 /// Processes the script may run at once, itself included.
 const PROCESSES: u32 = 8;
 /// GDAL drivers left out, as in the engine (`_SKIP` in columbus_gis.py):
@@ -230,7 +230,7 @@ fn script_env(run: &Path) -> Vec<(String, OsString)> {
 /// Copy one file the script left (opened through the safe folder walk: a
 /// regular file with one name, never a link, FIFO or device) to a new file
 /// of the gateway's, at most `cap` bytes. Returns its SHA-256 and size.
-fn take_output(src: std::fs::File, to: &Path, cap: u64) -> Result<(String, u64), String> {
+pub(crate) fn take_output(src: std::fs::File, to: &Path, cap: u64) -> Result<(String, u64), String> {
     use sha2::{Digest, Sha256};
     use std::io::{Read, Write};
     let m = src.metadata().map_err(|e| e.to_string())?;
