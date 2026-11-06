@@ -1359,7 +1359,17 @@ impl Plugins {
     /// Empty a plugin's own folder: nothing one run left is there for the next.
     pub fn wipe_own(&self, p: &Plugin) {
         let own = plugin_dir(&self.workspace, &p.folder);
-        let _ = std::fs::remove_dir_all(&own);
+        // On Windows a folder can't be removed while a stopped worker's
+        // process is still letting go of it, which takes a moment: retry
+        // briefly (the next run also refuses to start on a folder left over).
+        for _ in 0..40 {
+            match std::fs::remove_dir_all(&own) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                    std::thread::sleep(Duration::from_millis(50))
+                }
+                _ => return,
+            }
+        }
     }
 }
 
