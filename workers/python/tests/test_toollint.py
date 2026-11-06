@@ -149,7 +149,7 @@ class ToolLintTest(unittest.TestCase):
     def test_only_allowed_modules_and_public_parts(self):
         # Checked as text only; none of this is run.
         refused = {
-            "import zipfile\n": "tool.import",
+            "import gzip\n": "tool.import",
             "import six\n": "tool.import",
             "import posix\n": "tool.import",
             "from _operator import itemgetter\n": "tool.import",
@@ -166,9 +166,23 @@ class ToolLintTest(unittest.TestCase):
             "import numpy as np\n\n\ndef later(ctx):\n    return np.load(ctx.input_file('a'), allow_pickle=True)\n": "tool.pickle",
             "import pandas as pd\n\n\ndef later(ctx):\n    return pd.eval('1')\n": "tool.introspection",
         }
+        refused.update({
+            "from numpy import ctypeslib\n": "tool.import",
+            "import numpy.f2py\n": "tool.import",
+            "import numpy as np\n\n\ndef later(ctx):\n    return np.ctypeslib\n": "tool.introspection",
+            "import logging.handlers\n": "tool.import",
+            "import pandas as pd\n\n\ndef later(ctx):\n    return pd.read_clipboard()\n": "tool.settings",
+            "def later(ctx, df):\n    df.to_clipboard()\n": "tool.settings",
+            "import pandas as pd\n\n\ndef later(ctx):\n    pd.set_option(ctx.param('k'), ctx.param('v'))\n": "tool.settings",
+            "import pandas as pd\n\n\ndef later(ctx):\n    return pd.options\n": "tool.introspection",
+            "import rasterio\n\n\ndef later(ctx):\n    return rasterio.Env(GDAL_DATA='x')\n": "tool.settings",
+        })
         for extra, rule in refused.items():
             code = extra + "\n\ndef run(ctx):\n    return {}\n"
             self.assertIn(rule, rules(code)[0], extra)
+        # Allowed: zipfile for a zipped shapefile, rasterio.Env() with no settings.
+        ok = "import zipfile\nimport rasterio\n\n\ndef run(ctx):\n    with rasterio.Env():\n        pass\n    with zipfile.ZipFile(ctx.output_path('z'), 'w') as z:\n        z.writestr('a.txt', 'x')\n    return {}\n"
+        self.assertEqual(rules(ok)[0], set())
 
     def test_expressions_given_as_text_are_refused(self):
         base = "import geopandas as gpd\n\n\ndef run(ctx):\n    gdf = gpd.read_file(ctx.input_file('layer'))\n"

@@ -59,6 +59,7 @@ ALLOWED_MODULES = {
     "datetime", "time", "calendar", "zoneinfo", "itertools", "functools", "operator", "collections",
     "heapq", "bisect", "array", "dataclasses", "enum", "typing", "abc", "contextlib", "copy", "string",
     "textwrap", "unicodedata", "uuid", "hashlib", "base64", "struct", "pathlib", "logging", "warnings",
+    "zipfile",
     "__future__",
     # GIS and data.
     "geopandas", "shapely", "pyproj", "pandas", "numpy", "pyogrio", "fiona", "rasterio", "scipy", "networkx",
@@ -67,7 +68,17 @@ ALLOWED_MODULES = {
 # refused on any object (shutil.os.system, gzip.builtins.exec).
 ESCAPE_ATTRS = {"os", "_os", "sys", "_sys", "posix", "nt", "builtins", "bltns", "subprocess", "importlib",
                 "ctypes", "inspect", "types", "pickle", "marshal", "gc", "socket", "runpy", "six", "imp",
-                "io", "shutil", "tempfile", "platform", "signal", "threading", "multiprocessing"}
+                "io", "shutil", "tempfile", "platform", "signal", "threading", "multiprocessing",
+                "ctypeslib", "f2py", "distutils", "clipboard", "clipboards"}
+# Parts of allowed packages that load native code, start programs, read
+# from outside the tool's inputs or import modules named in text.
+REFUSED_SUBMODULES = {"numpy.ctypeslib", "numpy.f2py", "numpy.distutils", "numpy.testing", "pandas.io.clipboard",
+                      "pandas.io.clipboards", "pandas.util", "pandas.testing", "logging.handlers", "logging.config",
+                      "scipy.weave", "networkx.utils.backends"}
+# Methods refused by name on any object: the clipboard (other programs,
+# outside the inputs) and settings that make libraries load code.
+REFUSED_METHODS = {"read_clipboard", "to_clipboard", "set_option", "option_context", "set_gdal_config_options",
+                   "set_config_option"}
 # Calls that read pickled data (which runs code as it loads).
 PICKLE_CALLS = {"read_pickle", "to_pickle"}
 
@@ -96,7 +107,11 @@ REFUSED_SYS = {"sys.modules", "sys._getframe", "sys.settrace", "sys.setprofile",
 # Ways to reach attributes or code by a name written as text (stand-ins for
 # getattr), refused wherever they are named.
 REFUSED_NAMES = {"operator.attrgetter", "operator.methodcaller", "string.Formatter", "logging.config",
-                 "pandas.eval", "typing.ForwardRef", "typing.get_type_hints", "functools.singledispatch"}
+                 "pandas.eval", "typing.ForwardRef", "typing.get_type_hints", "functools.singledispatch",
+                 "pandas.options", "pandas.set_option", "pandas.option_context", "pandas.read_clipboard"}
+# GDAL settings can change where GDAL loads plugins and data from: rasterio
+# and fiona's Env take no settings in a tool.
+ENV_CALLS = {"rasterio.Env", "rasterio.env.Env", "fiona.Env", "fiona.env.Env"}
 # Modules whose objects may only be used as `module.thing`, never passed
 # around under another name (o = os; o.system(...)).
 DIRECT_ONLY = {"os", "sys", "shutil", "operator", "string", "io", "logging", "functools", "pathlib", "tempfile"}
@@ -183,6 +198,8 @@ class _Lint(ast.NodeVisitor):
     def _module(self, node: ast.AST, name: str) -> None:
         root = _root(name)
         why = REFUSED_MODULES.get(name) or REFUSED_MODULES.get(root)
+        if any(name == r or name.startswith(r + ".") for r in REFUSED_SUBMODULES):
+            self.err(node, "tool.import", f"import of {name}: this part of {root} loads native code, starts programs or loads modules named in text")
         if root != SDK and root not in ALLOWED_MODULES and not why:
             self.err(node, "tool.import", f"import of {name}: a tool may use only these modules: {', '.join(sorted(m for m in ALLOWED_MODULES if m != '__future__'))}")
         if root == SDK:
@@ -232,6 +249,10 @@ class _Lint(ast.NodeVisitor):
         if node.attr.startswith("_") and not _dunder(node.attr) \
                 and not (isinstance(node.value, ast.Name) and node.value.id in ("self", "cls")):
             self.err(node, "tool.private", f".{node.attr}: a tool may use only the public parts of other objects (no names starting with _)")
+        if any(full == r or full.startswith(r + ".") for r in REFUSED_SUBMODULES):
+            self.err(node, "tool.import", f"{full}: this part of {_root(full)} loads native code, starts programs or loads modules named in text")
+        if node.attr in REFUSED_METHODS:
+            self.err(node, "tool.settings", f".{node.attr}: a tool may not use the clipboard or change a library's settings")
         if node.attr in PICKLE_CALLS:
             self.err(node, "tool.pickle", f".{node.attr}: pickled data runs code as it loads; read and write GeoPackage, CSV or JSON instead")
         if any(full == r or full.startswith(r + ".") for r in REFUSED_NAMES):
@@ -241,7 +262,7 @@ class _Lint(ast.NodeVisitor):
         if full in REFUSED_SYS:
             self.err(node, "tool.introspection", f"{full}: a tool may not reach into Python's own machinery (it could change what runs)")
         if _dunder(node.attr) and node.attr not in DUNDERS_OK:
-            self.err(node, "tool.introspection", f".{node.attr}: a tool may not use Python's special attributes (they can swap the code that runs)")
+            self.err(node, "tool.introspection", f".{node.attr}: a tool may not use Python's special attributes (they can swap the code that runs){'; for a dataclass use dataclasses.asdict(obj)' if node.attr == '__dict__' else ''}")
         if node.attr.startswith(FRAME_ATTRS):
             self.err(node, "tool.introspection", f".{node.attr}: a tool may not reach into running frames")
         self.generic_visit(node)
@@ -282,6 +303,8 @@ class _Lint(ast.NodeVisitor):
             text = _const_str(expr) if expr is not None else None
             if text is None or "@" in text or "__" in text:
                 self.err(node, "tool.eval", f".{f.attr}(): only a fixed expression written in the tool, with no @names, is allowed; filter with a mask instead (gdf[gdf[field] > value])")
+        if name in ENV_CALLS and (node.args or node.keywords):
+            self.err(node, "tool.settings", f"{name}(...): a tool may not change GDAL's settings; use {name}() with no arguments if you need it at all")
         for k in node.keywords:
             if k.arg == "allow_pickle" and not (isinstance(k.value, ast.Constant) and k.value.value is False):
                 self.err(node, "tool.pickle", "allow_pickle: pickled data runs code as it loads")
