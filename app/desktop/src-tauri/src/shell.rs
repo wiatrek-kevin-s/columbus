@@ -197,6 +197,11 @@ fn front_matter(text: &str) -> serde_json::Map<String, Value> {
             continue;
         }
         if let Some((k, v)) = l.split_once(':') {
+            // An end-of-line comment is not part of the value.
+            let v = match v.find(" #") {
+                Some(i) if !v.trim_start().starts_with(['"', '\'']) => &v[..i],
+                _ => v,
+            };
             let v = v.trim().trim_matches('"').trim_matches('\'');
             if !k.trim().is_empty() && !v.is_empty() {
                 out.insert(k.trim().to_string(), json!(v));
@@ -983,8 +988,8 @@ mod tests {
 
     #[test]
     fn front_matter_is_read_as_plain_text() {
-        let fm = front_matter("---\ntitle: \"Routes\"\nstatus: draft\n  nested: x\n---\nbody: y\n");
-        assert_eq!(fm["title"], "Routes");
+        let fm = front_matter("---\ntitle: \"Routes # 1\"\nstatus: draft   # set reviewed\n  nested: x\n---\nbody: y\n");
+        assert_eq!(fm["title"], "Routes # 1");
         assert_eq!(fm["status"], "draft");
         assert!(!fm.contains_key("body"));
         assert!(!fm.contains_key("nested"));

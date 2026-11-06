@@ -224,7 +224,7 @@ tbody tr.selected { background: var(--select); box-shadow: inset 3px 0 var(--hyd
 .app.embedded.v-map .table, .app.embedded.v-table .map { display: none; }
 .app.embedded.v-map .work, .app.embedded.v-table .work { grid-template-rows: 1fr; }
 .embed-bar {
-  position: absolute; top: 8px; right: 8px; z-index: 4;
+  position: absolute; top: 8px; left: 8px; z-index: 4;
   display: flex; gap: 8px; align-items: center; padding: 3px 8px; font-size: 12px;
   background: var(--panel); border: 1px solid var(--rule); border-radius: 6px;
 }

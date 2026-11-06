@@ -71,10 +71,17 @@ function count(n, quiet) {
   return n ? h("span", { class: quiet ? "count quiet" : "count", "aria-hidden": "true" }, String(n)) : null;
 }
 
+let railKey = "";
 function drawRail(r = route()) {
   const rail = $("rail");
   const pending = store.inbox.reduce((n, s) => n + (s.pending || []).length, 0) + chats.waitingCount();
   const toolsWaiting = store.tools ? store.tools.waiting.length : 0;
+  // Redrawn only when something it shows changed, keeping the focus.
+  const key = JSON.stringify([location.hash, r.page, r.rest, pending, toolsWaiting, store.info && store.info.policy.source,
+    r.page === "chats" ? chats.recent(5).map((c) => [c.href, c.title]) : 0]);
+  if (key === railKey) return;
+  railKey = key;
+  const focused = rail.contains(document.activeElement) ? document.activeElement.getAttribute("href") || document.activeElement.className : null;
   const nav = h("div", { class: "nav" });
   for (const [head, items] of RAIL) {
     nav.append(head ? h("div", { class: "navhead", "aria-hidden": "true" }, head) : h("div", { class: "navgap" }));
@@ -119,6 +126,10 @@ function drawRail(r = route()) {
     icon("search"), h("span", { class: "label" }, "Search"), h("span", { class: "kbd" }, navigator.platform.startsWith("Mac") ? "⌘ K" : "Ctrl K"));
   const brand = h("div", { class: "brand" }, logo(), h("span", { class: "word" }, "Columbus"));
   rail.replaceChildren(brand, search, nav, h("div", { class: "spacer" }), foot);
+  if (focused) {
+    const again = [...rail.querySelectorAll("a, button")].find((x) => x.getAttribute("href") === focused || x.className === focused);
+    if (again) again.focus();
+  }
 }
 
 function classicMenu() {

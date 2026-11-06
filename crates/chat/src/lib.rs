@@ -689,8 +689,7 @@ fn made(v: Option<&Value>) -> Made {
     let plain = |s: &str| {
         !s.is_empty()
             && s.len() <= 200
-            && s
-                .chars()
+            && s.chars()
                 .all(|c| c.is_ascii_alphanumeric() || "_-./:".contains(c))
     };
     let Some(v) = v else {

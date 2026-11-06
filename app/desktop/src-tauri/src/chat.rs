@@ -434,12 +434,16 @@ async fn end(app: &AppHandle, st: &ChatState) {
     *st.transcript.lock().expect("transcript") = None;
     if let Some(c) = chat {
         // A reply still holding the chat stops at the cancel; close the
-        // session once it lets go.
-        let m = c.lock().await;
-        drop(m);
-        if let Ok(m) = Arc::try_unwrap(c) {
-            m.into_inner().close().await;
-        }
+        // session once it lets go, in the background: the chat is already
+        // ended for the window (a new one can start), and closing a
+        // session can take a while.
+        tauri::async_runtime::spawn(async move {
+            let m = c.lock().await;
+            drop(m);
+            if let Ok(m) = Arc::try_unwrap(c) {
+                m.into_inner().close().await;
+            }
+        });
     }
 }
 

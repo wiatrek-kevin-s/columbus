@@ -734,6 +734,7 @@ async function start() {
 }
 
 async function newChat() {
+  const was = live.chatId;
   await invoke("chat_end");
   live.started = false;
   live.busy = false;
@@ -748,7 +749,8 @@ async function newChat() {
   setBusy(false);
   store.set("waiting", 0);
   drawTray();
-  history.replaceState(null, "", "#/chats/new");
+  // Only if the person is still looking at this chat.
+  if (location.hash === "#/chats/new" || (was && location.hash === `#/chats/c/${encodeURIComponent(was)}`)) history.replaceState(null, "", "#/chats/new");
   await emptyChat();
   refreshFns && refreshFns.chats();
   $("text").focus();
