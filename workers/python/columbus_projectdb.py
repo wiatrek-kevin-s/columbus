@@ -41,9 +41,11 @@ import importlib.util
 import math
 import os
 import re
+import shutil
 import sqlite3
 import threading
 import time
+import uuid
 from typing import Any
 
 from columbus_plugin import readonly_uri
@@ -179,7 +181,10 @@ def _open(path: str, memory_mb: int, create: bool = False, read_only: bool = Fal
     if not create and not os.path.isfile(path):
         raise ProjectDbError("this project database does not exist; create it first")
     folder = os.path.dirname(path)
-    temp = path + ".tmp"
+    # Each connection spills to its own folder under <db>.tmp, so two
+    # sessions querying one database never share spill files.
+    temp_root = path + ".tmp"
+    temp = os.path.join(temp_root, uuid.uuid4().hex)
     ext_dir = os.path.join(folder, ".duckdb-extensions")  # never written: installs are off
     config = {
         "autoinstall_known_extensions": "false",
@@ -197,6 +202,11 @@ def _open(path: str, memory_mb: int, create: bool = False, read_only: bool = Fal
         con = duckdb.connect(path, read_only=read_only, config=config)
     except duckdb.Error as e:
         raise ProjectDbError(f"could not open the project database: {_msg(e)}") from None
+    if not read_only:
+        # Opened for writing, DuckDB's lock means no other process has the
+        # database open: spill left by a call that was killed is removed,
+        # so it never counts against the size cap.
+        _clear_spill(temp_root, keep=os.path.basename(temp))
     spatial = False
     ext = spatial_extension()
     if ext is not None:
@@ -220,6 +230,24 @@ def _open(path: str, memory_mb: int, create: bool = False, read_only: bool = Fal
         con.close()
         raise ProjectDbError(f"could not lock the project database's settings, so it is not used: {_msg(e)}") from None
     return con, spatial
+
+
+def _clear_spill(root: str, keep: str) -> None:
+    try:
+        entries = os.listdir(root)
+    except OSError:
+        return
+    for name in entries:
+        if name == keep:
+            continue
+        p = os.path.join(root, name)
+        try:
+            if os.path.islink(p) or not os.path.isdir(p):
+                os.unlink(p)
+            else:
+                shutil.rmtree(p, ignore_errors=True)
+        except OSError:
+            pass
 
 
 def _lit(text: str) -> str:
@@ -720,6 +748,12 @@ def check_statements(con, sql: str, allowed: set[str], pivot: bool = False) -> l
             # DuckDB expanded one statement into several of its own.
             if (pivot and len(parsed) > 1 and kinds[-1] == "SELECT" and all(k == "CREATE" for k in kinds[:-1])
                     and lowered[:1] in (["pivot"], ["unpivot"])):
+                # DuckDB expands a PIVOT exactly when some column's names come
+                # from the data.
+                if hidden:
+                    raise ProjectDbError(f"statement {n} is refused: a PIVOT names its columns after stored values unless "
+                                         "every ON column has an IN list, which this session may not see (return_rows "
+                                         "is 0); list the values with IN ('a', 'b', …) for each ON column")
                 out.append({"index": n, "type": "SELECT", "sql": piece.strip(), "pivot": True, "run": [piece.strip()]})
                 continue
             if "ALTER" in allowed and "ALTER" in kinds and lowered[:2] == ["alter", "table"]:
@@ -1317,6 +1351,10 @@ def _plain_check(c: dict[str, Any]) -> dict[str, Any]:
         c["message"] = c["message"].replace("(the extent is in the detail)", "(the extent is left out at return_rows 0)")
     if c.get("id") not in _PLAIN_CHECKS:
         c["message"] = _GENERIC_CHECKS.get(c.get("id"), "A check on the result found something to look at (left out at return_rows 0)")
+    # The suggested fix can also hint at the data (swapped axes, projected
+    # coordinates): one generic text.
+    if c.get("fix"):
+        c["fix"] = "Check the result's CRS and coordinates with someone who may see the rows"
     return c
 
 

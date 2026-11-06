@@ -437,12 +437,33 @@ class ProjectDbTests(unittest.TestCase):
             with self.assertRaises(pdb.ProjectDbError):
                 call()
 
+    def test_spill_left_by_a_killed_call_is_cleared(self):
+        self.load()
+        # As if a worker had been killed in the middle of spilling: files in
+        # the old layout and in another connection's folder.
+        root = self.db + ".tmp"
+        os.makedirs(os.path.join(root, "dead"), exist_ok=True)
+        with open(os.path.join(root, "dead", "spill.tmp"), "wb") as f:
+            f.write(b"\0" * 4096)
+        with open(os.path.join(root, "duckdb_temp_storage_DEFAULT-0.tmp"), "wb") as f:
+            f.write(b"\0" * 4096)
+        pdb.execute({"path": self.db, "sql": "CREATE TABLE spill_check AS SELECT 1 AS a"})
+        left = [os.path.join(d, f) for d, _, fs in os.walk(root) for f in fs]
+        self.assertEqual(left, [], left)
+
     def test_stored_values_never_come_back_as_names_when_rows_are_hidden(self):
         self.load()
         pdb.execute({"path": self.db, "sql": "CREATE TABLE o AS SELECT parcel_id, 'Owner ' || parcel_id AS owner, acres FROM parcels LIMIT 3"})
         with self.assertRaises(pdb.ProjectDbError):
             self.q("PIVOT o ON owner USING sum(acres)", return_rows=0)
         self.assertEqual(self.q("PIVOT o ON owner IN ('Owner 00000') USING sum(acres)", return_rows=0)["rows_read"], 3)
+        # An IN list elsewhere in the statement, or on only one of several ON
+        # columns, does not stop DuckDB naming columns after the data.
+        for sql in ("PIVOT (SELECT * FROM o WHERE parcel_id IN ('00000', '00001')) ON owner USING sum(acres)",
+                    "PIVOT o ON owner USING count(*) FILTER (WHERE acres IN (1, 2))",
+                    "PIVOT o ON owner IN ('x'), acres USING count(*)"):
+            with self.assertRaises(pdb.ProjectDbError, msg=sql):
+                self.q(sql, return_rows=0)
         with self.assertRaises(pdb.ProjectDbError):
             pdb.execute({"path": self.db, "return_rows": 0, "sql": "CREATE TYPE leak AS ENUM (SELECT owner FROM o)"})
         # Where rows may be seen an ENUM may come from data, but describe
