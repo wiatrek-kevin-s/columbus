@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-workflow-set-schedule"
+description = "Enables the workflow_set_schedule command without any pre-configured scope."
+commands.allow = ["workflow_set_schedule"]
+
+[[permission]]
+identifier = "deny-workflow-set-schedule"
+description = "Denies the workflow_set_schedule command without any pre-configured scope."
+commands.deny = ["workflow_set_schedule"]

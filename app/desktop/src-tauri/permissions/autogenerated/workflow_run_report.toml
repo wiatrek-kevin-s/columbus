@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-workflow-run-report"
+description = "Enables the workflow_run_report command without any pre-configured scope."
+commands.allow = ["workflow_run_report"]
+
+[[permission]]
+identifier = "deny-workflow-run-report"
+description = "Denies the workflow_run_report command without any pre-configured scope."
+commands.deny = ["workflow_run_report"]

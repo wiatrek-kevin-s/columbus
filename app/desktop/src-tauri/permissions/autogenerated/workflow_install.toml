@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-workflow-install"
+description = "Enables the workflow_install command without any pre-configured scope."
+commands.allow = ["workflow_install"]
+
+[[permission]]
+identifier = "deny-workflow-install"
+description = "Denies the workflow_install command without any pre-configured scope."
+commands.deny = ["workflow_install"]

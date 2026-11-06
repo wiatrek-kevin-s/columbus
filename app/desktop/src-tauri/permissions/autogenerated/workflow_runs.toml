@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-workflow-runs"
+description = "Enables the workflow_runs command without any pre-configured scope."
+commands.allow = ["workflow_runs"]
+
+[[permission]]
+identifier = "deny-workflow-runs"
+description = "Denies the workflow_runs command without any pre-configured scope."
+commands.deny = ["workflow_runs"]

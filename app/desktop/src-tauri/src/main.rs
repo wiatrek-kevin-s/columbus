@@ -45,6 +45,7 @@ use serde::Serialize;
 mod chat;
 mod settings;
 mod shell;
+mod workflows;
 use tauri::{AppHandle, Manager, Url, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_deep_link::DeepLinkExt;
 
@@ -461,6 +462,14 @@ fn main() {
             chat::chat_start,
             chat::chat_send,
             chat::chat_set_model,
+            workflows::workflows_state,
+            workflows::workflow_install,
+            workflows::workflow_decline,
+            workflows::workflow_remove,
+            workflows::workflow_set_schedule,
+            workflows::workflow_run_now,
+            workflows::workflow_runs,
+            workflows::workflow_run_report,
             chat::chat_stop,
             chat::chat_answer,
             chat::chat_end,

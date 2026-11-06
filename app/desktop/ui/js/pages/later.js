@@ -36,9 +36,3 @@ export function registry(main) {
       ["Your assistant can already search the registry today (registry_search, search_tools)."], "Coming in stage 3"));
 }
 
-export function workflows(main) {
-  page(main, "Workflows", "Saved, scheduled jobs that run without you, inside what you approved.",
-    coming("workflows", "Workflows are coming",
-      "A workflow runs approved tools on a schedule (for example a weekday 6:00 check of GSC and CN records), optionally with an AI review against your criteria, and delivers a report, a folder of results or an email. It is approved once as a whole at the keyboard, runs in its own sandbox, and stops with \"Needs you\" when anything falls outside what you approved.",
-      ["No runner is set up on this computer yet (shown at the foot of the rail).", "Your workflows start private to you; sharing comes later."], "Coming in stage 5"));
-}

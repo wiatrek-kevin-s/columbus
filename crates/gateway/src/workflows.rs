@@ -219,7 +219,7 @@ pub async fn run_cli_with(id: &str, scheduled: bool, python: Option<&str>) -> an
     let mut record = json!({
         "workflow": id,
         "run": run,
-        "started": started.to_rfc3339(),
+        "started": started.to_rfc3339_opts(chrono::SecondsFormat::Secs, false),
         "scheduled": scheduled,
         "status": "running",
         "steps": [],
@@ -227,7 +227,8 @@ pub async fn run_cli_with(id: &str, scheduled: bool, python: Option<&str>) -> an
     });
     let finish = |record: &mut Value, status: &str, why: Option<String>| -> i32 {
         record["status"] = json!(status);
-        record["finished"] = json!(Local::now().to_rfc3339());
+        record["finished"] =
+            json!(Local::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, false));
         if let Some(w) = why {
             record["reason"] = json!(w);
         }
@@ -677,11 +678,14 @@ pub(crate) fn report(record: &Value, workflow: Option<&Workflow>) -> String {
         .map(|w| w.name.clone())
         .unwrap_or_else(|| s(&record["workflow"]));
     out.push_str(&format!("# {name}\n\n"));
+    let started = chrono::DateTime::parse_from_rfc3339(&s(&record["started"]))
+        .map(|d| d.format("%A %-d %B %Y, %H:%M").to_string())
+        .unwrap_or_else(|_| s(&record["started"]));
     out.push_str(&format!(
         "**{}.** Run {} started {}{}.\n\n",
         status_words(record["status"].as_str().unwrap_or("")),
         s(&record["run"]),
-        s(&record["started"]),
+        started,
         if record["scheduled"] == true {
             " on its schedule"
         } else {

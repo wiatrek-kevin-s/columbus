@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-workflow-run-now"
+description = "Enables the workflow_run_now command without any pre-configured scope."
+commands.allow = ["workflow_run_now"]
+
+[[permission]]
+identifier = "deny-workflow-run-now"
+description = "Denies the workflow_run_now command without any pre-configured scope."
+commands.deny = ["workflow_run_now"]

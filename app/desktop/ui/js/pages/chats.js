@@ -71,7 +71,7 @@ function inline(parent, s) {
   }
 }
 
-function markdown(box, md) {
+export function markdown(box, md) {
   const lines = String(md).replace(/\r/g, "").split("\n");
   let list = null;
   let para = [];

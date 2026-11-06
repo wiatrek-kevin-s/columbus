@@ -6,6 +6,7 @@ import * as chats from "./pages/chats.js";
 import * as documents from "./pages/documents.js";
 import * as connections from "./pages/connections.js";
 import * as tools from "./pages/tools.js";
+import * as workflows from "./pages/workflows.js";
 import * as activity from "./pages/activity.js";
 import * as settings from "./pages/settings.js";
 import * as later from "./pages/later.js";
@@ -32,7 +33,7 @@ const PAGES = {
   connections: connections.render,
   registry: later.registry,
   tools: tools.render,
-  workflows: later.workflows,
+  workflows: workflows.render,
   activity: activity.render,
   settings: settings.render,
 };
@@ -123,8 +124,7 @@ function drawRail(r = route()) {
   const src = info ? info.policy.source : "";
   const policyText = { organization: "organization", file: "this computer's file", defaults: "Columbus defaults", unreadable: "file unreadable" }[src] || "…";
   const foot = h("div", { class: "rail-foot" },
-    h("div", { class: "row", title: "Workflows are not built yet, so no runner is set up" },
-      h("span", { class: "dot" }), h("span", { class: "text" }, h("b", {}, "Runner"), " not set up")),
+    workflowsRow(),
     h("a", { class: "row", href: "#/settings/org", title: `Policy in force: ${policyText}` },
       h("span", { class: src === "unreadable" ? "dot bad" : src === "defaults" ? "dot warn" : "dot ok" }),
       h("span", { class: "text" }, "Policy: ", h("b", {}, policyText))),
@@ -257,16 +257,38 @@ async function refreshInbox() {
 async function refreshTools() {
   try { store.set("tools", await invoke("settings_tools")); } catch (e) { console.error(e); }
 }
+async function refreshWorkflows() {
+  try { store.set("workflows", await invoke("workflows_state")); } catch (e) { console.error(e); }
+}
+
+// The rail's foot: how many workflows run on a schedule here, and whether
+// one needs the person.
+function workflowsRow() {
+  const w = store.workflows;
+  let text = "…";
+  let dot = "dot";
+  let title = "Your workflows";
+  if (w) {
+    const on = w.installed.filter((x) => x.schedule_entry === "on").length;
+    const needs = w.installed.filter((x) => x.last_run && ["failed", "needs_you", "needs_reapproval", "stopped_at_limit"].includes(x.last_run.status)).length + w.waiting.length;
+    text = !w.allowed ? "off" : on ? `${on} on schedule` : "none scheduled";
+    dot = !w.allowed ? "dot" : needs ? "dot warn" : on ? "dot ok" : "dot";
+    title = needs ? `${needs} workflow${needs === 1 ? "" : "s"} need you` : title;
+  }
+  return h("a", { class: "row", href: "#/workflows", title },
+    h("span", { class: dot }), h("span", { class: "text" }, h("b", {}, "Workflows"), ` ${text}`));
+}
+
 async function refreshChats() {
   try { store.set("chats", await invoke("chats_list")); } catch (e) { console.error(e); }
 }
-const refresh = { info: refreshInfo, sessions: refreshSessions, inbox: refreshInbox, tools: refreshTools, chats: refreshChats };
+const refresh = { info: refreshInfo, sessions: refreshSessions, inbox: refreshInbox, tools: refreshTools, chats: refreshChats, workflows: refreshWorkflows };
 store.refresh = refresh;
 chats.setRefresh(refresh);
 
 let railQueued = false;
 store.on((k) => {
-  if (["inbox", "tools", "info", "chats", "sessions", "waiting"].includes(k) && !railQueued) {
+  if (["inbox", "tools", "info", "chats", "sessions", "waiting", "workflows"].includes(k) && !railQueued) {
     railQueued = true;
     requestAnimationFrame(() => { railQueued = false; drawRail(); });
   }
@@ -290,13 +312,14 @@ async function boot() {
     store.prefs = p;
     applyTheme(p.theme);
   } catch (e) { console.error(e); }
-  await Promise.all([refreshInfo(), refreshChats(), refreshSessions(), refreshTools()]);
+  await Promise.all([refreshInfo(), refreshChats(), refreshSessions(), refreshTools(), refreshWorkflows()]);
   window.addEventListener("hashchange", show);
   await show();
   booted = true;
   refreshInbox();
   setInterval(refreshSessions, 4000);
   setInterval(refreshInbox, 5000);
+  setInterval(refreshWorkflows, 60000);
   setInterval(refreshTools, 15000);
   setInterval(refreshInfo, 20000);
   // New proposals or settings changed elsewhere while the app was away.

@@ -101,7 +101,7 @@ export async function render(main) {
       h("dt", {}, "Connections"), h("dd", {}, st ? plural(st.connections.filter((c) => c.id).length, "connection") : "—"),
       h("dt", {}, "Sessions running"), h("dd", {}, String(store.sessions.length)),
       h("dt", {}, "Policy"), h("dd", {}, info ? { organization: "your organization's (managed)", file: "this computer's file", defaults: "Columbus defaults (no file)", unreadable: "unreadable" }[info.policy.source] : "—"),
-      h("dt", {}, "Workflow runner"), h("dd", {}, "Not set up (workflows are coming)")))));
+      h("dt", {}, "Workflows"), h("dd", {}, store.workflows ? (store.workflows.allowed ? `${store.workflows.installed.length} approved, ${store.workflows.installed.filter((x) => x.schedule_entry === "on").length} on a schedule` : "Off (organization settings)") : "—")))));
 
   if (!needsSetup && STEPS.some((s) => !done[s])) {
     right.append(h("p", { class: "small muted" }, "Setup steps you skipped are in Settings. ",
