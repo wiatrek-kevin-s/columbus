@@ -1521,10 +1521,9 @@ def _snapshot_imagery(path: str, crs, transform, shape) -> tuple[Any, Any, dict[
         if win.width < 1 or win.height < 1:
             return np.zeros(shape + (3,), dtype=np.float32), np.zeros(shape, dtype=bool), info
         # About twice the picture's cells, at most: GDAL reads overviews for this.
-        k = max(1.0, max(win.width / (2 * w), win.height / (2 * h)))
+        k = max(1.0, win.width / (2 * w), win.height / (2 * h),
+                math.sqrt(win.width * win.height / SNAPSHOT_IMAGERY_MAX_CELLS))
         rw, rh = max(1, int(win.width / k)), max(1, int(win.height / k))
-        if rw * rh > SNAPSHOT_IMAGERY_MAX_CELLS:
-            raise GISError("params", "the imagery is too large to draw here")
         data = src.read(bands, window=win, out_shape=(len(bands), rh, rw), masked=True,
                         resampling=Resampling.bilinear if k > 1 else Resampling.nearest)
         src_t = src.window_transform(win) * rasterio.Affine.scale(win.width / rw, win.height / rh)

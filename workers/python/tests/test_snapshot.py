@@ -87,6 +87,15 @@ class SnapshotTest(unittest.TestCase):
         r = g.map_snapshot([a], out, 400, 400, imagery=far)
         self.assertFalse(r["imagery"]["covers"])
 
+    def test_large_imagery_is_read_smaller_not_refused(self):
+        import numpy as np
+        a = self.layer("a", [box(1_205_000, 946_000, 1_225_000, 966_000)], crs="EPSG:3081")
+        big = np.full((1, 3000, 4000), 50.0, dtype="float32")
+        img = self.raster("big", big, "EPSG:3081", (1_100_000, 850_000, 1_300_000, 1_050_000))
+        out = os.path.join(self.d, "s.png")
+        r = g.map_snapshot([a], out, 1600, 1200, imagery=img)
+        self.assertTrue(r["imagery"]["covers"])
+
     def test_imagery_that_is_not_a_geotiff_is_refused(self):
         import numpy as np
         a = self.layer("a", [box(1_205_000, 946_000, 1_225_000, 966_000)], crs="EPSG:3081")
