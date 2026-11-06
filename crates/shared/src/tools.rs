@@ -250,7 +250,8 @@ pub fn check_files(id: &str, manifest: &[u8], entry: &[u8]) -> Result<serde_yaml
                 ));
             }
             let text = p.get("type").and_then(|t| t.as_str()) == Some("string");
-            if text && p.get("enum").is_none() && p.get("format").is_none() {
+            let set = |k: &str| p.get(k).is_some_and(|v| !v.is_null());
+            if text && !set("enum") && !set("format") {
                 return Err(format!(
                     "{name}: a text parameter needs enum or format; ask your assistant to propose the tool again"
                 ));

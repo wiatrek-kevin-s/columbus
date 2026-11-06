@@ -304,15 +304,14 @@ class _Lint(ast.NodeVisitor):
         if isinstance(node.value, ast.Name) and node.value.id in self.ctx_names and node.attr not in CTX_METHODS \
                 and node.attr not in ("dataset", "_plugin", "_send", "_notify"):
             self.err(node, "tool.sdk", f"ctx.{node.attr}: use only ctx's documented methods ({', '.join(sorted(CTX_METHODS))}); take each parameter with ctx.param(name)")
+        if node.attr in ("params", "inputs", "output_specs", "workspace"):
+            self.err(node, "tool.sdk", f".{node.attr}: take each parameter with ctx.param(name) and each input with ctx.input_file(name)")
         if node.attr in TEMPLATE_ATTRS:
             self.err(node, "tool.settings", f".{node.attr}: a tool may not use template engines (they run code)")
         parent = self.parents.get(id(node))
         is_func = isinstance(parent, ast.Call) and parent.func is node
         if node.attr in CALL_ONLY_ATTRS and not is_func:
-            spatial = node.attr == "query" and ((isinstance(node.value, ast.Attribute) and node.value.attr == "sindex" and _dotted(node.value))
-                                                 or (isinstance(node.value, ast.Name) and node.value.id in self.trees))
-            if not spatial:
-                self.err(node, "tool.eval", f".{node.attr}: call it in place with a fixed expression; do not pass it around")
+            self.err(node, "tool.eval", f".{node.attr}: call it in place; do not pass it around")
         if full in ENV_CALLS and not is_func:
             self.err(node, "tool.settings", f"{full}: call it in place (with no settings); do not pass it around or subclass it")
         if SETTINGS_ATTR.search(node.attr):
@@ -372,6 +371,11 @@ class _Lint(ast.NodeVisitor):
             any(k.arg in ("predicate", "distance") for k in node.keywords)
             or (isinstance(f.value, ast.Attribute) and f.value.attr == "sindex" and _dotted(f.value))
             or (isinstance(f.value, ast.Name) and f.value.id in self.trees))
+        if spatial:
+            arg = node.args[0] if node.args else None
+            if arg is not None and (self._from_param(arg) or isinstance(arg, (ast.Constant, ast.JoinedStr, ast.BinOp))
+                                    or (isinstance(arg, ast.Call) and isinstance(arg.func, ast.Attribute) and arg.func.attr == "format")):
+                self.err(node, "tool.eval", ".query(): a spatial query takes a geometry, not text")
         if isinstance(f, ast.Attribute) and f.attr in ("query", "eval") and not spatial:
             expr = node.args[0] if node.args else next((k.value for k in node.keywords if k.arg == "expr"), None)
             text = _const_str(expr) if expr is not None else None
@@ -391,7 +395,7 @@ class _Lint(ast.NodeVisitor):
             first = [node.args[0]] if node.args and attr not in DISPATCH_BY_KEYWORD else []
             keyed = [k.value for k in node.keywords if k.arg in ("func", "aggfunc", "arg")]
             for c in first + keyed:
-                if self._from_param(c) and (c in keyed or len(node.args) == 1):
+                if self._from_param(c) and (c in keyed or attr != "transform" or len(node.args) == 1):
                     self.err(node, "tool.dispatch", f"{attr}(): a parameter may not choose the function that runs; look it up in a fixed dict ({{'sum': 'sum', 'mean': 'mean'}}[ctx.param('stat')]) or declare it with enum")
                 text = _const_str(c)
                 if text is not None and (text.startswith("_") or text in REFUSED_METHODS or text in CALL_ONLY_ATTRS
@@ -429,6 +433,9 @@ class _Lint(ast.NodeVisitor):
                 v = v.decode("utf-8", "replace")
             except Exception:  # noqa: BLE001
                 v = ""
+        if isinstance(v, str) and id(node) not in self.docstrings and (
+                v in CALL_ONLY_ATTRS or v in PICKLE_CALLS or v in REFUSED_METHODS):
+            self.err(node, "tool.dispatch", f"{v!r}: this names a method that runs text as code or a refused method; call what you need directly")
         if isinstance(v, str) and v in REFUSED_KEYWORD_TEXT and id(node) not in self.docstrings:
             self.err(node, "tool.settings", f"{v!r}: this names a setting that loads code or pickles; leave it at its default")
         if isinstance(v, str) and id(node) not in self.docstrings:
@@ -766,6 +773,12 @@ def _trees(tree: ast.Module, lint: _Lint) -> None:
             bad.update((a.asname or a.name).split(".")[0] for a in node.names)
         elif isinstance(node, (ast.Global, ast.Nonlocal)):
             bad.update(node.names)
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            bad.add(node.name)
+        elif isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name:
+            bad.add(node.name)
+        elif isinstance(node, ast.MatchMapping) and node.rest:
+            bad.add(node.rest)
     lint.trees = good - bad
 
 

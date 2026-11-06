@@ -241,6 +241,14 @@ class ToolLintTest(unittest.TestCase):
             "    tree = shapely.STRtree(gdf.geometry.values)\n    tree = gdf\n    return {'t': tree.query(ctx.param('w'))}\n": "tool.eval",
             "    def mySTRtree(x):\n        return x\n    tree = mySTRtree(gdf)\n    return {'t': tree.query(ctx.param('w'))}\n": "tool.eval",
         }
+        refused_any.update({
+            "    return {'t': gdf.agg(ctx.param('stat'), 0)}\n": "tool.dispatch",
+            "    s = ctx.param('stat')\n    return {'t': gdf.apply(s, 0)}\n": "tool.dispatch",
+            "    import pandas as pd\n    return {'t': pd.Series({'sindex': gdf}).sindex.query(ctx.param('w'))}\n": "tool.eval",
+            "    q = gdf.sindex.query\n    return {'t': q}\n": "tool.eval",
+            "    m = 'query'\n    return {'t': gdf.apply(m)}\n": "tool.dispatch",
+            "    c = ctx\n    return {'t': c.params}\n": "tool.sdk",
+        })
         for body, rule in refused_any.items():
             self.assertIn(rule, rules(head + body)[0], body)
         refused = [
