@@ -437,6 +437,32 @@ class ProjectDbTests(unittest.TestCase):
             with self.assertRaises(pdb.ProjectDbError):
                 call()
 
+    def test_big_queries_spill_to_disk_on_a_fresh_database(self):
+        # Under a small memory limit a large sort has to spill; the spill
+        # folder is made when needed.
+        self.load()
+        pdb.execute({"path": self.db, "sql": "CREATE TABLE big AS SELECT range AS i, random() AS r FROM range(3000000)"})
+        self.assertFalse(os.path.exists(self.db + ".tmp") and os.listdir(self.db + ".tmp"))
+        pdb.execute({"path": self.db, "memory_mb": 64, "sql": "CREATE TABLE sorted AS SELECT * FROM big ORDER BY r"})
+        self.assertEqual(self.q("SELECT count(*) AS n FROM sorted")["rows"][0][0], 3000000)
+        q = self.q("SELECT i, count(*) AS n FROM big GROUP BY i ORDER BY n DESC, i", memory_mb=64)
+        self.assertGreater(q["rows_read"], 0)
+
+    def test_a_spill_folder_that_is_a_link_is_refused_not_followed(self):
+        decoy = tempfile.mkdtemp()
+        keep = os.path.join(decoy, "keep.txt")
+        with open(keep, "w") as f:
+            f.write("x")
+        self.load()
+        root = self.db + ".tmp"
+        if os.path.isdir(root):
+            import shutil
+            shutil.rmtree(root)
+        os.symlink(decoy, root)
+        with self.assertRaises(pdb.ProjectDbError):
+            pdb.execute({"path": self.db, "sql": "CREATE TABLE t AS SELECT 1 AS a"})
+        self.assertTrue(os.path.exists(keep))
+
     def test_spill_left_by_a_killed_call_is_cleared(self):
         self.load()
         # As if a worker had been killed in the middle of spilling: files in

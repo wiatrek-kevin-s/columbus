@@ -42,6 +42,7 @@ import math
 import os
 import re
 import shutil
+import stat
 import sqlite3
 import threading
 import time
@@ -198,6 +199,7 @@ def _open(path: str, memory_mb: int, create: bool = False, read_only: bool = Fal
     }
     if max_mb:
         config["max_temp_directory_size"] = f"{max(64, int(max_mb))}MB"
+    _spill_root(temp_root)
     try:
         con = duckdb.connect(path, read_only=read_only, config=config)
     except duckdb.Error as e:
@@ -232,7 +234,39 @@ def _open(path: str, memory_mb: int, create: bool = False, read_only: bool = Fal
     return con, spatial
 
 
+def _plain_dir(p: str) -> bool:
+    """A real folder: not a link, a Windows junction or another reparse point."""
+    try:
+        st = os.lstat(p)
+    except OSError:
+        return False
+    if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
+        return False
+    if getattr(st, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400):
+        return False
+    isjunction = getattr(os.path, "isjunction", None)
+    return not (isjunction and isjunction(p))
+
+
+def _spill_root(root: str) -> None:
+    """Make <db>.tmp, the folder each connection's own spill folder goes in
+    (DuckDB makes only the last folder of a path). Anything but a plain
+    folder there is refused, never followed or emptied."""
+    if not os.path.lexists(root):
+        try:
+            os.mkdir(root)
+        except FileExistsError:
+            pass
+        except OSError as e:
+            raise ProjectDbError(f"could not make the project database's spill folder: {e.strerror}") from None
+    if not _plain_dir(root):
+        raise ProjectDbError(f"{os.path.basename(root)} beside the project database is not a plain folder (a link "
+                             "or a file); remove it and try again")
+
+
 def _clear_spill(root: str, keep: str) -> None:
+    if not _plain_dir(root):
+        return
     try:
         entries = os.listdir(root)
     except OSError:
@@ -402,8 +436,12 @@ def _check_size(con, max_mb: Any, what: str) -> int:
 
 
 def _tmp_bytes(path: str) -> int:
+    return _dir_bytes(path + ".tmp")
+
+
+def _dir_bytes(folder: str) -> int:
     total = 0
-    for dirpath, _dirs, files in os.walk(path + ".tmp"):
+    for dirpath, _dirs, files in os.walk(folder):
         for f in files:
             try:
                 total += os.path.getsize(os.path.join(dirpath, f))
@@ -439,6 +477,14 @@ class _SizeGuard:
         self.thread = None
         self.used0 = used_bytes(con) if self.cap is not None and mode != "spill" else 0
         self.pending0 = pending_bytes(con) if self.cap is not None and mode != "spill" else 0
+        # A read-only query is held to its own spill folder only: other
+        # readers' spill, or a killed reader's, is not its doing.
+        self.own_tmp = None
+        if mode == "spill":
+            try:
+                self.own_tmp = con.execute("SELECT current_setting('temp_directory')").fetchone()[0]
+            except Exception:  # noqa: BLE001 - fall back to the whole folder
+                self.own_tmp = None
         self.tmp0 = _tmp_bytes(path) if self.cap is not None else 0
         self.limit = None
         if self.cap is not None:
@@ -453,7 +499,7 @@ class _SizeGuard:
         blocks (the open transaction's included), what the transaction
         still holds in memory, and the spill folder."""
         if self.mode == "spill":
-            return _tmp_bytes(self.path)
+            return _dir_bytes(self.own_tmp) if self.own_tmp else _tmp_bytes(self.path)
         c = con if con is not None else self.cur
         return used_bytes(c) + max(0, pending_bytes(c) - self.pending0) + _tmp_bytes(self.path)
 
@@ -1353,7 +1399,7 @@ def _plain_check(c: dict[str, Any]) -> dict[str, Any]:
         c["message"] = _GENERIC_CHECKS.get(c.get("id"), "A check on the result found something to look at (left out at return_rows 0)")
     # The suggested fix can also hint at the data (swapped axes, projected
     # coordinates): one generic text.
-    if c.get("fix"):
+    if c.get("fix") and str(c.get("id", "")).startswith("crs."):
         c["fix"] = "Check the result's CRS and coordinates with someone who may see the rows"
     return c
 
