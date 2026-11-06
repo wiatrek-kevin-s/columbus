@@ -312,7 +312,8 @@ async function boot() {
     store.prefs = p;
     applyTheme(p.theme);
   } catch (e) { console.error(e); }
-  await Promise.all([refreshInfo(), refreshChats(), refreshSessions(), refreshTools(), refreshWorkflows()]);
+  await Promise.all([refreshInfo(), refreshChats(), refreshSessions(), refreshTools(), refreshWorkflows(),
+    invoke("chat_settings").then((s) => { store.ownSession = s.session || null; }).catch(() => {})]);
   testFrame();
   window.addEventListener("hashchange", show);
   await show();

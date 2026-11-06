@@ -418,6 +418,9 @@ pub struct SettingsView {
     engine_chosen: Option<String>,
     engine_suggestions: Vec<String>,
     chatting: bool,
+    /// The running chat's own Columbus session, so the page never lists it
+    /// among other AI apps' sessions (after a reload, say).
+    session: Option<String>,
 }
 
 struct ServerInfo {
@@ -486,6 +489,7 @@ pub async fn chat_settings(
             .map(|p| p.display().to_string())
             .collect(),
         chatting: st.chat.lock().await.is_some(),
+        session: st.session.lock().expect("session").clone(),
     })
 }
 

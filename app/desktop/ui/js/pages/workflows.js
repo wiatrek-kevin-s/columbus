@@ -63,7 +63,7 @@ export async function render(main, rest) {
     runsBox,
     h("section", { class: "card" }, h("div", { class: "hd" }, h("h2", {}, "Your organization's switch")), h("div", { class: "bd" }, sw)),
     h("p", { class: "small muted wrap-any" }, "Stored in ", h("code", { id: "wf-dir" })),
-    h("p", { class: "small muted" }, "Sharing a workflow with your team, and an AI review step in a run, come later."));
+    h("p", { class: "small muted" }, "Sharing a workflow with your team comes later."));
 
   const draw = () => {
     $("wf-dir").textContent = state.dir;

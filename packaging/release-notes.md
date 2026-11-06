@@ -4,12 +4,15 @@ Columbus {{VERSION}}, a test release. Click a link to download that file.
 - **Ask your assistant** ("make what we just did a workflow that runs every weekday at 6"). It proposes one; you find it under **Workflows**, read what it does in plain words and in full, and approve it with Touch ID or Windows Hello. Nothing runs before that.
 - **It does only what it lists:** it reads only the connections it names, its steps are reading and checking tools or personal tools you installed (never scripts or edits), and it never waits for you: a step that would need your approval stops the run with "needs you". A changed workflow, or a changed tool it uses, is off until you approve it again.
 - **Run now**, **Pause**, and every run's **report** (steps, row counts, checks, what was exported). Home and the menu's foot show workflows that need you.
+- **An optional AI review:** after the steps, a workflow can send a capped number of its result rows (only the fields you choose) with your criteria to Claude, using the API key you saved in the app, and keep its notes in the report, marked as the AI's. The reviewing AI has no tools: it cannot read anything else or change anything. On a Mac, the first **Run now** of such a workflow asks once for access to the key: choose **Always Allow**.
 - Turn them on with **Allow workflows** (Workflows page or Settings › Organization). Scheduled runs happen while you are signed in; one missed while the computer slept runs once when it wakes. Yours alone; sharing with your team comes later.
 - On a Mac, keep a workflow's data and export folders out of Documents, Desktop, Downloads and iCloud Drive (a scheduled run cannot ask for access there), or give `columbus-mcp` Full Disk Access.
 
 **Also new: your assistant can look at the map.** A new tool, `map_snapshot`, draws the session's layers as a picture the assistant sees, so it can spot slivers, gaps, layers that don't line up or features in the wrong place. It is drawn on your computer from geometry only (no attribute values, labels or basemap; nothing is downloaded), and the chat shows you what it saw. Your organization can turn it off.
 
-**Smaller fixes:** chat search finds Greek words typed in capitals.
+**Also:** the app's chat streams replies, so long answers at a high thinking level are not cut off; a new README with a tour of the app.
+
+**Smaller fixes:** chat search finds Greek words typed in capitals; the app's own chat is never listed among other AI apps' sessions.
 
 **Since 0.9.0 (in 0.9.1):** the app's chat brings its own Columbus server (so it is never older than the app); choose the model and thinking level for each chat; tables in replies show as tables. If your Columbus folder is somewhere other than your home folder, Settings › Models and accounts shows a **Use …** button for its engine: click it, then **Save settings**.
 
