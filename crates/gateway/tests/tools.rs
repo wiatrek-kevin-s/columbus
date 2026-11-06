@@ -23,6 +23,7 @@ use rmcp::{RoleClient, ServiceExt};
 use serde_json::{json, Value};
 
 const ID: &str = "personal.locate-measures";
+const ON: &str = "allow_personal_tools: true\nallow_scripts: true\n";
 const TOOL: &str = "personal.locate-measures.run";
 
 fn python(import: &str) -> Option<String> {
@@ -310,7 +311,18 @@ async fn propose_test_install_run_and_remove_a_personal_tool() {
         eprintln!("skipping: the GIS engine is not installed");
         return;
     };
+    // Proposing runs the assistant's code (the test), so scripts must be on too.
     let env = setup(&py, "allow_personal_tools: true\n");
+    let c = start(&env, &py).await;
+    let e = err(&call(
+        &c,
+        "propose_tool",
+        proposal("ws://x/a.gpkg", "ws://x/b.gpkg"),
+    )
+    .await);
+    assert!(e.contains("allow_scripts"), "{e}");
+    c.cancel().await.unwrap();
+    let env = setup(&py, ON);
     let c = start(&env, &py).await;
     if !can_confine() {
         let e = err(&call(
@@ -440,6 +452,21 @@ async fn propose_test_install_run_and_remove_a_personal_tool() {
     );
     assert!(!env.tools().join("proposals").join(ID).exists());
 
+    // An approval is for exactly what the person saw: a changed manifest
+    // (here, its description) is a different request.
+    let r = ok(&call(&c, "propose_tool", proposal(&routes, &crashes)).await);
+    let ap = r["result"]["approval"]["id"].as_str().unwrap().to_string();
+    b.decide(&ap, "allow_once").await;
+    let mut changed = proposal(&routes, &crashes);
+    changed["description"] = json!(format!(
+        "{} Also safe for every layer.",
+        changed["description"].as_str().unwrap()
+    ));
+    changed["approval_id"] = json!(ap);
+    let e = err(&call(&c, "propose_tool", changed).await);
+    assert!(e.contains("different request"), "{e}");
+    assert!(!env.tools().join("proposals").join(ID).exists());
+
     let r = ok(&call(&c, "propose_tool", proposal(&routes, &crashes)).await);
     let ap = r["result"]["approval"]["id"].as_str().unwrap().to_string();
     b.decide(&ap, "allow_once").await;
@@ -534,6 +561,19 @@ async fn propose_test_install_run_and_remove_a_personal_tool() {
 
     let r = ok(&call(&c, "run_tool", args.clone()).await);
     assert_eq!(r["result"]["status"], "done", "{r}");
+    // Nothing of the run is left for the next one: no folder of its own, no
+    // copies of its inputs, no staged code, no test folder.
+    let who = ok(&call(&c, "whoami", json!({})).await);
+    let ws = PathBuf::from(who["result"]["workspace"].as_str().unwrap());
+    let plugins = ws.join("plugins");
+    let left: Vec<_> = std::fs::read_dir(&plugins)
+        .map(|d| d.flatten().map(|e| e.file_name()).collect())
+        .unwrap_or_default();
+    assert!(left.is_empty(), "left in plugins/: {left:?}");
+    let staged: Vec<_> = std::fs::read_dir(ws.join("tool-code"))
+        .map(|d| d.flatten().map(|e| e.file_name()).collect())
+        .unwrap_or_default();
+    assert!(staged.is_empty(), "left in tool-code/: {staged:?}");
     assert_eq!(r["result"]["summary"]["located"], 2);
     assert_eq!(r["result"]["summary"]["off_route"], 1);
     let saved = r["result"]["saved"].as_array().unwrap();
@@ -542,6 +582,15 @@ async fn propose_test_install_run_and_remove_a_personal_tool() {
     assert!(handle.ends_with(".gpkg"), "{handle}");
     let checks = r["checks"].as_array().unwrap();
     assert!(checks.iter().any(|c| c["id"] == "lrs.off_route"));
+    // The tool reporting its own check never marks it as run by Columbus.
+    let pending = checks.iter().find(|c| c["id"] == "verify.pending").unwrap();
+    assert!(
+        pending["message"]
+            .as_str()
+            .unwrap()
+            .contains("lrs.off_route"),
+        "{pending}"
+    );
     assert!(checks.iter().any(|c| c["id"] == "flow.labels"));
     // The output is a layer other tools can use, labelled with its source.
     let lo = ok(&call(&c, "list_outputs", json!({})).await);
@@ -563,8 +612,6 @@ async fn propose_test_install_run_and_remove_a_personal_tool() {
     );
     let v = ok(&call(&c, "verify", json!({"layer": handle})).await);
     assert_eq!(v["result"]["rows"], 3);
-    let who = ok(&call(&c, "whoami", json!({})).await);
-    let ws = PathBuf::from(who["result"]["workspace"].as_str().unwrap());
     let prov: Value = serde_json::from_str(
         &std::fs::read_to_string(
             ws.join("provenance")
@@ -586,11 +633,30 @@ async fn propose_test_install_run_and_remove_a_personal_tool() {
     ok(&call(&c, "run_tool", args.clone()).await);
 
     // The organization's switch hides them all, from the next call.
-    env.policy("");
+    env.policy("allow_scripts: true\n");
     settle().await;
     let e = err(&call(&c, "run_tool", args.clone()).await);
     assert!(e.contains("turns personal tools off"), "{e}");
-    env.policy("allow_personal_tools: true\n");
+    // Denying the one tool hides it everywhere.
+    env.policy(&format!("{ON}deny_tools: [\"{TOOL}\"]\n"));
+    settle().await;
+    assert!(err(&call(&c, "run_tool", args.clone()).await).contains("not allowed"));
+    let found = ok(&call(
+        &c,
+        "search_tools",
+        json!({"query": "locate points along routes measure"}),
+    )
+    .await);
+    assert!(!found.to_string().contains(TOOL), "{found}");
+    let lp = ok(&call(&c, "list_providers", json!({})).await);
+    assert!(!lp.to_string().contains(ID), "{lp}");
+    assert!(
+        call(&c, "describe_tool", json!({"name": TOOL}))
+            .await
+            .is_error
+            == Some(true)
+    );
+    env.policy(ON);
     settle().await;
     ok(&call(&c, "run_tool", args.clone()).await);
 
@@ -611,4 +677,110 @@ async fn propose_test_install_run_and_remove_a_personal_tool() {
         log.contains("\"tool\":\"propose_tool\"")
             && log.contains(&format!("\"provider\":\"{ID}\""))
     );
+}
+
+fn fake_server() -> PathBuf {
+    let exe = std::env::current_exe().unwrap();
+    let p = exe
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("examples")
+        .join(format!("fake_mcp_server{}", std::env::consts::EXE_SUFFIX));
+    assert!(
+        p.exists(),
+        "build the example first: cargo build --example fake_mcp_server"
+    );
+    p
+}
+
+/// A personal tool, like a script, gets only files Columbus, a plugin or a
+/// script wrote: never a file a connected server sent.
+#[tokio::test]
+async fn personal_tools_refuse_a_connected_servers_file() {
+    let Some(py) = python("import geopandas, pyogrio, shapely, pyproj") else {
+        eprintln!("skipping: the GIS engine is not installed");
+        return;
+    };
+    if !can_confine() {
+        eprintln!("skipping: this machine cannot confine");
+        return;
+    }
+    let env = setup(&py, ON);
+    // A connected server whose report is saved to the workspace.
+    std::fs::create_dir_all(env.root.join("servers")).unwrap();
+    let manifest = env.root.join("servers").join("vault.yaml");
+    std::fs::write(
+        &manifest,
+        format!(
+            "id: vault\nname: Test vault\ntransport: {{ type: stdio, command: {}, args: [plain] }}\ntrust: standard\ntools:\n  export_report: {{ risk: read, output: to_workspace }}\n  default: {{ allow: false }}\n",
+            serde_json::to_string(&fake_server().display().to_string()).unwrap()
+        ),
+    )
+    .unwrap();
+    let review_ws = env.root.join("review");
+    std::fs::create_dir_all(&review_ws).unwrap();
+    let policy = columbus_shared::policy::OrgPolicy::load(&env.root.join("policy.yaml")).unwrap();
+    let b = columbus_broker::registry::Broker::load(
+        &policy,
+        &env.root.join("servers"),
+        &env.root.join("personal-servers"),
+        &review_ws,
+        std::sync::Arc::new(|_: &str| Ok(None)),
+        &[],
+    )
+    .unwrap();
+    let p = b.get("vault").unwrap().clone();
+    let conn = b.connected(&p).await.map_err(|s| format!("{s:?}")).unwrap();
+    let pinned = columbus_broker::review::pin(&conn.review, None);
+    let mut text = std::fs::read_to_string(&manifest).unwrap();
+    text.push_str(&serde_yaml::to_string(&json!({ "pinned": pinned })).unwrap());
+    std::fs::write(&manifest, text).unwrap();
+
+    // A tool that takes a table, installed as Settings would.
+    let dir = env.tools().join("personal.count-rows");
+    std::fs::create_dir_all(&dir).unwrap();
+    let yaml = "id: personal.count-rows\nversion: 1.0.0\nruntime: python\nentry: tool.py\ntools:\n  run:\n    summary: Count rows.\n    params:\n      table: { type: file, kind: table }\n    outputs:\n      report: { type: file, format: json }\n    risk: read\n";
+    let code = "def run(ctx):\n    return {'path': ctx.input_file('table')}\n\n\nfrom columbus_plugin import Plugin as _P\n_plugin = _P('personal.count-rows', '1.0.0')\n_plugin.tool('run', params=['table'], outputs=['report'])(run)\nif __name__ == '__main__':\n    _plugin.serve()\n";
+    std::fs::write(dir.join("plugin.yaml"), yaml).unwrap();
+    std::fs::write(dir.join("tool.py"), code).unwrap();
+    std::fs::write(
+        env.tools().join("approved.yaml"),
+        format!(
+            "personal.count-rows: {:?}\n",
+            columbus_shared::tools::content_hash(yaml.as_bytes(), code.as_bytes())
+        ),
+    )
+    .unwrap();
+
+    let c = start(&env, &py).await;
+    let r = ok(&call(&c, "run_tool", json!({"name": "vault.export_report"})).await);
+    let sent = r["result"]["saved"][0]["handle"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let e = err(&call(
+        &c,
+        "run_tool",
+        json!({"name": "personal.count-rows.run", "args": {"table": sent}}),
+    )
+    .await);
+    assert!(e.contains("came from a connected server"), "{e}");
+    // A file Columbus wrote is fine.
+    let q = ok(&call(
+        &c,
+        "query_features",
+        json!({"connection": "lrs", "dataset": "crashes"}),
+    )
+    .await);
+    let mine = q["result"]["layer"]["handle"].as_str().unwrap().to_string();
+    let r = ok(&call(
+        &c,
+        "run_tool",
+        json!({"name": "personal.count-rows.run", "args": {"table": mine}}),
+    )
+    .await);
+    assert_eq!(r["result"]["status"], "done", "{r}");
+    c.cancel().await.unwrap();
 }

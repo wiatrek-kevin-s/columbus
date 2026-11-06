@@ -208,13 +208,23 @@ async function refreshTools() {
   }
 }
 
+// Numbered lines, one per line as Python reads them (never scrolled
+// sideways), as on the approval card: what a reader counts is what runs.
+function numbered(id, countId, text) {
+  const pre = $(id);
+  pre.replaceChildren();
+  const lines = text === "" ? [] : text.replace(/\n$/, "").split("\n");
+  for (const line of lines) pre.append(el("span", "ln", line === "" ? " " : line));
+  $(countId).textContent = `${lines.length} line${lines.length === 1 ? "" : "s"}`;
+}
+
 function fillReview(t, manifest, code) {
   $("review-h").textContent = t.title;
   $("review-name").textContent = `${t.tool} · version ${t.version || "?"} · ${t.hash}`;
   $("review-desc").textContent = t.description || "";
   $("review-not-for").textContent = t.not_for ? `Not for: ${t.not_for}` : "";
-  $("review-manifest").textContent = manifest || "";
-  $("review-code").textContent = code || "";
+  numbered("review-manifest", "review-manifest-lines", manifest || "");
+  numbered("review-code", "review-code-lines", code || "");
   showError("review-error", null);
 }
 

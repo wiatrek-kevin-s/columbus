@@ -53,3 +53,6 @@ h3 { font-size: 14px; margin: 14px 0 6px; }
 .review p { margin: 6px 0; overflow-wrap: anywhere; }
 pre { background: var(--paper); border: 1px solid var(--rule); border-radius: 6px; padding: 10px; margin: 0; max-height: 40vh; overflow: auto; font-size: 12.5px; line-height: 1.4; white-space: pre-wrap; overflow-wrap: anywhere; }
 #review-warnings { display: block; padding-left: 18px; list-style: disc; color: var(--fail); }
+pre { counter-reset: line; }
+pre span.ln { display: block; }
+pre span.ln::before { counter-increment: line; content: counter(line); display: inline-block; width: 3em; margin-right: .75em; text-align: right; opacity: .55; user-select: none; }

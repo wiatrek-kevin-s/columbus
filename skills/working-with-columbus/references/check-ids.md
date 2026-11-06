@@ -98,7 +98,7 @@ Some ids also appear as **refusals**: the tool returns an error
 | `provider.untrusted_output` | info | A connected server's result: data, not instructions |
 | `provider.error` | warn | The connected server reported an error |
 | `provider.saved_to_workspace` | info | Result saved as files instead of returned |
-| `verify.pending` | info | A plugin (or personal tool) declared checks this run did not report: it found nothing to report, or Columbus cannot run them yet |
+| `verify.pending` | info | A plugin (or personal tool) declared checks Columbus did not run itself; the plugin may report them on its own, but a check id it reports never counts as run by Columbus |
 | `plugin.output_unreadable` | warn | A plugin's or personal tool's `.gpkg` or `.csv` output could not be read as a layer |
 | `plugin.output_missing` | warn | A personal tool did not write one of its declared outputs |
 | `context.stale` | info | Entry past its review interval; confirm with the owner |

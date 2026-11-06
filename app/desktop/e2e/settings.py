@@ -201,6 +201,8 @@ gpd.GeoDataFrame({"RTE": ["IH0035", "US0183"], "district": [14, 12]}, geometry=[
         d.find_element(By.XPATH, waiting.format("Count rows", "Review")).click()
         wait.until(EC.visibility_of_element_located((By.ID, "review-code")))
         assert "def run(ctx):" in d.find_element(By.ID, "review-code").text
+        assert d.find_element(By.ID, "review-code-lines").text == "2 lines", d.find_element(By.ID, "review-code-lines").text
+        assert len(d.find_elements(By.CSS_SELECTOR, "#review-code span.ln")) == 2
         assert "id: personal.count-rows" in d.find_element(By.ID, "review-manifest").text
         assert count_hash in d.find_element(By.ID, "review-name").text
         d.save_screenshot(str(OUT / "settings-tool-review.png"))

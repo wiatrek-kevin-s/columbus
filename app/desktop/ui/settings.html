@@ -30,7 +30,7 @@
 
       <section aria-labelledby="tools-h">
         <h2 id="tools-h">Tools</h2>
-        <p class="muted small">Tools your assistant made from scripts, so it (and any assistant you use with Columbus) can reuse them. You read each one and install it here; it then runs whenever it is needed, without asking, in the same sandbox as scripts: no network, only the layers it is given, writing only its own results. Ask your assistant, for example: <i>add the script we just made as a tool</i>.</p>
+        <p class="muted small">Tools your assistant made from scripts, so it (and any assistant you use with Columbus) can reuse them. You read each one and install it here; it then runs whenever it is needed, without asking, in the same sandbox as scripts: no network; each run starts afresh, reads only the layers it is given for that run (and the Python installation) and writes only its own folder, which is deleted when the run ends. Ask your assistant, for example: <i>add the script we just made as a tool</i>.</p>
         <p id="tools-off" class="notice" role="status" hidden>Personal tools are turned off in your organization's settings, so none of these are used, and none can be installed.</p>
         <p id="tools-error" class="error-text" role="alert" hidden></p>
         <h3>Waiting for you</h3>
@@ -122,10 +122,10 @@
         <p id="review-test" class="small"></p>
         <p id="review-replaces" class="notice" hidden></p>
         <ul id="review-warnings" class="small"></ul>
-        <p class="small">Read the code before you install it: once installed, your assistant may run it on your data whenever it needs, without asking. The last part of the code is added by Columbus to connect the tool to it.</p>
-        <h3>Manifest</h3>
+        <p class="small">Read the code before you install it: once installed, your assistant may run it on the layers it gives it whenever it needs, without asking. The last part of the code is added by Columbus to connect the tool to it.</p>
+        <h3>Manifest <span id="review-manifest-lines" class="muted small"></span></h3>
         <pre id="review-manifest" tabindex="0"></pre>
-        <h3>Code</h3>
+        <h3>Code <span id="review-code-lines" class="muted small"></span></h3>
         <pre id="review-code" tabindex="0"></pre>
         <p id="review-error" class="error-text" role="alert" hidden></p>
         <div class="actions">

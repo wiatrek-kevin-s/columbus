@@ -627,15 +627,27 @@ pub struct Plugin {
     /// A personal tool: proposed by an assistant with `propose_tool` and
     /// installed by the person in the Columbus app (see personal_tools.rs).
     pub personal_tool: bool,
+    /// The name of its own folder in the workspace (`plugins/<folder>`):
+    /// its id, or for a proposed tool's test run an id of its own, so a test
+    /// never shares a folder with the installed tool.
+    folder: String,
     gate: Option<PluginStatus>,
     /// The launcher and level, or None for an unconfined pilot.
     confine: Option<(PathBuf, columbus_confine::Level)>,
     worker: OnceCell<Result<Arc<Worker>, String>>,
+    /// A personal tool's describe check, made once with a worker that is
+    /// stopped straight after (personal tools keep no process between runs).
+    checked: OnceCell<Result<(), String>>,
 }
 
 impl Plugin {
     pub fn id(&self) -> &str {
         &self.manifest.id
+    }
+
+    /// Its own folder's name under `plugins/` in the workspace.
+    pub fn folder(&self) -> &str {
+        &self.folder
     }
 
     /// "A", "B", or "unconfined" (a pilot on a machine that cannot confine).
@@ -848,15 +860,18 @@ impl Plugins {
                     }
                 };
                 let gate = confine_gate.or(gate);
+                let folder = manifest.id.clone();
                 plugins.push(Arc::new(Plugin {
                     manifest,
                     dir,
                     hash,
                     personal,
                     personal_tool: false,
+                    folder,
                     gate,
                     confine,
                     worker: OnceCell::new(),
+                    checked: OnceCell::new(),
                 }));
             }
         }
@@ -957,6 +972,7 @@ impl Plugins {
                 continue;
             }
             plugins.push(Arc::new(Plugin {
+                folder: manifest.id.clone(),
                 manifest,
                 dir,
                 hash,
@@ -965,6 +981,7 @@ impl Plugins {
                 gate,
                 confine: confine.as_ref().ok().cloned(),
                 worker: OnceCell::new(),
+                checked: OnceCell::new(),
             }));
         }
         host(plugins, notes)
@@ -982,10 +999,25 @@ impl Plugins {
         host_script: PathBuf,
         workspace: PathBuf,
     ) -> Result<(Self, Arc<Plugin>), String> {
+        if !policy
+            .plugins
+            .levels
+            .iter()
+            .any(|l| l.eq_ignore_ascii_case("A"))
+        {
+            return Err("organization policy allows no confinement level A for plugins, and tools run only at A".into());
+        }
         let launcher = columbus_confine::ready(columbus_confine::Level::A).map_err(|e| {
             format!("tools run only confined (level A: no network, writes only their own folder), and {e}; Columbus never runs one unconfined")
         })?;
         let p = Arc::new(Plugin {
+            // A folder of its own: the test shares nothing with the
+            // installed tool of the same id, or with another test.
+            folder: format!(
+                "{}.test-{}",
+                manifest.id,
+                &uuid::Uuid::new_v4().simple().to_string()[..12]
+            ),
             manifest,
             dir,
             hash,
@@ -994,6 +1026,7 @@ impl Plugins {
             gate: None,
             confine: Some((launcher, columbus_confine::Level::A)),
             worker: OnceCell::new(),
+            checked: OnceCell::new(),
         });
         Ok((
             Plugins {
@@ -1020,14 +1053,20 @@ impl Plugins {
         if let Some(g) = &p.gate {
             return g.clone();
         }
-        match p.worker.get() {
-            Some(Err(e)) => PluginStatus::Error { reason: e.clone() },
+        match (p.worker.get(), p.checked.get()) {
+            (Some(Err(e)), _) | (_, Some(Err(e))) => PluginStatus::Error { reason: e.clone() },
             _ => PluginStatus::Ready,
         }
     }
 
     fn launch(&self, p: &Plugin) -> Launch {
-        let own = plugin_dir(&self.workspace, &p.manifest.id);
+        self.launch_from(p, &p.dir)
+    }
+
+    /// Start the plugin from the files in `dir` (its own folder, or a copy
+    /// Columbus made of exactly the files it checked).
+    fn launch_from(&self, p: &Plugin, dir: &Path) -> Launch {
+        let own = plugin_dir(&self.workspace, &p.folder);
         let tmp = own.join("tmp");
         let _ = std::fs::create_dir_all(&tmp);
         let (program, args, extra_read) = match p.manifest.runtime {
@@ -1037,7 +1076,7 @@ impl Plugins {
                     OsString::from("-I"),
                     OsString::from("-u"),
                     self.host_script.clone().into_os_string(),
-                    p.dir.clone().into_os_string(),
+                    dir.as_os_str().to_owned(),
                     OsString::from(&p.manifest.entry),
                 ],
                 // The interpreter and its libraries, and the SDK beside the
@@ -1048,7 +1087,7 @@ impl Plugins {
                     .collect::<Vec<_>>(),
             ),
             Runtime::Rust => {
-                let mut exe = p.dir.join(&p.manifest.entry);
+                let mut exe = dir.join(&p.manifest.entry);
                 if cfg!(windows) && exe.extension().is_none() {
                     exe.set_extension("exe");
                 }
@@ -1056,6 +1095,9 @@ impl Plugins {
             }
         };
         let mut launch = Launch::plugin(program, args, own.clone(), tmp);
+        // Every start (and every restart after a crash) checks the files are
+        // still the ones approved, just before the process is started.
+        launch.contents = Some((dir.to_path_buf(), p.manifest.entry.clone(), p.hash.clone()));
         if p.personal_tool {
             // As for scripts: no PROJ downloads, no GDAL formats that can
             // point at other files or URLs.
@@ -1076,7 +1118,9 @@ impl Plugins {
                 name: format!("plugin.{}", p.manifest.id),
                 // Its own folder only, never the workspace.
                 read_write: vec![own.clone()],
-                read_only: std::iter::once(p.dir.clone()).chain(extra_read).collect(),
+                read_only: std::iter::once(dir.to_path_buf())
+                    .chain(extra_read)
+                    .collect(),
                 memory_mb: Some(self.memory_mb),
                 processes: Some(16),
             };
@@ -1106,10 +1150,17 @@ impl Plugins {
         check_describe(&p.manifest, &d)
     }
 
-    /// Start (once) and check that `describe` matches `plugin.yaml`.
+    /// Start (once) and check that `describe` matches `plugin.yaml`. Not
+    /// for personal tools, which get a new worker for every run.
     pub async fn worker(&self, p: &Plugin) -> Result<Arc<Worker>, String> {
         if let Some(g) = &p.gate {
             return Err(describe_status(p.id(), g));
+        }
+        if p.personal_tool {
+            return Err(format!(
+                "{} runs in a worker of its own for each run",
+                p.id()
+            ));
         }
         p.worker
             .get_or_init(|| async {
@@ -1123,6 +1174,93 @@ impl Plugins {
             })
             .await
             .clone()
+    }
+}
+
+impl Plugins {
+    /// Whether the plugin is ready: approved, and its worker's describe
+    /// matches its manifest. A personal tool is checked once with a worker
+    /// that is stopped at once, from a checked copy of its files.
+    pub async fn check(&self, p: &Plugin) -> Result<(), String> {
+        if let Some(g) = &p.gate {
+            return Err(describe_status(p.id(), g));
+        }
+        if !p.personal_tool {
+            return self.worker(p).await.map(|_| ());
+        }
+        p.checked
+            .get_or_init(|| async {
+                let code = self
+                    .workspace
+                    .join("tool-code")
+                    .join(uuid::Uuid::new_v4().simple().to_string());
+                let result = async {
+                    self.stage_code(p, &code)?;
+                    self.fresh_worker(p, &code).await.map(|_| ())
+                }
+                .await;
+                let _ = std::fs::remove_dir_all(&code);
+                self.wipe_own(p);
+                result
+            })
+            .await
+            .clone()
+    }
+
+    /// Copy a personal tool's two files into `into` (a new folder no plugin
+    /// can write), from exactly the bytes whose hash is checked here against
+    /// the one approved: what runs is what was installed.
+    pub fn stage_code(&self, p: &Plugin, into: &Path) -> Result<(), String> {
+        use columbus_shared::tools;
+        let read = |f: &str| {
+            let path = p.dir.join(f);
+            match std::fs::symlink_metadata(&path) {
+                Ok(m) if m.file_type().is_file() => {
+                    std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))
+                }
+                _ => Err(format!("{} is not a plain file", path.display())),
+            }
+        };
+        let manifest = read(tools::MANIFEST)?;
+        let entry = read(&p.manifest.entry)?;
+        if tools::content_hash(&manifest, &entry) != p.hash {
+            return Err(format!(
+                "{} changed since the person installed it, so it is off; propose it again with propose_tool and the person installs it again",
+                p.id()
+            ));
+        }
+        std::fs::create_dir_all(into).map_err(|e| format!("{}: {e}", into.display()))?;
+        for (name, bytes) in [
+            (tools::MANIFEST, &manifest),
+            (p.manifest.entry.as_str(), &entry),
+        ] {
+            crate::export_tools::write_new(&into.join(name), bytes)
+                .map_err(|e| format!("could not stage {name}: {e}"))?;
+        }
+        Ok(())
+    }
+
+    /// A worker of its own for one run of a personal tool, started from
+    /// `code` (see [`stage_code`](Self::stage_code)) with an empty folder.
+    /// It ends when the run's last reference to it goes.
+    pub async fn fresh_worker(&self, p: &Plugin, code: &Path) -> Result<Worker, String> {
+        if let Some(g) = &p.gate {
+            return Err(describe_status(p.id(), g));
+        }
+        self.wipe_own(p);
+        let w = Worker::new(self.launch_from(p, code));
+        let d = w
+            .describe(Duration::from_secs(30))
+            .await
+            .map_err(|e| e.to_string())?;
+        check_describe(&p.manifest, &d)?;
+        Ok(w)
+    }
+
+    /// Empty a plugin's own folder: nothing one run left is there for the next.
+    pub fn wipe_own(&self, p: &Plugin) {
+        let own = plugin_dir(&self.workspace, &p.folder);
+        let _ = std::fs::remove_dir_all(&own);
     }
 }
 

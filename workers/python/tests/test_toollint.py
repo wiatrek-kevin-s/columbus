@@ -59,6 +59,24 @@ class ToolLintTest(unittest.TestCase):
             errors, _, _ = rules(f"import os\ndef run(ctx):\n    {line}\n    return {{}}\n")
             self.assertIn(rule, errors, line)
 
+    def test_code_reads_as_it_runs(self):
+        # Python folds full-width and other look-alike letters into ASCII:
+        # the tree says run where the text says something else.
+        self.assertIn("tool.identifier", rules("def \uff52\uff55\uff4e(ctx):\n    return {}\n")[0])
+        self.assertIn("tool.identifier", rules("def run(ctx):\n    \u0430 = 1\n    return {}\n")[0])
+        self.assertIn("tool.identifier", rules("def run(ctx):\n    return ctx.p\u0430ram('x')\n")[0])
+        self.assertIn("tool.identifier", rules("def run(ctx):\n    return dict(\u0430=1)\n")[0])
+        # A reader sees the first run; Python runs the last.
+        self.assertIn("tool.redefined", rules("def run(ctx):\n    return 1\n\ndef run(ctx):\n    return 2\n")[0])
+        self.assertIn("tool.redefined", rules("def run(ctx):\n    return 1\nif True:\n    def run(ctx):\n        return 2\n")[0])
+        self.assertIn("tool.redefined", rules("def run(ctx):\n    return 1\nfor run in [print]:\n    pass\n")[0])
+        self.assertIn("tool.redefined", rules("def helper():\n    pass\nfrom os import path as helper\ndef run(ctx):\n    return 1\n")[0])
+        self.assertIn("tool.redefined", rules("def run(ctx):\n    global run\n    return 1\n")[0])
+        self.assertIn("tool.call", rules("def run(ctx):\n    globals()['run'] = print\n")[0])
+        # Code pushed out of view by blank lines.
+        self.assertIn("tool.blank_lines", rules("def run(ctx):\n    x = 1\n" + "\n" * 6 + "    return x\n")[0])
+        self.assertEqual(rules("def run(ctx):\n    x = 1\n" + "\n" * 5 + "    return x\n")[0], set())
+
     def test_run_must_be_there_and_take_ctx(self):
         self.assertIn("tool.run", rules("def main(ctx):\n    pass\n")[0])
         self.assertIn("tool.run", rules("def run(ctx, other):\n    pass\n")[0])

@@ -2,16 +2,18 @@
 
 When the person says "add the script we just made as a tool" (or a job keeps coming back),
 package it with `propose_tool`. A personal tool is a small, single-purpose Python function
-that Columbus runs as an engine plugin: confined (no network, it reads only the layers it is
-given and writes only its own outputs), from the next call after the person installs it,
+that Columbus runs as an engine plugin: confined (no network; each run starts a fresh process
+that reads only the layers it is given for that run and writes only its own folder, deleted
+when the run ends), from the next call after the person installs it,
 with no approval per run. Other assistants, in other chats, will find it with `search_tools`
 and call it with `run_tool` knowing only what you write in its manifest. Write for them.
 
 ## How it goes
 
-1. **Check it is allowed.** `whoami` → `policy.personal_tools_allowed`. If it is false, say so:
-   the person can turn on "Allow personal tools" in the Columbus app's Settings if their
-   organization lets them. Do not offer workarounds.
+1. **Check it is allowed.** `whoami` → `policy.personal_tools_allowed` and
+   `policy.scripts_allowed` (the test run runs your code as a script). If either is false,
+   say so: the person can turn them on in the Columbus app's Settings if their organization
+   lets them. Do not offer workarounds.
 2. **Have a working script first**, usually one you ran with `run_python` on real layers.
 3. **Turn it into `run(ctx)`** (below) and write the manifest.
 4. **Call `propose_tool`** with the manifest, the code and a test on this session's layers
@@ -73,6 +75,11 @@ Columbus adds the lines that connect `run` to it; leave out `if __name__ == "__m
 - **Plain text**: at most 100 KB, lines of 200 characters or fewer, no invisible or
   right-to-left characters.
 - **Nothing at import time**: imports, constants and functions at the top; the work in `run`.
+- **Reads as it runs**: names in plain ASCII (no look-alike letters), each top-level name
+  defined once (`run` exactly once, never rebound), no `globals()`/`setattr` tricks, and no
+  more than 5 blank lines in a row.
+- **Nothing kept between runs**: each run is a new process with an empty folder; do not
+  rely on files left by an earlier run.
 
 ## The manifest: written for another assistant
 

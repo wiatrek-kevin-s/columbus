@@ -122,35 +122,15 @@ pub fn plain_text(text: &str) -> Result<(), String> {
 /// manifest, which the app shows wrapped).
 pub fn plain_chars(text: &str) -> Result<(), String> {
     for (i, line) in text.split('\n').enumerate() {
-        let n = i + 1;
-        for c in line.chars() {
-            let bad = match c {
-                '\t' => false,
-                '\r' => true,
-                c if c.is_control() => true,
-                '\u{200B}'..='\u{200F}'
-                | '\u{202A}'..='\u{202E}'
-                | '\u{2060}'..='\u{206F}'
-                | '\u{FEFF}'
-                | '\u{00AD}'
-                | '\u{034F}'
-                | '\u{061C}'
-                | '\u{115F}'
-                | '\u{1160}'
-                | '\u{17B4}'
-                | '\u{17B5}'
-                | '\u{180E}'
-                | '\u{3164}'
-                | '\u{FFA0}'
-                | '\u{E0000}'..='\u{E007F}' => true,
-                _ => false,
-            };
-            if bad {
-                return Err(format!(
-                    "line {n} contains the character U+{:04X}, which displays differently from how it is read; it must be plain text",
-                    c as u32
-                ));
-            }
+        if let Some(c) = line
+            .chars()
+            .find(|&c| c != '\t' && crate::canon::hidden_char(c))
+        {
+            return Err(format!(
+                "line {} contains the character U+{:04X}, which displays differently from how it is read; it must be plain text",
+                i + 1,
+                c as u32
+            ));
         }
     }
     Ok(())
@@ -196,6 +176,12 @@ pub fn check_files(id: &str, manifest: &[u8], entry: &[u8]) -> Result<serde_yaml
     let v: serde_yaml::Value =
         serde_yaml::from_str(m).map_err(|e| format!("plugin.yaml does not read: {e}"))?;
     let s = |k: &str| v.get(k).and_then(|x| x.as_str());
+    if let Some(name) = s("name") {
+        // Shown in the install prompt, quoted, and in approval summaries.
+        if name.chars().count() > 80 || name.contains(['"', '\n']) || plain_chars(name).is_err() {
+            return Err("the tool's name (its title) must be one plain line of at most 80 characters, without double quotes".into());
+        }
+    }
     if s("id") != Some(id) {
         return Err(format!("plugin.yaml names another id than {id}"));
     }
@@ -650,10 +636,49 @@ mod tests {
                 "{to}"
             );
         }
+        for bad in [
+            "Locate \\\"measures\\\"",
+            "Locate\\nmeasures",
+            "Locate\\u2028measures",
+        ] {
+            let y = YAML.replace("name: Locate measures", &format!("name: \"{bad}\""));
+            assert!(
+                check_files(id, y.as_bytes(), CODE.as_bytes()).is_err(),
+                "{bad}"
+            );
+        }
         let y = format!("{YAML}confinement: {{ level: B }}\n");
         assert!(check_files(id, y.as_bytes(), CODE.as_bytes()).is_err());
         assert!(check_files(id, YAML.as_bytes(), b"x = 1 # \xe2\x80\xae").is_err());
         assert!(check_files(id, YAML.as_bytes(), b"a\rb").is_err());
+    }
+
+    #[test]
+    fn text_that_shows_differently_is_refused() {
+        assert!(plain_chars("a\tb\nc d").is_ok());
+        for c in [
+            '\u{FE0F}',
+            '\u{FE00}',
+            '\u{E0100}',
+            '\u{E01EF}',
+            '\u{180B}',
+            '\u{180D}',
+            '\u{2028}',
+            '\u{2029}',
+            '\u{FFF9}',
+            '\u{FFFB}',
+            '\u{202E}',
+            '\u{200B}',
+            '\u{E0041}',
+            '\u{00AD}',
+            '\r',
+            '\u{1b}',
+        ] {
+            let t = format!("x = 1{c}2");
+            assert!(plain_chars(&t).is_err(), "U+{:04X}", c as u32);
+            assert!(plain_text(&t).is_err(), "U+{:04X}", c as u32);
+            assert!(crate::canon::hidden_char(c), "U+{:04X}", c as u32);
+        }
     }
 
     #[test]

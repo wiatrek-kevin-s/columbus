@@ -355,27 +355,7 @@ fn shown_as_run(code: &str) -> Result<(), String> {
             ));
         }
         for c in line.chars() {
-            let bad = match c {
-                '\t' => false,
-                '\r' => true,
-                c if c.is_control() => true,
-                '\u{200B}'..='\u{200F}'
-                | '\u{202A}'..='\u{202E}'
-                | '\u{2060}'..='\u{206F}'
-                | '\u{FEFF}'
-                | '\u{00AD}'
-                | '\u{034F}'
-                | '\u{061C}'
-                | '\u{115F}'
-                | '\u{1160}'
-                | '\u{17B4}'
-                | '\u{17B5}'
-                | '\u{180E}'
-                | '\u{3164}'
-                | '\u{FFA0}'
-                | '\u{E0000}'..='\u{E007F}' => true,
-                _ => false,
-            };
+            let bad = c != '\t' && columbus_shared::canon::hidden_char(c);
             if bad {
                 return Err(format!(
                     "line {n} contains the character U+{:04X}, which displays differently from how Python reads it; scripts must be plain text",

@@ -490,8 +490,13 @@ pub struct State {
     >,
     pub flow: columbus_flow::FlowState,
     pub outputs: crate::providers::Outputs,
-    /// `run_python` runs one script at a time per session.
+    /// `run_python` runs one script at a time per session, and personal
+    /// tools run one at a time too.
     pub scripts: tokio::sync::Mutex<()>,
+    /// The data labels of every input each organization plugin has had in
+    /// this session, by its folder: its worker lives across runs.
+    pub plugin_labels:
+        std::sync::Mutex<std::collections::HashMap<String, std::collections::BTreeSet<String>>>,
     /// Change sets propose_edits made in this session.
     pub edits: crate::edit_tools::ChangeSets,
     pub session: String,
@@ -668,6 +673,7 @@ impl State {
             flow: columbus_flow::FlowState::new(),
             outputs: crate::providers::Outputs::default(),
             scripts: tokio::sync::Mutex::new(()),
+            plugin_labels: Default::default(),
             edits: Default::default(),
             paths,
             fixed: startup_only(&policy),
@@ -1507,8 +1513,18 @@ impl Gateway {
         let mut out = Vec::new();
         for (host, p) in self.all_plugins() {
             let p = &p;
+            // A personal tool the organization denies is not shown at all.
+            if p.personal_tool
+                && !p
+                    .manifest
+                    .tools
+                    .keys()
+                    .any(|n| self.state.policy().tool_allowed(&format!("{}.{n}", p.id())))
+            {
+                continue;
+            }
             // Start approved plugins so a describe mismatch shows up here.
-            let _ = host.worker(p).await;
+            let _ = host.check(p).await;
             let status = host.status(p);
             let ready = matches!(status, crate::plugins::PluginStatus::Ready);
             out.push(ProviderCard {
@@ -1749,7 +1765,7 @@ impl Gateway {
             let p = &p;
             if args.provider.as_deref().is_some_and(|want| want != p.id())
                 || !matches!(host.status(p), crate::plugins::PluginStatus::Ready)
-                || host.worker(p).await.is_err()
+                || host.check(p).await.is_err()
             {
                 continue;
             }
@@ -1845,7 +1861,7 @@ impl Gateway {
                 if !self.state.policy().tool_allowed(&args.name) {
                     return Err(self.deny(&ctx, rec, Denied::Tool(args.name.clone())));
                 }
-                if let Err(e) = host.worker(&pl).await {
+                if let Err(e) = host.check(&pl).await {
                     return Err(self.deny(&ctx, rec, e));
                 }
                 let Some(t) = pl.manifest.tools.get(tool_name) else {

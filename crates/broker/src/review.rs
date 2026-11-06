@@ -134,11 +134,7 @@ const CORE_TOOLS: &[&str] = &[
 fn hidden_chars(s: &str) -> Vec<String> {
     s.chars()
         .filter(|c| {
-            let u = *c as u32;
-            matches!(u,
-                0x200B..=0x200F | 0x202A..=0x202E | 0x2060..=0x2064 | 0x2066..=0x2069
-                | 0xFEFF | 0xE0000..=0xE007F | 0x00AD | 0x180E)
-                || (c.is_control() && *c != '\n' && *c != '\t' && *c != '\r')
+            *c != '\n' && *c != '\t' && *c != '\r' && columbus_shared::canon::hidden_char(*c)
         })
         .map(|c| format!("U+{:04X}", c as u32))
         .collect()
@@ -468,5 +464,26 @@ mod tests {
         }))
         .unwrap();
         assert!(kinds(&t).contains(&FlagKind::ModelInstructions));
+    }
+
+    #[test]
+    fn variation_selectors_and_separators_are_hidden_characters() {
+        for c in [
+            '\u{FE0F}',
+            '\u{E0100}',
+            '\u{180B}',
+            '\u{2028}',
+            '\u{2029}',
+            '\u{FFF9}',
+        ] {
+            let t = tool("t", &format!("Reads routes{c}."));
+            assert!(
+                lint(&t, &BTreeSet::new())
+                    .iter()
+                    .any(|f| f.kind == FlagKind::HiddenCharacters),
+                "U+{:04X}",
+                c as u32
+            );
+        }
     }
 }

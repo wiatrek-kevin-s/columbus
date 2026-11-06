@@ -75,9 +75,37 @@ impl Gateway {
         if let Some(extra) = args.keys().find(|k| !spec.params.contains_key(*k)) {
             return Err(self.deny(ctx, rec, format!("{full} has no parameter {extra:?}")));
         }
-        let worker = match host.worker(&p).await {
-            Ok(w) => w,
-            Err(e) => return Err(self.deny(ctx, rec, e)),
+        // A personal tool keeps nothing between runs: one run at a time in a
+        // session (as scripts), a new worker started from a checked copy of
+        // exactly the installed files, an empty folder of its own, and all
+        // of it gone when the run ends, however it ends. The guards are
+        // declared before the worker, so they are dropped after it (its
+        // process is stopped first).
+        let mut _one = None;
+        let mut _wipe = None;
+        let mut _code = None;
+        let worker: Arc<crate::worker::Worker> = if p.personal_tool {
+            _one = Some(self.state.scripts.lock().await);
+            _wipe = Some(WipeOwn(host, p.clone()));
+            let code = self
+                .state
+                .sandbox
+                .root()
+                .join("tool-code")
+                .join(uuid::Uuid::new_v4().simple().to_string());
+            _code = Some(RemoveDir(code.clone()));
+            if let Err(e) = host.stage_code(&p, &code) {
+                return Err(self.deny(ctx, rec, e));
+            }
+            match host.fresh_worker(&p, &code).await {
+                Ok(w) => Arc::new(w),
+                Err(e) => return Err(self.deny(ctx, rec, e)),
+            }
+        } else {
+            match host.worker(&p).await {
+                Ok(w) => w,
+                Err(e) => return Err(self.deny(ctx, rec, e)),
+            }
         };
 
         let run_id = format!("r_{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
@@ -365,9 +393,12 @@ impl Gateway {
         // The plugin reads and writes only its own run folder: copies of its
         // inputs (made once the run is allowed) and its outputs, which
         // Columbus then copies into results/.
-        let run_dir = crate::plugins::plugin_dir(self.state.sandbox.root(), p.id())
+        let run_dir = crate::plugins::plugin_dir(self.state.sandbox.root(), p.folder())
             .join("runs")
             .join(&run_id);
+        // Its copies of the inputs and its outputs go when the run ends,
+        // however it ends (outputs are copied out first).
+        let _run_dir = RemoveDir(run_dir.clone());
         let mut outputs = serde_json::Map::new();
         let mut out_paths = Vec::new();
         for (name, o) in &spec.outputs {
@@ -383,7 +414,21 @@ impl Gateway {
         let _ = std::fs::create_dir_all(self.state.sandbox.root().join("results"));
         let _ = std::fs::create_dir_all(run_dir.join("out"));
 
-        let labels = self.state.flow.labels_for(&files);
+        let mut labels = self.state.flow.labels_for(&files);
+        if !p.personal_tool {
+            // An organization plugin's worker lives across runs and keeps its
+            // own folder: it could carry data from one run into the next.
+            // So its outputs carry the labels of every input it has had in
+            // this session, not only this run's.
+            let mut seen = self
+                .state
+                .plugin_labels
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let mine = seen.entry(p.folder().to_string()).or_default();
+            mine.extend(labels.iter().cloned());
+            labels = mine.clone();
+        }
         rec.labels = labels.iter().cloned().collect();
 
         // Tools that change things need the person's approval.
@@ -572,6 +617,8 @@ impl Gateway {
         });
         let counts = result.get("outputs").cloned().unwrap_or(Value::Null);
         let mut saved = Vec::new();
+        // Ids of the checks Columbus ran itself on the outputs.
+        let mut columbus_ran: Vec<String> = Vec::new();
         for (name, written, path) in &out_paths {
             // A regular file directly where the plugin was told to write it,
             // copied into results/ with the hash of exactly what was copied.
@@ -658,6 +705,7 @@ impl Gateway {
                 kind: spec.outputs[name].kind().to_string(),
                 path: path.clone(),
             });
+            columbus_ran.extend(own.iter().map(|c| c.id.clone()));
             checks.extend(own);
         }
         if p.personal_tool {
@@ -693,9 +741,9 @@ impl Gateway {
                 fix: None,
             });
         }
-        // Declared checks this run did not report (a check the tool reports
-        // only when it finds something, or one Columbus cannot run yet).
-        let reported: BTreeSet<String> = checks.iter().map(|c| c.id.clone()).collect();
+        // Declared checks Columbus did not run itself. What the plugin
+        // reports of its own (any id it likes) never counts as run.
+        let reported: BTreeSet<String> = columbus_ran.iter().cloned().collect();
         let declared: BTreeSet<&String> = spec
             .checks
             .iter()
@@ -706,7 +754,7 @@ impl Gateway {
                 id: "verify.pending".into(),
                 severity: Severity::Info,
                 message: format!(
-                    "Declared checks not reported by this run (the tool found nothing to report, or Columbus cannot run them yet): {}",
+                    "Declared checks Columbus did not run itself (the tool may report them on its own, as it found): {}",
                     declared.into_iter().cloned().collect::<Vec<_>>().join(", ")
                 ),
                 detail: None,
@@ -748,5 +796,23 @@ impl Gateway {
             checks,
             provenance: Some(prov),
         }))
+    }
+}
+
+/// Removes a folder when dropped (without following links in it).
+struct RemoveDir(PathBuf);
+
+impl Drop for RemoveDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// Empties a personal tool's own folder when dropped.
+struct WipeOwn<'a>(&'a Plugins, Arc<Plugin>);
+
+impl Drop for WipeOwn<'_> {
+    fn drop(&mut self) {
+        self.0.wipe_own(&self.1);
     }
 }

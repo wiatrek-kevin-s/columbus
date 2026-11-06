@@ -22,7 +22,9 @@ Standard library only.
 from __future__ import annotations
 
 import ast
+import io
 import re
+import tokenize
 from typing import Any
 
 # Modules a tool has no business importing.
@@ -47,7 +49,15 @@ REFUSED_MODULES = {
 SDK = "columbus_plugin"
 SDK_HELPERS = {"ToolError", "Severity", "write_csv", "write_geojson", "decode_geometry"}
 
+# Most blank lines in a row: more could push code out of sight of a reader.
+MAX_BLANK_RUN = 5
+
 REFUSED_CALLS = {
+    "globals": "changing the module's names behind the reader's back",
+    "locals": "changing names behind the reader's back",
+    "vars": "changing names behind the reader's back",
+    "setattr": "changing names behind the reader's back",
+    "delattr": "changing names behind the reader's back",
     "eval": "running text as code",
     "exec": "running text as code",
     "compile": "running text as code",
@@ -236,8 +246,48 @@ class _Lint(ast.NodeVisitor):
         self.generic_visit(node)
 
 
+def _bound_names(node: ast.AST) -> list[str]:
+    """Names a top-level statement binds."""
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        return [node.name]
+    if isinstance(node, (ast.Import, ast.ImportFrom)):
+        return [(a.asname or a.name).split(".")[0] for a in node.names]
+    targets = node.targets if isinstance(node, ast.Assign) else [node.target] if isinstance(node, (ast.AnnAssign, ast.AugAssign)) else []
+    out = []
+    for t in targets:
+        for n in ast.walk(t):
+            if isinstance(n, ast.Name):
+                out.append(n.id)
+    return out
+
+
 def _top_level(tree: ast.Module, lint: _Lint) -> None:
     run = None
+    # A reader sees the first definition; Python runs the last. Every name a
+    # function or class defines at the top level is bound exactly once.
+    defined: dict[str, int] = {}
+    bound: dict[str, int] = {}
+    for node in tree.body:
+        for name in _bound_names(node):
+            is_def = isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+            if (is_def and name in bound) or name in defined:
+                lint.err(node, "tool.redefined", f"{name} is defined more than once at the top level (line {defined.get(name) or bound.get(name)} and line {node.lineno}); a reader sees one, Python runs the last")
+            if is_def:
+                defined.setdefault(name, node.lineno)
+            bound.setdefault(name, node.lineno)
+    # `run` defined or rebound in top-level code (inside an if, a try, a
+    # loop), or changed from inside a function, is refused too.
+    for top in tree.body:
+        top_def = isinstance(top, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+        for node in ast.walk(top):
+            if isinstance(node, (ast.Global, ast.Nonlocal)) and "run" in node.names:
+                lint.err(node, "tool.redefined", "run is changed from inside a function; define it once, plainly")
+            if top_def or node is top:
+                continue
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.name == "run":
+                lint.err(node, "tool.redefined", "run is defined inside a block; define it once, plainly, at the top level")
+            if isinstance(node, ast.Name) and node.id == "run" and isinstance(node.ctx, (ast.Store, ast.Del)):
+                lint.err(node, "tool.redefined", "run is rebound at the top level; define it once, plainly")
     for i, node in enumerate(tree.body):
         if isinstance(node, (ast.Import, ast.ImportFrom, ast.ClassDef)):
             continue
@@ -279,6 +329,29 @@ def _top_level(tree: ast.Module, lint: _Lint) -> None:
                     lint.ctx_names.add("ctx")
 
 
+def _source_checks(code: str, lint: _Lint) -> None:
+    """What the parser hides: names spelled with other characters than the
+    reader sees (Python folds full-width and other look-alike letters into
+    ASCII, so the tree shows `run` where the text says `ｒｕｎ`), and long
+    runs of blank lines that push code out of view."""
+    try:
+        for tok in tokenize.generate_tokens(io.StringIO(code).readline):
+            if tok.type == tokenize.NAME and not tok.string.isascii():
+                lint.errors.append({"line": tok.start[0], "rule": "tool.identifier",
+                                    "message": f"the name {tok.string!r} uses characters other than ASCII letters, digits and _; names must be plain ASCII so they read as they run"})
+    except (tokenize.TokenError, SyntaxError, IndentationError):
+        pass  # the parser reports it
+    blank = 0
+    for n, line in enumerate(code.split("\n"), 1):
+        if line.strip():
+            blank = 0
+            continue
+        blank += 1
+        if blank == MAX_BLANK_RUN + 1:
+            lint.errors.append({"line": n, "rule": "tool.blank_lines",
+                                "message": f"more than {MAX_BLANK_RUN} blank lines in a row; keep the code together so a reader sees all of it"})
+
+
 def lint_tool(code: str) -> dict[str, Any]:
     """Check a tool's code. Returns errors (each refuses the tool), warnings,
     and the names the code uses from ctx."""
@@ -291,6 +364,7 @@ def lint_tool(code: str) -> dict[str, Any]:
     except (ValueError, RecursionError, MemoryError) as e:
         return {"errors": [{"line": 0, "rule": "tool.syntax", "message": f"the code cannot be read: {type(e).__name__}"}], "warnings": [], "uses": {}}
     lint = _Lint()
+    _source_checks(code, lint)
     for node in ast.walk(tree):
         if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.body:
             first = node.body[0]
