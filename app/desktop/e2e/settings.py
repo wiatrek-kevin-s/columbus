@@ -115,6 +115,14 @@ def nav(d, wait, where, ready):
     time.sleep(0.3)
 
 
+def click(d, how, what):
+    """Click a control, scrolled into view first (a dialog taller than the
+    window scrolls inside itself)."""
+    e = d.find_element(how, what)
+    d.execute_script("arguments[0].scrollIntoView({block: 'center'})", e)
+    e.click()
+
+
 def fill(d, name, value):
     # Set directly: Selenium would read an existing path as a file upload.
     d.execute_script("document.querySelector(`[name='${arguments[0]}']`).value = arguments[1];", name, value)
@@ -146,11 +154,11 @@ gpd.GeoDataFrame({"RTE": ["IH0035", "US0183"], "district": [14, 12]}, geometry=[
         wait.until(EC.visibility_of_element_located((By.NAME, "conn_id")))
         fill(d, "conn_id", "roads")
         fill(d, "path", str(broken))
-        d.find_element(By.ID, "test").click()
+        click(d, By.ID, "test")
         wait.until(lambda drv: "could not open" in drv.find_element(By.ID, "test-result").text)
         assert "test-bad" in d.find_element(By.ID, "test-result").get_attribute("class")
         fill(d, "path", str(gpkg))
-        d.find_element(By.ID, "test").click()
+        click(d, By.ID, "test")
         wait.until(lambda drv: "Opened" in drv.find_element(By.ID, "test-result").text)
         assert "routes" in d.find_element(By.ID, "test-result").text
         d.save_screenshot(str(OUT / "settings-test.png"))
@@ -158,11 +166,11 @@ gpd.GeoDataFrame({"RTE": ["IH0035", "US0183"], "district": [14, 12]}, geometry=[
         fill(d, "deny", "*audit*")
         # A filter on a hidden field would reveal it, row count by row count.
         fill(d, "row_filter", "owner_ssn LIKE '4%'")
-        d.find_element(By.ID, "save").click()
+        click(d, By.ID, "save")
         wait.until(lambda drv: "a field your organization hides" in drv.find_element(By.ID, "form-error").text)
         fill(d, "row_filter", "district = 14")
         d.save_screenshot(str(OUT / "settings-add.png"))
-        d.find_element(By.ID, "save").click()
+        click(d, By.ID, "save")
         wait.until(lambda drv: drv.find_element(By.ID, "restart").is_displayed())
         # The running session picks it up by itself.
         assert "no need to restart" in d.find_element(By.ID, "restart").text, d.find_element(By.ID, "restart").text
@@ -189,7 +197,7 @@ gpd.GeoDataFrame({"RTE": ["IH0035", "US0183"], "district": [14, 12]}, geometry=[
         d.find_element(By.XPATH, "//ul[@id='connections']//button[normalize-space()='Edit']").click()
         wait.until(EC.visibility_of_element_located((By.NAME, "mode")))
         d.execute_script("const s = document.querySelector('[name=mode]'); s.value = 'read-write';")
-        d.find_element(By.ID, "save").click()
+        click(d, By.ID, "save")
         wait.until(lambda drv: "Read and write" in drv.execute_script("return document.getElementById('connections').textContent"))
         assert yaml.safe_load((root / "connections" / "roads.yaml").read_text())["mode"] == "read-write"
         nav(d, wait, "#/settings/org", "allow_edits")
@@ -215,7 +223,7 @@ gpd.GeoDataFrame({"RTE": ["IH0035", "US0183"], "district": [14, 12]}, geometry=[
         assert "id: personal.count-rows" in d.find_element(By.ID, "review-manifest").text
         assert count_hash in d.find_element(By.ID, "review-name").text
         d.save_screenshot(str(OUT / "settings-tool-review.png"))
-        d.find_element(By.ID, "review-install").click()
+        click(d, By.ID, "review-install")
         installed = root / "tools" / "personal.count-rows"
         wait.until(lambda drv: (installed / "tool.py").exists())
         approved = yaml.safe_load((root / "tools" / "approved.yaml").read_text())
@@ -234,7 +242,8 @@ gpd.GeoDataFrame({"RTE": ["IH0035", "US0183"], "district": [14, 12]}, geometry=[
         # Removing needs no confirmation.
         nav(d, wait, "#/connections", "add")
         d.find_element(By.XPATH, "//ul[@id='connections']//button[normalize-space()='Edit']").click()
-        wait.until(EC.visibility_of_element_located((By.ID, "delete"))).click()
+        wait.until(EC.presence_of_element_located((By.ID, "delete")))
+        click(d, By.ID, "delete")
         wait.until(lambda drv: not (root / "connections" / "roads.yaml").exists())
     finally:
         try:
@@ -253,11 +262,11 @@ gpd.GeoDataFrame({"RTE": ["IH0035", "US0183"], "district": [14, 12]}, geometry=[
         wait.until(EC.visibility_of_element_located((By.NAME, "conn_id")))
         fill(d, "conn_id", "roads2")
         fill(d, "path", str(gpkg))
-        d.find_element(By.ID, "save").click()
+        click(d, By.ID, "save")
         wait.until(lambda drv: drv.find_element(By.ID, "form-error").is_displayed())
         assert "not confirmed" in d.find_element(By.ID, "form-error").text
         assert not (root / "connections" / "roads2.yaml").exists()
-        d.find_element(By.ID, "cancel").click()
+        click(d, By.ID, "cancel")
         nav(d, wait, "#/settings/org", "allow_scripts")
         box = d.find_element(By.ID, "allow_scripts")
         box.click()
@@ -268,12 +277,13 @@ gpd.GeoDataFrame({"RTE": ["IH0035", "US0183"], "district": [14, 12]}, geometry=[
         nav(d, wait, "#/tools", "tools-waiting")
         wait.until(lambda drv: "Third tool" in drv.find_element(By.ID, "tools-waiting").text)
         d.find_element(By.XPATH, "//ul[@id='tools-waiting']//li[contains(., 'Third tool')]//button[normalize-space()='Review']").click()
-        wait.until(EC.visibility_of_element_located((By.ID, "review-install"))).click()
+        wait.until(EC.presence_of_element_located((By.ID, "review-install")))
+        click(d, By.ID, "review-install")
         wait.until(lambda drv: drv.find_element(By.ID, "review-error").is_displayed())
         assert "not confirmed" in d.find_element(By.ID, "review-error").text
         assert not (root / "tools" / "personal.third-tool").exists()
         assert (root / "tools" / "proposals" / "personal.third-tool").exists()
-        d.find_element(By.ID, "review-close").click()
+        click(d, By.ID, "review-close")
         # Turning a switch off is a tightening: no confirmation needed.
         nav(d, wait, "#/settings/org", "allow_edits")
         d.find_element(By.ID, "allow_edits").click()

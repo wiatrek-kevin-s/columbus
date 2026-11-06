@@ -55,11 +55,18 @@ def text(d, css):
     return d.execute_script("return document.querySelector(arguments[0])?.textContent || ''", css)
 
 
+def click(d, how, what):
+    """Click a control, scrolled into view first."""
+    e = d.find_element(how, what)
+    d.execute_script("arguments[0].scrollIntoView({block: 'center'})", e)
+    e.click()
+
+
 def go(d, wait, href, title):
     """Follow a rail link (the rail is redrawn as counts change: try again)."""
     for _ in range(5):
         try:
-            d.find_element(By.CSS_SELECTOR, f"#rail a[href='{href}']").click()
+            click(d, By.CSS_SELECTOR, f"#rail a[href='{href}']")
             break
         except StaleElementReferenceException:
             time.sleep(0.3)
@@ -127,7 +134,7 @@ def main():
         # The session another AI app runs, under Chats: its activity and its map.
         go(d, wait, "#/chats", "Chats")
         wait.until(lambda drv: "Running in other AI apps" in text(drv, "main"))
-        d.find_element(By.CSS_SELECTOR, f"a[href='#/chats/s/{session}']").click()
+        click(d, By.CSS_SELECTOR, f"a[href='#/chats/s/{session}']")
         wait.until(lambda drv: 'Querying "tracts" on "tiger"' in text(drv, ".activity"))
         frame = WebDriverWait(d, 40).until(EC.presence_of_element_located((By.CSS_SELECTOR, ".outpanel iframe")))
         assert frame.get_attribute("sandbox") == "allow-scripts allow-same-origin", frame.get_attribute("sandbox")
@@ -143,7 +150,7 @@ def main():
         time.sleep(2)
         d.save_screenshot(str(OUT / "shell-session.png"))
         # Its files.
-        d.find_element(By.XPATH, "//div[@role='tablist']/button[normalize-space()='Files']").click()
+        click(d, By.XPATH, "//div[@role='tablist']/button[normalize-space()='Files']")
         wait.until(lambda drv: ".gpkg" in text(drv, ".outpanel"))
 
         # A request waiting in that session: listed, view only; decided in the browser.
@@ -162,7 +169,7 @@ def main():
         # test's stand-in for the browser is this file); the button asks
         # again, which the session limits to one page every 30 s.
         link = wait_file(root / "launch.txt")
-        d.find_element(By.XPATH, "//*[@id='approvals']//button[normalize-space()='Decide in browser']").click()
+        click(d, By.XPATH, "//*[@id='approvals']//button[normalize-space()='Decide in browser']")
         wait.until(lambda drv: "Decide there" in text(drv, "#toast") or "Nothing is waiting" in text(drv, "#toast"))
         assert link.startswith(f"http://127.0.0.1:{port}/#t="), f"the session opened its browser page: {link}"
         # Decide there, as the person would (decline).
@@ -187,7 +194,7 @@ def main():
         assert "approval_decision" in text(d, "#audit-rows")
         d.execute_script("const s = document.getElementById('audit-tool'); s.value = 'query_features'; s.dispatchEvent(new Event('change'));")
         wait.until(lambda drv: "whoami" not in text(drv, "#audit-rows") and "query_features" in text(drv, "#audit-rows"))
-        d.find_element(By.ID, "audit-verify").click()
+        click(d, By.ID, "audit-verify")
         wait.until(lambda drv: "holds" in text(drv, "#audit-verify-result"))
         d.save_screenshot(str(OUT / "shell-audit.png"))
         go(d, wait, "#/activity/exports", "Exports")
@@ -195,9 +202,9 @@ def main():
         # The person's note: read, then marked reviewed (their own file).
         go(d, wait, "#/documents", "Documents")
         wait.until(lambda drv: "tracts" in text(drv, "#notes-list"))
-        d.find_element(By.CSS_SELECTOR, "#notes-list li").click()
+        click(d, By.CSS_SELECTOR, "#notes-list li")
         wait.until(lambda drv: "NAME: the tract's name" in text(drv, "main"))
-        d.find_element(By.XPATH, "//button[normalize-space()='Mark reviewed']").click()
+        click(d, By.XPATH, "//button[normalize-space()='Mark reviewed']")
         wait.until(lambda drv: "status: reviewed" in note.read_text())
         assert "status: draft" not in note.read_text() and "NAME: the tract's name" in note.read_text()
 
@@ -207,8 +214,8 @@ def main():
         d.execute_script("document.getElementById('palette').close()")
 
         # A classic window is still there.
-        d.find_element(By.CSS_SELECTOR, ".rail-foot .classic").click()
-        d.find_element(By.XPATH, "//dialog//button[normalize-space()='Session list']").click()
+        click(d, By.CSS_SELECTOR, ".rail-foot .classic")
+        click(d, By.XPATH, "//dialog//button[normalize-space()='Session list']")
         wait.until(lambda drv: len(drv.window_handles) > 1)
         d.switch_to.window([h for h in d.window_handles if h != main_window][0])
         wait.until(lambda drv: session in drv.find_element(By.ID, "sessions").text)
