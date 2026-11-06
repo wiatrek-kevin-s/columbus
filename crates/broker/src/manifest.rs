@@ -469,6 +469,20 @@ tools:
 }
 
 #[cfg(test)]
+mod star_tests {
+    use super::*;
+
+    #[test]
+    fn star_takes_only_path() {
+        let m: ServerManifest = serde_yaml::from_str(
+            "id: x\ntransport: { type: stdio, command: x }\ntools:\n  t: { args: { \"*\": url } }\n",
+        )
+        .unwrap();
+        assert!(m.validate().unwrap_err().contains("only be path"));
+    }
+}
+
+#[cfg(test)]
 mod example_tests {
     use super::*;
 

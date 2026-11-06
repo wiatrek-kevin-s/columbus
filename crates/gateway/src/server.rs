@@ -2369,8 +2369,7 @@ impl Gateway {
                 &format!("server:{ns}"),
             );
             let offline = p.loaded.manifest.is_local()
-                && p
-                    .loaded
+                && p.loaded
                     .manifest
                     .confinement
                     .as_ref()

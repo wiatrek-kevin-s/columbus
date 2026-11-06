@@ -32,6 +32,10 @@ struct Env {
 }
 
 async fn setup(variant: &str) -> Env {
+    setup_with(variant, "").await
+}
+
+async fn setup_with(variant: &str, extra_policy: &str) -> Env {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().to_path_buf();
     for d in ["connections", "servers", "personal"] {
@@ -39,7 +43,9 @@ async fn setup(variant: &str) -> Env {
     }
     std::fs::write(
         root.join("policy.yaml"),
-        "connection_types: [gpkg]\nservers: { allow_unconfined_local: true }\n",
+        format!(
+            "connection_types: [gpkg]\nservers: {{ allow_unconfined_local: true }}\n{extra_policy}"
+        ),
     )
     .unwrap();
     let manifest = root.join("servers").join("geo.yaml");
@@ -85,6 +91,11 @@ async fn start(env: &Env) -> RunningService<RoleClient, ()> {
                 .env("COLUMBUS_WORKSPACES", root.join("workspaces"))
                 .env("COLUMBUS_AUDIT_DIR", root.join("audit"))
                 .env("COLUMBUS_PYTHON", "python3")
+                .env(
+                    "COLUMBUS_WORKER",
+                    Path::new(env!("CARGO_MANIFEST_DIR"))
+                        .join("../../workers/python/columbus_worker.py"),
+                )
                 .env("COLUMBUS_LOG", "warn");
         });
     ().serve(TokioChildProcess::new(cmd).unwrap())
@@ -203,6 +214,86 @@ async fn a_link_in_place_of_an_asked_for_file_is_not_followed() {
         checks(&r).contains("provider.outputs_skipped"),
         "{}",
         checks(&r)
+    );
+    c.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_path_of_the_computers_is_never_passed_through() {
+    let env = setup("plain").await;
+    let c = start(&env).await;
+    for p in [
+        "/etc/hosts",
+        "C:\\Windows\\win.ini",
+        "file:///etc/hosts",
+        "~/x.tif",
+    ] {
+        let r = call(
+            &c,
+            "run_tool",
+            json!({"name": "geo.run_tool", "args": {"tool": "slope", "params": {"input": p, "output": "out://a.txt"}}}),
+        )
+        .await;
+        assert_eq!(r.is_error, Some(true), "{p}");
+        assert!(
+            format!("{:?}", r.content).contains("ws:// handle"),
+            "{p}: {:?}",
+            r.content
+        );
+    }
+    c.cancel().await.unwrap();
+}
+
+/// Governed data handed to a read tool still follows the organization's
+/// flow rules for that server.
+#[tokio::test]
+async fn flow_rules_apply_to_files_handed_over() {
+    let ok_py = std::process::Command::new("python3")
+        .args(["-c", "import geopandas, pyogrio"])
+        .output()
+        .is_ok_and(|o| o.status.success());
+    if !ok_py {
+        return;
+    }
+    let env = setup_with(
+        "plain",
+        "flows:\n  - { from: [\"connection:pay\"], to: [\"server:geo\"], action: deny }\n",
+    )
+    .await;
+    let gpkg = env.root.join("pay.gpkg");
+    assert!(std::process::Command::new("python3")
+        .args(["-c", "import sys, geopandas as gpd; from shapely.geometry import Point; gpd.GeoDataFrame({'a': [1]}, geometry=[Point(0, 0)], crs='EPSG:4326').to_file(sys.argv[1], layer='p', driver='GPKG', engine='pyogrio')"])
+        .arg(&gpkg)
+        .status()
+        .unwrap()
+        .success());
+    std::fs::write(
+        env.root.join("connections/pay.yaml"),
+        format!(
+            "id: pay\ntype: gpkg\npath: {}\ndatasets:\n  allow: [\"*\"]\n",
+            serde_json::to_string(&gpkg.display().to_string()).unwrap()
+        ),
+    )
+    .unwrap();
+    let c = start(&env).await;
+    let q = ok(&call(
+        &c,
+        "query_features",
+        json!({"connection": "pay", "dataset": "p"}),
+    )
+    .await);
+    let h = q["result"]["layer"]["handle"].as_str().unwrap().to_string();
+    let r = call(
+        &c,
+        "run_tool",
+        json!({"name": "geo.run_tool", "args": {"tool": "slope", "params": {"input": h, "output": "out://a.txt"}}}),
+    )
+    .await;
+    assert_eq!(r.is_error, Some(true));
+    assert!(
+        format!("{:?}", r.content).contains("forbids"),
+        "{:?}",
+        r.content
     );
     c.cancel().await.unwrap();
 }

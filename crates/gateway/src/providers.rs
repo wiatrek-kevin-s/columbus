@@ -415,7 +415,10 @@ fn looks_like_path(s: &str) -> bool {
         || s.starts_with('\\')
         || s.starts_with("~/")
         || s.to_ascii_lowercase().starts_with("file:")
-        || (b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/'))
+        || (b.len() >= 3
+            && b[0].is_ascii_alphabetic()
+            && b[1] == b':'
+            && (b[2] == b'\\' || b[2] == b'/'))
 }
 
 /// Make the folder a server writes its asked-for files in (walked from the
