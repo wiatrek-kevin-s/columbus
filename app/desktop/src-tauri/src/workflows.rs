@@ -610,6 +610,26 @@ mod tests {
         }
     }
 
+    /// The real scheduler takes the entry, and it can be removed again
+    /// (run in CI on macOS and Windows; it writes the account's own
+    /// scheduler, so it is not run by default).
+    #[cfg(any(windows, target_os = "macos"))]
+    #[test]
+    #[ignore]
+    fn the_systems_scheduler_takes_and_removes_an_entry() {
+        let mut v = view();
+        v.id = format!(
+            "ci-check-{}",
+            &uuid::Uuid::new_v4().simple().to_string()[..8]
+        );
+        let server = std::env::current_exe().unwrap();
+        schedule(&v, &server, None).expect("the scheduler takes the entry");
+        assert_eq!(schedule_state(&v, Some(&server)), "on");
+        unschedule(&v.id).unwrap();
+        assert_eq!(schedule_state(&v, Some(&server)), "off");
+        println!("the system's scheduler took and removed {}", v.id);
+    }
+
     #[test]
     fn a_schedule_entry_names_only_the_workflow_and_its_engine() {
         let v = view();

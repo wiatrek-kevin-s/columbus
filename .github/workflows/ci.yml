@@ -128,6 +128,12 @@ jobs:
           cargo build --locked
           cargo clippy --locked -- -D warnings
           cargo test --locked
+      - name: A workflow's schedule entry is accepted by the system's scheduler (macOS, Windows)
+        if: runner.os != 'Linux'
+        # Informative: a runner without a desktop session may refuse it.
+        continue-on-error: true
+        working-directory: app/desktop/src-tauri
+        run: cargo test --locked -- --ignored --nocapture the_systems_scheduler
       - name: A page in the main window's frame cannot reach the app
         if: runner.os != 'Linux'
         run: python app/desktop/e2e/frame_ipc.py app/desktop/src-tauri/target/debug/columbus-desktop
