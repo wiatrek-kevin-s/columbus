@@ -49,15 +49,19 @@ from typing import Any
 from columbus_plugin import readonly_uri
 
 FETCH = 2000
-# Rows per INSERT when loading: two of DuckDB's row groups (122,880 rows)
-# where the columns allow, so DuckDB writes them to the file, compressed,
-# during the transaction (and the size cap sees them), instead of holding
-# the whole load in memory until COMMIT. Fewer for wide tables.
+# Rows per INSERT when loading: exactly one of DuckDB's row groups
+# (122,880 rows), so DuckDB writes each batch to the file, compressed,
+# during the transaction (and the size cap sees it), instead of holding the
+# load in memory until COMMIT. A smaller batch is never written early (the
+# whole load then waits in memory), and a larger one holds more of it
+# uncompressed at a time, which the size cap counts.
 ROW_GROUP = 122_880
 
 
 def _insert_batch(ncols: int) -> int:
-    return max(50_000, min(2 * ROW_GROUP, 5_000_000 // max(1, ncols)))
+    return ROW_GROUP
+
+
 NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,62}$")
 
 # Statement kinds `execute` runs; everything else is refused.
@@ -90,7 +94,7 @@ _DENY_NAMES = re.compile(
 _DENY_BARE = re.compile(
     r"(?i)(duckdb_(databases|logs\w*|log_contexts|settings|extensions|memory|temporary_files|secrets|secret_types|"
     r"variables|prepared_statements|external_file_cache|optimizers|approx_database_count|connection_count)|"
-    r"pragma_\w+|pg_settings|pg_prepared_statements|pg_database|which_secret)")
+    r"duckdb_profiling_settings|pragma_\w+|pg_settings|pg_prepared_statements|pg_database|which_secret)")
 _WORD = re.compile(r"[A-Za-z_\u0080-\uffff][\w$]*")
 # One token at the end of a statement, for telling that the tokenizer read
 # all of it (it stops early on syntax it does not know, such as U&"…").
@@ -327,11 +331,14 @@ def used_bytes(con) -> int:
 
 def pending_bytes(con) -> int:
     """Data an open transaction holds in memory and has not written to the
-    file yet (DuckDB writes it at COMMIT): counted at its in-memory size,
-    which is more than it takes once compressed on disk, so the cap is never
-    underestimated."""
+    file yet (DuckDB writes it at COMMIT): new rows (IN_MEMORY_TABLE),
+    rows changed in place by UPDATE (ALLOCATOR and TRANSACTION) and new
+    indexes (ART_INDEX). Counted at its in-memory size, which is more than
+    it takes once compressed on disk, so the cap is never underestimated;
+    the guard counts only the growth since the call began."""
     try:
-        r = con.execute("SELECT coalesce(sum(memory_usage_bytes), 0) FROM duckdb_memory() WHERE tag = 'IN_MEMORY_TABLE'").fetchone()
+        r = con.execute("SELECT coalesce(sum(memory_usage_bytes), 0) FROM duckdb_memory() "
+                        "WHERE tag IN ('IN_MEMORY_TABLE', 'ALLOCATOR', 'TRANSACTION', 'ART_INDEX')").fetchone()
         return int(r[0] or 0)
     except Exception:  # noqa: BLE001
         return 0
@@ -519,11 +526,11 @@ class _Deadline:
         return False
 
 
-def _words(sql: str) -> list[tuple[str, bool]]:
-    """The names and keywords of a statement in order, quoted names
-    unquoted, each with whether a ( follows it (a call), as DuckDB's own
-    tokenizer reads them. Refuses a statement the tokenizer does not read to
-    its end, since what it skips could hide a call."""
+def _tokens(sql: str) -> list[tuple[int, Any, str | None, bool]]:
+    """The statement's tokens as DuckDB's own tokenizer reads them: (start
+    as a character offset, type, the name for names and keywords with quoted
+    names unquoted, whether a ( follows). Refuses a statement the tokenizer
+    does not read to its end, since what it skips could hide a call."""
     duckdb = _duckdb()
     try:
         toks = duckdb.tokenize(sql)
@@ -532,9 +539,7 @@ def _words(sql: str) -> list[tuple[str, bool]]:
     significant = (duckdb.token_type.identifier, duckdb.token_type.keyword)
     # The tokenizer's offsets count UTF-8 bytes; the text is read by
     # characters. Map every byte offset to its character.
-    if sql.isascii():
-        toks = [(start, typ) for start, typ in toks]
-    else:
+    if not sql.isascii():
         at = [0] * (len(sql.encode("utf-8")) + 1)
         b = 0
         for i, ch in enumerate(sql):
@@ -544,29 +549,27 @@ def _words(sql: str) -> list[tuple[str, bool]]:
             b += n
         at[b] = len(sql)
         toks = [(at[min(start, b)], typ) for start, typ in toks]
-    out: list[tuple[str, bool]] = []
+    out: list[tuple[int, Any, str | None, bool]] = []
     for k, (start, typ) in enumerate(toks):
-        if typ not in significant:
-            continue
-        if sql.startswith('"', start):
-            j, name = start + 1, []
-            while j < len(sql):
-                if sql.startswith('""', j):
-                    name.append('"')
-                    j += 2
-                    continue
-                if sql[j] == '"':
-                    break
-                name.append(sql[j])
-                j += 1
-            word = "".join(name)
-        else:
-            m = _WORD.match(sql, start)
-            if not m:
-                continue
-            word = m.group(0)
+        word = None
+        if typ in significant:
+            if sql.startswith('"', start):
+                j, name = start + 1, []
+                while j < len(sql):
+                    if sql.startswith('""', j):
+                        name.append('"')
+                        j += 2
+                        continue
+                    if sql[j] == '"':
+                        break
+                    name.append(sql[j])
+                    j += 1
+                word = "".join(name)
+            else:
+                m = _WORD.match(sql, start)
+                word = m.group(0) if m else None
         nxt = toks[k + 1][0] if k + 1 < len(toks) else None
-        out.append((word, nxt is not None and sql.startswith("(", nxt)))
+        out.append((start, typ, word, nxt is not None and sql.startswith("(", nxt)))
     # Everything after the last token must be that token, comments and
     # space: otherwise the tokenizer stopped early.
     tail = sql[toks[-1][0]:] if toks else sql
@@ -577,9 +580,88 @@ def _words(sql: str) -> list[tuple[str, bool]]:
     return out
 
 
+def _words(sql: str) -> list[tuple[str, bool]]:
+    """The names and keywords of a statement in order, each with whether a
+    ( follows it (a call)."""
+    return [(w, call) for _s, _t, w, call in _tokens(sql) if w is not None]
+
+
+def _pieces(sql: str) -> list[str]:
+    """The statements in ``sql``, split at the semicolons DuckDB's
+    tokenizer sees (never one inside a string or quoted name)."""
+    out, at = [], 0
+    for start, _typ, _w, _c in _tokens(sql):
+        if sql.startswith(";", start):
+            out.append(sql[at:start])
+            at = start + 1
+    out.append(sql[at:])
+    return [p for p in out if _COMMENTS.sub("", p).strip()]
+
+
+def _alter_add_default(con, piece: str) -> list[str] | None:
+    """``ALTER TABLE t ADD [COLUMN] c type DEFAULT expr``, which DuckDB runs
+    as several statements of its own (changing a setting the locked
+    connection refuses), as three plain ones with the same effect: add the
+    column, set its default, fill the existing rows."""
+    toks = [t for t in _tokens(piece)]
+    words = [(t[2] or "").lower() for t in toks]
+    if words[:2] != ["alter", "table"] or "add" not in words or "default" not in words:
+        return None
+    a = words.index("add")
+    c = a + 1
+    if c < len(words) and words[c] == "column":
+        c += 1
+    if words[c:c + 3] == ["if", "not", "exists"]:
+        return None
+    d = words.index("default")
+    if not (2 < a < c < d - 1) or toks[c][2] is None:
+        return None
+    table = piece[toks[2][0]:toks[a][0]].strip()
+    col = piece[toks[c][0]:toks[c + 1][0]].strip()
+    ctype = piece[toks[c + 1][0]:toks[d][0]].strip()
+    expr = piece[toks[d][0] + len("default"):].strip()
+    if not table or not col or not ctype or not expr:
+        return None
+    return [f"ALTER TABLE {table} ADD COLUMN {col} {ctype}",
+            f"ALTER TABLE {table} ALTER COLUMN {col} SET DEFAULT {expr}",
+            f"UPDATE {table} SET {col} = ({expr}\n)"]
+
+
+# Functions whose output takes its field names from stored values.
+_NAMES_FROM_DATA = re.compile(r"(?i)(from_json|from_json_strict|json_transform|json_transform_strict)")
+
+
+def _pivot_in_literals(sql: str) -> bool:
+    """Every PIVOT … IN (…) list holds only literals (no query, no type
+    name), and there is one."""
+    duckdb = _duckdb()
+    toks = _tokens(sql)
+    words = [(t[2] or "").lower() for t in toks]
+    if "in" not in words:
+        return False
+    ok_types = (duckdb.token_type.string_const, duckdb.token_type.numeric_const, duckdb.token_type.operator)
+    for k, w in enumerate(words):
+        if w != "in":
+            continue
+        if k + 1 >= len(toks) or not sql.startswith("(", toks[k + 1][0]):
+            return False
+        depth = 0
+        for start, typ, _w, _c in toks[k + 1:]:
+            if sql.startswith("(", start):
+                depth += 1
+            elif sql.startswith(")", start):
+                depth -= 1
+                if depth == 0:
+                    break
+            elif typ not in ok_types:
+                return False
+    return True
+
+
 def _enum_from_query(words: list[tuple[str, bool]]) -> bool:
     for k, (w, call) in enumerate(words[:-1]):
-        if call and w.lower() == "enum" and words[k + 1][0].lower() in ("select", "from", "with", "values", "table"):
+        if call and w.lower() == "enum" and words[k + 1][0].lower() in ("select", "from", "with", "values", "table",
+                                                                     "describe", "summarize", "show", "pivot", "unpivot"):
             return True
     return False
 
@@ -596,41 +678,70 @@ def _denied_call(words: list[tuple[str, bool]]) -> str | None:
 
 
 def check_statements(con, sql: str, allowed: set[str], pivot: bool = False) -> list[dict[str, Any]]:
-    """The statements in ``sql`` as DuckDB parses them, each checked:
-    [{index, type, sql}]. Raises with the first refused one. With ``pivot``,
-    a PIVOT that DuckDB expands into helper statements (a CREATE TYPE and a
-    SELECT, with no text of their own) comes back as one SELECT."""
+    """The statements in ``sql``, split at its semicolons and each parsed
+    by DuckDB itself, checked: [{index, type, sql, run}] where ``run`` is
+    what is executed (the statement itself, or the plain statements an ADD
+    COLUMN … DEFAULT becomes). Raises with the first refused one. With
+    ``pivot``, a PIVOT that DuckDB expands into helper statements comes back
+    as one SELECT."""
     duckdb = _duckdb()
     if not isinstance(sql, str) or not sql.strip():
         raise ProjectDbError("sql is required")
     if len(sql) > 1_000_000:
         raise ProjectDbError("sql is over 1,000,000 characters; split it into several calls")
-    try:
-        parsed = con.extract_statements(sql)
-    except duckdb.Error as e:
-        raise ProjectDbError(f"the SQL does not parse: {_msg(e)}") from None
-    kinds = [str(st.type).split(".")[-1] for st in parsed]
     denied = ("reads files, other databases, settings or logs, runs SQL given as text, or raises stored values as errors, "
               "which a project database does not allow; load data with action load instead")
-    if (pivot and len(parsed) > 1 and kinds[-1] == "SELECT" and all(k == "CREATE" for k in kinds[:-1])
-            and not any(st.query.strip() for st in parsed)):
-        words = _words(sql)
-        if _first_words(words, 1) in (["pivot"], ["unpivot"]):
-            if not _DETAILS.get():
-                raise ProjectDbError("statement 1 is refused: a PIVOT without an IN list names its columns after stored "
-                                     "values, which this session may not see (return_rows is 0); list the values with IN (...)")
-            bad = _denied_call(words)
-            if bad:
-                raise ProjectDbError(f"statement 1 is refused: {bad}() {denied}")
-            return [{"index": 1, "type": "SELECT", "sql": sql.strip(), "pivot": True}]
-    out = []
-    for i, st in enumerate(parsed):
-        kind = kinds[i]
-        text = st.query.strip()
-        if not text:
-            raise ProjectDbError(f"statement {i + 1} is refused: it cannot be read on its own (a PIVOT goes to action query, alone)")
-        words = _words(text)
-        first = _first_words(words, 6)
+    hidden = not _DETAILS.get()
+    out: list[dict[str, Any]] = []
+    for i, piece in enumerate(_pieces(sql)):
+        n = i + 1
+        try:
+            parsed = con.extract_statements(piece)
+        except duckdb.Error as e:
+            raise ProjectDbError(f"statement {n} does not parse: {_msg(e)}") from None
+        kinds = [str(st.type).split(".")[-1] for st in parsed]
+        words = _words(piece)
+        lowered = [w.lower() for w, _ in words]
+        bad = _denied_call(words)
+        if bad:
+            raise ProjectDbError(f"statement {n} is refused: {bad}() {denied}")
+        if hidden and any(c and _NAMES_FROM_DATA.fullmatch(w) for w, c in words):
+            raise ProjectDbError(f"statement {n} is refused: this function names its fields after stored values, which "
+                                 "this session may not see (return_rows is 0)")
+        if hidden and _enum_from_query(words):
+            raise ProjectDbError(f"statement {n} is refused: an ENUM built from a query names its values after stored "
+                                 "values, which this session may not see (return_rows is 0)")
+        if hidden and any(w in ("pivot", "pivot_wider") for w in lowered) and not _pivot_in_literals(piece):
+            raise ProjectDbError(f"statement {n} is refused: a PIVOT names its columns after stored values unless its "
+                                 "IN list names them, which this session may not see (return_rows is 0); list the values "
+                                 "with IN ('a', 'b', …)")
+        empty = not any(st.query.strip() for st in parsed)
+        if len(parsed) > 1 or empty:
+            # DuckDB expanded one statement into several of its own.
+            if (pivot and len(parsed) > 1 and kinds[-1] == "SELECT" and all(k == "CREATE" for k in kinds[:-1])
+                    and lowered[:1] in (["pivot"], ["unpivot"])):
+                out.append({"index": n, "type": "SELECT", "sql": piece.strip(), "pivot": True, "run": [piece.strip()]})
+                continue
+            if "ALTER" in allowed and "ALTER" in kinds and lowered[:2] == ["alter", "table"]:
+                run = _alter_add_default(con, piece)
+                if run is None:
+                    raise ProjectDbError(
+                        f"statement {n} is refused: DuckDB runs this ALTER as several statements of its own, which a "
+                        "project database cannot check one by one. Add the column without DEFAULT, then set the default "
+                        "and fill it: ALTER TABLE t ADD COLUMN c TYPE; ALTER TABLE t ALTER COLUMN c SET DEFAULT expr; "
+                        "UPDATE t SET c = expr")
+                for sub in run:
+                    check_statements(con, sub, allowed)
+                # The fill (the UPDATE) waits until the run of ALTERs this one
+                # is in ends: DuckDB cannot ALTER a table after changing its
+                # rows in the same transaction.
+                out.append({"index": n, "type": "ALTER", "sql": piece.strip(), "run": run[:-1], "fill": run[-1:]})
+                continue
+            raise ProjectDbError(f"statement {n} is refused: it cannot be read on its own (a PIVOT goes to action "
+                                 "query, alone)")
+        kind = kinds[0]
+        text = parsed[0].query.strip()
+        first = lowered[:6]
         if kind == "VACUUM" and first[:1] in (["analyze"], ["analyse"]):
             kind = "ANALYZE"
         if kind == "ANALYZE" and "VACUUM" in allowed:
@@ -642,16 +753,13 @@ def check_statements(con, sql: str, allowed: set[str], pivot: bool = False) -> l
                     "CALL": "CALL statements", "TRANSACTION": "transaction statements (each call is one transaction)",
                     "PREPARE": "prepared statements", "EXECUTE": "prepared statements", "SELECT": "a SELECT here (use action query)",
                     "EXPLAIN": "EXPLAIN here (use action query)"}.get(kind, f"{kind} statements")
-            raise ProjectDbError(f"statement {i + 1} is refused: a project database does not allow {what}. "
+            raise ProjectDbError(f"statement {n} is refused: a project database does not allow {what}. "
                                  f"Allowed here: {', '.join(sorted(allowed))}")
         if kind == "CREATE" and "secret" in [w for w in first if w not in ("create", "or", "replace", "persistent", "temporary", "temp")][:1]:
-            raise ProjectDbError(f"statement {i + 1} is refused: secrets are not allowed in a project database")
-        bad = _denied_call(words)
-        if bad:
-            raise ProjectDbError(f"statement {i + 1} is refused: {bad}() {denied}")
-        if not _DETAILS.get() and _enum_from_query(words):
-            raise ProjectDbError(f"statement {i + 1} is refused: an ENUM built from a query names its values after stored "
-                                 "values, which this session may not see (return_rows is 0)")
+            raise ProjectDbError(f"statement {n} is refused: secrets are not allowed in a project database")
+        if kind in ("INSERT", "UPDATE", "DELETE", "MERGE_INTO") and "returning" in lowered:
+            raise ProjectDbError(f"statement {n} is refused: RETURNING sends stored values back; a project database "
+                                 "reports only how many rows a statement changed (read rows with action query)")
         if kind == "EXPLAIN":
             # EXPLAIN ANALYZE runs what it explains: only a SELECT may be inside.
             inner = _EXPLAIN.sub("", text, count=1)
@@ -660,8 +768,8 @@ def check_statements(con, sql: str, allowed: set[str], pivot: bool = False) -> l
             except duckdb.Error:
                 inside = []
             if len(inside) != 1 or str(inside[0].type).split(".")[-1] != "SELECT":
-                raise ProjectDbError(f"statement {i + 1} is refused: EXPLAIN is allowed only of a SELECT")
-        out.append({"index": i + 1, "type": kind, "sql": text})
+                raise ProjectDbError(f"statement {n} is refused: EXPLAIN is allowed only of a SELECT")
+        out.append({"index": n, "type": kind, "sql": text, "run": [text]})
     if not out:
         raise ProjectDbError("sql holds no statement")
     return out
@@ -773,7 +881,7 @@ def load(params: dict[str, Any]) -> dict[str, Any]:
     con, spatial = _open(path, int(params.get("memory_mb") or 2048), max_mb=max_mb)
     started = time.monotonic()
     try:
-        used = _check_size(con, max_mb, "loading more")
+        _check_size(con, max_mb, "loading more")
         with _Deadline(con, timeout) as dl, _SizeGuard(con, path, max_mb, "grow") as sg:
             try:
                 con.execute("BEGIN TRANSACTION")
@@ -785,6 +893,10 @@ def load(params: dict[str, Any]) -> dict[str, Any]:
                 if not exists and mode == "append":
                     raise ProjectDbError(f"table {table} does not exist; use mode create")
                 types = {c: ("GEOMETRY" if c == geom else _duck_type(t)) for c, t in cols}
+                if kind == "csv" and params.get("types", "infer") != "text" and not (exists and mode == "append"):
+                    # Typed in a first pass over the file, so the table is
+                    # created with its final types and filled once.
+                    types.update(_csv_types(source, names))
                 if exists and mode == "replace":
                     con.execute(f"DROP TABLE {_qi(table)}")
                 if not exists or mode == "replace":
@@ -798,8 +910,14 @@ def load(params: dict[str, Any]) -> dict[str, Any]:
                         [table]).fetchall()]
                     if [h.lower() for h in have] != [n.lower() for n in names]:
                         raise ProjectDbError(f"table {table} has columns {have}, the layer {names}: append needs the same columns")
-                select = ", ".join(
-                    (f"ST_GeomFromWKB({_qi(c)})" if c == geom else _qi(c)) + f" AS {_qi(c)}" for c in names)
+                def pick(c):
+                    if c == geom:
+                        return f"ST_GeomFromWKB({_qi(c)})"
+                    if kind == "csv" and types[c] != "VARCHAR":
+                        return f"CAST({_qi(c)} AS {types[c]})"
+                    return _qi(c)
+
+                select = ", ".join(f"{pick(c)} AS {_qi(c)}" for c in names)
                 insert = f"INSERT INTO {_qi(table)} SELECT {select} FROM columbus_batch"
                 insert_batch = _insert_batch(len(names))
                 rows = 0
@@ -850,8 +968,6 @@ def load(params: dict[str, Any]) -> dict[str, Any]:
                                 push(batch)
                                 batch = []
                         push(batch)
-                    if params.get("types", "infer") != "text":
-                        _infer_csv_types(con, table, names, pk)
                 comment = params.get("comment")
                 if isinstance(comment, str) and comment:
                     con.execute(f"COMMENT ON TABLE {_qi(table)} IS {_lit(comment[:2000])}")
@@ -885,27 +1001,48 @@ def load(params: dict[str, Any]) -> dict[str, Any]:
                     raise ProjectDbError(f"the load failed and nothing was loaded: {_msg(e)}") from None
                 raise
         described = _columns(con, table)
-        held = used_bytes(con)
     finally:
         con.close()
+    held = used_after(path)
     return {"table": table, "rows": rows, "columns": described, "geometry_column": geom, "crs": crs, "bytes": db_bytes(path),
             "used_bytes": held,
             "hidden_columns": hidden, "primary_key": pk, "spatial": spatial, "seconds": round(time.monotonic() - started, 3)}
 
 
-def _infer_csv_types(con, table: str, names: list[str], pk: list[str]) -> None:
-    """A CSV's columns become BIGINT or DOUBLE where every value reads back
-    exactly as written ("0042" stays text, so codes keep their padding)."""
-    for c in names:
-        q = _qi(c)
-        for target in ("BIGINT", "DOUBLE"):
-            bad = con.execute(
-                f"SELECT count(*) FROM {_qi(table)} WHERE {q} IS NOT NULL AND (TRY_CAST({q} AS {target}) IS NULL "
-                f"OR CAST(TRY_CAST({q} AS {target}) AS VARCHAR) <> {q})").fetchone()[0]
-            some = con.execute(f"SELECT count({q}) FROM {_qi(table)}").fetchone()[0]
-            if some and not bad:
-                con.execute(f"ALTER TABLE {_qi(table)} ALTER {q} TYPE {target} USING CAST({q} AS {target})")
-                break
+_INT_TEXT = re.compile(r"-?(0|[1-9][0-9]*)")
+_REAL_TEXT = re.compile(r"-?(0|[1-9][0-9]*)\.[0-9]+")
+
+
+def _csv_types(source: str, names: list[str]) -> dict[str, str]:
+    """A CSV's columns as BIGINT or DOUBLE where every value reads back
+    exactly as written ("0042" stays text, so codes keep their padding),
+    worked out in one pass over the file before anything is inserted."""
+    with open(source, encoding="utf-8", newline="") as f:
+        reader = csv.reader(f)
+        header = next(reader, [])
+        idx = [header.index(c) for c in names]
+        can_int = [True] * len(names)
+        can_real = [True] * len(names)
+        seen = [False] * len(names)
+        for r in reader:
+            for k, i in enumerate(idx):
+                if not (can_int[k] or can_real[k]):
+                    continue
+                v = r[i] if i < len(r) else ""
+                if v == "":
+                    continue
+                seen[k] = True
+                if can_int[k] and not (_INT_TEXT.fullmatch(v) and -(2**63) <= int(v) < 2**63):
+                    can_int[k] = False
+                if can_real[k] and not (_REAL_TEXT.fullmatch(v) and repr(float(v)) == v):
+                    can_real[k] = False
+    out = {}
+    for k, c in enumerate(names):
+        if seen[k] and can_int[k]:
+            out[c] = "BIGINT"
+        elif seen[k] and can_real[k]:
+            out[c] = "DOUBLE"
+    return out
 
 
 def _type_name(t: Any) -> Any:
@@ -940,15 +1077,19 @@ def execute(params: dict[str, Any]) -> dict[str, Any]:
             _check_size(con, max_mb, "anything but DROP, DELETE, VACUUM and ANALYZE")
         started = time.monotonic()
         done = []
+        before = _table_oids(con)
         with _Deadline(con, timeout) as dl, _SizeGuard(con, path, max_mb, "free" if frees else "grow") as sg:
             try:
                 con.execute("BEGIN TRANSACTION")
-                for st in stmts:
+
+                def run(st, parts):
+                    cur = None
                     # An interrupt that arrived between two statements.
                     if sg.fired:
                         raise ProjectDbError(sg.message())
                     try:
-                        cur = con.execute(st["sql"])
+                        for part in parts:
+                            cur = con.execute(part)
                     except Exception as e:  # noqa: BLE001
                         duckdb = _duckdb()
                         if sg.fired:
@@ -958,14 +1099,23 @@ def execute(params: dict[str, Any]) -> dict[str, Any]:
                         if isinstance(e, duckdb.Error):
                             raise ProjectDbError(f"statement {st['index']} ({st['type']}) failed, so nothing in this call was kept: {_msg(e)}") from None
                         raise
-                    changed = None
-                    if st["type"] in ("INSERT", "UPDATE", "DELETE", "MERGE_INTO"):
-                        try:
-                            r = cur.fetchone()
-                            changed = int(r[0]) if r and isinstance(r[0], int) else None
-                        except Exception:  # noqa: BLE001
-                            changed = None
-                    done.append({**st, "rows": changed})
+                    return cur
+
+                # ADD COLUMN … DEFAULT: the columns of a run of ALTER
+                # statements are all added first, then filled, before the
+                # next statement of another kind.
+                fills = []
+                for st in stmts:
+                    if st["type"] != "ALTER":
+                        for f in fills:
+                            run(f, f["fill"])
+                        fills = []
+                    cur = run(st, st["run"])
+                    if st.get("fill"):
+                        fills.append(st)
+                    done.append({**{k: v for k, v in st.items() if k not in ("run", "fill")}, "rows": _changed(st, cur)})
+                for f in fills:
+                    run(f, f["fill"])
                 # No interrupt may land during the commit: stop the timer and
                 # the watcher first, then check the size once more.
                 dl.cancel()
@@ -975,18 +1125,64 @@ def execute(params: dict[str, Any]) -> dict[str, Any]:
                 try:
                     con.execute("COMMIT")
                 except Exception as e:  # noqa: BLE001
-                    raise ProjectDbError(f"the commit failed, so nothing in this call was kept: {_scrub(e)}") from None
+                    hint = ""
+                    if "altered this table" in str(e):
+                        hint = (" (DuckDB cannot ALTER a table after changing its rows in the same transaction, and an ADD "
+                                "COLUMN with a DEFAULT changes them: put the ALTER statements first, or give them their "
+                                "own execute call)")
+                    raise ProjectDbError(f"the commit failed, so nothing in this call was kept: {_scrub(e)}{hint}") from None
             except BaseException:
                 try:
                     con.execute("ROLLBACK")
                 except Exception:  # noqa: BLE001
                     pass
                 raise
-        held = used_bytes(con)
+        after = _table_oids(con)
     finally:
         con.close()
+    # Tables that are gone, or were dropped and made again under the same
+    # name (a new catalog entry): their load record no longer applies.
+    replaced = sorted(t for t, oid in before.items() if after.get(t) != oid)
     return {"statements": done, "spatial": spatial, "seconds": round(time.monotonic() - started, 3), "bytes": db_bytes(path),
-            "used_bytes": held}
+            "used_bytes": used_after(path), "tables": sorted(after), "replaced": replaced}
+
+
+def _table_oids(con) -> dict[str, int]:
+    """Each base table's catalog entry: it stays through ALTER and changes
+    when a table is dropped and made again."""
+    return {r[0]: r[1] for r in con.execute(
+        "SELECT table_name, table_oid FROM duckdb_tables() WHERE database_name = current_database() AND schema_name = 'main'"
+    ).fetchall()}
+
+
+def _changed(st: dict[str, Any], cur) -> int | None:
+    """How many rows a statement changed, from DuckDB's own change count
+    (a single BIGINT column named Count): never a value from a result set.
+    RETURNING is refused, so a DML statement has no other result."""
+    if st["type"] not in ("INSERT", "UPDATE", "DELETE", "MERGE_INTO"):
+        return None
+    desc = getattr(cur, "description", None) or []
+    if len(desc) != 1 or str(desc[0][0]) != "Count":
+        return None
+    try:
+        r = cur.fetchone()
+    except Exception:  # noqa: BLE001
+        return None
+    return int(r[0]) if r and isinstance(r[0], int) and not isinstance(r[0], bool) else None
+
+
+def used_after(path: str) -> int:
+    """What the database holds once a call has committed and closed: read
+    again from a fresh read-only connection (the closing connection's own
+    count still includes blocks it freed)."""
+    try:
+        con, _ = _open(path, 64, read_only=True)
+    except ProjectDbError:
+        return db_bytes(path)
+    try:
+        return used_bytes(con) or db_bytes(path)
+    finally:
+        con.close()
 
 
 def _cell(v: Any) -> Any:
@@ -1094,8 +1290,7 @@ def query(params: dict[str, Any]) -> dict[str, Any]:
         if not _DETAILS.get():
             # Coordinates are stored values too: no extent, no examples.
             summary["extent"] = None
-            for c in checks:
-                c.pop("detail", None)
+            checks = [_plain_check(c) for c in checks]
         types = [_type_name(t) for t in types]
         return {"columns": attr_cols + ([columns[gi]] if gi is not None else []), "types": types, "rows": shown, "rows_read": n,
                 "rows_returned": len(shown), "hit_read_limit": hit, "output_path": out, "summary": summary,
@@ -1103,6 +1298,26 @@ def query(params: dict[str, Any]) -> dict[str, Any]:
                 "seconds": round(time.monotonic() - started, 3)}
     finally:
         con.close()
+
+
+# Checks whose message holds only labels (CRS names, geometry type names),
+# never a number taken from the data.
+_PLAIN_CHECKS = {"crs.present", "crs.info", "crs.area_of_use", "geometry.mixed_types"}
+_GENERIC_CHECKS = {
+    "geometry.valid": "Some geometries are invalid (counts are left out at return_rows 0)",
+    "geometry.empty": "Some rows have no geometry or an empty one (counts are left out at return_rows 0)",
+}
+
+
+def _plain_check(c: dict[str, Any]) -> dict[str, Any]:
+    """A check as shown at return_rows 0: no detail, and a generic message
+    for any check whose message counts or measures stored values."""
+    c = {k: v for k, v in c.items() if k != "detail"}
+    if isinstance(c.get("message"), str):
+        c["message"] = c["message"].replace("(the extent is in the detail)", "(the extent is left out at return_rows 0)")
+    if c.get("id") not in _PLAIN_CHECKS:
+        c["message"] = _GENERIC_CHECKS.get(c.get("id"), "A check on the result found something to look at (left out at return_rows 0)")
+    return c
 
 
 @_action

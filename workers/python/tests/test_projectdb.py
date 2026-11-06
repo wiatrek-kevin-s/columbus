@@ -475,6 +475,113 @@ class ProjectDbTests(unittest.TestCase):
         e = pdb.execute({"path": self.db, "sql": "ANALYZE sales"})
         self.assertEqual(e["statements"][0]["type"], "ANALYZE")
 
+    def test_returning_is_refused_and_counts_never_read_a_value(self):
+        pdb.execute({"path": self.db, "sql": "CREATE TABLE o (id BIGINT PRIMARY KEY, owner VARCHAR, val DOUBLE); "
+                     "INSERT INTO o VALUES (1, 'Alice', 100.5), (2, 'Bob', 200), (3, 'Carol', 300)"})
+        leaky = [
+            "UPDATE o SET val = val WHERE id = 1 RETURNING CAST(val * 100 AS BIGINT)",
+            "UPDATE o SET owner = owner WHERE id = 1 RETURNING ascii(owner[1])",
+            "DELETE FROM o WHERE id = 99 RETURNING id",
+            "INSERT INTO o SELECT 10, 'x', 0 RETURNING (SELECT ascii(owner[2]) FROM o WHERE id = 1)",
+            "UPDATE o SET val = val WHERE id = 2; UPDATE o SET owner = owner WHERE id = 1 RETURNING ascii(owner[1])",
+            "MERGE INTO o USING (SELECT 3 AS id) s ON o.id = s.id WHEN MATCHED THEN UPDATE SET val = o.val RETURNING o.val",
+            "UPDATE o SET val = val /* c */ returning val",
+        ]
+        for rr in (0, 5):
+            for sql in leaky:
+                with self.assertRaises(pdb.ProjectDbError, msg=sql) as cm:
+                    pdb.execute({"path": self.db, "sql": sql, "return_rows": rr})
+                self.assertIn("RETURNING", str(cm.exception))
+        # The word in a literal or as a name is not the clause.
+        e = pdb.execute({"path": self.db, "sql": "INSERT INTO o VALUES (4, 'returning', 1); "
+                         "UPDATE o SET val = val + 1 WHERE owner <> 'x'; DELETE FROM o WHERE id = 4", "return_rows": 0})
+        self.assertEqual([s["rows"] for s in e["statements"]], [1, 4, 1])
+
+    def test_check_messages_carry_no_coordinates(self):
+        from pyproj import CRS
+        c = g.crs_checks(CRS.from_epsg(4326), [1100.5, 1065.0, 1100.5, 1065.0])
+        aou = [x for x in c if x["id"] == "crs.area_of_use"][0]
+        self.assertNotIn("1100", aou["message"])
+        self.assertEqual(aou["detail"]["extent"][0], 1100.5)
+        if pdb.spatial_extension() is None:
+            self.skipTest("the spatial extension is not installed")
+        pdb.execute({"path": self.db, "sql": "CREATE TABLE o (id BIGINT, owner VARCHAR, val DOUBLE); "
+                     "INSERT INTO o VALUES (1, 'Alice', 100.5), (2, 'Bob', 200), (3, 'Carol', 300)"})
+        r = self.q("SELECT ST_Point(val + 1000, ascii(owner[1]) + 1000) AS g FROM o WHERE id = 1", return_rows=0, crs="EPSG:4326")
+        text = str(r["checks"]) + str(r["summary"])
+        self.assertIn("crs.area_of_use", text)
+        for v in ("1100", "1065"):
+            self.assertNotIn(v, text)
+        # Counts of invalid or empty geometries are values too.
+        pdb.execute({"path": self.db, "sql": "CREATE TABLE bad AS SELECT ST_GeomFromText('POLYGON((0 0, 1 1, 1 0, 0 1, 0 0))') AS g "
+                     "FROM range(7) UNION ALL SELECT NULL FROM range(3)"})
+        r = self.q("SELECT g FROM bad", return_rows=0, crs="EPSG:2277")
+        msgs = " ".join(c["message"] for c in r["checks"])
+        self.assertIn("invalid", msgs)
+        self.assertNotRegex(msgs, r"\b[37]\b")
+        r = self.q("SELECT g FROM bad", return_rows=5, crs="EPSG:2277")
+        self.assertIn("7 of", " ".join(c["message"] for c in r["checks"]))
+
+    def test_updates_and_indexes_count_against_the_cap(self):
+        pdb.execute({"path": self.db, "sql": "CREATE TABLE t AS SELECT md5(range::VARCHAR) s FROM range(500000)"})
+        before = pdb.used_after(self.db)
+        for sql, cap in (("UPDATE t SET s = repeat(s, 20)", 60), ("CREATE INDEX ix ON t (s)", 20)):
+            with self.assertRaises(pdb.ProjectDbError, msg=sql) as cm:
+                pdb.execute({"path": self.db, "sql": sql, "max_mb": cap})
+            self.assertIn("project_db.max_mb", str(cm.exception))
+            self.assertLess(pdb.used_after(self.db), before + (2 << 20))
+        self.assertEqual(pdb.describe({"path": self.db})["indexes"], [])
+        # The same work under a cap that holds it is kept.
+        pdb.execute({"path": self.db, "sql": "CREATE INDEX ix ON t (s)", "max_mb": 200})
+
+    def test_add_column_with_a_default(self):
+        pdb.execute({"path": self.db, "sql": "CREATE TABLE t AS SELECT range AS id FROM range(5)"})
+        e = pdb.execute({"path": self.db, "sql": """
+            ALTER TABLE t ADD COLUMN flag BOOLEAN DEFAULT false;
+            ALTER TABLE t ADD COLUMN day DATE DEFAULT current_date;
+            ALTER TABLE t ADD COLUMN two INTEGER DEFAULT 1+1;
+            ALTER TABLE t ADD COLUMN tag VARCHAR DEFAULT 'x'
+        """, "return_rows": 0})
+        self.assertEqual([s["type"] for s in e["statements"]], ["ALTER"] * 4)
+        r = self.q("SELECT count(*) FILTER (WHERE flag = false AND day = current_date AND two = 2 AND tag = 'x') FROM t")
+        self.assertEqual(r["rows"], [[5]])
+        # New rows get the defaults too.
+        pdb.execute({"path": self.db, "sql": "INSERT INTO t (id) VALUES (9)"})
+        self.assertEqual(self.q("SELECT flag, two, tag FROM t WHERE id = 9")["rows"], [[False, 2, "x"]])
+        with self.assertRaises(pdb.ProjectDbError) as cm:
+            pdb.execute({"path": self.db, "sql": "UPDATE t SET two = 3; ALTER TABLE t ADD COLUMN three INTEGER DEFAULT 1+2"})
+        self.assertIn("ALTER statements first", str(cm.exception))
+
+    def test_csv_columns_are_typed_before_they_are_loaded(self):
+        path = os.path.join(self.ws, "typed.csv")
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            wr = csv.writer(f)
+            wr.writerow(["code", "n", "x", "mixed", "padded", "empty", "big"])
+            for i in range(300):
+                wr.writerow([f"{i:04d}", i, f"{i}.5", i if i % 2 else f"{i}.25", f"0{i}", "", 2**63 if i == 7 else i])
+        r = pdb.load({"path": self.db, "source": path, "table": "typed"})
+        types = {c["name"]: c["type"] for c in r["columns"]}
+        self.assertEqual(types, {"code": "VARCHAR", "n": "BIGINT", "x": "DOUBLE", "mixed": "VARCHAR",
+                                 "padded": "VARCHAR", "empty": "VARCHAR", "big": "VARCHAR"})
+        self.assertEqual(self.q("SELECT sum(n), max(x), min(code) FROM typed")["rows"], [[44850, 299.5, "0000"]])
+        # The size reported is the database's after the commit.
+        self.assertEqual(r["used_bytes"], pdb.used_after(self.db))
+        t = pdb.load({"path": self.db, "source": path, "table": "plain", "types": "text"})
+        self.assertEqual({c["type"] for c in t["columns"]}, {"VARCHAR"})
+
+    def test_dropped_and_remade_tables_are_reported(self):
+        pdb.execute({"path": self.db, "sql": "CREATE TABLE a (x INT); CREATE TABLE b (x INT); CREATE TABLE c (x INT)"})
+        e = pdb.execute({"path": self.db, "sql": "DROP TABLE a; DROP TABLE b; CREATE TABLE b (y INT); ALTER TABLE c ADD COLUMN z INT"})
+        self.assertEqual(e["tables"], ["b", "c"])
+        self.assertEqual(e["replaced"], ["a", "b"])
+
+    def test_timestamps_with_time_zone_come_back(self):
+        r = self.q("SELECT now() AS t, current_timestamp AS u")
+        self.assertEqual(r["rows_read"], 1)
+        self.assertEqual(len(r["rows"][0]), 2)
+        with self.assertRaises(pdb.ProjectDbError):
+            self.q("SELECT * FROM duckdb_profiling_settings()")
+
     def test_through_the_worker(self):
         r = w._projectdb("describe")({"path": self.db})
         self.assertEqual(r["tables"], [])

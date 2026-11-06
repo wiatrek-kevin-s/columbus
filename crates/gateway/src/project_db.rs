@@ -261,35 +261,49 @@ fn read_sidecar(db: &Db) -> Result<Option<Sidecar>, String> {
         .map_err(|e| format!("the project database's record ({SIDECAR}) cannot be read: {e}"))
 }
 
-/// Write the record, merged with the one on disk: another session using
-/// the same project database may have added labels meanwhile, and a label,
-/// a fingerprint, a fail or truncation is never dropped by a write. The
-/// merged record is left in `side`.
 /// A lock file beside the record, held from reading the record on disk to
 /// renaming the new one into place, so two sessions (two processes) never
 /// interleave. Made with create-new; one older than `STALE` (a session
 /// that died holding it) is taken over.
-struct RecordLock(PathBuf);
+struct RecordLock {
+    path: PathBuf,
+    token: String,
+}
 
 const LOCK: &str = "columbus-project.lock";
 const STALE: Duration = Duration::from_secs(30);
 
 impl RecordLock {
+    /// Take the record's lock file, waiting up to 10 s for another holder.
+    /// The file holds a random token, so a holder only ever removes its own
+    /// lock, and a stale lock is taken over only if it is still the one
+    /// that was found stale.
     fn acquire(dir: &Path) -> Result<RecordLock, String> {
         let path = dir.join(LOCK);
+        let token = uuid::Uuid::new_v4().to_string();
         let until = std::time::Instant::now() + Duration::from_secs(10);
         loop {
             let made =
                 crate::safefs::Dir::open_beneath(dir, &[], false).and_then(|d| d.create_file(LOCK));
             match made {
-                Ok(_) => return Ok(RecordLock(path)),
+                Ok(mut f) => {
+                    use std::io::Write;
+                    if let Err(e) = f.write_all(token.as_bytes()).and_then(|_| f.sync_all()) {
+                        let _ = std::fs::remove_file(&path);
+                        return Err(format!(
+                            "the project database's record cannot be locked: {e}"
+                        ));
+                    }
+                    return Ok(RecordLock { path, token });
+                }
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    let seen = std::fs::read_to_string(&path).ok();
                     let stale = std::fs::symlink_metadata(&path)
                         .ok()
                         .and_then(|m| m.modified().ok())
                         .and_then(|t| t.elapsed().ok())
                         .is_some_and(|age| age > STALE);
-                    if stale {
+                    if stale && seen.is_some() && std::fs::read_to_string(&path).ok() == seen {
                         let _ = std::fs::remove_file(&path);
                         continue;
                     }
@@ -303,22 +317,48 @@ impl RecordLock {
             if std::time::Instant::now() >= until {
                 return Err("another session is writing this project database's record; try again in a moment".into());
             }
-            std::thread::sleep(Duration::from_millis(50));
+            pause(Duration::from_millis(50));
         }
+    }
+}
+
+/// Wait without holding up the async runtime's other tasks: on a
+/// multi-threaded runtime the worker thread is handed over while it waits.
+fn pause(d: Duration) {
+    match tokio::runtime::Handle::try_current() {
+        Ok(h) if h.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
+            tokio::task::block_in_place(|| std::thread::sleep(d))
+        }
+        _ => std::thread::sleep(d),
     }
 }
 
 impl Drop for RecordLock {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
+        // Only our own lock: if it was taken over meanwhile, leave it.
+        if std::fs::read_to_string(&self.path).ok().as_deref() == Some(self.token.as_str()) {
+            let _ = std::fs::remove_file(&self.path);
+        }
     }
 }
 
+/// Write the record, merged with the one on disk: another session using
+/// the same project database may have added labels meanwhile, and a label,
+/// a fingerprint, a fail or truncation is never dropped by a write. The
+/// merged record is left in `side`.
 fn write_sidecar(db: &Db, side: &mut Sidecar) -> Result<(), String> {
+    write_sidecar_dropping(db, side, &[])
+}
+
+/// Write the record back, merged with the one on disk; the load records of
+/// `dropped` tables are taken out after the merge.
+fn write_sidecar_dropping(db: &Db, side: &mut Sidecar, dropped: &[String]) -> Result<(), String> {
     let _lock = RecordLock::acquire(&db.dir)?;
     if let Ok(Some(disk)) = read_sidecar(db) {
         merge_record(side, disk);
     }
+    side.tables
+        .retain(|t, _| !dropped.iter().any(|d| d.eq_ignore_ascii_case(t)));
     let text = serde_json::to_string_pretty(side).map_err(|e| e.to_string())?;
     let tmp = db.dir.join(format!("{SIDECAR}.new"));
     let _ = std::fs::remove_file(&tmp);
@@ -367,8 +407,8 @@ fn merge_record(side: &mut Sidecar, disk: Sidecar) {
         (a, b) => a.or(b),
     };
     side.truncated |= disk.truncated;
-    // Tables another session loaded meanwhile (a table this one dropped is
-    // taken out again by execute, which lists what is there).
+    // Tables another session loaded meanwhile (a table this call dropped is
+    // taken out again after the merge, by write_sidecar_dropping).
     for (t, r) in disk.tables {
         side.tables.entry(t).or_insert(r);
     }
@@ -1121,13 +1161,33 @@ impl Gateway {
                 },
             )?;
         }
-        // Tables dropped or replaced by name lose their load record.
-        let present = self.project_db_tables(&db).await.unwrap_or_default();
-        side.tables
-            .retain(|t, _| present.iter().any(|p| p.eq_ignore_ascii_case(t)));
+        // Tables dropped, or dropped and made again under the same name,
+        // lose their load record: taken out after the record on disk is
+        // merged in (under its lock), so another session's copy of the old
+        // record cannot bring them back.
+        let names = |k: &str| -> Vec<String> {
+            reply
+                .get(k)
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|t| t.as_str().map(String::from))
+                .collect()
+        };
+        let present = names("tables");
+        let replaced = names("replaced");
+        let gone: Vec<String> = side
+            .tables
+            .keys()
+            .filter(|t| {
+                !present.iter().any(|p| p.eq_ignore_ascii_case(t))
+                    || replaced.iter().any(|p| p.eq_ignore_ascii_case(t))
+            })
+            .cloned()
+            .collect();
         side.history.push(json!({"at": now(), "action": "execute", "statements": stmts.iter().map(|s| s.get("type")).collect::<Vec<_>>(), "provenance": prov}));
         trim(&mut side.history);
-        write_sidecar(&db, side)?;
+        write_sidecar_dropping(&db, side, &gone)?;
         let mut checks = vec![Check::info(
             "project_db.statements",
             format!("{n} statement(s) run in one transaction"),
@@ -1151,19 +1211,6 @@ impl Gateway {
             "bytes": reply.get("bytes"),
         });
         answer("execute", &db, result, &side.labels, checks, Some(prov))
-    }
-
-    async fn project_db_tables(&self, db: &Db) -> Result<Vec<String>, String> {
-        let reply = self
-            .project_worker("project_db_describe", self.worker_params(db))
-            .await?;
-        Ok(reply
-            .get("tables")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(|t| t.get("name").and_then(Value::as_str).map(String::from))
-            .collect())
     }
 
     async fn project_db_query(
@@ -1600,5 +1647,58 @@ mod tests {
         std::thread::sleep(Duration::from_millis(200));
         drop(_b);
         assert!(t.join().unwrap());
+        // A holder whose lock was taken over leaves the new holder's file.
+        let c = RecordLock::acquire(dir.path()).unwrap();
+        std::fs::write(dir.path().join(LOCK), "someone-else").unwrap();
+        drop(c);
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join(LOCK)).unwrap(),
+            "someone-else"
+        );
+    }
+
+    #[test]
+    fn a_dropped_table_stays_dropped_when_the_record_on_disk_still_has_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db {
+            name: "p".into(),
+            scope: "project".into(),
+            dir: dir.path().to_path_buf(),
+            file: dir.path().join("p.duckdb"),
+        };
+        let mut first = record(&["connection:a"], &[]);
+        for t in ["parcels", "roads"] {
+            first.tables.insert(
+                t.into(),
+                TableRecord {
+                    rows: 3,
+                    ..Default::default()
+                },
+            );
+        }
+        write_sidecar(&db, &mut first).unwrap();
+        // This call read the record, then dropped "parcels" (and made
+        // "Parcels" again, a new table); the record on disk still has it.
+        let mut mine = read_sidecar(&db).unwrap().unwrap();
+        mine.tables.clear();
+        write_sidecar_dropping(&db, &mut mine, &["Parcels".into()]).unwrap();
+        let after = read_sidecar(&db).unwrap().unwrap();
+        assert!(!after.tables.contains_key("parcels"));
+        assert_eq!(after.tables["roads"].rows, 3);
+        assert!(after.labels.contains("connection:a"));
+        // Loaded again under the same name: a new record, kept.
+        let mut again = read_sidecar(&db).unwrap().unwrap();
+        again.tables.insert(
+            "parcels".into(),
+            TableRecord {
+                rows: 7,
+                ..Default::default()
+            },
+        );
+        write_sidecar(&db, &mut again).unwrap();
+        assert_eq!(
+            read_sidecar(&db).unwrap().unwrap().tables["parcels"].rows,
+            7
+        );
     }
 }

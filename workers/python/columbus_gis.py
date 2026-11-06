@@ -171,7 +171,7 @@ def crs_checks(crs: CRS | None, extent: list[float] | None, has_geometry: bool =
     if crs.is_geographic and (abs(extent[1]) > 90.5 or abs(extent[3]) > 90.5 or abs(extent[0]) > 360 or abs(extent[2]) > 360):
         swapped_ok = abs(extent[0]) <= 90.5 and abs(extent[2]) <= 90.5 and abs(extent[1]) <= 180.5 and abs(extent[3]) <= 180.5
         out.append(check("crs.area_of_use", "fail",
-                         f"{what} is labelled {_label(crs)} (degrees), but its coordinates reach {extent}, which cannot be longitude and latitude in that order",
+                         f"{what} is labelled {_label(crs)} (degrees), but its coordinates reach beyond ±180/±90, so they cannot be longitude and latitude in that order (the extent is in the detail)",
                          detail={"extent": extent},
                          fix="Longitude and latitude look swapped; swap X and Y" if swapped_ok
                          else "The data is probably in a projected CRS; find the right one and assign it (do not reproject)"))

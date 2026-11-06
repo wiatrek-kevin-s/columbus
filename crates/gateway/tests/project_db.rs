@@ -424,8 +424,38 @@ async fn a_project_database_kept_for_later_follows_the_settings() {
     )
     .await);
     ok(&pdb(&c, json!({"action": "load", "db": "review", "scope": "project", "layer": parcels, "table": "parcels"})).await);
-    c.cancel().await.unwrap();
     let folder = root.join("workspaces/projects/review");
+    let record = || -> Value {
+        serde_json::from_str(
+            &std::fs::read_to_string(folder.join("columbus-project.json")).unwrap(),
+        )
+        .unwrap()
+    };
+    // A table dropped, or dropped and made again under its name, loses its
+    // load record (the record on disk is merged in first, and must not
+    // bring it back); the labels stay.
+    ok(&pdb(&c, json!({"action": "load", "db": "review", "scope": "project", "layer": parcels, "table": "extra"})).await);
+    assert!(record()["tables"]["extra"].is_object());
+    ok(&pdb(
+        &c,
+        json!({"action": "execute", "db": "review", "scope": "project",
+        "sql": "DROP TABLE extra; CREATE TABLE remade AS SELECT 1 AS x"}),
+    )
+    .await);
+    let r = record();
+    assert!(r["tables"].get("extra").is_none(), "{r}");
+    assert!(r["tables"]["parcels"].is_object());
+    assert_eq!(r["labels"], json!(["connection:county"]));
+    ok(&pdb(&c, json!({"action": "load", "db": "review", "scope": "project", "layer": parcels, "table": "extra"})).await);
+    ok(&pdb(
+        &c,
+        json!({"action": "execute", "db": "review", "scope": "project",
+        "sql": "DROP TABLE extra; CREATE TABLE extra AS SELECT 1 AS x"}),
+    )
+    .await);
+    assert!(record()["tables"].get("extra").is_none());
+    ok(&pdb(&c, json!({"action": "execute", "db": "review", "scope": "project", "sql": "DROP TABLE extra; DROP TABLE remade"})).await);
+    c.cancel().await.unwrap();
     assert!(
         folder.join("review.duckdb").is_file() && folder.join("columbus-project.json").is_file()
     );

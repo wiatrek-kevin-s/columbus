@@ -27,3 +27,7 @@ duckdb-extension-spatial==1.5.5 \
     --hash=sha256:27acd886f6e6f1d6abd45d255dfafb94b6d8fa832572d26274e7fcab71a474a1 \
     --hash=sha256:157d877e00be6c5d1d40e134d4b2e3fd2d84e72562da1ca2c1ddd0bcea5cead2 \
     --hash=sha256:736dbe75cd9d7f7a05d4920b02439f9d441945c81a56128911371fad2b3a5611
+# pytz: DuckDB's Python client needs it to return TIMESTAMP WITH TIME ZONE
+# values (now(), current_timestamp, timestamptz columns); pure Python.
+pytz==2025.2 \
+    --hash=sha256:5ddf76296dd8c44c26eb8f4b6f35488f3ccbf6fbbd7adee0b7262d43f0ec2f00
