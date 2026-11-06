@@ -647,7 +647,12 @@ struct WindowUi {
 
 impl Ui for WindowUi {
     fn event(&self, e: Event) {
-        record(&self.app, &serde_json::to_value(&e).unwrap_or_default());
+        let mut v = serde_json::to_value(&e).unwrap_or_default();
+        // A picture stays in the workspace (its handle is kept), not in the transcript.
+        if let Some(m) = v.as_object_mut() {
+            m.remove("image");
+        }
+        record(&self.app, &v);
         let _ = self.app.emit_to(MAIN, "chat-event", e);
     }
     fn approve(&self, p: Prompt) -> (u64, oneshot::Receiver<Answer>) {

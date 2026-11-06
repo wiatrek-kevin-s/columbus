@@ -1260,6 +1260,7 @@ impl Gateway {
                 + Self::notes_router()
                 + Self::tools_router()
                 + Self::workflow_router()
+                + Self::snapshot_router()
                 + Self::project_db_router(),
         }
     }

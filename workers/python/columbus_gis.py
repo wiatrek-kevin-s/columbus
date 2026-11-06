@@ -1464,3 +1464,149 @@ def vector_op(op: str, inputs: dict[str, str], params: dict[str, Any], stem: str
         except Exception:  # noqa: BLE001
             pass
     return {"output_path": path, "summary": summary, "checks": checks, "engine": versions()}
+
+
+# ---------- Map snapshots: a picture of layers for the AI to look at ----------
+
+SNAPSHOT_MAX_FEATURES = 2_000_000
+SNAPSHOT_PAPER = (246, 243, 236)
+SNAPSHOT_FRAME = (40, 52, 70)
+# Distinct on the paper background and to most colour-blind eyes.
+SNAPSHOT_COLORS = [(31, 119, 180), (214, 39, 40), (44, 160, 44), (148, 103, 189),
+                   (255, 127, 14), (23, 190, 207), (140, 86, 75), (227, 119, 194)]
+
+
+def _wrap_antimeridian(gdf):
+    """Longitudes west of 0 moved east by 360, for a layer that crosses the
+    180th meridian (the Aleutians), so it is drawn in one piece."""
+    return gdf.set_geometry(shapely.transform(gdf.geometry.values, lambda xy: xy + [[360.0, 0.0]] * (xy[:, :1] < 0)))
+
+
+def map_snapshot(paths: list[str], out_path: str, width: int = 1000, height: int = 700,
+                 bbox: list[float] | None = None) -> dict[str, Any]:
+    """Draw layers as a PNG: geometry only (no attribute, label or name is
+    drawn), each layer its own colour, polygons filled lightly with an
+    outline, lines and points solid, on a plain background with no basemap.
+    Layers are drawn in the first layer's CRS; a geographic one is drawn
+    with its longitude scaled for its latitude, in one piece across the
+    180th meridian."""
+    import numpy as np
+    import rasterio
+    from rasterio.features import rasterize
+    from rasterio.transform import from_bounds
+
+    if not paths or len(paths) > 8:
+        raise GISError("params", "give 1 to 8 layers")
+    width = max(200, min(1600, int(width)))
+    height = max(150, min(1200, int(height)))
+    frames, total = [], 0
+    for p in paths:
+        df = read_layer(p)
+        if not isinstance(df, gpd.GeoDataFrame):
+            raise GISError("params", f"{os.path.basename(p)} has no geometry to draw")
+        total += len(df)
+        if total > SNAPSHOT_MAX_FEATURES:
+            raise GISError("params", f"more than {SNAPSHOT_MAX_FEATURES:,} features in all; draw fewer or smaller layers")
+        g = gpd.GeoDataFrame(geometry=df.geometry, crs=df.crs)
+        g = g[g.geometry.notna() & ~g.geometry.is_empty]
+        frames.append(g)
+    if not frames:
+        raise GISError("params", "give 1 to 8 layers")
+    crs = next((f.crs for f in frames if f.crs is not None), None)
+    if crs is not None:
+        frames = [f.to_crs(crs) if f.crs is not None and f.crs != crs else f for f in frames]
+    geographic = bool(crs is not None and crs.is_geographic)
+    if geographic:
+        lons = [f.total_bounds for f in frames if len(f)]
+        if lons and max(b[2] for b in lons) - min(b[0] for b in lons) > 180:
+            frames = [_wrap_antimeridian(f) for f in frames]
+    if bbox is not None:
+        if len(bbox) != 4 or not (bbox[0] < bbox[2] and bbox[1] < bbox[3]):
+            raise GISError("params", "bbox is [minx, miny, maxx, maxy] in the first layer's CRS")
+        minx, miny, maxx, maxy = (float(v) for v in bbox)
+    else:
+        bounds = [f.total_bounds for f in frames if len(f)]
+        if not bounds:
+            raise GISError("params", "the layers have no geometry to draw")
+        minx = min(b[0] for b in bounds)
+        miny = min(b[1] for b in bounds)
+        maxx = max(b[2] for b in bounds)
+        maxy = max(b[3] for b in bounds)
+        dx, dy = maxx - minx, maxy - miny
+        pad = max(dx, dy) * 0.05 or 1.0
+        minx, miny, maxx, maxy = minx - pad, miny - pad, maxx + pad, maxy + pad
+    # The picture's shape follows the extent's (on the ground, for degrees).
+    xscale = math.cos(math.radians(max(-80.0, min(80.0, (miny + maxy) / 2)))) if geographic else 1.0
+    ground_w, ground_h = (maxx - minx) * xscale, maxy - miny
+    if ground_w / ground_h > width / height:
+        height = max(150, int(round(width * ground_h / ground_w)))
+    else:
+        width = max(200, int(round(height * ground_w / ground_h)))
+    transform = from_bounds(minx, miny, maxx, maxy, width, height)
+    px, py = (maxx - minx) / width, (maxy - miny) / height
+    img = np.empty((height, width, 3), dtype=np.float32)
+    img[:] = SNAPSHOT_PAPER
+    shape = (height, width)
+
+    def burn(geoms, all_touched=True):
+        geoms = [g for g in geoms if g is not None and not g.is_empty]
+        if not geoms:
+            return np.zeros(shape, dtype=bool)
+        return rasterize(geoms, out_shape=shape, transform=transform, fill=0, default_value=1,
+                         all_touched=all_touched, dtype="uint8").astype(bool)
+
+    def thicken(m):
+        out = m.copy()
+        out[1:, :] |= m[:-1, :]
+        out[:-1, :] |= m[1:, :]
+        out[:, 1:] |= m[:, :-1]
+        out[:, :-1] |= m[:, 1:]
+        return out
+
+    layers = []
+    for i, f in enumerate(frames):
+        color = np.array(SNAPSHOT_COLORS[i % len(SNAPSHOT_COLORS)], dtype=np.float32)
+        types = f.geometry.geom_type
+        polys = f.geometry[types.isin(["Polygon", "MultiPolygon"])]
+        lines = f.geometry[types.isin(["LineString", "MultiLineString", "LinearRing"])]
+        points = f.geometry[types.isin(["Point", "MultiPoint"])]
+        others = f.geometry[types == "GeometryCollection"]
+        for c in others:
+            for part in getattr(c, "geoms", []):
+                kind = part.geom_type
+                if "Polygon" in kind:
+                    polys = pd.concat([polys, gpd.GeoSeries([part], crs=f.crs)])
+                elif "Line" in kind:
+                    lines = pd.concat([lines, gpd.GeoSeries([part], crs=f.crs)])
+                elif "Point" in kind:
+                    points = pd.concat([points, gpd.GeoSeries([part], crs=f.crs)])
+        if len(polys):
+            fill = burn(list(polys.values), all_touched=False)
+            img[fill] = img[fill] * 0.7 + color * 0.3
+            edge = burn(list(polys.boundary.values))
+            img[edge] = color
+        if len(lines):
+            m = thicken(burn(list(lines.values)))
+            img[m] = color
+        if len(points):
+            # Round on the picture: three pixels across each way.
+            from shapely import affinity
+            dots = burn([affinity.scale(g.buffer(1.0, 8), px * 3.0, py * 3.0) for g in points.values])
+            img[thicken(dots) & ~dots] = SNAPSHOT_FRAME
+            img[dots] = color
+        layers.append({"features": int(len(f)), "geometry_types": sorted(set(types)),
+                       "color": "#%02x%02x%02x" % tuple(int(v) for v in color)})
+    img[0, :] = img[-1, :] = SNAPSHOT_FRAME
+    img[:, 0] = img[:, -1] = SNAPSHOT_FRAME
+    data = np.clip(img, 0, 255).astype(np.uint8)
+    import warnings
+    with warnings.catch_warnings(), rasterio.Env(GDAL_PAM_ENABLED="NO"):
+        warnings.simplefilter("ignore", rasterio.errors.NotGeoreferencedWarning)
+        with rasterio.open(out_path, "w", driver="PNG", width=width, height=height, count=3, dtype="uint8") as dst:
+            for b in range(3):
+                dst.write(data[:, :, b], b + 1)
+    return {"path": out_path, "width": int(width), "height": int(height),
+            "crs": (crs.to_string() if crs is not None else None),
+            "extent": [float(minx), float(miny), float(maxx), float(maxy)],
+            "wrapped_antimeridian": bool(geographic and maxx > 180),
+            "layers": layers}

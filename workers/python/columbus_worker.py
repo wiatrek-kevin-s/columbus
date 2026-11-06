@@ -1770,6 +1770,25 @@ def read_rows(params: dict[str, Any]) -> dict[str, Any]:
         raise _refused(e) from None
 
 
+def map_snapshot(params: dict[str, Any]) -> dict[str, Any]:
+    g = _gis()
+    paths, out = params.get("paths"), params.get("out_path")
+    if not isinstance(paths, list) or not all(isinstance(x, str) for x in paths) or not isinstance(out, str):
+        raise WorkerError(INVALID_PARAMS, "paths and out_path are required")
+    bbox = params.get("bbox")
+    if bbox is not None and (not isinstance(bbox, list) or not all(isinstance(v, (int, float)) for v in bbox)):
+        raise WorkerError(INVALID_PARAMS, "bbox is four numbers")
+    try:
+        w = int(params.get("width") or 1000)
+        h = int(params.get("height") or 700)
+    except (TypeError, ValueError):
+        raise WorkerError(INVALID_PARAMS, "width and height must be whole numbers") from None
+    try:
+        return g.map_snapshot(paths, out, w, h, bbox)
+    except g.GISError as e:
+        raise _refused(e) from None
+
+
 def geojson_layer(params: dict[str, Any]) -> dict[str, Any]:
     g = _gis()
     pages, stem = params.get("pages"), params.get("out_stem")
@@ -1978,6 +1997,7 @@ for _name, _fn in (
     ("vector_op", vector_op),
     ("verify_layer", verify_layer),
     ("read_rows", read_rows),
+    ("map_snapshot", map_snapshot),
     ("display_geojson", display_geojson),
     ("export_layer", export_layer),
     ("geojson_layer", geojson_layer),

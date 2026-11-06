@@ -46,6 +46,7 @@ mod safefs;
 mod script_tools;
 mod secrets;
 mod server;
+mod snapshot_tools;
 mod worker;
 mod workflows;
 

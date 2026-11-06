@@ -54,6 +54,19 @@ async fn messages(State(s): State<Script>, h: HeaderMap, Json(body): Json<Value>
     };
     // `{"export_last": true}`: export the layer the previous tool made, as
     // a model would after reading its result.
+    if next.get("snapshot_last").is_some() {
+        let body = g.1.requests.last().unwrap();
+        let text = body["messages"].as_array().unwrap().last().unwrap()["content"][0]["content"]
+            .as_str()
+            .unwrap_or("")
+            .to_string();
+        let v: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+        let h = v["result"]["layer"]["handle"]
+            .as_str()
+            .unwrap_or("")
+            .to_string();
+        return Json(tool_use("s1", "map_snapshot", json!({"layers": [h]})));
+    }
     if next.get("export_last").is_some() {
         let body = g.1.requests.last().unwrap();
         let text = body["messages"].as_array().unwrap().last().unwrap()["content"][0]["content"]
@@ -348,6 +361,57 @@ async fn each_message_uses_the_chats_model_and_thinking_level() {
     let sent = b["messages"].to_string();
     assert!(!sent.contains("\"thinking\""), "{sent}");
     assert!(sent.contains("First."), "{sent}");
+    chat.close().await;
+}
+
+#[tokio::test]
+async fn the_model_sees_a_map_snapshot_as_a_picture() {
+    let Some(py) = python() else {
+        return;
+    };
+    let rasterio = std::process::Command::new(&py)
+        .args(["-c", "import rasterio"])
+        .output()
+        .is_ok_and(|o| o.status.success());
+    if !rasterio {
+        return;
+    }
+    let (_dir, root) = setup(&py);
+    let script = vec![
+        tool_use(
+            "q",
+            "query_features",
+            json!({"connection": "tiger", "dataset": "tracts"}),
+        ),
+        json!({"snapshot_last": true}),
+        json!({"content": [{"type": "text", "text": "They line up."}], "stop_reason": "end_turn"}),
+    ];
+    let (base, state) = stand_in(script).await;
+    let ui = Arc::new(TestUi {
+        events: Mutex::default(),
+        prompts: Mutex::default(),
+        withdrawn: Mutex::default(),
+        answer: Answer::Decline,
+    });
+    let mut chat = Chat::start(config(&root, &py, base), ui.clone(), Cancel::default())
+        .await
+        .unwrap();
+    chat.send("show me", &Cancel::default()).await.unwrap();
+    let last = {
+        let g = state.lock().unwrap();
+        g.1.requests.last().unwrap().clone()
+    };
+    let result = last["messages"].as_array().unwrap().last().unwrap()["content"][0].clone();
+    assert_eq!(result["type"], "tool_result", "{result}");
+    let blocks = result["content"].as_array().expect("text and picture");
+    assert_eq!(blocks[0]["type"], "text");
+    assert_eq!(blocks[1]["type"], "image");
+    assert_eq!(blocks[1]["source"]["media_type"], "image/png");
+    // The window shows it too.
+    let shown = ui.events.lock().unwrap().iter().any(|e| {
+        matches!(e, Event::ToolFinished { image: Some(i), .. } if i.starts_with("data:image/png;base64,"))
+    });
+    assert!(shown, "the window gets the picture");
     chat.close().await;
 }
 

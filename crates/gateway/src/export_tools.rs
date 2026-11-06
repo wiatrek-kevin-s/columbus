@@ -107,7 +107,10 @@ fn fail(id: &str, message: String, fix: Option<&str>) -> Check {
 
 impl Gateway {
     /// A workspace file Columbus or an approved plugin wrote, unchanged.
-    fn own_output(&self, handle: &str) -> Result<(PathBuf, crate::providers::OutputMeta), String> {
+    pub(crate) fn own_output(
+        &self,
+        handle: &str,
+    ) -> Result<(PathBuf, crate::providers::OutputMeta), String> {
         let path =
             crate::providers::resolve_handle(&self.state.session, &self.state.sandbox, handle)?;
         let meta = self.state.outputs.get(&path).ok_or_else(|| {

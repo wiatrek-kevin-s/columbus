@@ -168,6 +168,8 @@ export function describe(name, input) {
     case "raster_op": return `Processing: ${i.op ? q(i.op) : "raster operation"}`;
     case "verify": return "Running checks";
     case "read_output": return "Reading a result";
+    case "map_snapshot": return `Looking at ${Array.isArray(i.layers) && i.layers.length > 1 ? `${i.layers.length} layers` : "a layer"} on a map`;
+    case "propose_workflow": return "Proposing a workflow";
     case "export_output": return `Exporting${i.folder ? ` to ${q(i.folder)}` : ""}`;
     case "registry_search": return `Searching open data${i.query ? ` for ${q(i.query)}` : ""}`;
     case "registry_fetch": return "Downloading open data";
@@ -273,6 +275,13 @@ class Renderer {
         li.classList.remove("running");
         const result = el("span", e.ok ? null : "bad", e.ok ? e.summary : `Refused or failed: ${e.summary}`);
         li.insertBefore(result, s.raw || null);
+        // What the AI looked at, shown to the person too (a PNG only).
+        if (e.ok && typeof e.image === "string" && /^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(e.image)) {
+          const img = h("img", { class: "snapshot", alt: "The map picture the assistant looked at" });
+          img.src = e.image;
+          li.insertBefore(h("figure", { class: "snapshot" }, img, h("figcaption", { class: "small muted" }, "What the assistant saw (geometry only, no basemap)")), s.raw || null);
+          g.details.open = true;
+        }
         if (e.fails) li.insertBefore(el("span", "bad", `${e.fails} check${e.fails > 1 ? "s" : ""} failed`), s.raw || null);
         if (e.warns) li.insertBefore(el("span", "warn", `${e.warns} to review`), s.raw || null);
         if (e.ok && e.provenance) {

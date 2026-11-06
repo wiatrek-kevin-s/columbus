@@ -130,6 +130,10 @@ pub enum Event {
         /// The layer or file it made, as a workspace handle.
         #[serde(skip_serializing_if = "Option::is_none")]
         handle: Option<String>,
+        /// A picture the tool gave the model (a map snapshot), as a
+        /// `data:image/png;base64,…` URL, for the window to show too.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        image: Option<String>,
     },
     /// The session's server asks the person; answer with [`Answer`].
     /// `summary` is the server's own description; `code`, when present, was
@@ -541,8 +545,12 @@ impl Chat {
                     warns,
                     provenance: made.provenance,
                     handle: made.handle,
+                    image: made
+                        .images
+                        .first()
+                        .map(|d| format!("data:image/png;base64,{d}")),
                 });
-                results.push(tool_result(&id, &text, is_error));
+                results.push(tool_result_with(&id, &text, is_error, &made.images));
             }
             self.history
                 .push(json!({"role": "user", "content": results}));
@@ -648,7 +656,9 @@ impl Chat {
                 let made = if is_error {
                     Made::default()
                 } else {
-                    made(r.structured_content.as_ref())
+                    let mut m = made(r.structured_content.as_ref());
+                    m.images = pngs(&r.content);
+                    m
                 };
                 (cut(&text), is_error, summary, fails, warns, made)
             }
@@ -721,6 +731,18 @@ fn drop_thinking(history: &mut [Value]) {
     }
 }
 
+/// A tool result with its pictures, as the AI service takes them.
+fn tool_result_with(id: &str, text: &str, is_error: bool, images: &[String]) -> Value {
+    if images.is_empty() || is_error {
+        return tool_result(id, text, is_error);
+    }
+    let mut content = vec![json!({"type": "text", "text": text})];
+    for d in images {
+        content.push(json!({"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": d}}));
+    }
+    json!({"type": "tool_result", "tool_use_id": id, "content": content, "is_error": false})
+}
+
 fn tool_result(id: &str, text: &str, is_error: bool) -> Value {
     json!({"type": "tool_result", "tool_use_id": id, "content": text, "is_error": is_error})
 }
@@ -759,6 +781,29 @@ fn count_checks(v: &Value) -> (u32, u32) {
 struct Made {
     provenance: Option<String>,
     handle: Option<String>,
+    /// PNG pictures in the result, base64, for the model to see.
+    images: Vec<String>,
+}
+
+/// Largest picture passed on to the model, as base64 characters.
+const MAX_IMAGE_B64: usize = 6 * 1024 * 1024;
+
+/// The PNG pictures in a tool's result: base64 only, at most two, each of
+/// a size the AI service takes.
+fn pngs(content: &[rmcp::model::ContentBlock]) -> Vec<String> {
+    content
+        .iter()
+        .filter_map(|c| c.as_image())
+        .filter(|i| i.mime_type == "image/png")
+        .map(|i| i.data.clone())
+        .filter(|d| {
+            !d.is_empty()
+                && d.len() <= MAX_IMAGE_B64
+                && d.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'='))
+        })
+        .take(2)
+        .collect()
 }
 
 /// The provenance record and layer a result names, if any. Plain ids only:
@@ -783,6 +828,7 @@ fn made(v: Option<&Value>) -> Made {
             .or(v["result"]["handle"].as_str())
             .filter(|s| plain(s))
             .map(String::from),
+        images: vec![],
     }
 }
 

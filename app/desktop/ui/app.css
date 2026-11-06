@@ -373,3 +373,6 @@ dialog .actions .spacer { flex: 1; }
 .msg table.md { border-collapse: collapse; font-size: 13px; }
 .msg table.md th, .msg table.md td { border: 1px solid var(--rule); padding: 4px 8px; text-align: left; vertical-align: top; }
 .msg table.md th { background: var(--panel); font-weight: 600; }
+
+#log figure.snapshot { margin: 6px 0 2px; }
+#log figure.snapshot img { display: block; max-width: 100%; max-height: 360px; border: 1px solid var(--rule); border-radius: 6px; background: var(--paper); }
