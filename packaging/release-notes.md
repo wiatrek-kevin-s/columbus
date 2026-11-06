@@ -1,8 +1,17 @@
 Columbus {{VERSION}}, a test release. Click a link to download that file.
 
-**Fixed in this version: saving a script as a tool works in Claude.** In 0.8.0, Claude desktop sent one part of a tool proposal (its test run) as text, and Columbus refused every proposal. Columbus now describes that part so every assistant sends it correctly, and accepts it either way. Columbus also now hands assistants its own guides (including how to design a tool), so they no longer need the skills folder installed. And the app has a new compass icon.
+**New in this version: a redesigned Columbus app.** One main window replaces the separate windows, with a menu down the side: Home, Chats, Projects, Documents, Skills, Connections, Tools, Activity and Settings.
+- **Home** shows what needs you: requests waiting, notes in draft, tools to review and your recent chats, with a setup checklist the first time.
+- **Chats** open with the map and table beside them (one click puts the map first). Tool steps fold into short lines with check badges; chats are saved and searchable with **Ctrl+K**. Sessions from Claude desktop show up too, with what they did and their map.
+- **Connections, your notes** (now with **Mark reviewed**), **personal tools, settings**, an **approvals inbox** across every session (decide in the browser page, as before) and an **audit log viewer** are all pages of the main window. The old session list and settings windows are still under **Classic windows…** for now.
+- Workflows, the registry and data groups have their pages, saying plainly that they are coming.
+- A new compass icon.
 
-**New in 0.8.0: your own tools.** Ask your assistant to "save the script we just made as a tool" and it packages it as one of your own Columbus tools, with a clear description, typed inputs, and the units and checks other assistants need to use it well. You approve one test run (you see the full code), then install it in the Columbus app under **Settings → Tools** with Touch ID or Windows Hello. After that, any assistant can find it and run it on your layers without asking each time. Switch on **Allow personal tools** in Settings first (scripts must be allowed too). Every run is sandboxed: no network, it reads only the layers it's given and writes only its own results, and settings passed in later (like a field name) can never become code.
+**Also new: big tables and project databases.** Your organization can raise the per-query limits (up to 20 million rows), large results are saved to disk as they are read, and your assistant can build a local project database (DuckDB) to load several tables into, add keys and indexes, and join them with SQL, writing only to that one file, never to your databases. Your data rules, hidden fields and labels follow the data in, and a size cap protects your disk.
+
+**Fixed:** saving a script as a tool now works in Claude (0.8.0 refused every proposal), and Columbus hands assistants its own guides (`columbus_guide`), including how to design a tool.
+
+Since 0.8.0: your own tools (switch on **Allow personal tools** in Settings).
 
 ## Mac (Apple Silicon: M1 or later)
 
