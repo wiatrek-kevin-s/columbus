@@ -317,9 +317,10 @@ impl Handover {
             .file_name()
             .map(|f| f.to_string_lossy().into_owned())
             .unwrap_or_else(|| "file".into());
-        let dst = server_dir
-            .join("in")
-            .join(format!("{}-{base}", &uuid::Uuid::new_v4().simple().to_string()[..8]));
+        let dst = server_dir.join("in").join(format!(
+            "{}-{base}",
+            &uuid::Uuid::new_v4().simple().to_string()[..8]
+        ));
         self.copies.push((p, dst.clone(), sha));
         Ok(Value::String(dst.display().to_string()))
     }
@@ -371,12 +372,26 @@ impl Handover {
             }
             Value::Array(a) => {
                 for (i, x) in a.iter_mut().enumerate() {
-                    self.walk(x, &format!("{at}[{i}]"), depth + 1, session, sandbox, server_dir)?;
+                    self.walk(
+                        x,
+                        &format!("{at}[{i}]"),
+                        depth + 1,
+                        session,
+                        sandbox,
+                        server_dir,
+                    )?;
                 }
             }
             Value::Object(m) => {
                 for (k, x) in m.iter_mut() {
-                    self.walk(x, &format!("{at}.{k}"), depth + 1, session, sandbox, server_dir)?;
+                    self.walk(
+                        x,
+                        &format!("{at}.{k}"),
+                        depth + 1,
+                        session,
+                        sandbox,
+                        server_dir,
+                    )?;
                 }
             }
             _ => {}
@@ -436,7 +451,10 @@ pub fn take_outputs(
             }
         };
         if let Err(e) = std::fs::create_dir_all(results) {
-            skipped.push(format!("{} (could not make the results folder: {e})", s.name));
+            skipped.push(format!(
+                "{} (could not make the results folder: {e})",
+                s.name
+            ));
             continue;
         }
         let room = crate::script_tools::MAX_TOTAL_BYTES.saturating_sub(total);

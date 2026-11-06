@@ -1,0 +1,42 @@
+# PILOT. RustGIS (https://github.com/opengeos/RustGIS, Apache-2.0) as a
+# connected server: its MCP server reaches more than 1,000 GeoLibre and
+# Whitebox geoprocessing tools through search_tools, describe_tool and
+# run_tool. See docs/rustgis-pilot.md for what is settled and what is not.
+#
+# Install RustGIS (Homebrew cask on macOS, winget on Windows), put this file
+# in Columbus's servers folder, set `command` to the installed rustgis-cli,
+# then review and approve it:
+#   columbus-mcp servers review rustgis
+#   columbus-mcp servers approve rustgis
+# A new RustGIS version with changed tools is switched off until approved
+# again.
+id: rustgis
+name: RustGIS geoprocessing
+publisher: opengeos
+transport:
+  type: stdio
+  command: rustgis-cli
+  # --yes lets its tools read and write files. Confined (below), the only
+  # files it can reach are in its own folder: the copies Columbus hands it
+  # and the files it is asked to write. --no-plugins: no third-party code.
+  args: [mcp, --yes, --no-plugins]
+trust: standard
+# Level B: reads and writes only its own folder, no network. Tools that
+# would fetch web tiles or data fail rather than reach out.
+confinement: { level: B, folders: [], hosts: [] }
+tools:
+  search_tools:    { risk: read }
+  describe_tool:   { risk: read }
+  # Workspace handles anywhere in params are handed over as copies;
+  # out://<name> asks for an output file, taken back into the workspace.
+  run_tool:        { risk: read, args: { "*": path } }
+  list_layers:     { risk: read }
+  read_features:   { risk: read, output: untrusted }
+  search_docs:     { risk: read }
+  read_doc:        { risk: read, output: untrusted }
+  view_map:        { risk: read }
+  # Commands cover opening, saving and plugin actions: off until reviewed
+  # one by one.
+  search_commands: { allow: false }
+  run_command:     { allow: false }
+  default:         { allow: false }

@@ -230,7 +230,11 @@ fn script_env(run: &Path) -> Vec<(String, OsString)> {
 /// Copy one file the script left (opened through the safe folder walk: a
 /// regular file with one name, never a link, FIFO or device) to a new file
 /// of the gateway's, at most `cap` bytes. Returns its SHA-256 and size.
-pub(crate) fn take_output(src: std::fs::File, to: &Path, cap: u64) -> Result<(String, u64), String> {
+pub(crate) fn take_output(
+    src: std::fs::File,
+    to: &Path,
+    cap: u64,
+) -> Result<(String, u64), String> {
     use sha2::{Digest, Sha256};
     use std::io::{Read, Write};
     let m = src.metadata().map_err(|e| e.to_string())?;

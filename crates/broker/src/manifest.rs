@@ -468,7 +468,10 @@ mod example_tests {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/servers");
         let loaded = load_dir(&dir, Source::Organization).unwrap();
         let ids: Vec<&str> = loaded.iter().map(|l| l.manifest.id.as_str()).collect();
-        assert_eq!(ids, ["drive", "obsidian"]);
+        assert_eq!(ids, ["drive", "obsidian", "rustgis"]);
+        let rg = &loaded[2].manifest;
+        assert_eq!(rg.tools["run_tool"].args["*"], ArgRole::Path);
+        assert_eq!(rg.tools["run_command"].allow, Some(false));
         let policy = columbus_shared::policy::OrgPolicy::load(
             &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/policy.yaml"),
         )

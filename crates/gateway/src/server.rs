@@ -2472,6 +2472,11 @@ impl Gateway {
         if let Err(e) = crate::providers::do_copies(self.state.sandbox.root(), &prepared.copies) {
             return Err(self.deny(&ctx, rec, e));
         }
+        if let Err(e) =
+            crate::providers::make_output_dirs(self.state.sandbox.root(), &prepared.outputs)
+        {
+            return Err(self.deny(&ctx, rec, e));
+        }
         let timeout = self.state.policy().read_limits().max_seconds();
         let started = Local::now();
         let result = match self
@@ -2509,61 +2514,125 @@ impl Gateway {
                 None,
             ));
         }
-        let (external, saved) = if rule.output == columbus_broker::manifest::OutputMode::ToWorkspace
-        {
-            let saved = match crate::providers::save_result(
-                &self.state.sandbox,
-                &self.state.session,
-                ns,
-                tool,
-                &prov,
-                &result,
-            ) {
-                Ok(v) => v,
-                Err(e) => {
-                    self.audit(
-                        &ctx,
-                        AuditRecord {
-                            decision: "error".into(),
-                            reason: Some(e.clone()),
-                            ..rec
+        let (external, mut saved) =
+            if rule.output == columbus_broker::manifest::OutputMode::ToWorkspace {
+                let saved = match crate::providers::save_result(
+                    &self.state.sandbox,
+                    &self.state.session,
+                    ns,
+                    tool,
+                    &prov,
+                    &result,
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        self.audit(
+                            &ctx,
+                            AuditRecord {
+                                decision: "error".into(),
+                                reason: Some(e.clone()),
+                                ..rec
+                            },
+                        )?;
+                        return Err(format!("could not save the result to the workspace: {e}"));
+                    }
+                };
+                for f in &saved {
+                    self.state.flow.record_file(&f.path, &labels);
+                    self.state.outputs.record(
+                        &f.path,
+                        crate::providers::OutputMeta {
+                            made_by: args.name.clone(),
+                            provenance: Some(prov.clone()),
+                            rows: None,
+                            source: crate::providers::OutputSource::Provider,
+                            truncated: false,
+                            inherited: vec![],
+                            sha256: None,
                         },
-                    )?;
-                    return Err(format!("could not save the result to the workspace: {e}"));
+                    );
                 }
+                checks.push(Check::info(
+                    "provider.saved_to_workspace",
+                    format!(
+                        "{} file(s) saved to the workspace instead of returned",
+                        saved.len()
+                    ),
+                ));
+                let summary = json!({
+                    "untrusted": true,
+                    "provider": ns,
+                    "is_error": result.is_error.unwrap_or(false),
+                    "saved_files": saved.len(),
+                });
+                (Some(summary), saved)
+            } else {
+                (Some(crate::providers::wrap_untrusted(ns, &result)), vec![])
             };
-            for f in &saved {
-                self.state.flow.record_file(&f.path, &labels);
-                self.state.outputs.record(
-                    &f.path,
-                    crate::providers::OutputMeta {
-                        made_by: args.name.clone(),
-                        provenance: Some(prov.clone()),
-                        rows: None,
-                        source: crate::providers::OutputSource::Provider,
-                        truncated: false,
-                        inherited: vec![],
-                        sha256: None,
-                    },
+
+        // The files it was asked to write, taken into the workspace: as
+        // results of a connected server, carrying the labels of what it was
+        // given.
+        if !prepared.outputs.is_empty() {
+            if result.is_error == Some(true) {
+                checks.push(Check::warn(
+                    "provider.outputs_not_taken",
+                    "The server reported an error, so the files it was asked to write were not taken".to_string(),
+                    None,
+                ));
+            } else {
+                let results = self
+                    .state
+                    .sandbox
+                    .resolve("results")
+                    .map_err(|e| e.to_string())?;
+                let (taken, skipped) = crate::providers::take_outputs(
+                    self.state.sandbox.root(),
+                    &prepared.outputs,
+                    &results,
+                    &format!("{ns}-{prov}"),
                 );
+                let base = self.state.outputs.inherit(&prepared.files);
+                for t in &taken {
+                    self.state.flow.record_file(&t.path, &labels);
+                    self.state.outputs.record_with_hash(
+                        &t.path,
+                        crate::providers::OutputMeta {
+                            made_by: args.name.clone(),
+                            provenance: Some(prov.clone()),
+                            rows: None,
+                            source: crate::providers::OutputSource::Provider,
+                            truncated: base.truncated,
+                            inherited: base.fails.clone(),
+                            sha256: None,
+                        },
+                        t.sha256.clone(),
+                    );
+                    saved.push(crate::providers::SavedFile {
+                        handle: self.ws_handle(&t.path).unwrap_or_default(),
+                        bytes: t.bytes,
+                        kind: t.name.rsplit('.').next().unwrap_or("").to_ascii_lowercase(),
+                        path: t.path.clone(),
+                    });
+                }
+                if !taken.is_empty() {
+                    checks.push(Check::info(
+                        "provider.outputs_taken",
+                        format!(
+                            "{} file(s) the server wrote were taken into the workspace",
+                            taken.len()
+                        ),
+                    ));
+                }
+                if !skipped.is_empty() {
+                    checks.push(Check::warn(
+                        "provider.outputs_skipped",
+                        format!("Not taken: {}", skipped.join("; ")),
+                        None,
+                    ));
+                }
             }
-            checks.push(Check::info(
-                "provider.saved_to_workspace",
-                format!(
-                    "{} file(s) saved to the workspace instead of returned",
-                    saved.len()
-                ),
-            ));
-            let summary = json!({
-                "untrusted": true,
-                "provider": ns,
-                "is_error": result.is_error.unwrap_or(false),
-                "saved_files": saved.len(),
-            });
-            (Some(summary), saved)
-        } else {
-            (Some(crate::providers::wrap_untrusted(ns, &result)), vec![])
-        };
+        }
 
         let inputs: Vec<Value> = prepared
             .files

@@ -59,6 +59,13 @@ impl Fake {
                 "inputSchema": {"type": "object", "properties": {}}
             })),
             tool(json!({
+                "name": "run_tool",
+                "description": "Run a geoprocessing tool on files; it writes its output file.",
+                "inputSchema": {"type": "object", "properties": {
+                    "tool": {"type": "string"},
+                    "params": {"type": "object"}}, "required": ["tool", "params"]}
+            })),
+            tool(json!({
                 "name": "delete_all",
                 "description": "Delete every note.",
                 "inputSchema": {"type": "object", "properties": {}}
@@ -124,6 +131,31 @@ impl ServerHandler for Fake {
                         "checksum": checksum(&content).to_string(),
                     })),
                     Err(e) => CallToolResult::error(vec![ContentBlock::text(format!("cannot read {path}: {e}"))]),
+                }
+            }
+            "run_tool" => {
+                // Reads params.input, writes params.output (variant "linky":
+                // a link to a file outside instead).
+                let p = args.get("params").cloned().unwrap_or_default();
+                let input = p["input"].as_str().unwrap_or("");
+                let output = p["output"].as_str().unwrap_or("");
+                match std::fs::read_to_string(input) {
+                    Ok(content) => {
+                        let wrote = if self.variant == "linky" {
+                            #[cfg(unix)]
+                            let r = std::os::unix::fs::symlink(input, output);
+                            #[cfg(not(unix))]
+                            let r = std::fs::write(output, "linky");
+                            r
+                        } else {
+                            std::fs::write(output, format!("slope of {}", checksum(&content)))
+                        };
+                        match wrote {
+                            Ok(()) => text(json!({"layersAdded": ["slope"], "output": output}).to_string()),
+                            Err(e) => CallToolResult::error(vec![ContentBlock::text(format!("cannot write {output}: {e}"))]),
+                        }
+                    }
+                    Err(e) => CallToolResult::error(vec![ContentBlock::text(format!("cannot read {input}: {e}"))]),
                 }
             }
             "export_report" => text(json!({"report": "inspections", "rows": 3}).to_string()),
