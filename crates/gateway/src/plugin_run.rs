@@ -529,11 +529,15 @@ impl Gateway {
                 .iter()
                 .find(|(p, _)| p == &src)
                 .and_then(|(_, h)| h.clone());
+            // Only a short, plain extension carries over to the copy's name.
             let ext = src
                 .extension()
                 .and_then(|e| e.to_str())
+                .filter(|e| {
+                    (1..=8).contains(&e.len()) && e.chars().all(|c| c.is_ascii_alphanumeric())
+                })
                 .unwrap_or("dat")
-                .to_string();
+                .to_ascii_lowercase();
             let dst = run_dir.join("in").join(format!("{name}.{ext}"));
             copies.push((src, dst.clone(), want));
             spec_in["path"] = json!(dst);

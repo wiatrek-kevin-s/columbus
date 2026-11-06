@@ -156,7 +156,11 @@ start points first); calibrated LRS measures (this measures length along the lin
   or `label` (a short label or code, such as a route id: letters, digits, spaces and
   `- _ . , : / # & +`, up to 80). Nothing else is accepted, so what another assistant passes
   at run time is data, never code, an expression or a template. Use field names as
-  `gdf[field]`, never inside a `.query()` text.
+  `gdf[field]`, never inside a `.query()` text. A parameter never chooses which function
+  runs (`gdf.agg(ctx.param("stat"))` is refused): give it an `enum` and look the function
+  up in a fixed dict, `{"sum": "sum", "mean": "mean"}[ctx.param("stat")]`. Spatial-index
+  lookups (`gdf.sindex.query(geom, predicate="intersects")`, `STRtree(...).query(g)`) are
+  fine.
 
 **`outputs`**: `kind` `layer` (GeoPackage), `table` (CSV) or `report` (JSON), with a
 `description`, and for layers `geometry` and `crs` (`"same as routes"`). List the `fields`

@@ -365,6 +365,9 @@ fn param_spec(problems: &mut Vec<String>, name: &str, p: &ParamDecl) -> ParamSpe
     if p.choices.is_some() && p.kind != ScalarType::String {
         problems.push(format!("{what}: enum is for strings"));
     }
+    if p.format.is_some() && p.kind != ScalarType::String {
+        problems.push(format!("{what}: format is for strings"));
+    }
     if (p.min.is_some() || p.max.is_some())
         && !matches!(p.kind, ScalarType::Number | ScalarType::Integer)
     {
@@ -1476,6 +1479,21 @@ mod tests {
         assert!(b.manifest_text.contains(
             "\nid: personal.locate-measures\nname: Locate points along routes\nversion: 1.0.0\n"
         ));
+    }
+
+    #[test]
+    fn an_installed_tool_without_text_formats_does_not_load() {
+        let mut a = good();
+        a.params.insert(
+            "route_field".into(),
+            serde_json::from_value(json!({"type": "string", "format": "field_name", "description": "The route id field", "default": "RTE_ID"})).unwrap(),
+        );
+        let built = build(&a).unwrap();
+        assert!(built.manifest_text.contains("format: field_name"));
+        let id = built.id.clone();
+        let loose = built.manifest_text.replace("format: field_name", "");
+        let e = PluginManifest::parse_personal(&loose, &id).err().unwrap();
+        assert!(e.contains("needs enum or format"), "{e}");
     }
 
     #[test]

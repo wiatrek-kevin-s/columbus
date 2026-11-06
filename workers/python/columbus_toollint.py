@@ -144,6 +144,10 @@ ENV_CALLS = {"rasterio.Env", "rasterio.env.Env", "fiona.Env", "fiona.env.Env", "
 # checks on their arguments always apply (q = gdf.query; q(text)).
 CALL_ONLY_ATTRS = {"query", "eval"}
 # Calls whose positional arguments reach a refused setting.
+# Calls that run a function chosen by name.
+DISPATCH_CALLS = {"agg", "aggregate", "apply", "transform", "pipe", "map", "applymap", "dissolve", "pivot_table"}
+# Of those, the ones whose first argument is a column, not the function.
+DISPATCH_BY_KEYWORD = {"dissolve", "pivot_table"}
 POSITIONAL_LIMITS = {"load": 2, "hist": 2, "boxplot": 2, "hist_series": 2, "hist_frame": 2, "boxplot_frame": 2}
 # Modules whose objects may only be used as `module.thing`, never passed
 # around under another name (o = os; o.system(...)).
@@ -216,6 +220,10 @@ class _Lint(ast.NodeVisitor):
         self.top_imports: set[str] = set()
         self.parents: dict[int, ast.AST] = {}
         self.ctx_names: set[str] = set()
+        # Names given a run-time parameter straight from ctx.param(...).
+        self.param_names: set[str] = set()
+        # Names holding a shapely STRtree (their .query is a spatial query).
+        self.trees: set[str] = set()
         # Names the file binds at the top level other than by importing.
         self.local_names: set[str] = set()
         # Docstrings may mention a URL or path (as text, not as data).
@@ -296,7 +304,10 @@ class _Lint(ast.NodeVisitor):
         parent = self.parents.get(id(node))
         is_func = isinstance(parent, ast.Call) and parent.func is node
         if node.attr in CALL_ONLY_ATTRS and not is_func:
-            self.err(node, "tool.eval", f".{node.attr}: call it in place with a fixed expression; do not pass it around")
+            spatial = node.attr == "query" and ((isinstance(node.value, ast.Attribute) and node.value.attr == "sindex")
+                                                 or (isinstance(node.value, ast.Name) and node.value.id in self.trees))
+            if not spatial:
+                self.err(node, "tool.eval", f".{node.attr}: call it in place with a fixed expression; do not pass it around")
         if full in ENV_CALLS and not is_func:
             self.err(node, "tool.settings", f"{full}: call it in place (with no settings); do not pass it around or subclass it")
         if SETTINGS_ATTR.search(node.attr):
@@ -352,7 +363,11 @@ class _Lint(ast.NodeVisitor):
             self.warn(node, "tool.file", f"{name}(): a tool should only write its outputs, not move or delete files")
         # Expressions given as text (pandas query and eval) run code: only a
         # fixed text written in the tool, with no @names, is allowed.
-        if isinstance(f, ast.Attribute) and f.attr in ("query", "eval"):
+        spatial = isinstance(f, ast.Attribute) and f.attr == "query" and (
+            any(k.arg in ("predicate", "distance") for k in node.keywords)
+            or (isinstance(f.value, ast.Attribute) and f.value.attr == "sindex")
+            or (isinstance(f.value, ast.Name) and f.value.id in self.trees))
+        if isinstance(f, ast.Attribute) and f.attr in ("query", "eval") and not spatial:
             expr = node.args[0] if node.args else next((k.value for k in node.keywords if k.arg == "expr"), None)
             text = _const_str(expr) if expr is not None else None
             if text is None or "@" in text or "__" in text:
@@ -363,8 +378,19 @@ class _Lint(ast.NodeVisitor):
             self.err(node, "tool.call", f"{attr}(): give arguments after the first {limit} as keywords, so settings like allow_pickle and backend can be checked")
         if name in ENV_CALLS and (node.args or node.keywords):
             self.err(node, "tool.settings", f"{name}(...): a tool may not change GDAL's settings; use {name}() with no arguments if you need it at all")
+        # A run-time text choosing which method or function runs
+        # (df.agg(ctx.param("stat")) looks the text up as any attribute).
+        if attr in DISPATCH_CALLS:
+            chosen = [node.args[0]] if node.args and attr not in DISPATCH_BY_KEYWORD else []
+            chosen += [k.value for k in node.keywords if k.arg in ("func", "aggfunc", "arg")]
+            for c in chosen:
+                if self._from_param(c):
+                    self.err(node, "tool.dispatch", f"{attr}(): a parameter may not choose the function that runs; look it up in a fixed dict ({{'sum': 'sum', 'mean': 'mean'}}[ctx.param('stat')]) or declare it with enum")
+                text = _const_str(c)
+                if text is not None and (text.startswith("_") or text in REFUSED_METHODS or SETTINGS_ATTR.search(text)):
+                    self.err(node, "tool.dispatch", f"{attr}({text!r}): this names a private or refused method")
         for k in node.keywords:
-            if k.arg is None and not isinstance(k.value, ast.Name):
+            if k.arg is None and not (isinstance(k.value, ast.Name) or _dotted(k.value)):
                 self.err(node, "tool.call", "**{...}: write the keywords out, or unpack a plain name (**profile)")
             if k.arg == "backend":
                 self.err(node, "tool.settings", "backend=: a library loads the module this names; leave it at its default")
@@ -424,7 +450,21 @@ class _Lint(ast.NodeVisitor):
             if n and SECRET_NAME.search(n):
                 self.err(value, "tool.credential", f"{n} = '...': a tool never holds passwords, keys or tokens")
 
+    def _from_param(self, node: ast.AST | None) -> bool:
+        if isinstance(node, ast.Name):
+            return node.id in self.param_names
+        return isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "param" \
+            and isinstance(node.func.value, ast.Name) and node.func.value.id in self.ctx_names
+
     def visit_Assign(self, node: ast.Assign) -> None:
+        if isinstance(node.value, ast.Call) and self._resolve(node.value.func).endswith("STRtree"):
+            for t in node.targets:
+                if isinstance(t, ast.Name):
+                    self.trees.add(t.id)
+        if self._from_param(node.value):
+            for t in node.targets:
+                if isinstance(t, ast.Name):
+                    self.param_names.add(t.id)
         self._assign_secret(node.targets, node.value)
         self.generic_visit(node)
 

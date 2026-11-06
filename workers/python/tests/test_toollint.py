@@ -219,6 +219,27 @@ class ToolLintTest(unittest.TestCase):
               "    shapes = rasterio.features.shapes\n    return {'n': len(rows), 'p': path, 'ids': list(ids), 'c': cfg, 's': shapes}\n")
         self.assertEqual(rules(ok)[0], set())
 
+    def test_spatial_queries_and_parameters_choosing_functions(self):
+        head = "import geopandas as gpd\nimport shapely\nimport rasterio\n\n\ndef run(ctx):\n    gdf = gpd.read_file(ctx.input_file('a'))\n"
+        ok = [
+            "    hits = gdf.sindex.query(gdf.geometry.iloc[0], predicate='intersects')\n    return {'n': len(hits)}\n",
+            "    tree = shapely.STRtree(gdf.geometry.values)\n    return {'n': len(tree.query(gdf.geometry.iloc[0]))}\n",
+            "    stat = ctx.param('stat')\n    how = {'sum': 'sum', 'mean': 'mean'}[stat]\n    return {'t': gdf.agg(how).to_dict()}\n",
+            "    field = ctx.param('field')\n    out = gdf.dissolve(field, aggfunc='sum')\n    return {'n': len(out)}\n",
+            "    with rasterio.open(ctx.input_file('r')) as src:\n        with rasterio.open(ctx.output_path('o'), 'w', **src.profile) as dst:\n            dst.write(src.read())\n    return {}\n",
+        ]
+        for body in ok:
+            self.assertEqual(rules(head + body)[0], set(), body)
+        refused = [
+            "    return {'t': gdf.agg(ctx.param('stat'))}\n",
+            "    stat = ctx.param('stat')\n    return {'t': gdf.apply(stat)}\n",
+            "    return {'t': gdf.dissolve('a', aggfunc=ctx.param('how'))}\n",
+            "    return {'t': gdf.agg('to_clipboard')}\n",
+            "    return {'t': gdf.agg('_private')}\n",
+        ]
+        for body in refused:
+            self.assertIn("tool.dispatch", rules(head + body)[0], body)
+
     def test_expressions_given_as_text_are_refused(self):
         base = "import geopandas as gpd\n\n\ndef run(ctx):\n    gdf = gpd.read_file(ctx.input_file('layer'))\n"
         for line in ("    return gdf.query(ctx.param('where'))\n",

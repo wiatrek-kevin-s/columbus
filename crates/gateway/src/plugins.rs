@@ -385,6 +385,27 @@ impl PluginManifest {
                 "{n}: a personal tool takes workspace layers and tables (type: file), not datasets"
             ));
         }
+        // Text reaching an installed tool at run time is a fixed choice or
+        // has a narrow shape, whichever rules it was installed under.
+        if let Some(n) = t
+            .params
+            .iter()
+            .find(|(_, p)| {
+                matches!(
+                    p,
+                    ParamSpec::String {
+                        choices: None,
+                        format: None,
+                        ..
+                    }
+                )
+            })
+            .map(|(n, _)| n)
+        {
+            return Err(format!(
+                "{n}: a personal tool's text parameter needs enum or format; ask your assistant to propose the tool again"
+            ));
+        }
         if t.outputs.is_empty() {
             return Err("a personal tool has at least one output".into());
         }
