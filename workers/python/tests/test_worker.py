@@ -182,6 +182,11 @@ class PostgresTests(unittest.TestCase):
                           "sql": "SELECT 1 FROM roads.roadway_inventory", "max_rows": 1})
         self.assertIn("lookalike.=", cm.exception.message)
 
+    def test_query_layer_streams_in_batches(self):
+        from test_db_engines import streamed_layer
+
+        streamed_layer(self, pg_conn(), "SELECT fid, route_id, owner_name, geom FROM roads.roadway_inventory WHERE district_nbr = 14", "geom", crs="EPSG:3081")
+
     def test_read_limit_on_server_cursor(self):
         r = w.sql_select({"connection": pg_conn(), "sql": "SELECT fid FROM roads.roadway_inventory", "max_rows": 2500})
         self.assertEqual(r["rows_read"], 1200)

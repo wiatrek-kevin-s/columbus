@@ -171,7 +171,7 @@ def crs_checks(crs: CRS | None, extent: list[float] | None, has_geometry: bool =
     if crs.is_geographic and (abs(extent[1]) > 90.5 or abs(extent[3]) > 90.5 or abs(extent[0]) > 360 or abs(extent[2]) > 360):
         swapped_ok = abs(extent[0]) <= 90.5 and abs(extent[2]) <= 90.5 and abs(extent[1]) <= 180.5 and abs(extent[3]) <= 180.5
         out.append(check("crs.area_of_use", "fail",
-                         f"{what} is labelled {_label(crs)} (degrees), but its coordinates reach {extent}, which cannot be longitude and latitude in that order",
+                         f"{what} is labelled {_label(crs)} (degrees), but its coordinates reach beyond ±180/±90, so they cannot be longitude and latitude in that order (the extent is in the detail)",
                          detail={"extent": extent},
                          fix="Longitude and latitude look swapped; swap X and Y" if swapped_ok
                          else "The data is probably in a projected CRS; find the right one and assign it (do not reproject)"))
@@ -280,30 +280,88 @@ def _family(t: str | None) -> str | None:
 
 
 def geometry_checks(gs: gpd.GeoSeries, what: str = "The layer") -> list[dict]:
-    out = []
-    n = len(gs)
-    if n == 0:
-        return out
-    null = gs.isna().to_numpy()
-    arr = gs.to_numpy()
-    present = ~null
-    empty = present & shapely.is_empty(arr)
-    valid = shapely.is_valid(arr)
-    invalid = present & ~empty & ~valid
-    if invalid.any():
+    tally = GeometryTally()
+    tally.add(gs.to_numpy())
+    return tally.checks(what)
+
+
+class GeometryTally:
+    """What geometry_checks reports, counted a batch at a time, so a layer
+    written in batches is checked without holding it whole."""
+
+    def __init__(self):
+        self.n = 0
+        self.null = 0
+        self.empty = 0
+        self.invalid = 0
+        self.reasons: list[str] = []
+        self.types: set[str] = set()
+        self.has_z = 0
+        self.extent: list[float] | None = None
+
+    def add(self, arr) -> None:
+        import numpy as np
+
+        arr = np.asarray(arr, dtype=object)
+        n = len(arr)
+        if n == 0:
+            return
+        self.n += n
+        null = shapely.is_missing(arr)
+        present = ~null
+        empty = present & shapely.is_empty(arr)
+        invalid = present & ~empty & ~shapely.is_valid(arr)
+        self.null += int(null.sum())
+        self.empty += int(empty.sum())
         k = int(invalid.sum())
-        reasons = [shapely.is_valid_reason(g) for g in arr[invalid][:3]]
-        out.append(check("geometry.valid", "warn", f"{k} of {n} geometries are invalid",
-                         detail={"invalid": k, "examples": reasons},
-                         fix="Repair them with vector_op make_valid before overlay, clip or dissolve"))
-    if null.any() or empty.any():
-        out.append(check("geometry.empty", "info", f"{int(null.sum())} rows have no geometry and {int(empty.sum())} have an empty one",
-                         detail={"null": int(null.sum()), "empty": int(empty.sum())}))
-    families = {_family(t) for t in gs[present & ~empty].geom_type.unique()} - {None}
-    if len(families) > 1:
-        out.append(check("geometry.mixed_types", "warn", f"{what} mixes geometry types: {', '.join(sorted(families))}",
-                         fix="Split it by geometry type before exporting to formats that allow one type per layer"))
-    return out
+        if k:
+            self.invalid += k
+            room = 3 - len(self.reasons)
+            if room > 0:
+                self.reasons.extend(shapely.is_valid_reason(g) for g in arr[invalid][:room])
+        solid = present & ~empty
+        if solid.any():
+            kinds = shapely.get_type_id(arr[solid])
+            for t in np.unique(kinds):
+                self.types.add(_TYPE_NAMES.get(int(t), "Geometry"))
+            self.has_z += int(shapely.has_z(arr[solid]).sum())
+            b = shapely.bounds(arr[solid])
+            box = [float(np.nanmin(b[:, 0])), float(np.nanmin(b[:, 1])), float(np.nanmax(b[:, 2])), float(np.nanmax(b[:, 3]))]
+            if all(math.isfinite(v) for v in box):
+                e = self.extent
+                self.extent = box if e is None else [min(e[0], box[0]), min(e[1], box[1]), max(e[2], box[2]), max(e[3], box[3])]
+
+    def checks(self, what: str = "The layer") -> list[dict]:
+        out = []
+        if self.n == 0:
+            return out
+        if self.invalid:
+            out.append(check("geometry.valid", "warn", f"{self.invalid} of {self.n} geometries are invalid",
+                             detail={"invalid": self.invalid, "examples": self.reasons},
+                             fix="Repair them with vector_op make_valid before overlay, clip or dissolve"))
+        if self.null or self.empty:
+            out.append(check("geometry.empty", "info", f"{self.null} rows have no geometry and {self.empty} have an empty one",
+                             detail={"null": self.null, "empty": self.empty}))
+        families = {_family(t) for t in self.types} - {None}
+        if len(families) > 1:
+            out.append(check("geometry.mixed_types", "warn", f"{what} mixes geometry types: {', '.join(sorted(families))}",
+                             fix="Split it by geometry type before exporting to formats that allow one type per layer"))
+        return out
+
+    def gpkg_type(self) -> str:
+        """The GeoPackage geometry type name for what was seen: one type,
+        its multi-part form when single and multi parts are mixed (as GDAL
+        writes it), else GEOMETRY."""
+        families = {_family(t) for t in self.types} - {None}
+        if len(families) != 1 or "GeometryCollection" in self.types:
+            return "GEOMETRY"
+        if len(self.types) == 1:
+            return next(iter(self.types)).upper()
+        return ("Multi" + next(iter(families))).upper()
+
+
+_TYPE_NAMES = {0: "Point", 1: "LineString", 2: "LinearRing", 3: "Polygon", 4: "MultiPoint",
+               5: "MultiLineString", 6: "MultiPolygon", 7: "GeometryCollection"}
 
 
 def bbox_filter(bbox: list[float] | None, bbox_crs: CRS | None, layer_crs: CRS | None):
@@ -389,6 +447,242 @@ def _fid_safe(df):
                 name = "_" + name
             df = df.rename(columns={c: name})
     return df
+
+
+def _kind(v: Any) -> int:
+    """A value's place in the type order null < boolean < integer < real <
+    text, for choosing a column's type as a layer is written in batches."""
+    if v is None:
+        return 0
+    if isinstance(v, bool):
+        return 1
+    if isinstance(v, int):
+        return 2
+    if isinstance(v, float):
+        return 0 if math.isnan(v) else 3
+    return 4
+
+
+_DECLARED = {0: "TEXT", 1: "BOOLEAN", 2: "INTEGER", 3: "REAL", 4: "TEXT"}
+
+
+def _widen(a: int, b: int) -> int:
+    if a == 0 or a == b:
+        return b
+    if b == 0:
+        return a
+    if a == 4 or b == 4:
+        return 4
+    return max(a, b)  # boolean < integer < real
+
+
+def _qi(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
+
+
+class LayerStream:
+    """A layer written in batches as rows arrive, so memory stays flat
+    whatever the row count: a GeoPackage when there is a geometry column,
+    CSV without one.
+
+    The GeoPackage is written directly with SQLite (it is a SQLite file):
+    the GeoPackage tables, then the features in batches. A column's type is
+    the widest its values needed (boolean, integer, real or text); when a
+    later batch needs a wider type than the first, the table is rebuilt in
+    SQLite at the end, so no value is cut to fit. A source column named
+    ``fid`` is kept as ``source_fid``: the GeoPackage's own ``fid`` numbers
+    the features. No spatial index is written.
+    """
+
+    def __init__(self, stem: str, layer: str, attr_cols: list[str], geom_col: str | None, crs: CRS | None):
+        os.makedirs(os.path.dirname(stem) or ".", exist_ok=True)
+        self.layer = layer
+        self.crs = crs
+        self.geom_col = geom_col
+        self.tally = GeometryTally()
+        self.count = 0
+        names: list[str] = []
+        taken = {(geom_col or "").lower(), "fid"} if geom_col else set()
+        for c in attr_cols:
+            name = c
+            if geom_col and c.lower() == "fid":
+                name = "source_fid"
+            while name.lower() in taken:
+                name = "_" + name
+            taken.add(name.lower())
+            names.append(name)
+        self.fields = names
+        self.kinds = [0] * len(names)
+        self.declared: list[int] | None = None
+        self.declared_geom: str | None = None
+        if geom_col is None:
+            import csv
+
+            self.path = stem + ".csv"
+            if os.path.exists(self.path):
+                os.remove(self.path)
+            self._file = open(self.path, "w", newline="", encoding="utf-8")
+            self._csv = csv.writer(self._file)
+            self._csv.writerow(names)
+            self.db = None
+            return
+        import sqlite3
+
+        self.path = stem + ".gpkg"
+        for p in (self.path, self.path + "-wal", self.path + "-shm", self.path + "-journal"):
+            if os.path.exists(p):
+                os.remove(p)
+        self.db = sqlite3.connect(self.path)
+        self.db.execute("PRAGMA journal_mode = OFF")
+        self.db.execute("PRAGMA synchronous = OFF")
+        self.db.execute(f"PRAGMA application_id = {GPKG_APPLICATION_ID}")
+        self.db.execute("PRAGMA user_version = 10400")
+        self.srs_id = self._init_gpkg(crs)
+
+    def _init_gpkg(self, crs: CRS | None) -> int:
+        db = self.db
+        db.execute(
+            "CREATE TABLE gpkg_spatial_ref_sys (srs_name TEXT NOT NULL, srs_id INTEGER NOT NULL PRIMARY KEY, "
+            "organization TEXT NOT NULL, organization_coordsys_id INTEGER NOT NULL, definition TEXT NOT NULL, description TEXT)")
+        wgs84 = CRS.from_epsg(4326)
+        rows = [
+            ("Undefined cartesian SRS", -1, "NONE", -1, "undefined", "undefined cartesian coordinate reference system"),
+            ("Undefined geographic SRS", 0, "NONE", 0, "undefined", "undefined geographic coordinate reference system"),
+            ("WGS 84 geodetic", 4326, "EPSG", 4326, wgs84.to_wkt("WKT1_GDAL"), "longitude/latitude coordinates in decimal degrees on the WGS 84 spheroid"),
+        ]
+        srs_id = -1
+        if crs is not None:
+            epsg = crs.to_epsg()
+            srs_id = epsg if epsg else 100000
+            if srs_id != 4326:
+                try:
+                    wkt = crs.to_wkt("WKT1_GDAL")
+                except Exception:  # noqa: BLE001 - a CRS WKT1 cannot express
+                    wkt = crs.to_wkt()
+                rows.append((crs.name, srs_id, "EPSG" if epsg else "NONE", epsg or srs_id, wkt, None))
+        db.executemany("INSERT INTO gpkg_spatial_ref_sys VALUES (?, ?, ?, ?, ?, ?)", rows)
+        db.execute(
+            "CREATE TABLE gpkg_contents (table_name TEXT NOT NULL PRIMARY KEY, data_type TEXT NOT NULL, "
+            "identifier TEXT UNIQUE, description TEXT DEFAULT '', "
+            "last_change DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), "
+            "min_x DOUBLE, min_y DOUBLE, max_x DOUBLE, max_y DOUBLE, srs_id INTEGER, "
+            "CONSTRAINT fk_gc_r_srs_id FOREIGN KEY (srs_id) REFERENCES gpkg_spatial_ref_sys(srs_id))")
+        db.execute(
+            "CREATE TABLE gpkg_geometry_columns (table_name TEXT NOT NULL, column_name TEXT NOT NULL, "
+            "geometry_type_name TEXT NOT NULL, srs_id INTEGER NOT NULL, z TINYINT NOT NULL, m TINYINT NOT NULL, "
+            "CONSTRAINT pk_geom_cols PRIMARY KEY (table_name, column_name), "
+            "CONSTRAINT fk_gc_tn FOREIGN KEY (table_name) REFERENCES gpkg_contents(table_name), "
+            "CONSTRAINT fk_gc_srs FOREIGN KEY (srs_id) REFERENCES gpkg_spatial_ref_sys (srs_id))")
+        return srs_id
+
+    def _create(self, name: str, kinds: list[int], geom_type: str) -> None:
+        cols = [f"{_qi('fid')} INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL", f"{_qi(self.geom_col)} {geom_type}"]
+        cols += [f"{_qi(f)} {_DECLARED[k]}" for f, k in zip(self.fields, kinds)]
+        self.db.execute(f"CREATE TABLE {_qi(name)} ({', '.join(cols)})")
+
+    def _blobs(self, shapes) -> list:
+        """GeoPackage binary geometries: header, envelope, ISO WKB."""
+        import struct
+
+        import numpy as np
+
+        arr = np.asarray(shapes, dtype=object)
+        wkb = shapely.to_wkb(arr, flavor="iso")
+        bounds = shapely.bounds(arr)
+        empty = shapely.is_empty(arr)
+        out = []
+        srs = struct.pack("<i", self.srs_id)
+        for i, w in enumerate(wkb):
+            if w is None:
+                out.append(None)
+            elif empty[i]:
+                out.append(b"GP\x00" + bytes([0x01 | 0x10]) + srs + w)
+            else:
+                b = bounds[i]
+                out.append(b"GP\x00\x03" + srs + struct.pack("<4d", b[0], b[2], b[1], b[3]) + w)
+        return out
+
+    def write(self, attr_rows: list[list[Any]], shapes: list | None = None) -> None:
+        """One batch: attribute values in field order, and the shapes."""
+        if not attr_rows:
+            return
+        rows = [[_plain(v) for v in r] for r in attr_rows]
+        for r in rows:
+            for j, v in enumerate(r):
+                k = _kind(v)
+                if k and k != self.kinds[j]:
+                    self.kinds[j] = _widen(self.kinds[j], k)
+        if self.db is None:
+            self._csv.writerows([["" if v is None else v for v in r] for r in rows])
+            self.count += len(rows)
+            return
+        self.tally.add(shapes)
+        if self.declared is None:
+            self.declared = list(self.kinds)
+            self.declared_geom = self.tally.gpkg_type()
+            self._create(self.layer, self.declared, self.declared_geom)
+            marks = ", ".join("?" for _ in range(len(self.fields) + 2))
+            self._insert = f"INSERT INTO {_qi(self.layer)} VALUES ({marks})"
+        blobs = self._blobs(shapes)
+        start = self.count + 1
+        self.db.executemany(self._insert, ([start + i, blobs[i], *r] for i, r in enumerate(rows)))
+        self.count += len(rows)
+
+    def close(self) -> str:
+        if self.db is None:
+            self._file.close()
+            return self.path
+        db = self.db
+        if self.declared is None:
+            self.declared = list(self.kinds)
+            self.declared_geom = self.tally.gpkg_type()
+            self._create(self.layer, self.declared, self.declared_geom)
+        final_geom = self.tally.gpkg_type()
+        final = [k if k else d for k, d in zip(self.kinds, self.declared)]
+        if [_DECLARED[k] for k in final] != [_DECLARED[k] for k in self.declared] or final_geom != self.declared_geom:
+            # A later batch needed a wider type: rebuild the table in SQLite
+            # with the final types, converting the values stored earlier.
+            tmp = self.layer + "__columbus_rebuild"
+            self._create(tmp, final, final_geom)
+            sel = [_qi("fid"), _qi(self.geom_col)]
+            for f, k in zip(self.fields, final):
+                sel.append(f"CAST({_qi(f)} AS {_DECLARED[k]})" if k in (3, 4) else _qi(f))
+            db.execute(f"INSERT INTO {_qi(tmp)} SELECT {', '.join(sel)} FROM {_qi(self.layer)}")
+            db.execute(f"DROP TABLE {_qi(self.layer)}")
+            db.execute(f"ALTER TABLE {_qi(tmp)} RENAME TO {_qi(self.layer)}")
+        e = self.tally.extent
+        db.execute(
+            "INSERT INTO gpkg_contents (table_name, data_type, identifier, min_x, min_y, max_x, max_y, srs_id) "
+            "VALUES (?, 'features', ?, ?, ?, ?, ?, ?)",
+            (self.layer, self.layer, *(e if e else (None, None, None, None)), self.srs_id))
+        z = 0 if not self.tally.has_z else (1 if self.tally.has_z == self.count - self.tally.null - self.tally.empty else 2)
+        db.execute("INSERT INTO gpkg_geometry_columns VALUES (?, ?, ?, ?, ?, 0)",
+                   (self.layer, self.geom_col, final_geom, self.srs_id, z))
+        db.commit()
+        db.close()
+        self.db = None
+        return self.path
+
+    def abort(self) -> None:
+        try:
+            if self.db is not None:
+                self.db.close()
+            elif getattr(self, "_file", None) is not None:
+                self._file.close()
+        finally:
+            if os.path.exists(self.path):
+                os.remove(self.path)
+
+    def summary(self) -> dict[str, Any]:
+        if self.geom_col is None:
+            return {"rows": self.count, "geometry_types": [], "crs": None, "extent": None, "fields": list(self.fields)}
+        return {"rows": self.count, "geometry_types": sorted(self.tally.types), "crs": crs_facts(self.crs),
+                "extent": self.tally.extent, "fields": list(self.fields)}
+
+    def checks(self, what: str = "The result") -> list[dict]:
+        if self.geom_col is None:
+            return []
+        return crs_checks(self.crs, self.tally.extent, what=what) + self.tally.checks(what)
 
 
 GPKG_APPLICATION_ID = 0x47504B47  # "GPKG"
@@ -484,7 +778,13 @@ def _row_value(v: Any) -> Any:
 
 def read_rows(path: str, offset: int = 0, limit: int = 50, fields: list[str] | None = None) -> dict[str, Any]:
     """Rows of a workspace layer, a page at a time. Geometry comes back as its
-    type and bounding box, not coordinates."""
+    type and bounding box, not coordinates. A large GeoPackage is read a page
+    at a time, never whole."""
+    if path.lower().endswith(".gpkg"):
+        read_layer(path, check_only=True)
+        info = pyogrio.read_info(path, force_total_bounds=True)
+        if int(info.get("features") or 0) > LARGE_LAYER:
+            return _read_rows_paged(path, info, offset, limit, fields)
     df = read_layer(path)
     geo = isinstance(df, gpd.GeoDataFrame)
     gname = df.geometry.name if geo else None
@@ -504,6 +804,38 @@ def read_rows(path: str, offset: int = 0, limit: int = 50, fields: list[str] | N
         rows.append(row)
     return {"columns": cols + ([gname] if geo else []), "rows": rows, "total": int(len(df)),
             "offset": offset, "summary": layer_summary(df)}
+
+
+LARGE_LAYER = 100_000
+
+
+def _read_rows_paged(path: str, info: dict, offset: int, limit: int, fields: list[str] | None) -> dict[str, Any]:
+    gname = "geometry"  # as geopandas names it when reading
+    cols = [str(c) for c in info.get("fields", [])]
+    if fields:
+        missing = [f for f in fields if f not in cols]
+        if missing:
+            raise GISError("params", f"no field(s) {', '.join(missing)} in the layer")
+        cols = list(fields)
+    total = int(info.get("features") or 0)
+    rows = []
+    if offset < total:
+        page = gpd.read_file(path, engine="pyogrio", skip_features=offset, max_features=limit, columns=cols)
+        for _, r in page.iterrows():
+            row = [_row_value(r[c]) for c in cols]
+            geom = r[page.geometry.name]
+            row.append(None if geom is None or geom.is_empty else {"type": geom.geom_type, "bbox": [float(x) for x in geom.bounds]})
+            rows.append(row)
+    crs = CRS.from_user_input(info["crs"]) if info.get("crs") else None
+    bounds = info.get("total_bounds")
+    summary = {
+        "rows": total,
+        "geometry_types": [info["geometry_type"]] if info.get("geometry_type") not in (None, "Unknown") else [],
+        "crs": crs_facts(crs),
+        "extent": [float(v) for v in bounds] if bounds and all(math.isfinite(v) for v in bounds) else None,
+        "fields": [str(c) for c in info.get("fields", [])],
+    }
+    return {"columns": cols + [gname], "rows": rows, "total": total, "offset": offset, "summary": summary}
 
 
 def display_geojson(path: str, max_features: int = 20000, max_coordinates: int = 750_000) -> dict[str, Any]:

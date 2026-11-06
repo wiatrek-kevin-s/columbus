@@ -16,7 +16,7 @@ Columbus's GIS engine needs Python 3.12. If you don't have it, install it from p
 powershell -ExecutionPolicy Bypass -File engine\setup-engine.ps1
 ```
 
-This creates `engine\venv` with GDAL, PROJ, GeoPandas and rasterio (about 300 MB). At the end it prints the engine's Python path; keep it for step 4. On a machine without internet access, run it with `-Wheels <folder>` pointing at a folder of downloaded wheels.
+This creates `engine\venv` with GDAL, PROJ, GeoPandas and rasterio (about 300 MB). At the end it prints the engine's Python path; keep it for step 4. On a machine without internet access, run it with `-Wheels <folder>` pointing at a folder of downloaded wheels. That folder must also hold the exact DuckDB wheels `workers\python\requirements-projectdb.txt` pins by SHA-256 (`duckdb` and `duckdb-extension-spatial` 1.5.5, and `pytz` 2025.2, which DuckDB needs to return timestamps with a time zone; the pins cover CPython 3.12 and 3.13 on Windows x64, macOS arm64 and Linux x64), for example from `pip download --require-hashes --no-deps --only-binary :all: -r workers\python\requirements-projectdb.txt -d <folder>` on a connected machine; any other file is refused.
 
 ## 3. Tell Columbus what it may use
 

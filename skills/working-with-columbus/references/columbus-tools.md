@@ -1,14 +1,14 @@
 # Columbus tool reference
 
 Argument names and result fields as the gateway defines them
-(`crates/gateway/src/server.rs`, `gis_tools.rs`, `raster_tools.rs`, `context.rs`, `registry_tools.rs`).
+(`crates/gateway/src/server.rs`, `gis_tools.rs`, `raster_tools.rs`, `context.rs`, `registry_tools.rs`, `project_db.rs`).
 Every tool returns `{result, checks, provenance}`.
 
 ## Session and permissions
 
 | Tool | Arguments | Result highlights |
 | --- | --- | --- |
-| `whoami` | none | `user`, `client`, `session`, `policy` {`source`, `connection_types`, `scripts_allowed`, `edits_allowed`, `personal_tools_allowed`, `rows_returned_per_call`, `rows_read_per_query`, `query_seconds`}, `connections[]`, `workspace`, `granted_folders`, `audit_log`, `secret_store`, `approvals`, `always_on_rules`, `engines`, `providers`, `labels`, `notes` |
+| `whoami` | none | `user`, `client`, `session`, `policy` {`source`, `connection_types`, `scripts_allowed`, `edits_allowed`, `personal_tools_allowed`, `rows_returned_per_call`, `rows_read_per_query`, `query_seconds`, `limits_raised`, `limits_ceiling` {`rows`, `seconds`}, `project_db`}, `connections[]`, `workspace`, `granted_folders`, `audit_log`, `secret_store`, `approvals`, `always_on_rules`, `engines`, `providers`, `labels`, `notes` |
 | `columbus_guide` | `name` (optional): `working-with-columbus`, `designing-tools`, `columbus-tools` or `check-ids` | the guide's `text`; with no name, the list of guides |
 | `search_tools` | `query`, `provider?` | Tool cards: `name`, `summary`, `provider`, `risk`, `approval` (`no`, `yes`, `if_labelled`) |
 | `describe_tool` | `name` | `description`, `input_schema`, `read_only`, `risk`, `egress`, `argument_roles`, `saves_to_workspace` |
@@ -74,6 +74,35 @@ Every tool returns `{result, checks, provenance}`.
 | `info` | `raster` | none; result `info` {`bands` [{min, max, mean, std, nodata_share, valid, cells}], `computed_on`}; no output file |
 
 Outputs over 400 million pixels, or the read limit (`limits.rows`) x 1,000 if smaller, are refused (`output.too_large`).
+
+## Project databases
+
+`project_db` takes `action` and the arguments below. `db` is a name of lower-case
+letters, digits, `_` and `-`; `scope` is `session` (default) or `project` (kept for later
+sessions). Every answer has `action`, `db`, `scope`, `status` ("done" or
+"approval_required"), `result` and `labels` (the database's data labels).
+
+| action | Arguments | Result |
+| --- | --- | --- |
+| `list` | none | `databases` [{`db`, `scope`, `bytes`, `tables`, `labels`, `description`, `withheld`}] |
+| `create` | `db`, `scope?`, `description?` | `created`, `path`, `duckdb`, `spatial_functions`, `tables`; check `project_db.no_spatial` when the spatial extension is not installed |
+| `load` | `db`, `layer` (a `ws://` handle a Columbus tool wrote), `table`, `mode?` (`create` default, `replace`, `append`), `primary_key?` [columns], `types?` (`infer` default, `text`: CSV columns), `description?` (the table's comment) | `table`, `rows`, `columns` [{`name`, `type`, `nullable`, `comment`}], `geometry_column`, `crs`, `hidden_columns`, `primary_key`; checks `project_db.loaded`, `flow.labels`, `input.truncated` |
+| `execute` | `db`, `sql` (statements separated by `;`) | `statements` [{`index`, `type`, `rows`}]; one transaction; allowed: CREATE (TABLE, VIEW, INDEX, SEQUENCE, MACRO, SCHEMA, TYPE), INSERT, UPDATE, DELETE, MERGE, ALTER (COMMENT ON too), DROP, ANALYZE, VACUUM |
+| `query` | `db`, `sql` (one SELECT; DESCRIBE, SUMMARIZE, SHOW and EXPLAIN too), `crs?` (`EPSG:` code of the geometry), `limit?` (at most the read limit) | `columns`, `rows` (first rows), `rows_read`, `rows_returned`, `layer` {`handle`, `summary`}; checks `query.rows`, `query.read_limit`, `input.truncated`, `flow.labels`, CRS and geometry checks |
+| `describe` | `db` | `tables` [{`name`, `kind` (table or view), `rows`, `comment`, `has_primary_key`, `columns`}], `constraints` [{`table`, `type`, `columns`, `references`, `referenced_columns`}], `indexes`, `loaded` (each loaded table's source, rows, CRS, labels), `spatial`, `bytes` |
+| `delete` | `db`, `scope?`, `approval_id?` | Asks the person every time; `deleted` |
+
+Refused in every statement: ATTACH, DETACH, COPY, EXPORT and IMPORT DATABASE, INSTALL,
+LOAD, SET, RESET, USE, PRAGMA, CALL, PREPARE, transaction statements, CREATE SECRET, and
+functions that read files, other databases, settings or SQL as text (`read_*`, `*_scan`,
+`glob`, `ST_Read*`, `query`, `query_table`, `current_setting`, `error`, the logging
+functions). `query` and `describe` open the database read-only; EXPLAIN may only wrap a
+SELECT; a PIVOT goes to `query`. Policy `project_db: {enabled, memory_mb, max_mb}` turns
+the tool off, sets the engine's memory (default 2048 MB; beyond it, work spills to the
+database's own folder) and caps a database's size (default 20,480 MB; a call that
+would pass it is stopped and rolled back, and over it only DROP, DELETE, VACUUM and
+ANALYZE run; DROP TABLE frees space for reuse, DELETE hardly any). `load` and `execute` report `bytes` and a
+`project_db.size` check.
 
 ## Other providers, outputs and approvals
 

@@ -23,7 +23,7 @@ use std::time::Duration;
 
 use chrono::Local;
 use columbus_shared::audit::AuditRecord;
-use columbus_shared::policy::{normalize_identifier, Connection, EffectiveAccess, DEFAULT_LIMITS};
+use columbus_shared::policy::{normalize_identifier, Connection, EffectiveAccess};
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::service::RequestContext;
 use rmcp::{tool, tool_router, Json, RoleServer};
@@ -364,7 +364,7 @@ impl Gateway {
                 "modified": meta.and_then(|m| m.modified().ok()).map(|t| chrono::DateTime::<Local>::from(t).to_rfc3339())}),
             path,
             labels: [columbus_flow::connection_label(&conn.id)].into(),
-            rows_limit: access.limits.rows,
+            rows_limit: Some(access.limits.max_rows()),
             read: Some((conn.id.clone(), dataset, 0)),
         })
     }
@@ -423,7 +423,7 @@ impl Gateway {
         let mut labels = BTreeSet::new();
         let mut warnings = Vec::new();
         let mut reads = Vec::new();
-        let mut rows_limits = vec![DEFAULT_LIMITS.narrow(self.state.policy().limits).rows];
+        let mut rows_limits = vec![Some(self.state.policy().read_limits().max_rows())];
         for (name, v) in &args.inputs {
             let got = if name == "raster" {
                 self.raster_input(v, &prov).await.map(|r| {
@@ -467,7 +467,7 @@ impl Gateway {
             Ok(s) => s,
             Err(e) => return Err(self.deny(&ctx, rec, e)),
         };
-        let timeout = self.state.policy().limits.seconds.unwrap_or(120).max(1);
+        let timeout = self.state.policy().read_limits().max_seconds();
         let reply = self
             .state
             .worker

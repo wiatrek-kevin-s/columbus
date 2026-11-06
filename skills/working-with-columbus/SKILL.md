@@ -1,6 +1,6 @@
 ---
 name: working-with-columbus
-description: How to work through a governed GIS server such as Columbus, from the first whoami call to describe, sample and query a dataset, pass ws:// handles between tools, read checks, wait for approvals and handle refusals or hidden fields. Use it at the start of any GIS session with Columbus tools, or when someone asks to "query a layer", "pull features", "run a query on roads", "why was this refused" or "what do these checks mean".
+description: How to work through a governed GIS server such as Columbus, from the first whoami call to describe, sample and query a dataset, pass ws:// handles between tools, read checks, wait for approvals and handle refusals or hidden fields, and how to work with tables of a million rows or more and build a local project database (keys, indexes, joins in SQL). Use it at the start of any GIS session with Columbus tools, or when someone asks to "query a layer", "pull features", "run a query on roads", "join these tables", "build a project database", "why was this refused" or "what do these checks mean".
 ---
 
 # Working with Columbus
@@ -53,9 +53,12 @@ every check id is in [references/check-ids.md](references/check-ids.md).
 Call `whoami` once, first, with no arguments. Read and keep:
 
 - `policy.edits_allowed`, `policy.scripts_allowed`: phase 1 is read-only by default.
-  `policy.personal_tools_allowed`: whether the person's own tools (section 12) are on.
+  `policy.personal_tools_allowed`: whether the person's own tools (section 13) are on.
 - `policy.rows_returned_per_call` (at most 500), `policy.rows_read_per_query` (default
-  200,000), `policy.query_seconds`.
+  200,000; an organization may raise it, up to 20,000,000), `policy.query_seconds`
+  (default 120, at most 3,600), `policy.limits_raised`, and `policy.project_db` (whether
+  local project databases are available). A connection may set lower limits:
+  `describe_connection` shows the ones in force for it.
 - `connections[]`: each `id`, `type`, `mode` (`read` or `read-write`), `status` (`ok` or why
   not) and `engine_ready`. A connection with `engine_ready: false` (`sde` through ArcPy
   today) passes checks but cannot be read yet.
@@ -309,7 +312,96 @@ Columbus edits in two steps, and only GeoPackage and PostGIS datasets so far.
 Never describe edits as made until `apply_edits` returns `"status": "written"` (source) or
 `"applied_to_copy"` (copy), and say which.
 
-### 12. Personal tools
+### 12. Big tables and project databases
+
+Enterprise tables often hold a million rows or more. Work so that the database does the
+heavy lifting and only what the job needs comes into the workspace.
+
+**Filter and aggregate in the source first.** `query_features` with `fields`, `where` and
+`bbox` sends the filter to the database; `sql_select` can `GROUP BY`, `COUNT`, `SUM` and
+join inside the database, and returns a small answer. Pull whole tables only when the
+analysis needs every row. Check `describe_dataset`'s `rows` before a big pull, and compare
+it with `rows_read_per_query`.
+
+**Large results stream to disk.** A result over 100,000 rows is written to its layer in
+batches as it is read (check `query.streamed`), so its size is limited by the read limit,
+not memory. Only the first rows come back to you; page further with `read_output`. When a
+result stops at the limit (`query.read_limit`), it is incomplete: narrow it, split it (by
+district, by year, by bbox) into several complete results, or tell the person an
+administrator can raise the limit (`limits.allow_raise` in policy). Never treat a cut-off
+result as the whole table; `input.truncated` follows it into everything built from it.
+
+**When to build a project database.** Use `project_db` when a job needs several large
+tables joined, the same tables queried many ways, keys and relationships checked, or a
+working set kept for later sessions. For one table, or a single join of small layers,
+`vector_op join` is enough.
+
+1. Pull each table with `query_features` (geometry) or `query_features`/`sql_select`
+   (attributes), filtered to what the project needs. Keep fields hidden by policy out of
+   your plans: they never reach the workspace, so they never reach the database.
+2. `project_db {"action": "create", "db": "corridor-2026", "scope": "project",
+   "description": "..."}`. `scope: "session"` (default) keeps it in this session's
+   workspace; `project` keeps it for later sessions under the workspaces root.
+3. `load` each layer into a table, with its key: `{"action": "load", "db": ..., "layer":
+   "ws://...", "table": "segments", "primary_key": ["segment_id"]}`.
+4. Add structure in ONE `execute` (no approval is needed for the person's own project
+   database, so do not split work into one call per statement; a batch is one
+   transaction, all or nothing).
+5. `query` with one SELECT; the result is a layer (`ws://` handle) carrying the
+   database's data labels, ready for `verify`, `vector_op` or `export_output`.
+6. `describe` shows tables, columns, keys, indexes, comments and row counts. `delete`
+   removes a whole database and asks the person.
+
+**Schema practice in a project database.**
+
+- **Keys.** Give every table a primary key, the source's own key where it has one
+  (`segment_id`, `csj`, `parcel_id`); a load refuses duplicates or nulls in it, which is
+  the first data check you get for free. Composite keys are fine (`["route_id",
+  "begin_dfo"]`).
+- **Foreign keys.** DuckDB enforces `REFERENCES` on insert, so create the child table
+  with them when you build it from a loaded one: `CREATE TABLE events (event_id VARCHAR
+  PRIMARY KEY, segment_id VARCHAR REFERENCES segments (segment_id), ...); INSERT INTO
+  events SELECT ... FROM events_raw;`. Orphans fail the insert: report them instead of
+  dropping the constraint.
+- **Indexes** on the join and lookup columns that are not already keys (`CREATE INDEX
+  events_segment ON events (segment_id)`). DuckDB joins large tables by hashing and scans
+  columns fast without them, so its indexes pay off mainly for selective lookups (`WHERE
+  segment_id = ...`) and to back keys; in the source databases and in GeoPackage
+  (SQLite), an index on a join column matters far more. Index what you join on anyway:
+  it documents the relationship and keeps lookups fast.
+- **Names.** Lower-case `snake_case`, singular nouns or clear plurals used consistently,
+  the same name for the same thing in every table (`segment_id` everywhere, not `seg_id`
+  in one and `SEGMENTID` in another). No spaces or reserved words.
+- **Types.** Keep codes and identifiers as text when they have leading zeros or letters
+  (`'001501077'`, `'IH0035'`): a CSV load keeps a column as text unless every value reads
+  back exactly as a number. Cast measures to `DOUBLE` or `DECIMAL`, dates to `DATE` or
+  `TIMESTAMP` (`CAST(... AS DATE)`), flags to `BOOLEAN`.
+- **Normalize what you edit, widen what you analyse.** Keep source tables as loaded (one
+  row per source row, the source's key) and lookups (code -> label) separate. Build wide,
+  analysis-friendly tables or views from them for the questions asked (`CREATE VIEW
+  segment_summary AS SELECT ...`), so they can be rebuilt when a source is reloaded.
+- **Document.** `COMMENT ON TABLE t IS '...'` and `COMMENT ON COLUMN t.c IS '...'` say
+  what a table holds, where it came from (the load sets one) and what its codes mean;
+  `describe` shows them.
+- **Geometry** is a `GEOMETRY` column, one CRS per database where you can (the CRS is
+  recorded at load; `query` labels results with it, or pass `crs`). Spatial SQL
+  (`ST_Intersects`, `ST_Area`) works when DuckDB's spatial extension is installed beside
+  the engine (`create` says so); otherwise do spatial steps with `vector_op` on query
+  results.
+
+**GeoPackage or DuckDB?** Workspace layers are GeoPackage (geometry) or CSV: best for one
+layer at a time, for viewing in QGIS or ArcGIS Pro, and for every Columbus GIS tool and
+export. A DuckDB project database is for many tables, joins and aggregation over
+millions of rows; take results out of it as layers with `query`. GeoParquet is an
+exchange format, not a working store here: export to it is not offered yet.
+
+The project database writes only its own file. `ATTACH`, `COPY`, `EXPORT`, `INSTALL`,
+`LOAD`, `SET`, `PRAGMA`, file readers (`read_csv`, `ST_Read`, a path in `FROM`) and
+`query()` are refused. Bring data in with `load`, take it out with `query` and
+`export_output`. If a database is withheld because the settings changed since its data
+came in, tell the person; only they can decide to delete it and build it again.
+
+### 13. Personal tools
 
 The person can keep scripts as their own tools. `search_tools` lists installed ones as
 `personal.<name>.run` (provider kind `personal` in `list_providers`); call them with

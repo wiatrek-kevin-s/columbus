@@ -85,6 +85,7 @@ def ping(_params: dict[str, Any]) -> dict[str, Any]:
             "pyogrio": _optional_version("pyogrio"),
             "shapely": _optional_version("shapely"),
             "duckdb": _optional_version("duckdb"),
+            "duckdb_spatial": _optional_version("duckdb-extension-spatial"),
             "pdal": _optional_version("pdal"),
             "rasterio": _optional_version("rasterio"),
             "psycopg": _optional_version("psycopg"),
@@ -197,29 +198,81 @@ def _cell(value: Any) -> Any:
     return value
 
 
-def _sqlite_fetch(conn: dict[str, Any], sql: str, max_rows: int, timeout_s: float, keep_factory=None):
-    """Returns (columns, rows, hit_limit, cell_fn)."""
+class _Collect:
+    """The default sink: every row read, kept in memory (small reads)."""
+
+    def __init__(self):
+        self.rows: list = []
+
+    def start(self, columns, cells, geoms) -> None:
+        pass
+
+    def add(self, chunk) -> None:
+        self.rows.extend(chunk)
+
+
+# Rows fetched from a database cursor at a time. A sink receives them in
+# chunks this size (fewer after a bbox filter), so memory does not grow
+# with the rows read when the sink writes them out.
+FETCH_CHUNK = 2000
+
+
+def _drain(fetch, max_rows: int, convert, keep, sink) -> tuple[int, bool]:
+    """Rows from ``fetch()`` chunks into ``sink``, at most ``max_rows``
+    (after ``keep``, when there is one). Returns (rows, cut off)."""
+    n = 0
+    while True:
+        chunk = fetch()
+        if not chunk:
+            return n, False
+        if convert is not None:
+            chunk = [convert(r) for r in chunk]
+        if keep is not None:
+            chunk = [r for r in chunk if keep(r)]
+        room = max_rows - n
+        if len(chunk) > room:
+            if room:
+                sink.add(chunk[:room])
+            return max_rows, True
+        if chunk:
+            sink.add(chunk)
+        n += len(chunk)
+
+
+def _sqlite_fetch(conn: dict[str, Any], sql: str, max_rows: int, timeout_s: float, keep_factory=None, sink=None):
+    """Returns (columns, rows, hit_limit, cell_fns, geometry formats). With a
+    ``sink``, rows go to it in chunks instead and ``rows`` is empty."""
     db = _open_sqlite(conn, timeout_s)
+    collect = sink is None
+    sink = _Collect() if sink is None else sink
     try:
         try:
             cur = db.execute(sql)
             columns = [d[0] for d in (cur.description or [])]
             keep = keep_factory(columns, "gpkg") if keep_factory else None
-            rows = []
-            hit = False
-            for row in cur:
-                if keep is not None and not keep(row):
-                    continue
-                if len(rows) >= max_rows:
-                    hit = True
-                    break
-                rows.append(row)
-            geoms = {}
-            for i in range(len(columns)):
-                first = next((r[i] for r in rows if r[i] is not None), None)
-                if isinstance(first, (bytes, memoryview)) and bytes(first)[:2] == b"GP":
-                    geoms[i] = "gpkg"
-            return columns, rows, hit, [_cell] * len(columns), geoms
+            geoms: dict[int, str] = {}
+            cells = [_cell] * len(columns)
+            started = False
+
+            class _First:
+                """Finds the GeoPackage geometry columns in the first rows,
+                then hands everything on."""
+
+                def add(self, chunk):
+                    nonlocal started
+                    if not started:
+                        for i in range(len(columns)):
+                            first = next((r[i] for r in chunk if r[i] is not None), None)
+                            if isinstance(first, (bytes, memoryview)) and bytes(first)[:2] == b"GP":
+                                geoms[i] = "gpkg"
+                        sink.start(columns, cells, geoms)
+                        started = True
+                    sink.add(chunk)
+
+            _n, hit = _drain(lambda: cur.fetchmany(FETCH_CHUNK), max_rows, None, keep, _First())
+            if not started:
+                sink.start(columns, cells, geoms)
+            return columns, sink.rows if collect else [], hit, cells, geoms
         except sqlite3.OperationalError as e:
             if "interrupted" in str(e):
                 raise WorkerError(TIMEOUT, f"query exceeded {timeout_s:g} s") from e
@@ -356,41 +409,29 @@ def _pg_geom(value: Any) -> Any:
     return {"geometry": "ewkb", "bytes": len(bytes(value))}
 
 
-def _pg_fetch(conn: dict[str, Any], sql: str, max_rows: int, timeout_s: float, keep_factory=None):
+def _pg_fetch(conn: dict[str, Any], sql: str, max_rows: int, timeout_s: float, keep_factory=None, sink=None):
     import psycopg
 
     db, scrub = _pg_connect(conn, timeout_s)
+    collect = sink is None
+    sink = _Collect() if sink is None else sink
     try:
         geom_oids = _pg_geometry_oids(db)
         try:
             # A named (server-side) cursor streams rows instead of loading
             # the whole result into memory.
             with db.cursor(name="columbus_q") as cur:
-                cur.itersize = 2000
+                cur.itersize = FETCH_CHUNK
                 cur.execute(sql)
-                rows = []
-                hit = False
-                keep = None
-                while True:
-                    chunk = cur.fetchmany(2000)
-                    if not chunk:
-                        break
-                    if keep_factory is not None:
-                        if keep is None:
-                            keep = keep_factory([d.name for d in cur.description], "ewkb")
-                        chunk = [r for r in chunk if keep(r)]
-                    room = max_rows - len(rows)
-                    if len(chunk) > room:
-                        rows.extend(chunk[:room])
-                        hit = True
-                        break
-                    rows.extend(chunk)
                 desc = cur.description or []
                 columns = [d.name for d in desc]
                 cells = [_pg_geom if d.type_code in geom_oids else _pg_cell for d in desc]
                 geoms = {i: "ewkb" for i, d in enumerate(desc) if d.type_code in geom_oids}
+                keep = keep_factory(columns, "ewkb") if keep_factory is not None else None
+                sink.start(columns, cells, geoms)
+                _n, hit = _drain(lambda: cur.fetchmany(FETCH_CHUNK), max_rows, None, keep, sink)
             db.rollback()
-            return columns, rows, hit, cells, geoms
+            return columns, sink.rows if collect else [], hit, cells, geoms
         except psycopg.errors.QueryCanceled as e:
             raise WorkerError(TIMEOUT, f"query exceeded {timeout_s:g} s") from e
         except psycopg.errors.ReadOnlySqlTransaction as e:
@@ -566,23 +607,16 @@ def _end(db) -> None:
         pass
 
 
-def _fetch_rows(cur, max_rows: int, convert, keep_factory, columns, fmt):
+def _fetch_rows(cur, max_rows: int, convert, keep_factory, columns, fmt, cells, geoms, sink=None):
     """Rows from an open cursor, at most ``max_rows`` (after the bbox
-    filter, when there is one), and whether there were more."""
-    rows: list = []
+    filter, when there is one), and whether there were more. With a
+    ``sink`` they go to it in chunks and the list returned is empty."""
+    collect = sink is None
+    sink = _Collect() if sink is None else sink
     keep = keep_factory(columns, fmt) if keep_factory is not None else None
-    while True:
-        chunk = cur.fetchmany(2000)
-        if not chunk:
-            return rows, False
-        chunk = [convert(r) for r in chunk]
-        if keep is not None:
-            chunk = [r for r in chunk if keep(r)]
-        room = max_rows - len(rows)
-        if len(chunk) > room:
-            rows.extend(chunk[:room])
-            return rows, True
-        rows.extend(chunk)
+    sink.start(columns, cells, geoms)
+    _n, hit = _drain(lambda: cur.fetchmany(FETCH_CHUNK), max_rows, convert, keep, sink)
+    return (sink.rows if collect else []), hit
 
 
 # ---------- Oracle (python-oracledb, thin mode) ----------
@@ -699,14 +733,14 @@ def _ora_describe(cur, sql: str):
     return None
 
 
-def _ora_fetch(conn: dict[str, Any], sql: str, max_rows: int, timeout_s: float, keep_factory=None):
+def _ora_fetch(conn: dict[str, Any], sql: str, max_rows: int, timeout_s: float, keep_factory=None, sink=None):
     oracledb = _ora()
     db, scrub = _ora_connect(conn, timeout_s)
     try:
         try:
             cur = db.cursor()
-            cur.arraysize = 2000
-            cur.prefetchrows = 2001
+            cur.arraysize = FETCH_CHUNK
+            cur.prefetchrows = FETCH_CHUNK + 1
             # SDO_GEOMETRY comes back as WKB (with its SRID) converted by the
             # database; other object types (Esri ST_Geometry and the like)
             # as a placeholder, never as objects. The query is the gateway's,
@@ -771,8 +805,8 @@ def _ora_fetch(conn: dict[str, Any], sql: str, max_rows: int, timeout_s: float, 
                 def convert(r):
                     return list(r)
 
-            rows, hit = _fetch_rows(cur, max_rows, convert, keep_factory, columns, "ewkb")
             cells = [_pg_geom if i in geom_cols else _pg_cell for i in range(len(columns))]
+            rows, hit = _fetch_rows(cur, max_rows, convert, keep_factory, columns, "ewkb", cells, geom_cols, sink)
             return columns, rows, hit, cells, geom_cols
         except oracledb.Error as e:
             _ora_raise(e, timeout_s, scrub)
@@ -1030,7 +1064,7 @@ def _ms_geometry_columns(cur, sql: str):
     return out
 
 
-def _ms_fetch(conn: dict[str, Any], sql: str, max_rows: int, timeout_s: float, keep_factory=None):
+def _ms_fetch(conn: dict[str, Any], sql: str, max_rows: int, timeout_s: float, keep_factory=None, sink=None):
     import pyodbc
 
     db, scrub = _ms_connect(conn, timeout_s)
@@ -1081,10 +1115,10 @@ def _ms_fetch(conn: dict[str, Any], sql: str, max_rows: int, timeout_s: float, k
                 def convert(r):
                     return list(r)
 
-            rows, hit = _fetch_rows(cur, max_rows, convert, keep_factory, columns, "ewkb")
+            cells = [_pg_geom if i in geom_cols else _pg_cell for i in range(len(columns))]
+            rows, hit = _fetch_rows(cur, max_rows, convert, keep_factory, columns, "ewkb", cells, geom_cols, sink)
             if hit:
                 cur.cancel()
-            cells = [_pg_geom if i in geom_cols else _pg_cell for i in range(len(columns))]
             return columns, rows, hit, cells, geom_cols
         except pyodbc.Error as e:
             state, _, _ = _ms_error_parts(e)
@@ -1211,16 +1245,21 @@ def _pg_extension_functions(conn: dict[str, Any], timeout_s: float) -> dict[str,
         db.close()
 
 
-def _fetch(conn: dict[str, Any], sql: str, max_rows: int, timeout_s: float, keep_factory=None):
+def _fetch(conn: dict[str, Any], sql: str, max_rows: int, timeout_s: float, keep_factory=None, sink=None):
+    """Run a checked SELECT read-only: (columns, rows, cut off, cell
+    functions, geometry formats by column). With a ``sink`` (``start`` and
+    ``add``), rows are handed to it in chunks as they arrive instead of
+    being kept, and ``rows`` is empty: memory does not grow with the rows
+    read."""
     kind = conn["kind"].lower()
     if kind in SQLITE_KINDS:
-        return _sqlite_fetch(conn, sql, max_rows, timeout_s, keep_factory)
+        return _sqlite_fetch(conn, sql, max_rows, timeout_s, keep_factory, sink)
     if kind in PG_KINDS:
-        return _pg_fetch(conn, sql, max_rows, timeout_s, keep_factory)
+        return _pg_fetch(conn, sql, max_rows, timeout_s, keep_factory, sink)
     if kind in ORACLE_KINDS:
-        return _ora_fetch(conn, sql, max_rows, timeout_s, keep_factory)
+        return _ora_fetch(conn, sql, max_rows, timeout_s, keep_factory, sink)
     if kind in MSSQL_KINDS:
-        return _ms_fetch(conn, sql, max_rows, timeout_s, keep_factory)
+        return _ms_fetch(conn, sql, max_rows, timeout_s, keep_factory, sink)
     raise WorkerError(UNSUPPORTED, f"reading {conn['kind']!r} connections is not supported yet")
 
 
@@ -1229,14 +1268,67 @@ def _hidden_mask(columns: list[str], patterns) -> list[bool]:
     return [not any(fnmatch.fnmatchcase(c.lower(), p) for p in hide) for c in columns]
 
 
+class _ExtractSink:
+    """Writes an extract's rows to its SQLite file as they arrive."""
+
+    def __init__(self, db, hide_fields):
+        self.db = db
+        self.hide_fields = hide_fields
+        self.count = 0
+        self.srid = ""
+
+    def start(self, columns, cells, geoms) -> None:
+        self.columns, self.geoms = columns, geoms
+        keep = _hidden_mask(columns, self.hide_fields)
+        self.hidden = [c for c, k in zip(columns, keep) if not k]
+        self.kept = [i for i, k in enumerate(keep) if k]
+        self.geom_idx = next((i for i in self.kept if i in geoms), None)
+        cols_sql = ", ".join('"' + columns[i].replace('"', '""') + '"' for i in self.kept)
+        self.db.execute(f'CREATE TABLE "data" ({cols_sql})')
+        self.insert = f'INSERT INTO "data" VALUES ({", ".join("?" for _ in self.kept)})'
+
+    def raw(self, i, v):
+        if v is None:
+            return None
+        if i in self.geoms:
+            return bytes.fromhex(v) if isinstance(v, str) else bytes(v)
+        if isinstance(v, (int, float, str, bytes)):
+            return v
+        if isinstance(v, memoryview):
+            return bytes(v)
+        return str(v)
+
+    def add(self, chunk) -> None:
+        if not self.kept:
+            self.count += len(chunk)
+            return
+        self.db.executemany(self.insert, ([self.raw(i, r[i]) for i in self.kept] for r in chunk))
+        if self.count == 0 or (not self.srid and self.geom_idx is not None):
+            self._srid(chunk)
+        self.count += len(chunk)
+
+    def _srid(self, chunk) -> None:
+        if self.geom_idx is None or self.srid:
+            return
+        gi = self.geom_idx
+        sample = next((r[gi] for r in chunk if r[gi] is not None), None)
+        if sample is not None:
+            try:
+                g = decode_geometry(self.raw(gi, sample), self.geoms[gi])
+                self.srid = "" if g is None or g.srid is None else str(g.srid)
+            except ValueError:
+                pass
+
+
 def extract(params: dict[str, Any]) -> dict[str, Any]:
     """Write a governed read to an extract for an engine plugin.
 
     The SQL arrives checked and rewritten by the gateway. Every row read is
     written, raw geometry included, to a SQLite file with the table ``data``
-    and the metadata table ``columbus_extract`` (docs/worker-protocol.md).
-    Hidden fields are dropped. Stops at ``max_rows`` and says so, so the
-    gateway can refuse to hand a plugin a silently truncated dataset.
+    and the metadata table ``columbus_extract`` (docs/worker-protocol.md),
+    in chunks as the rows arrive. Hidden fields are dropped. Stops at
+    ``max_rows`` and says so, so the gateway can refuse to hand a plugin a
+    silently truncated dataset.
     """
     conn = _connection(params)
     sql = params.get("sql")
@@ -1245,63 +1337,92 @@ def extract(params: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(sql, str) or not isinstance(max_rows, int) or max_rows < 1 or not isinstance(out, str):
         raise WorkerError(INVALID_PARAMS, "sql, a positive max_rows and output_path are required")
     timeout_s = float(params.get("timeout_s", 120))
-    columns, rows, hit, _cells, geoms = _fetch(conn, sql, max_rows, timeout_s)
-    keep = _hidden_mask(columns, params.get("hide_fields"))
-    hidden = [c for c, k in zip(columns, keep) if not k]
-    kept = [i for i, k in enumerate(keep) if k]
-    geom_idx = next((i for i in kept if i in geoms), None)
-
-    def raw(i, v):
-        if v is None:
-            return None
-        if i in geoms:
-            return bytes.fromhex(v) if isinstance(v, str) else bytes(v)
-        if isinstance(v, (int, float, str, bytes)):
-            return v
-        if isinstance(v, memoryview):
-            return bytes(v)
-        return str(v)
-
     os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
     if os.path.exists(out):
         os.remove(out)
     db = sqlite3.connect(out)
     try:
-        cols_sql = ", ".join('"' + columns[i].replace('"', '""') + '"' for i in kept)
-        db.execute(f'CREATE TABLE "data" ({cols_sql})')
-        marks = ", ".join("?" for _ in kept)
-        db.executemany(f'INSERT INTO "data" VALUES ({marks})', ([raw(i, r[i]) for i in kept] for r in rows))
-        srid = ""
-        if geom_idx is not None:
-            sample = next((r[geom_idx] for r in rows if r[geom_idx] is not None), None)
-            if sample is not None:
-                try:
-                    g = decode_geometry(raw(geom_idx, sample), geoms[geom_idx])
-                    srid = "" if g is None or g.srid is None else str(g.srid)
-                except ValueError:
-                    pass
+        sink = _ExtractSink(db, params.get("hide_fields"))
+        columns, _rows, hit, _cells, geoms = _fetch(conn, sql, max_rows, timeout_s, sink=sink)
+        gi = sink.geom_idx
         meta = {
             "connection": str(params.get("connection_id") or ""),
             "dataset": str(params.get("dataset") or ""),
-            "rows": str(len(rows)),
-            "geometry_column": columns[geom_idx] if geom_idx is not None else "",
-            "geometry_format": geoms.get(geom_idx, "") if geom_idx is not None else "",
-            "srid": srid,
+            "rows": str(sink.count),
+            "geometry_column": columns[gi] if gi is not None else "",
+            "geometry_format": geoms.get(gi, "") if gi is not None else "",
+            "srid": sink.srid,
             "labels": json.dumps(params.get("labels") or []),
         }
         db.execute("CREATE TABLE columbus_extract (key TEXT PRIMARY KEY, value TEXT)")
         db.executemany("INSERT INTO columbus_extract VALUES (?, ?)", meta.items())
         db.commit()
-    finally:
+    except BaseException:
         db.close()
+        if os.path.exists(out):
+            os.remove(out)
+        raise
+    db.close()
     return {
-        "rows": len(rows),
+        "rows": sink.count,
         "hit_read_limit": hit,
-        "columns": [columns[i] for i in kept],
-        "hidden_columns": hidden,
+        "columns": [columns[i] for i in sink.kept],
+        "hidden_columns": sink.hidden,
         "geometry_column": meta["geometry_column"] or None,
         "srid": meta["srid"] or None,
     }
+
+
+class _CsvSink:
+    """sql_select's rows: the first ``return_rows`` kept for the reply and,
+    once there are more, every row written to the CSV as it arrives, so
+    memory does not grow with the rows read. Hidden fields are dropped
+    before anything is kept or written."""
+
+    def __init__(self, output_path, return_rows: int, hide_fields):
+        self.output_path = output_path if isinstance(output_path, str) and output_path else None
+        self.return_rows = return_rows
+        self.hide_fields = hide_fields
+        self.first: list = []
+        self.count = 0
+        self.file = None
+        self.writer = None
+        self.written = None
+
+    def start(self, columns, cells, geoms) -> None:
+        self.keep = _hidden_mask(columns, self.hide_fields)
+        self.hidden = [c for c, k in zip(columns, self.keep) if not k]
+        self.columns = [c for c, k in zip(columns, self.keep) if k]
+        self.cells = cells
+
+    def convert(self, row):
+        return [f(v) for f, v, k in zip(self.cells, row, self.keep) if k]
+
+    def _write(self, rows) -> None:
+        for row in rows:
+            self.writer.writerow([json.dumps(v) if isinstance(v, dict) else v for v in self.convert(row)])
+
+    def add(self, chunk) -> None:
+        self.count += len(chunk)
+        if self.writer is not None:
+            self._write(chunk)
+            return
+        self.first.extend(chunk)
+        if len(self.first) > self.return_rows and self.output_path:
+            os.makedirs(os.path.dirname(self.output_path) or ".", exist_ok=True)
+            self.file = open(self.output_path, "w", newline="", encoding="utf-8")
+            self.writer = csv.writer(self.file)
+            self.writer.writerow(self.columns)
+            self._write(self.first)
+            self.written = self.output_path
+            del self.first[self.return_rows:]
+        elif not self.output_path:
+            del self.first[self.return_rows:]
+
+    def close(self) -> None:
+        if self.file is not None:
+            self.file.close()
+            self.file = None
 
 
 def sql_select(params: dict[str, Any]) -> dict[str, Any]:
@@ -1310,7 +1431,8 @@ def sql_select(params: dict[str, Any]) -> dict[str, Any]:
     Reads at most ``max_rows``. Returns the first ``return_rows`` rows; when
     more were read, writes every row read to ``output_path`` (CSV, inside the
     session workspace, already resolved by the gateway) so large results stay
-    on the machine instead of going to the AI provider.
+    on the machine instead of going to the AI provider. Rows are written as
+    they arrive, in chunks, so a large result never sits in memory whole.
     """
     conn = _connection(params)
     sql = params.get("sql")
@@ -1322,37 +1444,27 @@ def sql_select(params: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(return_rows, int) or return_rows < 0:
         raise WorkerError(INVALID_PARAMS, "return_rows must be a non-negative integer")
     timeout_s = float(params.get("timeout_s", 120))
-    kind = conn["kind"].lower()
     started = time.monotonic()
-    columns, all_rows, hit_limit, cells, _ = _fetch(conn, sql, max_rows, timeout_s)
-
     # Fields organization policy hides never leave the worker: not in the
     # rows returned, and not in the workspace file, which can later be sent
     # to another provider as a file handle.
-    keep = _hidden_mask(columns, params.get("hide_fields"))
-    hidden = [c for c, k in zip(columns, keep) if not k]
-    columns = [c for c, k in zip(columns, keep) if k]
-
-    def convert(row):
-        return [f(v) for f, v, k in zip(cells, row, keep) if k]
-
-    written = None
-    if len(all_rows) > return_rows and isinstance(output_path, str) and output_path:
-        os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-        with open(output_path, "w", newline="", encoding="utf-8") as f:
-            w = csv.writer(f)
-            w.writerow(columns)
-            for row in all_rows:
-                w.writerow([json.dumps(v) if isinstance(v, dict) else v for v in convert(row)])
-        written = output_path
+    sink = _CsvSink(output_path, return_rows, params.get("hide_fields"))
+    try:
+        _, _, hit_limit, _, _ = _fetch(conn, sql, max_rows, timeout_s, sink=sink)
+    except BaseException:
+        sink.close()
+        if sink.written and os.path.exists(sink.written):
+            os.remove(sink.written)
+        raise
+    sink.close()
     return {
-        "columns": columns,
-        "hidden_columns": hidden,
-        "rows": [convert(row) for row in all_rows[:return_rows]],
-        "rows_read": len(all_rows),
-        "rows_returned": min(len(all_rows), return_rows),
+        "columns": sink.columns,
+        "hidden_columns": sink.hidden,
+        "rows": [sink.convert(row) for row in sink.first[:return_rows]],
+        "rows_read": sink.count,
+        "rows_returned": min(sink.count, return_rows),
         "hit_read_limit": hit_limit,
-        "output_path": written,
+        "output_path": sink.written,
         "seconds": round(time.monotonic() - started, 3),
     }
 
@@ -1440,10 +1552,107 @@ def describe_dataset(params: dict[str, Any]) -> dict[str, Any]:
     return entry
 
 
+# Results up to this many rows are built in memory and written whole (as
+# before); larger ones are written in batches of WRITE_BATCH rows as they
+# arrive from the database, so memory stays flat.
+STREAM_AFTER = 100_000
+WRITE_BATCH = 20_000
+
+
+class _LayerSink:
+    """query_layer's rows: kept for the reply (the first ``return_rows``),
+    and written to the layer. Small results are built in memory as before;
+    once more than ``stream_after`` rows have arrived, they go to a
+    LayerStream in batches and are not kept."""
+
+    def __init__(self, g, params, geom_col, layer_crs, return_rows, stream_after):
+        self.g = g
+        self.params = params
+        self.geom_col = geom_col
+        self.layer_crs = layer_crs
+        self.return_rows = return_rows
+        self.stream_after = stream_after
+        self.stem = params.get("output_stem") if isinstance(params.get("output_stem"), str) and params.get("output_stem") else None
+        self.layer_name = str(params.get("layer_name") or "query")
+        self.rows: list = []
+        self.shown: list = []
+        self.count = 0
+        self.stream = None
+
+    def start(self, columns, cells, geoms) -> None:
+        self.columns, self.cells, self.geoms = columns, cells, geoms
+        keep = _hidden_mask(columns, self.params.get("hide_fields"))
+        self.hidden = [c for c, k in zip(columns, keep) if not k]
+        self.gi = columns.index(self.geom_col) if self.geom_col in columns else None
+        self.kept_idx = [i for i, k in enumerate(keep) if k and i != self.gi]
+        self.attr_cols = [columns[i] for i in self.kept_idx]
+
+    @property
+    def fmt(self):
+        return self.geoms.get(self.gi, "gpkg") if self.gi is not None else None
+
+    def add(self, chunk) -> None:
+        self.count += len(chunk)
+        room = self.return_rows - len(self.shown)
+        for r in chunk[:max(room, 0)]:
+            vals = [self.cells[i](r[i]) for i in self.kept_idx]
+            if self.gi is not None:
+                vals.append(self.cells[self.gi](r[self.gi]))
+            self.shown.append(vals)
+        if self.stream is not None:
+            self.rows.extend(chunk)
+            if len(self.rows) >= WRITE_BATCH:
+                self._flush()
+            return
+        if self.stem is None:
+            # Rows only (sample_rows): nothing is written; the checks look
+            # at what was kept.
+            self.rows.extend(chunk[:max(self.stream_after - len(self.rows), 0)])
+            return
+        self.rows.extend(chunk)
+        if len(self.rows) > self.stream_after:
+            g = self.g
+            self.stream = g.LayerStream(self.stem, self.layer_name, self.attr_cols,
+                                        self.geom_col if self.gi is not None else None, self.layer_crs)
+            self._flush()
+
+    def _flush(self) -> None:
+        rows, self.rows = self.rows, []
+        for at in range(0, len(rows), WRITE_BATCH):
+            part = rows[at:at + WRITE_BATCH]
+            attrs = [[r[i] for i in self.kept_idx] for r in part]
+            shapes = [self.g.decode(r[self.gi], self.fmt) for r in part] if self.gi is not None else None
+            self.stream.write(attrs, shapes)
+
+    def finish(self):
+        """(path, summary, checks)."""
+        g = self.g
+        if self.stream is not None:
+            self._flush()
+            path = self.stream.close()
+            return path, self.stream.summary(), self.stream.checks("The result")
+        gi, fmt = self.gi, self.fmt
+        attr_rows = [[r[i] for i in self.kept_idx] for r in self.rows]
+        shapes = [g.decode(r[gi], fmt) for r in self.rows] if gi is not None else None
+        layer = g.build_layer(self.attr_cols, attr_rows, self.geom_col if gi is not None else None, shapes, self.layer_crs)
+        path = g.write_layer(layer, self.stem, layer=self.layer_name) if self.stem else None
+        checks = []
+        summary = g.layer_summary(layer)
+        if gi is not None:
+            checks = g.crs_checks(self.layer_crs, summary["extent"], what="The result") + g.geometry_checks(layer.geometry, what="The result")
+        return path, summary, checks
+
+    def abort(self) -> None:
+        if self.stream is not None:
+            self.stream.abort()
+
+
 def query_layer(params: dict[str, Any]) -> dict[str, Any]:
     """Run a checked query and save the result as a layer in the workspace
     (GeoPackage with geometry, CSV without). Optional ``bbox`` keeps only
-    rows whose geometry meets the box (moved into the layer's CRS)."""
+    rows whose geometry meets the box (moved into the layer's CRS). Large
+    results are written in batches as they arrive (``streamed`` in the
+    reply), so memory does not grow with the rows read."""
     g = _gis()
     conn = _connection(params)
     sql = params.get("sql")
@@ -1452,6 +1661,7 @@ def query_layer(params: dict[str, Any]) -> dict[str, Any]:
         raise WorkerError(INVALID_PARAMS, "sql and a positive max_rows are required")
     return_rows = int(params.get("return_rows", 500))
     timeout_s = float(params.get("timeout_s", 120))
+    stream_after = int(params.get("stream_after") or STREAM_AFTER)
     geom_col = params.get("geometry_column")
     layer_crs = g.crs_from_spec(params.get("crs_spec"))
     bbox_crs = layer_crs
@@ -1473,41 +1683,25 @@ def query_layer(params: dict[str, Any]) -> dict[str, Any]:
             i = columns.index(geom_col)
             return lambda row: keep_geom(g.decode(row[i], fmt))
 
-    columns, rows, hit, cells, geoms = _fetch(conn, sql, max_rows, timeout_s, keep_factory)
-    keep = _hidden_mask(columns, params.get("hide_fields"))
-    hidden = [c for c, k in zip(columns, keep) if not k]
-    gi = columns.index(geom_col) if geom_col in columns else None
-    fmt = geoms.get(gi, "gpkg") if gi is not None else None
-    kept_idx = [i for i, k in enumerate(keep) if k and i != gi]
-    attr_cols = [columns[i] for i in kept_idx]
-    attr_rows = [[r[i] for i in kept_idx] for r in rows]
-    shapes = [g.decode(r[gi], fmt) for r in rows] if gi is not None else None
-    layer = g.build_layer(attr_cols, attr_rows, geom_col if gi is not None else None, shapes, layer_crs)
-    stem = params.get("output_stem")
-    path = g.write_layer(layer, stem, layer=str(params.get("layer_name") or "query")) if isinstance(stem, str) and stem else None
-    checks = []
-    if gi is not None:
-        summary = g.layer_summary(layer)
-        checks = g.crs_checks(layer_crs, summary["extent"], what="The result") + g.geometry_checks(layer.geometry, what="The result")
-    else:
-        summary = g.layer_summary(layer)
-    out_cols = attr_cols + ([geom_col] if gi is not None else [])
-    shown = []
-    for r in rows[:return_rows]:
-        vals = [cells[i](r[i]) for i in kept_idx]
-        if gi is not None:
-            vals.append(cells[gi](r[gi]))
-        shown.append(vals)
+    sink = _LayerSink(g, params, geom_col, layer_crs, return_rows, max(1, stream_after))
+    try:
+        _columns, _rows, hit, _cells, _geoms = _fetch(conn, sql, max_rows, timeout_s, keep_factory, sink)
+        path, summary, checks = sink.finish()
+    except BaseException:
+        sink.abort()
+        raise
+    out_cols = sink.attr_cols + ([geom_col] if sink.gi is not None else [])
     return {
         "columns": out_cols,
-        "rows": shown,
-        "rows_read": len(rows),
-        "rows_returned": len(shown),
+        "rows": sink.shown,
+        "rows_read": sink.count,
+        "rows_returned": len(sink.shown),
         "hit_read_limit": hit,
-        "hidden_columns": hidden,
+        "hidden_columns": sink.hidden,
         "output_path": path,
         "summary": summary,
         "checks": checks,
+        "streamed": sink.stream is not None,
     }
 
 
@@ -1755,6 +1949,23 @@ def registry_get(params: dict[str, Any]) -> dict[str, Any]:
     return {"entry": json.loads(row[0])}
 
 
+def _projectdb(fn: str):
+    """A project database action (columbus_projectdb), its refusals passed
+    on as refusals."""
+
+    def run(params: dict[str, Any]) -> dict[str, Any]:
+        import columbus_projectdb as pdb
+
+        try:
+            return getattr(pdb, fn)(params)
+        except pdb.ProjectDbError as e:
+            raise WorkerError(INVALID_PARAMS, str(e)) from None
+        except Exception as e:  # noqa: BLE001 - never pass raw text on: it may hold stored values
+            raise WorkerError(ENGINE_ERROR, f"the project database action failed ({type(e).__name__})") from None
+
+    return run
+
+
 plugin = Plugin("columbus.core", VERSION)
 
 for _name, _fn in (
@@ -1778,6 +1989,11 @@ for _name, _fn in (
     ("edit_prepare", lambda p: _edits().edit_prepare(p)),
     ("edit_apply", lambda p: _edits().edit_apply(p)),
     ("catalog_details", lambda p: _catalog().catalog_details(p)),
+    ("project_db_create", _projectdb("create")),
+    ("project_db_load", _projectdb("load")),
+    ("project_db_execute", _projectdb("execute")),
+    ("project_db_query", _projectdb("query")),
+    ("project_db_describe", _projectdb("describe")),
     ("lint_tool", lambda p: _toollint().lint_tool(p.get("code"))),
 ):
     plugin.tool(_name)(lambda ctx, fn=_fn: fn(ctx.params))
