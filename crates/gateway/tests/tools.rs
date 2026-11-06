@@ -751,7 +751,7 @@ async fn personal_tools_refuse_a_connected_servers_file() {
     let yaml = "id: personal.count-rows\nversion: 1.0.0\nruntime: python\nentry: tool.py\ntools:\n  run:\n    summary: Count rows.\n    params:\n      table: { type: file, kind: table }\n    outputs:\n      report: { type: file, format: json }\n    risk: read\n";
     // (Installed by hand, so not checked: it also leaves a child process
     // running, which must not outlive the run.)
-    let code = "import os, time\n\n\ndef run(ctx):\n    ctx.input_file('table')\n    pid = os.fork()\n    if pid == 0:\n        time.sleep(60)\n        os._exit(0)\n    return {'child': pid}\n\n\nfrom columbus_plugin import Plugin as _P\n_plugin = _P('personal.count-rows', '1.0.0')\n_plugin.tool('run', params=['table'], outputs=['report'])(run)\nif __name__ == '__main__':\n    _plugin.serve()\n";
+    let code = "import os, time\n\n\ndef run(ctx):\n    ctx.input_file('table')\n    if not hasattr(os, 'fork'):\n        return {'child': None}\n    pid = os.fork()\n    if pid == 0:\n        time.sleep(60)\n        os._exit(0)\n    return {'child': pid}\n\n\nfrom columbus_plugin import Plugin as _P\n_plugin = _P('personal.count-rows', '1.0.0')\n_plugin.tool('run', params=['table'], outputs=['report'])(run)\nif __name__ == '__main__':\n    _plugin.serve()\n";
     std::fs::write(dir.join("plugin.yaml"), yaml).unwrap();
     std::fs::write(dir.join("tool.py"), code).unwrap();
     std::fs::write(
