@@ -21,8 +21,10 @@
   color-scheme: light;
 }
 
+/* Dark with the system, unless the Columbus app that frames this page
+   chose a theme (data-theme, set from its message). */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --paper: #0f1a24;
     --panel: #152331;
     --ink: #e2e9ef;
@@ -38,6 +40,22 @@
     --select: #1d3954;
     color-scheme: dark;
   }
+}
+:root[data-theme="dark"] {
+  --paper: #0f1a24;
+  --panel: #152331;
+  --ink: #e2e9ef;
+  --ink-soft: #9fb2c2;
+  --rule: #2a3c4c;
+  --hydro: #5ca3ee;
+  --hydro-ink: #0f1a24;
+  --pass: #6cc08a;
+  --warn: #e7b04f;
+  --warn-bg: #3a2c12;
+  --fail: #f08a80;
+  --fail-bg: #3d1a17;
+  --select: #1d3954;
+  color-scheme: dark;
 }
 
 * { box-sizing: border-box; }
@@ -199,3 +217,15 @@ tbody tr.selected { background: var(--select); box-shadow: inset 3px 0 var(--hyd
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }
 }
+
+/* Inside the Columbus app's output panel: no header (the app shows the
+   session), the app's own tabs choose map, table or both. */
+.app.embedded > .top { display: none; }
+.app.embedded.v-map .table, .app.embedded.v-table .map { display: none; }
+.app.embedded.v-map .work, .app.embedded.v-table .work { grid-template-rows: 1fr; }
+.embed-bar {
+  position: absolute; top: 8px; right: 8px; z-index: 4;
+  display: flex; gap: 8px; align-items: center; padding: 3px 8px; font-size: 12px;
+  background: var(--panel); border: 1px solid var(--rule); border-radius: 6px;
+}
+.app.embedded.v-table .embed-bar { display: none; }

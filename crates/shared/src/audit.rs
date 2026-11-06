@@ -23,6 +23,10 @@ pub const GENESIS: &str = "00000000000000000000000000000000000000000000000000000
 pub struct AuditRecord {
     pub user: String,
     pub client: String,
+    /// The Columbus session that wrote the line, so the person's app can
+    /// show one session's activity.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
     pub tool: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub connection: Option<String>,

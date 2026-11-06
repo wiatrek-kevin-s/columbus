@@ -47,6 +47,16 @@
 //!   session made but never approve anything: its approval cards ask the
 //!   server to open the browser page instead (`POST /api/review`).
 //!
+//! The Columbus app's main window also asks over the signed channel that
+//! connection tests use (the app proves it holds `live/<session>.key`,
+//! readable by this account only): `POST /api/app-view` returns a view link
+//! for its output panel straight to the app (no `columbus://` hop another
+//! program could catch), and `POST /api/app-approvals` lists the requests
+//! waiting, view only, optionally opening the browser page that decides.
+//! The companion page may be framed by the app's own pages only
+//! (`frame-ancestors`, [`APP_FRAME_ANCESTORS`]), and a framed page never
+//! decides approvals.
+//!
 //! Honest limits, documented for IT: an agent that can run programs as the
 //! person could read the browser's command line in the moment it starts
 //! (the launch token is single-use, so the person would then see "already
@@ -83,6 +93,8 @@ const MAX_LAUNCHES: u32 = 10;
 /// and a cap.
 const ASKED_GAP: Duration = Duration::from_secs(3);
 const MAX_ASKED: u32 = 20;
+/// Most view links the app may take for its output panel, per session.
+const MAX_EMBEDS: u32 = 60;
 /// The Columbus app counts as running while its heartbeat is this fresh.
 const APP_HEARTBEAT: Duration = Duration::from_secs(20);
 
@@ -169,6 +181,8 @@ struct Shared {
     companion: Option<Arc<crate::companion::Companion>>,
     /// When the person last asked for a window, and how many times.
     asked: Mutex<(Option<Instant>, u32)>,
+    /// View links handed to the app for its output panel.
+    embeds: Mutex<u32>,
     store: Arc<ApprovalStore>,
     audit: Arc<AuditLog>,
     user: String,
@@ -210,6 +224,25 @@ impl Shared {
         let scope = sessions.get(&key).map(|(_, s)| *s)?;
         sessions.insert(key, (now, scope));
         Some(scope)
+    }
+
+    /// A fresh view launch token for the Columbus app's output panel,
+    /// handed back to the app itself (which proved it holds this session's
+    /// key) instead of through a `columbus://` link any program could
+    /// register for. View only, single use, two minutes, as any view link.
+    fn view_token(&self) -> Result<String, String> {
+        {
+            let mut n = self.embeds.lock().expect("embeds");
+            if *n >= MAX_EMBEDS {
+                return Err("Columbus will not open this session in the app again; open it in its own window".into());
+            }
+            *n += 1;
+        }
+        let t = token();
+        let mut launch = self.launch.lock().expect("launch");
+        launch.retain(|_, (at, _)| at.elapsed() < LAUNCH_TTL);
+        launch.insert(t.clone(), (Instant::now(), Scope::View));
+        Ok(t)
     }
 
     /// Open a window on a fresh launch token. Approval and review windows
@@ -477,6 +510,7 @@ impl ApprovalsPage {
                     live_dir: self.live_dir.clone(),
                     companion: self.companion.get().cloned(),
                     asked: Mutex::new((None, 0)),
+                    embeds: Mutex::new(0),
                     store: self.store.clone(),
                     audit: self.audit.clone(),
                     user: self.user.clone(),
@@ -497,6 +531,8 @@ impl ApprovalsPage {
                     .route("/api/test-hello", post(test_hello))
                     .route("/api/test-connection", post(test_connection))
                     .route("/api/draft-notes", post(draft_notes))
+                    .route("/api/app-approvals", post(app_approvals))
+                    .route("/api/app-view", post(app_view))
                     .route("/api/review", post(review))
                     .route("/api/state", get(state))
                     .route("/api/overview", get(overview))
@@ -570,13 +606,26 @@ pub(crate) fn open_browser(url: &str) -> std::io::Result<()> {
 // ---------- HTTP ----------
 
 fn harden(mut r: Response<Body>, csp: Option<String>) -> Response<Body> {
+    r.headers_mut()
+        .insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+    harden_common(r, csp)
+}
+
+/// The companion window's page: framed only by the Columbus app's own
+/// pages (its `frame-ancestors` names them; `X-Frame-Options` cannot, so
+/// it is left out here). Every other answer, the approvals page without
+/// the window's files included, refuses all framing.
+fn harden_for_app_frame(r: Response<Body>, csp: String) -> Response<Body> {
+    harden_common(r, Some(csp))
+}
+
+fn harden_common(mut r: Response<Body>, csp: Option<String>) -> Response<Body> {
     let h = r.headers_mut();
     h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     h.insert(
         header::X_CONTENT_TYPE_OPTIONS,
         HeaderValue::from_static("nosniff"),
     );
-    h.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
     h.insert(
         header::REFERRER_POLICY,
         HeaderValue::from_static("no-referrer"),
@@ -668,7 +717,7 @@ async fn page(State(s): State<Arc<Shared>>, h: HeaderMap) -> Response<Body> {
             HeaderValue::from_static("text/html; charset=utf-8"),
         );
         let basemap = s.companion.as_ref().is_some_and(|c| c.basemap_allowed());
-        return harden(r, Some(ui_csp(basemap)));
+        return harden_for_app_frame(r, ui_csp(basemap));
     }
     let nonce = uuid::Uuid::new_v4().simple().to_string();
     let html = PAGE.replace("{{NONCE}}", &nonce);
@@ -783,6 +832,7 @@ async fn decide(
             let rec = AuditRecord {
                 user: s.user.clone(),
                 client: "approvals-page".into(),
+                session: Some(s.session.clone()),
                 tool: "approval_decision".into(),
                 decision: if body.decision == Decision::Decline {
                     "declined"
@@ -813,10 +863,20 @@ fn shared_reset_launches(s: &Shared) {
 
 const PAGE: &str = include_str!("approvals_page.html");
 
+/// The Columbus app's own pages, which may show the companion window in
+/// their output panel: `tauri://localhost` (macOS, Linux) and
+/// `http(s)://tauri.localhost` (Windows). A frame changes nothing the page
+/// may do: it still needs a launch token to show anything, the app's links
+/// carry view tokens only, and the page will not decide approvals while it
+/// is framed (App.tsx). No other page may frame it.
+pub(crate) const APP_FRAME_ANCESTORS: &str =
+    "tauri://localhost http://tauri.localhost https://tauri.localhost";
+
 /// The companion window's policy: its own scripts and styles only, data
 /// from this server, and, when organization policy allows the basemap,
 /// tiles, glyphs and sprites from one public host (OpenFreeMap; the window
 /// works without them). MapLibre's worker is its own file or a blob.
+/// Framed only by the Columbus app (see [`APP_FRAME_ANCESTORS`]).
 pub(crate) fn ui_csp(basemap: bool) -> String {
     let tiles = if basemap {
         " https://tiles.openfreemap.org"
@@ -826,7 +886,7 @@ pub(crate) fn ui_csp(basemap: bool) -> String {
     format!(
         "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'{tiles}; \
          img-src 'self' data: blob:{tiles}; font-src 'self'; worker-src 'self' blob:; \
-         base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+         base-uri 'none'; form-action 'none'; frame-ancestors {APP_FRAME_ANCESTORS}"
     )
 }
 
@@ -1048,11 +1108,100 @@ async fn review(State(s): State<Arc<Shared>>, h: HeaderMap) -> Response<Body> {
     }
 }
 
+#[derive(Deserialize, Default)]
+struct AppApprovalsRequest {
+    /// Also open the browser page that decides (as `/api/review` does).
+    #[serde(default)]
+    review: bool,
+}
+
+/// `POST /api/app-approvals`: the requests waiting in this session, for
+/// the Columbus app's approvals inbox, signed like a test. View only: the
+/// summaries the view window already shows, never the exact request or
+/// code, and nothing here can decide. With `review`, the browser page that
+/// can decide is opened, under the same limits as a review link.
+async fn app_approvals(
+    State(s): State<Arc<Shared>>,
+    h: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response<Body> {
+    if let Err(r) = signed_by_app(&h, &s, &body) {
+        return *r;
+    }
+    let req = if body.is_empty() {
+        AppApprovalsRequest::default()
+    } else {
+        match serde_json::from_slice::<AppApprovalsRequest>(&body) {
+            Ok(r) => r,
+            Err(_) => return status(StatusCode::BAD_REQUEST, "expected {review}"),
+        }
+    };
+    let pending: Vec<serde_json::Value> = s
+        .store
+        .pending(Utc::now())
+        .iter()
+        .map(|a| {
+            json!({
+                "id": a.id,
+                "tool": a.tool,
+                "risk": a.risk,
+                "summary": a.summary,
+                "created": a.created,
+                "expires": a.expires,
+                "lines": a.detail.as_ref().and_then(|d| d.get("lines")).cloned(),
+            })
+        })
+        .collect();
+    let opened = if req.review && !pending.is_empty() {
+        match s.launch(Launch::Review) {
+            Ok(_) => true,
+            Err(e) => return status(StatusCode::TOO_MANY_REQUESTS, &e),
+        }
+    } else {
+        false
+    };
+    json_response(
+        StatusCode::OK,
+        json!({"session": s.session, "pending": pending, "opened": opened}),
+    )
+}
+
+/// `POST /api/app-view`: a view link for the Columbus app's output panel,
+/// signed like a test. The app shows the page in a frame of its own; the
+/// page can only look (`Scope::View`).
+async fn app_view(
+    State(s): State<Arc<Shared>>,
+    h: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response<Body> {
+    if let Err(r) = signed_by_app(&h, &s, &body) {
+        return *r;
+    }
+    let has_window = s
+        .ui_dir
+        .as_ref()
+        .is_some_and(|d| d.join("index.html").is_file());
+    if s.companion.is_none() || !has_window {
+        return status(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "this session has no companion window",
+        );
+    }
+    match s.view_token() {
+        Ok(t) => json_response(
+            StatusCode::OK,
+            json!({"url": format!("{}/#t={t}", s.origin())}),
+        ),
+        Err(e) => status(StatusCode::TOO_MANY_REQUESTS, &e),
+    }
+}
+
 /// A window read, in the audit log beside the agent's own calls.
 fn audit_view(s: &Shared, scope: Scope, tool: &str, handle: &str) {
     let _ = s.audit.append(&AuditRecord {
         user: s.user.clone(),
         client: format!("companion-window ({})", scope.as_str()),
+        session: Some(s.session.clone()),
         tool: tool.into(),
         decision: "allowed".into(),
         reason: Some(handle.to_string()),
@@ -1242,6 +1391,7 @@ mod tests {
             live_dir: None,
             companion: None,
             asked: Mutex::new((None, 0)),
+            embeds: Mutex::new(0),
             store: Arc::new(ApprovalStore::new()),
             audit: Arc::new(AuditLog::new(d.path()).unwrap()),
             user: "u".into(),
@@ -1254,6 +1404,22 @@ mod tests {
             challenges: Mutex::new(Vec::new()),
         };
         (d, s)
+    }
+
+    #[test]
+    fn only_the_app_may_frame_the_window() {
+        for basemap in [false, true] {
+            let csp = ui_csp(basemap);
+            let fa: Vec<&str> = csp
+                .split(';')
+                .map(str::trim)
+                .filter(|d| d.starts_with("frame-ancestors"))
+                .collect();
+            assert_eq!(
+                fa,
+                ["frame-ancestors tauri://localhost http://tauri.localhost https://tauri.localhost"]
+            );
+        }
     }
 
     #[test]
