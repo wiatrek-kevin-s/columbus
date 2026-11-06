@@ -298,6 +298,17 @@ async fn personal_tools_are_off_until_policy_allows_them() {
         ),
     )
     .unwrap();
+    // The design guide comes from the server itself.
+    let g = ok(&call(&c, "columbus_guide", json!({})).await);
+    assert!(
+        g["result"]["guides"]
+            .to_string()
+            .contains("designing-tools"),
+        "{g}"
+    );
+    let g = ok(&call(&c, "columbus_guide", json!({"name": "designing-tools"})).await);
+    assert!(g["result"]["text"].as_str().unwrap().contains("run(ctx)"));
+    assert!(err(&call(&c, "columbus_guide", json!({"name": "nope"})).await).contains("no guide"));
     let e = err(&call(&c, "run_tool", json!({"name": TOOL, "args": {}})).await);
     assert!(e.contains("turns personal tools off"), "{e}");
     let found = ok(&call(&c, "search_tools", json!({"query": "locate measures"})).await);

@@ -2978,7 +2978,9 @@ impl ServerHandler for Gateway {
                  (and sample_rows to see real values); prefer query_features to raw SQL. \
                  Results are layers in the workspace, passed on as ws:// handles to \
                  vector_op, raster_op, verify or other tools. Read the `checks` on every result and never \
-                 report success over a warn or fail without saying so.",
+                 report success over a warn or fail without saying so. \
+                 columbus_guide has Columbus's guides (working-with-columbus first; \
+                 designing-tools before propose_tool).",
             )
     }
 }

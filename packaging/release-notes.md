@@ -1,16 +1,8 @@
 Columbus {{VERSION}}, a test release. Click a link to download that file.
 
-**New in this version: your own tools.** Ask your assistant to "save the script we just made as a tool" and it packages it as one of your own Columbus tools, with a clear description, typed inputs, and the units and checks other assistants need to use it well. You approve one test run (you see the full code), then install it in the Columbus app under **Settings → Tools** with Touch ID or Windows Hello. After that, any assistant can find it and run it on your layers without asking each time. A worked example for locating points along routes (LRS measures) is included.
+**Fixed in this version: saving a script as a tool works in Claude.** In 0.8.0, Claude desktop sent one part of a tool proposal (its test run) as text, and Columbus refused every proposal. Columbus now describes that part so every assistant sends it correctly, and accepts it either way. Columbus also now hands assistants its own guides (including how to design a tool), so they no longer need the skills folder installed. And the app has a new compass icon.
 
-How your tools are kept safe:
-- **You decide:** only you can install a tool, and only the exact code you read; if anyone changes it, it switches off until you review it again.
-- **Contained:** every run is sandboxed: no network, it reads only the layers it's given and writes only its own results, in a fresh folder each time.
-- **Nothing hidden:** Columbus checks the code reads the way it runs, uses only standard data and GIS libraries, and that settings passed in later (like a field name) can never become code.
-- **Off until you turn it on:** switch on **Allow personal tools** in Settings (scripts must be allowed too).
-
-Also fixed: a way a script shown to you for approval could hide extra code behind its first line (scripts now run exactly as shown).
-
-Since 0.7.1: one approval for a batch of note changes.
+**Since 0.8.0: your own tools.** Ask your assistant to "save the script we just made as a tool" and it packages it as one of your own Columbus tools, with a clear description, typed inputs, and the units and checks other assistants need to use it well. You approve one test run (you see the full code), then install it in the Columbus app under **Settings → Tools** with Touch ID or Windows Hello. After that, any assistant can find it and run it on your layers without asking each time. Switch on **Allow personal tools** in Settings first (scripts must be allowed too). Every run is sandboxed: no network, it reads only the layers it's given and writes only its own results, and settings passed in later (like a field name) can never become code.
 
 ## Mac (Apple Silicon: M1 or later)
 

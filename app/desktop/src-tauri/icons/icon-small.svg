@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- For 16-32 px: fills the square, bolder strokes -->
+  <rect x="0" y="0" width="1024" height="1024" rx="200" fill="#17324d"/>
+  <circle cx="512" cy="512" r="360" fill="none" stroke="#5ca3ee" stroke-width="90"/>
+  <path d="M512 190 L610 512 L512 834 L414 512 Z" fill="#5ca3ee"/>
+  <path d="M512 190 L610 512 L414 512 Z" fill="#e7b04f"/>
+</svg>

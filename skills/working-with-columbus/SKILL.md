@@ -320,7 +320,7 @@ units, `not_for`) before calling it.
 
 When the person asks to save a script as a tool ("add the script we just made as a tool"),
 or the same script keeps being written, use `propose_tool`. Read
-[references/designing-tools.md](references/designing-tools.md) first: the code is a
+[references/designing-tools.md](references/designing-tools.md) (also `columbus_guide {"name": "designing-tools"}` from the server) first: the code is a
 `run(ctx)` function, the manifest is written for other assistants, and Columbus refuses
 network use, credentials, environment variables, absolute paths and undeclared names. The
 person approves a test run, then installs the tool in the Columbus app (Settings, Tools);

@@ -185,6 +185,9 @@ pub struct ExampleDecl {
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+// Written out in the tool's schema (not a $ref), so every client sends it
+// as an object.
+#[schemars(inline)]
 pub struct TestDecl {
     /// A ws:// handle for every input, from this session (query_features,
     /// vector_op, run_python...).
@@ -192,6 +195,23 @@ pub struct TestDecl {
     /// Parameter values for the test (defaults apply to the rest).
     #[serde(default)]
     pub params: serde_json::Map<String, Value>,
+}
+
+/// An object, or the same object sent as JSON text (some clients send a
+/// nested object that way).
+fn object_or_json_text<'de, D, T>(d: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
+{
+    use serde::de::Error;
+    let v = Value::deserialize(d)?;
+    let v = match v {
+        Value::String(s) => serde_json::from_str(&s)
+            .map_err(|e| D::Error::custom(format!("expected an object (or its JSON text): {e}")))?,
+        v => v,
+    };
+    serde_json::from_value(v).map_err(D::Error::custom)
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -233,6 +253,7 @@ pub struct ProposeToolArgs {
     /// absolute paths. Do not import columbus_plugin.
     pub code: String,
     /// The test run on this session's data, before the person sees it.
+    #[serde(deserialize_with = "object_or_json_text")]
     pub test: TestDecl,
     /// An approval the person granted for this exact test run.
     #[serde(default)]
@@ -1024,10 +1045,68 @@ fn compare_uses(
     }
 }
 
+/// Columbus's own guides for assistants, built into the server so any
+/// client can read them (not every client loads the skills folder).
+const GUIDES: &[(&str, &str, &str)] = &[
+    ("working-with-columbus", "How to work with Columbus: the order of calls, checks, approvals, notes, big tables and personal tools.", include_str!("../../../skills/working-with-columbus/SKILL.md")),
+    ("designing-tools", "How to design a personal tool for propose_tool: names, descriptions, typed inputs and parameters, the code rules, and a worked LRS example.", include_str!("../../../skills/working-with-columbus/references/designing-tools.md")),
+    ("columbus-tools", "Every Columbus tool, its arguments and what it returns.", include_str!("../../../skills/working-with-columbus/references/columbus-tools.md")),
+    ("check-ids", "The verification check ids and what each finding means.", include_str!("../../../skills/working-with-columbus/references/check-ids.md")),
+];
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GuideArgs {
+    /// Which guide: working-with-columbus, designing-tools, columbus-tools
+    /// or check-ids. Leave out to list them.
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
 #[tool_router(router = tools_router, vis = "pub(crate)")]
 impl Gateway {
     #[tool(
-        description = "Package a script as one of the person's own tools, so later sessions (and other assistants) can run it with run_tool instead of writing and approving a script each time. Give a name, title, description (what it does, when to use it) and not_for, typed inputs (workspace layers or tables, each with geometry, CRS and required fields), scalar params (numbers with units), outputs, the checks it reports, examples, the code (a run(ctx) function) and a test on this session's layers. Columbus checks the manifest and the code (no network, credentials, environment or absolute paths), then test-runs it confined, once the person approves the test like a script. If the test runs, the tool waits in the Columbus app's Settings, where the person reads the code and installs it; only they can, and it is usable from the next call after that. Read the skill reference designing-tools.md first. Needs organization policy to allow personal tools and scripts (whoami: personal_tools_allowed, scripts_allowed).",
+        description = "Read one of Columbus's guides for assistants: working-with-columbus (how to work here), designing-tools (read before propose_tool), columbus-tools (every tool) or check-ids (what each check means). Leave name out to list them.",
+        annotations(read_only_hint = true, open_world_hint = false)
+    )]
+    async fn columbus_guide(
+        &self,
+        Parameters(args): Parameters<GuideArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<Json<Output<Value>>, String> {
+        let rec = self.gate(&ctx, "columbus_guide", &json!({"name": args.name}))?;
+        let result = match args.name.as_deref() {
+            None => {
+                json!({"guides": GUIDES.iter().map(|(n, d, _)| json!({"name": n, "about": d})).collect::<Vec<_>>()})
+            }
+            Some(n) => match GUIDES.iter().find(|(g, _, _)| *g == n) {
+                Some((g, _, text)) => json!({"name": g, "text": text}),
+                None => {
+                    return Err(self.deny(
+                        &ctx,
+                        rec,
+                        format!(
+                            "no guide {n:?}; the guides are {}",
+                            GUIDES
+                                .iter()
+                                .map(|(g, _, _)| *g)
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ),
+                    ))
+                }
+            },
+        };
+        self.audit(&ctx, rec)?;
+        Ok(Json(Output {
+            result,
+            checks: vec![],
+            provenance: None,
+        }))
+    }
+
+    #[tool(
+        description = "Package a script as one of the person's own tools, so later sessions (and other assistants) can run it with run_tool instead of writing and approving a script each time. Give a name, title, description (what it does, when to use it) and not_for, typed inputs (workspace layers or tables, each with geometry, CRS and required fields), scalar params (numbers with units), outputs, the checks it reports, examples, the code (a run(ctx) function) and a test on this session's layers. Columbus checks the manifest and the code (no network, credentials, environment or absolute paths), then test-runs it confined, once the person approves the test like a script. If the test runs, the tool waits in the Columbus app's Settings, where the person reads the code and installs it; only they can, and it is usable from the next call after that. Read columbus_guide {\"name\": \"designing-tools\"} first. Needs organization policy to allow personal tools and scripts (whoami: personal_tools_allowed, scripts_allowed).",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -1405,7 +1484,11 @@ mod tests {
     use super::*;
 
     pub(crate) fn good() -> ProposeToolArgs {
-        serde_json::from_value(json!({
+        serde_json::from_value(good_value()).unwrap()
+    }
+
+    pub(crate) fn good_value() -> Value {
+        json!({
             "name": "locate_measures",
             "title": "Locate points along routes",
             "description": "Locate each point on the nearest route and give its route id and measure in miles from the route's start. Use it for crash, sign or asset points that need a route and milepoint.",
@@ -1425,8 +1508,7 @@ mod tests {
             "examples": [{"description": "Locate crashes on state routes", "arguments": {"routes": "ws://<session>/results/routes.gpkg", "points": "ws://<session>/results/crashes.gpkg"}}],
             "code": "def run(ctx):\n    return {}\n",
             "test": {"inputs": {"routes": "ws://s/results/r.gpkg", "points": "ws://s/results/p.gpkg"}}
-        }))
-        .unwrap()
+        })
     }
 
     #[test]
@@ -1484,6 +1566,26 @@ mod tests {
         assert!(b.manifest_text.contains(
             "\nid: personal.locate-measures\nname: Locate points along routes\nversion: 1.0.0\n"
         ));
+    }
+
+    #[test]
+    fn the_test_may_arrive_as_json_text() {
+        let good_json = good_value();
+        let mut v = good_json.clone();
+        let t = v["test"].clone();
+        v["test"] = Value::String(t.to_string());
+        let a: ProposeToolArgs = serde_json::from_value(v).unwrap();
+        assert_eq!(
+            a.test.inputs.len(),
+            good_json["test"]["inputs"].as_object().unwrap().len()
+        );
+        // The schema writes the test out as an object.
+        let schema = serde_json::to_value(schemars::schema_for!(ProposeToolArgs)).unwrap();
+        assert_eq!(
+            schema["properties"]["test"]["type"], "object",
+            "{}",
+            schema["properties"]["test"]
+        );
     }
 
     #[test]

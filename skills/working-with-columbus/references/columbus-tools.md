@@ -9,6 +9,7 @@ Every tool returns `{result, checks, provenance}`.
 | Tool | Arguments | Result highlights |
 | --- | --- | --- |
 | `whoami` | none | `user`, `client`, `session`, `policy` {`source`, `connection_types`, `scripts_allowed`, `edits_allowed`, `personal_tools_allowed`, `rows_returned_per_call`, `rows_read_per_query`, `query_seconds`}, `connections[]`, `workspace`, `granted_folders`, `audit_log`, `secret_store`, `approvals`, `always_on_rules`, `engines`, `providers`, `labels`, `notes` |
+| `columbus_guide` | `name` (optional): `working-with-columbus`, `designing-tools`, `columbus-tools` or `check-ids` | the guide's `text`; with no name, the list of guides |
 | `search_tools` | `query`, `provider?` | Tool cards: `name`, `summary`, `provider`, `risk`, `approval` (`no`, `yes`, `if_labelled`) |
 | `describe_tool` | `name` | `description`, `input_schema`, `read_only`, `risk`, `egress`, `argument_roles`, `saves_to_workspace` |
 | `list_connections` | none | `id`, `type`, `description`, `mode`, `status`, `engine_ready` |
