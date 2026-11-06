@@ -941,7 +941,15 @@ async fn review(
                 .await
                 .map_err(|e| e.to_string())?
         } else {
-            let bytes = resp.bytes().await.map_err(|_| "the reply was cut off".to_string())?;
+            // At most 8 MB of a reply that is not streamed.
+            let mut resp = resp;
+            let mut bytes = Vec::new();
+            while let Some(c) = resp.chunk().await.map_err(|_| "the reply was cut off".to_string())? {
+                bytes.extend_from_slice(&c);
+                if bytes.len() > 8 << 20 {
+                    return Err("the AI service's reply was larger than Columbus takes".into());
+                }
+            }
             serde_json::from_slice(&bytes).unwrap_or(Value::Null)
         };
         if !code.is_success() {

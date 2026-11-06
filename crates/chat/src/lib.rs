@@ -773,8 +773,12 @@ pub async fn read_stream(mut r: reqwest::Response) -> Result<Value> {
         if seen > MAX_STREAM {
             bail!("the reply was larger than Columbus takes");
         }
+        // Only the new bytes (and the three before them) can end an event.
+        let from = buf.len().saturating_sub(3);
         buf.extend_from_slice(&chunk);
-        while let Some(end) = find_event_end(&buf) {
+        let mut start = from;
+        while let Some(end) = find_event_end(&buf[start..]).map(|e| e + start) {
+            start = 0;
             let event: Vec<u8> = buf.drain(..end).collect();
             for line in String::from_utf8_lossy(&event).lines() {
                 if let Some(data) = line.strip_prefix("data:") {

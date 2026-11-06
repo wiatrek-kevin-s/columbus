@@ -156,9 +156,19 @@ pub(crate) struct Db {
     pub scope: String,
     pub dir: PathBuf,
     pub file: PathBuf,
+    /// The trusted folder the database's folder is reached from, and the
+    /// way down: every file made in it is made by walking from here again,
+    /// never from `dir` (which confined code can write, and so swap).
+    root: PathBuf,
+    comps: Vec<String>,
 }
 
 impl Db {
+    fn open_dir(&self) -> std::io::Result<crate::safefs::Dir> {
+        let comps: Vec<&str> = self.comps.iter().map(String::as_str).collect();
+        crate::safefs::Dir::open_beneath(&self.root, &comps, false)
+    }
+
     fn sidecar_path(&self) -> PathBuf {
         self.dir.join(SIDECAR)
     }
@@ -278,13 +288,24 @@ impl RecordLock {
     /// The file holds a random token, so a holder only ever removes its own
     /// lock, and a stale lock is taken over only if it is still the one
     /// that was found stale.
+    #[cfg(test)]
     fn acquire(dir: &Path) -> Result<RecordLock, String> {
+        Self::acquire_with(dir, || crate::safefs::Dir::open_beneath(dir, &[], false))
+    }
+
+    fn acquire_in(db: &Db) -> Result<RecordLock, String> {
+        Self::acquire_with(&db.dir, || db.open_dir())
+    }
+
+    fn acquire_with(
+        dir: &Path,
+        open: impl Fn() -> std::io::Result<crate::safefs::Dir>,
+    ) -> Result<RecordLock, String> {
         let path = dir.join(LOCK);
         let token = uuid::Uuid::new_v4().to_string();
         let until = std::time::Instant::now() + Duration::from_secs(10);
         loop {
-            let made =
-                crate::safefs::Dir::open_beneath(dir, &[], false).and_then(|d| d.create_file(LOCK));
+            let made = open().and_then(|d| d.create_file(LOCK));
             match made {
                 Ok(mut f) => {
                     use std::io::Write;
@@ -353,7 +374,7 @@ fn write_sidecar(db: &Db, side: &mut Sidecar) -> Result<(), String> {
 /// Write the record back, merged with the one on disk; the load records of
 /// `dropped` tables are taken out after the merge.
 fn write_sidecar_dropping(db: &Db, side: &mut Sidecar, dropped: &[String]) -> Result<(), String> {
-    let _lock = RecordLock::acquire(&db.dir)?;
+    let _lock = RecordLock::acquire_in(db)?;
     if let Ok(Some(disk)) = read_sidecar(db) {
         merge_record(side, disk);
     }
@@ -362,7 +383,7 @@ fn write_sidecar_dropping(db: &Db, side: &mut Sidecar, dropped: &[String]) -> Re
     let text = serde_json::to_string_pretty(side).map_err(|e| e.to_string())?;
     let tmp = db.dir.join(format!("{SIDECAR}.new"));
     let _ = std::fs::remove_file(&tmp);
-    let dir = crate::safefs::Dir::open_beneath(&db.dir, &[], false).map_err(|e| e.to_string())?;
+    let dir = db.open_dir().map_err(|e| e.to_string())?;
     {
         use std::io::Write;
         let mut f = dir
@@ -472,6 +493,8 @@ impl Gateway {
             scope: scope.to_string(),
             dir,
             file,
+            root,
+            comps: comps.iter().map(|c| c.to_string()).collect(),
         })
     }
 
@@ -1665,6 +1688,8 @@ mod tests {
             scope: "project".into(),
             dir: dir.path().to_path_buf(),
             file: dir.path().join("p.duckdb"),
+            root: dir.path().to_path_buf(),
+            comps: vec![],
         };
         let mut first = record(&["connection:a"], &[]);
         for t in ["parcels", "roads"] {

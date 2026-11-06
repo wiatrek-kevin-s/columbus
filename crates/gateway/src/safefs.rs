@@ -7,11 +7,11 @@
 //! opens and creates files relative to the directory it holds open, so a
 //! link planted anywhere on the way is refused rather than followed.
 //!
-//! On Unix this uses `openat` with `O_NOFOLLOW`. On Windows, where a
-//! sandboxed (AppContainer) process cannot normally create links or
-//! junctions, each component is checked not to be a reparse point and files
-//! are opened as themselves (`FILE_FLAG_OPEN_REPARSE_POINT`), refusing any
-//! that turn out to be reparse points.
+//! On Unix this uses `openat` with `O_NOFOLLOW`. On Windows each component
+//! is checked not to be a reparse point, files are opened as themselves
+//! (`FILE_FLAG_OPEN_REPARSE_POINT`), and every folder and file opened is
+//! then checked through its handle: its real path must be exactly the one
+//! asked for below the trusted root, and a file must have one name.
 
 use std::fs::File;
 use std::io;
@@ -41,10 +41,10 @@ pub struct Dir {
     path: PathBuf,
     #[cfg(unix)]
     fd: std::os::fd::OwnedFd,
-    /// Where the folder really is (Windows: files opened in it are checked
-    /// to be there).
+    /// Where the folder really is, in the form paths are compared in
+    /// (Windows: files opened in it are checked to be there).
     #[cfg(windows)]
-    real: PathBuf,
+    real: String,
 }
 
 #[cfg(unix)]
@@ -204,24 +204,34 @@ mod imp {
     use windows_sys::Win32::Storage::FileSystem::{
         FileDispositionInfo, GetFileInformationByHandle, GetFinalPathNameByHandleW,
         SetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, DELETE, FILE_DISPOSITION_INFO,
-        FILE_FLAG_BACKUP_SEMANTICS, FILE_NAME_NORMALIZED, VOLUME_NAME_DOS,
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_NAME_NORMALIZED, VOLUME_NAME_DOS, VOLUME_NAME_NT,
     };
 
     const REPARSE: u32 = 0x400; // FILE_ATTRIBUTE_REPARSE_POINT
     const OPEN_REPARSE_POINT: u32 = 0x0020_0000; // FILE_FLAG_OPEN_REPARSE_POINT
 
-    /// Where an open file or folder really is.
+    /// Where an open file or folder really is: as a drive path, or, on a
+    /// volume with no drive letter (a RAM disk, some mounted cloud drives),
+    /// as the system's device path. A file and its folder are on one
+    /// volume, so they are always compared in the same form.
     fn final_path(f: &File) -> io::Result<String> {
+        final_path_as(f, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS)
+            .or_else(|_| final_path_as(f, FILE_NAME_NORMALIZED | VOLUME_NAME_NT))
+    }
+
+    fn open_folder(p: &Path) -> io::Result<File> {
+        std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | OPEN_REPARSE_POINT)
+            .open(p)
+    }
+
+    fn final_path_as(f: &File, flags: u32) -> io::Result<String> {
         let h = f.as_raw_handle();
         let mut buf = vec![0u16; 1024];
         loop {
             let n = unsafe {
-                GetFinalPathNameByHandleW(
-                    h as _,
-                    buf.as_mut_ptr(),
-                    buf.len() as u32,
-                    FILE_NAME_NORMALIZED | VOLUME_NAME_DOS,
-                )
+                GetFinalPathNameByHandleW(h as _, buf.as_mut_ptr(), buf.len() as u32, flags)
             } as usize;
             if n == 0 {
                 return Err(io::Error::last_os_error());
@@ -253,7 +263,8 @@ mod imp {
 
     /// Delete a file through its handle (one just created somewhere else
     /// than asked, through a swapped folder).
-    fn delete_open(f: &File) {
+    /// Whether that worked; the file goes when its handle closes.
+    fn delete_open(f: &File) -> bool {
         let d = FILE_DISPOSITION_INFO { DeleteFile: true };
         unsafe {
             SetFileInformationByHandle(
@@ -261,20 +272,20 @@ mod imp {
                 FileDispositionInfo,
                 (&d as *const FILE_DISPOSITION_INFO).cast(),
                 std::mem::size_of::<FILE_DISPOSITION_INFO>() as u32,
-            );
+            ) != 0
         }
     }
 
     impl Dir {
         pub fn open_beneath(root: &Path, comps: &[&str], create: bool) -> io::Result<Dir> {
             // The root is the gateway's own; where it really is, once.
-            let real_root = std::fs::canonicalize(root)?;
+            let mut want = key(&final_path(&open_folder(root)?)?);
             let mut path = root.to_path_buf();
-            let mut want = real_root.clone();
             for c in comps {
                 plain(c)?;
                 path.push(c);
-                want.push(c);
+                want.push('\\');
+                want.push_str(&c.to_lowercase());
                 if create && std::fs::symlink_metadata(&path).is_err() {
                     std::fs::create_dir(&path).or_else(|e| {
                         if e.kind() == io::ErrorKind::AlreadyExists {
@@ -290,11 +301,8 @@ mod imp {
                 }
             }
             // The folder as opened, wherever the walk led: it must be the one asked for.
-            let d = std::fs::OpenOptions::new()
-                .read(true)
-                .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | OPEN_REPARSE_POINT)
-                .open(&path)?;
-            if key(&final_path(&d)?) != key(&want.to_string_lossy()) {
+            let d = open_folder(&path)?;
+            if key(&final_path(&d)?) != want {
                 return Err(refused("a folder on the way is a link"));
             }
             Ok(Dir { path, real: want })
@@ -310,7 +318,7 @@ mod imp {
         }
 
         fn is_where_asked(&self, f: &File, name: &str) -> io::Result<bool> {
-            Ok(key(&final_path(f)?) == key(&self.real.join(name).to_string_lossy()))
+            Ok(key(&final_path(f)?) == format!("{}\\{}", self.real, name.to_lowercase()))
         }
 
         pub fn open_file(&self, name: &str) -> io::Result<File> {
@@ -339,14 +347,16 @@ mod imp {
             let f = std::fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
-                .access_mode(0x4000_0000 | 0x8000_0000 | DELETE) // GENERIC_WRITE | GENERIC_READ | DELETE
+                .access_mode(0x4000_0000 | DELETE) // GENERIC_WRITE | DELETE
                 .custom_flags(OPEN_REPARSE_POINT)
                 .open(self.path.join(name))?;
             if !self.is_where_asked(&f, name)? {
-                delete_open(&f);
-                return Err(refused(&format!(
-                    "{name} would have been made through a link; it was not"
-                )));
+                let gone = delete_open(&f);
+                return Err(refused(&if gone {
+                    format!("{name} would have been made through a link; it was not")
+                } else {
+                    format!("{name} was made through a link, outside the folder asked for, and could not be removed")
+                }));
             }
             Ok(f)
         }
@@ -496,6 +506,44 @@ mod windows_tests {
             .status
             .success();
         assert!(ok, "mklink /J failed");
+    }
+
+    /// A workspace on a substituted drive, or reached as a network share,
+    /// still works: the root's real path is taken from its own handle.
+    #[test]
+    fn roots_on_subst_drives_and_shares_work() {
+        let real = tempfile::tempdir().unwrap();
+        std::fs::create_dir(real.path().join("w")).unwrap();
+        std::fs::write(real.path().join("w").join("a.txt"), "a").unwrap();
+        let check = |root: &Path| {
+            let d = Dir::open_beneath(root, &["w"], false).unwrap();
+            assert!(d.open_file("a.txt").is_ok(), "{}", root.display());
+            let made = format!("n{}.txt", std::process::id());
+            assert!(d.create_file(&made).is_ok(), "{}", root.display());
+            let _ = std::fs::remove_file(real.path().join("w").join(&made));
+        };
+        check(real.path());
+        for letter in ['Q', 'R', 'S', 'T', 'U'] {
+            let drive = format!("{letter}:");
+            let ok = std::process::Command::new("subst")
+                .arg(&drive)
+                .arg(real.path())
+                .status()
+                .is_ok_and(|s| s.success());
+            if ok {
+                check(Path::new(&format!("{drive}\\")));
+                let _ = std::process::Command::new("subst")
+                    .args([&drive, "/D"])
+                    .status();
+                break;
+            }
+        }
+        // The same folder as an administrative share, where there is one.
+        let p = real.path().to_string_lossy().replace(':', "$");
+        let unc = std::path::PathBuf::from(format!(r"\\localhost\{p}"));
+        if unc.exists() {
+            check(&unc);
+        }
     }
 
     #[test]
