@@ -44,6 +44,7 @@ function route() {
 }
 
 let unmount = null;
+let booted = false;
 // Pages draw here; the live chat keeps its own host beside it (chats.js),
 // so its map frame is never reloaded when the person looks elsewhere.
 const pageHost = h("div", { class: "page", id: "page-host" });
@@ -62,6 +63,12 @@ async function show() {
   document.title = `${PAGE_NAMES[r.page] || "Columbus"} · Columbus`;
   try {
     unmount = (await PAGES[r.page](main, r.rest)) || null;
+    // After following a link, a screen reader starts at the new page's title.
+    const a = document.activeElement;
+    if (booted && (!a || a === document.body || $("rail").contains(a))) {
+      const t = main.hidden ? null : $("page-title");
+      if (t) t.focus({ preventScroll: true });
+    }
   } catch (e) {
     main.replaceChildren(h("div", { class: "pad" }, h("p", { class: "error-text", role: "alert" }, `This page could not be shown: ${e}`)));
   }
@@ -274,6 +281,7 @@ async function boot() {
   await Promise.all([refreshInfo(), refreshChats(), refreshSessions(), refreshTools()]);
   window.addEventListener("hashchange", show);
   await show();
+  booted = true;
   refreshInbox();
   setInterval(refreshSessions, 4000);
   setInterval(refreshInbox, 5000);

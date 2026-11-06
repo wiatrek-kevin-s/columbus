@@ -528,11 +528,12 @@ fn record(app: &AppHandle, v: &serde_json::Value) {
         return;
     };
     line.push('\n');
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-    {
+    let mut o = std::fs::OpenOptions::new();
+    o.create(true).append(true);
+    // What was said and shown may hold data: this account's alone.
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
+    if let Ok(mut f) = o.open(&path) {
         let _ = f.write_all(line.as_bytes());
     }
 }

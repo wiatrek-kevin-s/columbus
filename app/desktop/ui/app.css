@@ -82,6 +82,8 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .page { display: flex; flex-direction: column; min-height: 0; flex: 1; }
 .pagehead { display: flex; align-items: center; gap: 14px; padding: 14px 22px 12px; background: var(--panel); border-bottom: 1px solid var(--rule); flex: none; min-width: 0; }
 .pagehead h1 { font-size: 19px; font-weight: 650; }
+.pagehead h1:focus { outline: none; }
+.pagehead h1:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 .pagehead .lede { color: var(--soft); font-size: 13px; margin-top: 2px; }
 .pagehead .actions { margin-left: auto; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
 .pagehead > div:first-child { min-width: 0; }
