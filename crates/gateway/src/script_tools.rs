@@ -576,7 +576,7 @@ impl Gateway {
                 ))
             }
         };
-        let cap = policy.limits.seconds.unwrap_or(DEFAULT_TIMEOUT).max(1);
+        let cap = policy.read_limits().max_seconds();
         let timeout = args
             .timeout_seconds
             .unwrap_or(DEFAULT_TIMEOUT)

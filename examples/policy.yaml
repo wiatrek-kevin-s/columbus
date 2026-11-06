@@ -1,6 +1,7 @@
 # Organization policy: %ProgramData%\Columbus\policy.yaml
-# Writable only by administrators; can be pushed by Intune. Every setting can
-# only narrow what Columbus allows. With no file, the defaults are: local
+# Writable only by administrators; can be pushed by Intune. Settings narrow
+# what Columbus allows (limits can be raised, within a fixed ceiling, with
+# limits.allow_raise). With no file, the defaults are: local
 # GeoPackage/SQLite only, read-only, no scripts, no edits.
 
 # Connection types allowed at all.
@@ -16,9 +17,21 @@ deny_tools: []
 allow_scripts: false   # run_python (always approved per call when allowed)
 allow_edits: false     # read-write connections are treated as read-only while false
 
+# Rows read per query and seconds per call. Lower values always apply;
+# values above the defaults (200,000 rows, 120 s) apply only with
+# allow_raise: true, and never past 20,000,000 rows or 3,600 s. Connections
+# can only lower them further. Large results are written to the workspace in
+# batches, so memory does not grow with the rows read.
 limits:
-  rows: 200000         # rows read per query
-  seconds: 120         # query time
+  rows: 200000         # e.g. 2000000 with allow_raise: true
+  seconds: 120         # e.g. 900 with allow_raise: true
+  allow_raise: false
+
+# Project databases: local DuckDB files the assistant builds from governed
+# results and joins with SQL (they write only their own file).
+project_db:
+  enabled: true
+  memory_mb: 2048      # engine memory per call; beyond it work spills to disk
 
 return_rows: 500       # rows sent to the AI provider per call (500 is the maximum)
 

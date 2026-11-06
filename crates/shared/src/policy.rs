@@ -49,11 +49,123 @@ impl Limits {
     }
 }
 
+impl Limits {
+    /// Rows one read may take: this layer's value, the default where none is
+    /// set, never above [`MAX_LIMITS`] and never below 1. Every tool that
+    /// reads, writes a result or times a call goes through this (and
+    /// [`Limits::max_seconds`]), so they all agree.
+    pub fn max_rows(&self) -> u64 {
+        self.rows
+            .unwrap_or(DEFAULT_ROWS)
+            .clamp(1, MAX_LIMITS.rows.unwrap_or(u64::MAX))
+    }
+
+    /// Seconds one call may run, as [`Limits::max_rows`] does for rows.
+    pub fn max_seconds(&self) -> u64 {
+        self.seconds
+            .unwrap_or(DEFAULT_SECONDS)
+            .clamp(1, MAX_LIMITS.seconds.unwrap_or(u64::MAX))
+    }
+}
+
+const DEFAULT_ROWS: u64 = 200_000;
+const DEFAULT_SECONDS: u64 = 120;
+
 /// Built-in defaults from the design (section 3, "Limits and defaults").
 pub const DEFAULT_LIMITS: Limits = Limits {
-    rows: Some(200_000),
-    seconds: Some(120),
+    rows: Some(DEFAULT_ROWS),
+    seconds: Some(DEFAULT_SECONDS),
 };
+
+/// The firm ceiling, in code: no policy can raise a limit past it.
+pub const MAX_LIMITS: Limits = Limits {
+    rows: Some(20_000_000),
+    seconds: Some(3600),
+};
+
+/// The organization's limits. Below the defaults they always apply; above
+/// them only with `allow_raise: true`, and never past [`MAX_LIMITS`].
+/// Connections and data groups can then only narrow what this allows.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OrgLimits {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rows: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seconds: Option<u64>,
+    /// Honour `rows` and `seconds` above the defaults (200,000 rows, 120 s),
+    /// up to the ceiling (20,000,000 rows, 3,600 s). Off: a value above a
+    /// default is ignored and the default applies.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub allow_raise: bool,
+}
+
+impl OrgLimits {
+    /// The defaults, as the organization's limits.
+    pub const DEFAULT: OrgLimits = OrgLimits {
+        rows: DEFAULT_LIMITS.rows,
+        seconds: DEFAULT_LIMITS.seconds,
+        allow_raise: false,
+    };
+
+    /// The limits in force at the organization layer: the one value every
+    /// tool narrows from.
+    pub fn effective(&self) -> Limits {
+        let set = Limits {
+            rows: self.rows,
+            seconds: self.seconds,
+        };
+        let base = if self.allow_raise {
+            Limits {
+                rows: self.rows.or(DEFAULT_LIMITS.rows),
+                seconds: self.seconds.or(DEFAULT_LIMITS.seconds),
+            }
+        } else {
+            DEFAULT_LIMITS.narrow(set)
+        };
+        let l = base.narrow(MAX_LIMITS);
+        Limits {
+            rows: Some(l.max_rows()),
+            seconds: Some(l.max_seconds()),
+        }
+    }
+
+    /// Whether the policy asks for more than the defaults and is allowed to.
+    pub fn raised(&self) -> bool {
+        let e = self.effective();
+        e.max_rows() > DEFAULT_ROWS || e.max_seconds() > DEFAULT_SECONDS
+    }
+
+    /// A value the policy sets above a default without `allow_raise`, or
+    /// above the ceiling: said in `whoami` so an administrator notices.
+    pub fn ignored(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        for (what, set, default, max) in [
+            (
+                "rows",
+                self.rows,
+                DEFAULT_ROWS,
+                MAX_LIMITS.rows.unwrap_or(u64::MAX),
+            ),
+            (
+                "seconds",
+                self.seconds,
+                DEFAULT_SECONDS,
+                MAX_LIMITS.seconds.unwrap_or(u64::MAX),
+            ),
+        ] {
+            match set {
+                Some(v) if v > default && !self.allow_raise => out.push(format!(
+                    "limits.{what}: {v} is above the default ({default}) and applies only with limits.allow_raise: true; {default} is in force"
+                )),
+                Some(v) if v > max => out.push(format!(
+                    "limits.{what}: {v} is above the ceiling Columbus allows ({max}); {max} is in force"
+                )),
+                _ => {}
+            }
+        }
+        out
+    }
+}
 /// Rows returned to the agent per call; larger results stay in the workspace.
 pub const DEFAULT_RETURN_ROWS: u64 = 500;
 
@@ -121,8 +233,13 @@ pub struct OrgPolicy {
     pub allow_scripts: bool,
     #[serde(default)]
     pub allow_edits: bool,
+    /// Rows read and seconds per call; see [`OrgLimits`]. Use
+    /// [`OrgPolicy::read_limits`] for the values in force.
     #[serde(default)]
-    pub limits: Limits,
+    pub limits: OrgLimits,
+    /// The person's local project databases (`project_db`).
+    #[serde(default)]
+    pub project_db: ProjectDbPolicy,
     /// Rows returned to the AI provider per call.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub return_rows: Option<u64>,
@@ -157,6 +274,32 @@ pub struct OrgPolicy {
     /// Notes Columbus drafts from a connection's database.
     #[serde(default)]
     pub notes: NotesPolicy,
+}
+
+/// Project databases: local DuckDB files the assistant builds from governed
+/// results and queries with SQL. They write only to their own file.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectDbPolicy {
+    /// Off: `project_db` refuses every action.
+    #[serde(default = "yes")]
+    pub enabled: bool,
+    /// Most memory the database engine uses per call, in MiB; beyond it,
+    /// work spills to disk in the database's own folder.
+    #[serde(default = "project_db_memory")]
+    pub memory_mb: u64,
+}
+
+fn project_db_memory() -> u64 {
+    2048
+}
+
+impl Default for ProjectDbPolicy {
+    fn default() -> Self {
+        ProjectDbPolicy {
+            enabled: true,
+            memory_mb: project_db_memory(),
+        }
+    }
 }
 
 /// What drafted notes may hold.
@@ -347,7 +490,8 @@ impl Default for OrgPolicy {
             deny_tools: vec![],
             allow_scripts: false,
             allow_edits: false,
-            limits: DEFAULT_LIMITS,
+            limits: OrgLimits::DEFAULT,
+            project_db: ProjectDbPolicy::default(),
             return_rows: Some(DEFAULT_RETURN_ROWS),
             hide_fields: vec![],
             servers: ServerPolicy::default(),
@@ -371,6 +515,12 @@ impl OrgPolicy {
     /// The policy in `text`, as read from `path` (named in errors).
     pub fn parse(text: &str, path: &Path) -> Result<Self, LoadError> {
         serde_yaml::from_str(text).map_err(|e| LoadError::Parse(path.into(), e.to_string()))
+    }
+
+    /// Rows and seconds in force at the organization layer (see
+    /// [`OrgLimits::effective`]); a connection narrows from here.
+    pub fn read_limits(&self) -> Limits {
+        self.limits.effective()
     }
 
     pub fn tool_allowed(&self, tool: &str) -> bool {
@@ -651,7 +801,7 @@ impl EffectiveAccess {
             connection: conn.id.clone(),
             kind: conn.kind.clone(),
             mode,
-            limits: DEFAULT_LIMITS.narrow(org.limits).narrow(conn.limits),
+            limits: org.read_limits().narrow(conn.limits),
             return_rows: org
                 .return_rows
                 .unwrap_or(DEFAULT_RETURN_ROWS)
@@ -821,9 +971,10 @@ expires: 2027-06-30
     #[test]
     fn limits_take_the_tightest() {
         let mut o = org();
-        o.limits = Limits {
+        o.limits = OrgLimits {
             rows: Some(100_000),
             seconds: Some(30),
+            allow_raise: false,
         };
         let a = EffectiveAccess::resolve(&o, &roads(), &ProjectScope::default(), now()).unwrap();
         assert_eq!(
@@ -832,6 +983,68 @@ expires: 2027-06-30
                 rows: Some(50_000),
                 seconds: Some(30)
             }
+        );
+    }
+
+    #[test]
+    fn raising_limits_needs_the_opt_in_and_stops_at_the_ceiling() {
+        let open = |rows, seconds, allow_raise| {
+            let mut o = org();
+            o.limits = OrgLimits {
+                rows,
+                seconds,
+                allow_raise,
+            };
+            let mut c = roads();
+            c.limits = Limits::default();
+            EffectiveAccess::resolve(&o, &c, &ProjectScope::default(), now())
+                .unwrap()
+                .limits
+        };
+        // Above the default without the opt-in: the default applies.
+        let l = open(Some(2_000_000), Some(900), false);
+        assert_eq!((l.max_rows(), l.max_seconds()), (200_000, 120));
+        // With it: honoured.
+        let l = open(Some(2_000_000), Some(900), true);
+        assert_eq!((l.max_rows(), l.max_seconds()), (2_000_000, 900));
+        // Never past the ceiling in code.
+        let l = open(Some(u64::MAX), Some(1_000_000), true);
+        assert_eq!((l.max_rows(), l.max_seconds()), (20_000_000, 3600));
+        // The opt-in alone raises nothing.
+        let l = open(None, None, true);
+        assert_eq!((l.max_rows(), l.max_seconds()), (200_000, 120));
+        // Lowering needs no opt-in.
+        let l = open(Some(10), Some(5), false);
+        assert_eq!((l.max_rows(), l.max_seconds()), (10, 5));
+        // A connection still only narrows a raised limit.
+        let mut o = org();
+        o.limits = OrgLimits {
+            rows: Some(5_000_000),
+            seconds: None,
+            allow_raise: true,
+        };
+        let a = EffectiveAccess::resolve(&o, &roads(), &ProjectScope::default(), now()).unwrap();
+        assert_eq!(a.limits.max_rows(), 50_000);
+        let ignored = OrgLimits {
+            rows: Some(300_000),
+            seconds: None,
+            allow_raise: false,
+        }
+        .ignored();
+        assert!(ignored[0].contains("allow_raise"), "{ignored:?}");
+        let p: OrgPolicy =
+            serde_yaml::from_str("limits: { rows: 2000000, seconds: 900, allow_raise: true }\n")
+                .unwrap();
+        assert_eq!(p.read_limits().max_rows(), 2_000_000);
+        assert!(p.limits.raised());
+        // Zero means one, never "no limit".
+        assert_eq!(
+            Limits {
+                rows: Some(0),
+                seconds: Some(0)
+            }
+            .max_rows(),
+            1
         );
     }
 

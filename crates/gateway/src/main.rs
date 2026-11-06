@@ -30,6 +30,7 @@ mod gis_tools;
 mod notes;
 mod plugin_run;
 mod plugins;
+mod project_db;
 mod providers;
 mod raster_tools;
 mod registry_tools;

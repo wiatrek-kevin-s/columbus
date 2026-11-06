@@ -96,7 +96,7 @@ pub struct OutputMeta {
 }
 
 /// A `fail` check from a step a file was built from.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize, JsonSchema)]
 pub struct InheritedFail {
     pub id: String,
     pub message: String,

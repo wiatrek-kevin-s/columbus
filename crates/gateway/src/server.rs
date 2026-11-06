@@ -85,7 +85,7 @@ pub struct Check {
 }
 
 impl Check {
-    fn info(id: &str, message: impl Into<String>) -> Self {
+    pub(crate) fn info(id: &str, message: impl Into<String>) -> Self {
         Check {
             id: id.into(),
             severity: Severity::Info,
@@ -328,8 +328,16 @@ pub struct PolicySummary {
     pub scripts_allowed: bool,
     pub edits_allowed: bool,
     pub rows_returned_per_call: u64,
+    /// Most rows one query reads (and writes to its workspace file); a
+    /// connection may set less.
     pub rows_read_per_query: Option<u64>,
     pub query_seconds: Option<u64>,
+    /// The organization raised the limits above the defaults.
+    pub limits_raised: bool,
+    /// The most any policy can allow.
+    pub limits_ceiling: Value,
+    /// Whether `project_db` (local project databases) is available.
+    pub project_db: bool,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -490,6 +498,8 @@ pub struct State {
     pub scripts: tokio::sync::Mutex<()>,
     /// Change sets propose_edits made in this session.
     pub edits: crate::edit_tools::ChangeSets,
+    /// Project databases this session has opened: folder -> database file.
+    pub project_dbs: std::sync::Mutex<std::collections::BTreeMap<PathBuf, PathBuf>>,
     pub session: String,
     pub user: String,
     pub notes: Vec<String>,
@@ -654,6 +664,7 @@ impl State {
             outputs: crate::providers::Outputs::default(),
             scripts: tokio::sync::Mutex::new(()),
             edits: Default::default(),
+            project_dbs: Default::default(),
             paths,
             fixed: startup_only(&policy),
             live: std::sync::Mutex::new(Live {
@@ -708,9 +719,10 @@ const STALL: Duration = Duration::from_secs(10);
 /// running across the change has its answer withheld.
 fn limits_shrank(old: &OrgPolicy, new: &OrgPolicy) -> bool {
     let eff = |p: &OrgPolicy| {
+        let l = p.read_limits();
         (
-            p.limits.rows.unwrap_or(200_000),
-            p.limits.seconds.unwrap_or(120),
+            l.max_rows(),
+            l.max_seconds(),
             p.return_rows.unwrap_or(500).min(500),
         )
     };
@@ -800,6 +812,47 @@ impl State {
         (gone, failed)
     }
 
+    /// Remove the project databases this session opened that hold data
+    /// from the given connections (any governed data when `everything`).
+    /// A folder that cannot be deleted yet is tried again at the next
+    /// reload; until then its record no longer matches the settings, so
+    /// `project_db` withholds it.
+    pub fn withdraw_project_dbs(
+        &self,
+        everything: bool,
+        labels: &std::collections::BTreeSet<String>,
+    ) -> (Vec<PathBuf>, Vec<PathBuf>) {
+        if !everything && labels.is_empty() {
+            return (vec![], vec![]);
+        }
+        let dbs = self
+            .project_dbs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let (mut gone, mut failed) = (Vec::new(), Vec::new());
+        for (dir, file) in dbs {
+            let theirs = self.flow.file_labels(&file);
+            let hit = if everything {
+                theirs.iter().any(|l| l.starts_with("connection:"))
+            } else {
+                theirs.iter().any(|l| labels.contains(l))
+            };
+            if !hit {
+                continue;
+            }
+            if !crate::project_db::remove_db_dir(&dir) {
+                failed.push(dir.clone());
+            }
+            self.project_dbs
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&dir);
+            gone.push(dir);
+        }
+        (gone, failed)
+    }
+
     /// Withdraw now (for a call that ran across a narrowing); files that
     /// cannot be deleted yet are tried again at the next reload.
     pub fn withdraw_now(
@@ -808,7 +861,10 @@ impl State {
         labels: &std::collections::BTreeSet<String>,
         only: &std::collections::BTreeSet<PathBuf>,
     ) -> (Vec<PathBuf>, Vec<PathBuf>) {
-        let (gone, failed) = self.withdraw_among(everything, labels, Some(only));
+        let (mut gone, mut failed) = self.withdraw_among(everything, labels, Some(only));
+        let (dbs, dbs_failed) = self.withdraw_project_dbs(everything, labels);
+        gone.extend(dbs);
+        failed.extend(dbs_failed);
         self.live().leftovers.extend(failed.iter().cloned());
         (gone, failed)
     }
@@ -847,6 +903,13 @@ impl State {
 fn remove_files(paths: &[PathBuf]) -> Vec<PathBuf> {
     let mut failed = Vec::new();
     for p in paths {
+        if std::fs::symlink_metadata(p).is_ok_and(|m| m.is_dir()) {
+            // A project database's folder.
+            if !crate::project_db::remove_db_dir(p) {
+                failed.push(p.clone());
+            }
+            continue;
+        }
         if let Err(e) = std::fs::remove_file(p) {
             if e.kind() != std::io::ErrorKind::NotFound {
                 failed.push(p.clone());
@@ -999,7 +1062,10 @@ impl State {
                 // asked again under the new ones.
                 let revoked = self.approvals.revoke_all();
                 // Files made from data the new settings no longer allow go.
-                let (removed, failed) = self.withdraw(everything, &narrowed);
+                let (mut removed, mut failed) = self.withdraw(everything, &narrowed);
+                let (dbs, dbs_failed) = self.withdraw_project_dbs(everything, &narrowed);
+                removed.extend(dbs);
+                failed.extend(dbs_failed);
                 live.leftovers.extend(failed.iter().cloned());
                 Reload::Applied {
                     generation: live.generation,
@@ -1154,7 +1220,8 @@ impl Gateway {
                 + Self::raster_router()
                 + Self::script_router()
                 + Self::edit_router()
-                + Self::notes_router(),
+                + Self::notes_router()
+                + Self::project_db_router(),
         }
     }
 
@@ -1290,7 +1357,7 @@ impl Gateway {
             }
         }
         let handle = self.handle(conn)?;
-        let timeout = access.limits.seconds.unwrap_or(120);
+        let timeout = access.limits.max_seconds();
         let reply = self
             .state
             .worker
@@ -1586,7 +1653,7 @@ impl Gateway {
             Err(e) => json!({"error": e.to_string()}),
         };
         let p = &self.state.policy();
-        let limits = columbus_shared::policy::DEFAULT_LIMITS.narrow(p.limits);
+        let limits = p.read_limits();
         let result = WhoAmI {
             server: format!("{SERVER_NAME} {}", env!("CARGO_PKG_VERSION")),
             user: self.state.user.clone(),
@@ -1598,8 +1665,14 @@ impl Gateway {
                 scripts_allowed: p.allow_scripts,
                 edits_allowed: p.allow_edits,
                 rows_returned_per_call: p.return_rows.unwrap_or(500).min(500),
-                rows_read_per_query: limits.rows,
-                query_seconds: limits.seconds,
+                rows_read_per_query: Some(limits.max_rows()),
+                query_seconds: Some(limits.max_seconds()),
+                limits_raised: p.limits.raised(),
+                limits_ceiling: json!({
+                    "rows": columbus_shared::policy::MAX_LIMITS.max_rows(),
+                    "seconds": columbus_shared::policy::MAX_LIMITS.max_seconds(),
+                }),
+                project_db: p.project_db.enabled,
             },
             connections: self.connection_cards(),
             connections_folder: self.state.paths.connections.display().to_string(),
@@ -1639,6 +1712,7 @@ impl Gateway {
                 if let Some(why) = self.state.problem() {
                     notes.insert(0, why);
                 }
+                notes.extend(p.limits.ignored());
                 notes.push("Changes the person makes in the Columbus app's Settings (connections, edits, scripts) apply to this session within a second, from the next call: no restart is needed. Call whoami again to see them. When a change narrows what a connection allows, workspace files made from its data are removed, and every approval not yet used is withdrawn.".into());
                 notes
             },
@@ -1951,8 +2025,8 @@ impl Gateway {
             allowed_datasets: conn.datasets.allow.clone(),
             denied_datasets: conn.datasets.deny.clone(),
             row_filter: access.row_filter.clone(),
-            rows_read_per_query: access.limits.rows,
-            query_seconds: access.limits.seconds,
+            rows_read_per_query: Some(access.limits.max_rows()),
+            query_seconds: Some(access.limits.max_seconds()),
             rows_returned_per_call: access.return_rows,
             expires: conn.expires.map(|d| d.to_string()),
             engine_ready: Self::engine_ready(&conn.kind),
@@ -2001,7 +2075,7 @@ impl Gateway {
             self.audit(&ctx, rec)?;
             return Ok(out(result));
         }
-        let timeout = access.limits.seconds.unwrap_or(120);
+        let timeout = access.limits.max_seconds();
         let handle = match self.handle(&conn) {
             Ok(h) => h,
             Err(e) => return Err(self.deny(&ctx, rec, e)),
@@ -2290,7 +2364,7 @@ impl Gateway {
         if let Err(e) = crate::providers::do_copies(self.state.sandbox.root(), &prepared.copies) {
             return Err(self.deny(&ctx, rec, e));
         }
-        let timeout = self.state.policy().limits.seconds.unwrap_or(120).max(1);
+        let timeout = self.state.policy().read_limits().max_seconds();
         let started = Local::now();
         let result = match self
             .state
@@ -2528,7 +2602,7 @@ impl Gateway {
             Ok(v) => v,
             Err(e) => return Err(self.deny(&ctx, rec, e)),
         };
-        let max_rows = access.limits.rows.unwrap_or(200_000);
+        let max_rows = access.limits.max_rows();
         let cols = match self.table_columns(&access, &conn).await {
             Ok(c) => c,
             Err(e) => return Err(self.deny(&ctx, rec, e)),
@@ -2552,7 +2626,7 @@ impl Gateway {
             .sandbox
             .resolve(&format!("results/{prov}.csv"))
             .map_err(|e| e.to_string())?;
-        let timeout = access.limits.seconds.unwrap_or(120);
+        let timeout = access.limits.max_seconds();
         let handle = match self.handle(&conn) {
             Ok(h) => h,
             Err(e) => return Err(self.deny(&ctx, rec, e)),

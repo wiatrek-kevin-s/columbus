@@ -412,7 +412,7 @@ impl Gateway {
                 .and_then(Value::as_str)
                 .map(String::from)
         });
-        let read_limit = self.state.policy().limits.rows.unwrap_or(200_000).max(1);
+        let read_limit = self.state.policy().read_limits().max_rows();
         let cap = args.limit.unwrap_or(read_limit).clamp(1, read_limit);
         let page = PAGE.min(cap);
         let url = match first_url(&kind, &base, layer.as_deref(), args.bbox.as_deref(), page) {

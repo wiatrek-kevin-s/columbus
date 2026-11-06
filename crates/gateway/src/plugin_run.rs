@@ -244,7 +244,7 @@ impl Gateway {
                     Err(e) => return Err(self.deny(ctx, rec, e)),
                 }
             }
-            let max_rows = access.limits.rows.unwrap_or(200_000);
+            let max_rows = access.limits.max_rows();
             let cols = match self.table_columns(&access, &conn).await {
                 Ok(c) => c,
                 Err(e) => return Err(self.deny(ctx, rec, e)),
@@ -269,7 +269,7 @@ impl Gateway {
                 .flow
                 .add(columbus_flow::connection_label(&conn.id));
             let labels: Vec<String> = self.state.flow.session_labels().into_iter().collect();
-            let timeout = access.limits.seconds.unwrap_or(120);
+            let timeout = access.limits.max_seconds();
             let r = self
                 .state
                 .worker
@@ -478,7 +478,7 @@ impl Gateway {
                 }
             })
         });
-        let timeout = self.state.policy().limits.seconds.unwrap_or(120).max(1);
+        let timeout = self.state.policy().read_limits().max_seconds();
         let started = Local::now();
         let result = worker
             .run(

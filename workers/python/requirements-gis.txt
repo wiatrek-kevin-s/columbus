@@ -9,3 +9,12 @@ shapely>=2.0,<3
 pyproj>=3.6,<4
 pandas>=2.2,<4
 rasterio>=1.4,<2
+# Project databases (project_db). DuckDB publishes wheels for Windows x64,
+# macOS arm64 and Linux. Its spatial extension normally downloads at run
+# time, which Columbus never allows; duckdb-extension-spatial (a community
+# package of DuckDB's own signed extension binaries) installs it beside
+# DuckDB instead, and DuckDB checks its signature when it loads. The two
+# versions must match exactly. Without the extension, project databases
+# still work; only the spatial SQL functions are missing.
+duckdb==1.5.5
+duckdb-extension-spatial==1.5.5

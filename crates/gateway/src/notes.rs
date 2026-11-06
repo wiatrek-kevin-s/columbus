@@ -449,7 +449,7 @@ impl Gateway {
                 conn.kind
             ));
         }
-        let timeout = access.limits.seconds.unwrap_or(120);
+        let timeout = access.limits.max_seconds();
         let handle = self.handle(&conn)?;
         let listed = self
             .state
@@ -802,7 +802,7 @@ impl Gateway {
                 }
             }
         }
-        let timeout = access.limits.seconds.unwrap_or(120);
+        let timeout = access.limits.max_seconds();
         let mut cat = self
             .state
             .worker
