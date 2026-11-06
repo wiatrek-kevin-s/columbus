@@ -1,9 +1,11 @@
-//! The Settings window: the person's connections, the organization's
-//! switches for edits, scripts and personal tools, and the person's own
-//! tools, edited here instead of in files.
+//! Settings: the person's connections, the organization's switches for
+//! edits, scripts and personal tools, and the person's own tools, edited
+//! in the app instead of in files (the main window's Connections, Tools
+//! and Settings › Organization pages, and the classic settings window).
 //!
 //! The assistant has no way to change these: settings are never a tool,
-//! and only this window may call these commands (capabilities/settings.json).
+//! and only the app's own windows may call these commands
+//! (capabilities/main.json, capabilities/settings.json).
 //! Anything that loosens access (a new connection, read-write, more
 //! datasets, a removed row filter, edits, scripts or personal tools turned
 //! on, a tool installed) is confirmed
