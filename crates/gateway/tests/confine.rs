@@ -630,7 +630,9 @@ fn on_macos_processes_and_memory_count_the_whole_tree() {
     let d = dirs();
     let many = "import os, time\nfor i in range(12):\n    if os.fork() == 0:\n        time.sleep(20); os._exit(0)\ntime.sleep(20)\nprint('many: ok')\n";
     // The program cannot lift the kernel's limit itself.
-    let lift = "import os, resource, time\nsoft, hard = resource.getrlimit(resource.RLIMIT_NPROC)\ntry:\n    resource.setrlimit(resource.RLIMIT_NPROC, (hard + 1000, hard + 1000))\n    print('raise: ok')\nexcept (ValueError, OSError):\n    print('raise: refused')\nn = 0\nfor i in range(200):\n    try:\n        if os.fork() == 0:\n            time.sleep(20); os._exit(0)\n        n += 1\n    except OSError:\n        break\nprint('forked', n, flush=True)\ntime.sleep(20)\n";
+    let lift = "import os, resource, time\nsoft, hard = resource.getrlimit(resource.RLIMIT_NPROC)\ntry:\n    resource.setrlimit(resource.RLIMIT_NPROC, (hard + 1000, hard + 1000))\n    print('raise: ok', flush=True)\nexcept (ValueError, OSError):\n    print('raise: refused', flush=True)\nn = 0\nfor i in range(200):\n    try:\n        if os.fork() == 0:\n            time.sleep(20); os._exit(0)\n        n += 1\n    except OSError:\n        break\nprint('forked', n, flush=True)\ntime.sleep(20)\n";
+    // Flushed at once: the guard may stop the program for its processes
+    // before the kernel refuses a fork, and unflushed output would be lost.
     let out = run("A", &d.ws, &["--processes", "5"], &py, lift);
     assert!(has(&out, "raise: refused"), "{}{}", out.stdout, out.stderr);
     let forked: usize = out
