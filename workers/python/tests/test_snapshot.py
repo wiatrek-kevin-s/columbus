@@ -87,6 +87,20 @@ class SnapshotTest(unittest.TestCase):
         r = g.map_snapshot([a], out, 400, 400, imagery=far)
         self.assertFalse(r["imagery"]["covers"])
 
+    def test_imagery_that_is_not_a_geotiff_is_refused(self):
+        import numpy as np
+        a = self.layer("a", [box(1_205_000, 946_000, 1_225_000, 966_000)], crs="EPSG:3081")
+        red = np.full((3, 20, 20), 200, dtype="uint8")
+        self.raster("secret", red, "EPSG:4326", (-98.5, 30.0, -97.0, 31.5))
+        kml = os.path.join(self.d, "over.kml")
+        with open(kml, "w") as f:
+            f.write('<?xml version="1.0"?><kml xmlns="http://www.opengis.net/kml/2.2"><Document><GroundOverlay>'
+                    '<Icon><href>secret.tif</href></Icon><LatLonBox><north>31.5</north><south>30</south>'
+                    '<east>-97</east><west>-98.5</west></LatLonBox></GroundOverlay></Document></kml>')
+        out = os.path.join(self.d, "s.png")
+        with self.assertRaises(g.GISError):
+            g.map_snapshot([a], out, 400, 400, imagery=kml)
+
     def test_what_it_refuses(self):
         a = self.layer("a", [box(0, 0, 1, 1)], crs="EPSG:3081")
         out = os.path.join(self.d, "s.png")

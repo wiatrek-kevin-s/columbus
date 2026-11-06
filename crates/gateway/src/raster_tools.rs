@@ -63,7 +63,7 @@ pub(crate) fn not_tabular(conn: &Connection) -> String {
     )
 }
 
-fn has_raster_ext(name: &str) -> bool {
+pub(crate) fn has_raster_ext(name: &str) -> bool {
     let low = name.to_ascii_lowercase();
     low.ends_with(".tif") || low.ends_with(".tiff")
 }

@@ -112,6 +112,18 @@ struct Running {
     /// object does this, and this stays None.)
     #[cfg_attr(not(unix), allow(dead_code))]
     group: Option<u32>,
+    /// The process id as it started, kept because the child forgets it once
+    /// it has been reaped (killed and waited for).
+    pid: Option<u32>,
+}
+
+impl Running {
+    /// No longer a live engine process for `end_all`.
+    fn forget(&self) {
+        if let (Some(pid), Ok(mut l)) = (self.pid, LIVE.lock()) {
+            l.retain(|(p, _)| *p != pid);
+        }
+    }
 }
 
 /// Every engine process running now (its id, and whether it leads a
@@ -148,9 +160,7 @@ pub fn end_all() {
 
 impl Drop for Running {
     fn drop(&mut self) {
-        if let (Some(pid), Ok(mut l)) = (self.child.id(), LIVE.lock()) {
-            l.retain(|(p, _)| *p != pid);
-        }
+        self.forget();
         #[cfg(unix)]
         if let Some(pid) = self.group {
             if pid > 1 {
@@ -290,7 +300,8 @@ impl Worker {
         } else {
             None
         };
-        if let (Some(pid), Ok(mut live)) = (child.id(), LIVE.lock()) {
+        let pid = child.id();
+        if let (Some(pid), Ok(mut live)) = (pid, LIVE.lock()) {
             live.push((pid, group.is_some()));
         }
         Ok(Running {
@@ -299,6 +310,7 @@ impl Worker {
             stdout,
             next_id: 1,
             group,
+            pid,
         })
     }
 
@@ -350,6 +362,9 @@ impl Worker {
 
     async fn kill(run: Option<Running>) {
         if let Some(mut r) = run {
+            // Forgotten before it is reaped, so its id, free for reuse once
+            // it is, is never ended later by mistake.
+            r.forget();
             // Its whole group first, while the leader still holds the id.
             #[cfg(unix)]
             if let Some(pid) = r.group.filter(|p| *p > 1) {

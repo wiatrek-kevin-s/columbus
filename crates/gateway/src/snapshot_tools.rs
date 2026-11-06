@@ -74,7 +74,23 @@ impl Gateway {
         }
         let imagery = match &args.imagery {
             Some(h) => match self.own_output(h) {
-                Ok((p, _)) => Some(p),
+                // A GeoTIFF, by name and by its first bytes, as raster_op
+                // takes: never a format that brings in other files.
+                Ok((p, _))
+                    if crate::raster_tools::has_raster_ext(&p.to_string_lossy())
+                        && crate::raster_tools::is_tiff(&p) =>
+                {
+                    Some(p)
+                }
+                Ok(_) => {
+                    return Err(self.deny(
+                        &ctx,
+                        rec,
+                        format!(
+                            "{h} is not a GeoTIFF; imagery must be one (raster_op writes them)"
+                        ),
+                    ))
+                }
                 Err(e) => return Err(self.deny(&ctx, rec, e)),
             },
             None => None,

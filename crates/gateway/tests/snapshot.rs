@@ -284,6 +284,20 @@ with rasterio.open(sys.argv[2], "w", driver="GTiff", width=100, height=100, coun
     assert_eq!(out["result"]["imagery"]["bands"], "one band, grey", "{out}");
     assert_eq!(out["result"]["imagery"]["covers"], true, "{out}");
 
+    // A layer of the session's that is not a GeoTIFF is not imagery.
+    let r = call(
+        &c,
+        "map_snapshot",
+        json!({"layers": [layer], "imagery": layer}),
+    )
+    .await;
+    assert_eq!(r.is_error, Some(true));
+    assert!(
+        format!("{:?}", r.content).contains("not a GeoTIFF"),
+        "{:?}",
+        r.content
+    );
+
     // Only this session's own rasters.
     let r = call(
         &c,

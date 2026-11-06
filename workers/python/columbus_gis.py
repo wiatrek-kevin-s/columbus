@@ -1482,27 +1482,64 @@ def _wrap_antimeridian(gdf):
     return gdf.set_geometry(shapely.transform(gdf.geometry.values, lambda xy: xy + [[360.0, 0.0]] * (xy[:, :1] < 0)))
 
 
+SNAPSHOT_IMAGERY_MAX_CELLS = 4_000_000
+
+
 def _snapshot_imagery(path: str, crs, transform, shape) -> tuple[Any, Any, dict[str, Any]]:
     """A raster of the session's, warped onto the picture's grid: an RGB
     image and where it has data. Three or more 8-bit bands are drawn as
     red, green, blue; anything else as grey, stretched between its 2nd and
-    98th percentiles."""
+    98th percentiles. Opened as a GeoTIFF only (never a format that brings
+    in other files), and read at about the picture's own resolution (from
+    overviews where it has them), never cell by cell at full size."""
     import numpy as np
     import rasterio
-    from rasterio.warp import Resampling, reproject
+    from rasterio.enums import Resampling
+    from rasterio.warp import reproject, transform_bounds
+    from rasterio.windows import from_bounds as window_from_bounds
 
-    with rasterio.open(path) as src:
+    import columbus_raster as cr
+
+    if not cr.is_tiff(path):
+        raise GISError("input.format", f"{os.path.basename(path)} is not a GeoTIFF; imagery must be one")
+    h, w = shape
+    left, top = transform * (0, 0)
+    right, bottom = transform * (w, h)
+    with cr.open_raster(path) as src:
         if src.crs is None:
             raise GISError("params", f"{os.path.basename(path)} has no CRS, so it cannot be placed under the layers")
         rgb = src.count >= 3 and all(d == "uint8" for d in src.dtypes[:3])
         bands = [1, 2, 3] if rgb else [1]
+        info = {"bands": "red, green, blue" if rgb else "one band, grey", "covers": False}
+        try:
+            b = transform_bounds(crs, src.crs, left, bottom, right, top, densify_pts=21)
+            win = window_from_bounds(*b, transform=src.transform).intersection(
+                rasterio.windows.Window(0, 0, src.width, src.height))
+        except Exception:  # noqa: BLE001 - no overlap, or outside the CRS's area
+            return np.zeros(shape + (3,), dtype=np.float32), np.zeros(shape, dtype=bool), info
+        win = win.round_offsets().round_lengths()
+        if win.width < 1 or win.height < 1:
+            return np.zeros(shape + (3,), dtype=np.float32), np.zeros(shape, dtype=bool), info
+        # About twice the picture's cells, at most: GDAL reads overviews for this.
+        k = max(1.0, max(win.width / (2 * w), win.height / (2 * h)))
+        rw, rh = max(1, int(win.width / k)), max(1, int(win.height / k))
+        if rw * rh > SNAPSHOT_IMAGERY_MAX_CELLS:
+            raise GISError("params", "the imagery is too large to draw here")
+        data = src.read(bands, window=win, out_shape=(len(bands), rh, rw), masked=True,
+                        resampling=Resampling.bilinear if k > 1 else Resampling.nearest)
+        src_t = src.window_transform(win) * rasterio.Affine.scale(win.width / rw, win.height / rh)
+        # A cell every band masks (nodata, an alpha band, an internal mask)
+        # is no data; a band masked alone (a 0 in (200, 0, 0) with nodata
+        # 0) is a 0.
+        arr = np.ma.filled(data.astype(np.float32), 0.0)
+        arr[:, np.ma.getmaskarray(data).all(axis=0)] = np.nan
         out = np.full((len(bands),) + shape, np.nan, dtype=np.float32)
-        for i, b in enumerate(bands):
-            reproject(source=rasterio.band(src, b), destination=out[i], src_transform=src.transform,
-                      src_crs=src.crs, src_nodata=src.nodata, dst_transform=transform, dst_crs=crs,
-                      dst_nodata=np.nan, resampling=Resampling.bilinear)
-    have = ~np.isnan(out).all(axis=0)
-    info = {"bands": "red, green, blue" if rgb else "one band, grey", "covers": bool(have.any())}
+        for i in range(len(bands)):
+            reproject(source=arr[i], destination=out[i], src_transform=src_t, src_crs=src.crs,
+                      src_nodata=np.nan, dst_transform=transform, dst_crs=crs, dst_nodata=np.nan,
+                      resampling=Resampling.bilinear)
+    have = ~np.isnan(out).any(axis=0)
+    info["covers"] = bool(have.any())
     if not have.any():
         return np.zeros(shape + (3,), dtype=np.float32), have, info
     if rgb:
