@@ -388,6 +388,11 @@ impl Gateway {
                 o.remove(k);
             }
         }
+        if !access.filters_for(dataset).is_empty() {
+            // The database's estimate counts every row, the filtered-out
+            // ones included.
+            o.remove("estimated_rows");
+        }
         if !access.filters_for(dataset).is_empty() && o.get("extent").is_some_and(|e| !e.is_null())
         {
             o.insert("extent".into(), Value::Null);

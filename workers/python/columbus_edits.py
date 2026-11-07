@@ -325,7 +325,12 @@ def _open(conn: dict, timeout_s: float, write: bool):
 
 def _rows(db, sql: str, args=()) -> tuple[list[str], list[tuple]]:
     cur = db.cursor()
-    cur.execute(sql, args)
+    # With no parameters, none are passed, so psycopg leaves a literal %
+    # (LIKE 'A%') alone.
+    if args:
+        cur.execute(sql, args)
+    else:
+        cur.execute(sql)
     cols = [d[0] for d in (cur.description or [])]
     return cols, [tuple(r) for r in cur.fetchall()]
 

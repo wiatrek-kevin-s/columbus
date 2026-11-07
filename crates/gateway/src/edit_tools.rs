@@ -809,7 +809,7 @@ impl Gateway {
             let filters = access
                 .filters_for(&cs.dataset)
                 .iter()
-                .map(|f| columbus_shared::sqlcheck::check_where(f, dialect).map_err(|e| format!("the row filter {f:?} can't be checked: {e}")))
+                .map(|f| columbus_shared::sqlcheck::edit_filter(f, dialect).map_err(|e| format!("the row filter {f:?} can't be checked: {e}")))
                 .collect::<Result<Vec<_>, _>>()?;
             self.state
                 .worker

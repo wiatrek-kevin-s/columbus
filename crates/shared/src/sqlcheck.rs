@@ -625,9 +625,11 @@ fn function_name(name: &ObjectName) -> String {
 const FILTER_ALIAS: &str = "columbus_filtered";
 
 /// Bare names Oracle reads as values, not columns (`EXPIRES > SYSDATE`):
-/// left as they are in a filter. They are reserved words there, so no
-/// column of the query around the filter can be called that.
-const FILTER_KEYWORDS: &[&str] = &["SYSDATE", "SYSTIMESTAMP", "USER", "UID"];
+/// left as they are in a filter. They are on Oracle's list of reserved
+/// words, so no column of the query around the filter can be called that.
+/// (SYSTIMESTAMP and CURRENT_DATE are not reserved, so a filter can't use
+/// them: a caller's column of that name might be the one they read.)
+const FILTER_KEYWORDS: &[&str] = &["SYSDATE", "USER", "UID"];
 
 /// Names the server gives its own parts of a query: free SQL may not use
 /// them anywhere, so no name the caller writes can stand in for them.
@@ -656,6 +658,7 @@ fn bind_filter(
 ) -> Result<String, Denied> {
     let mut expr = parse_expr(checked, dialect)?;
     let mut missing: Option<String> = None;
+    let mut bare_value: Option<String> = None;
     let mut note = |i: &Ident| {
         if let Some(cols) = columns {
             if missing.is_none() && !cols.iter().any(|c| c.eq_ignore_ascii_case(&i.value)) {
@@ -676,16 +679,51 @@ fn bind_filter(
                     *parts = vec![Ident::new(alias), last];
                 }
             }
+            Expr::Function(f)
+                if dialect == SqlDialect::Oracle
+                    && matches!(f.args, sqlparser::ast::FunctionArguments::None) =>
+            {
+                // CURRENT_DATE and the like: not reserved on Oracle, so a
+                // column of the query around might stand in for one.
+                if bare_value.is_none() {
+                    bare_value = Some(f.name.to_string());
+                }
+            }
             _ => pin_function(e, dialect, catalog),
         }
         ControlFlow::<()>::Continue(())
     });
+    if let Some(v) = bare_value {
+        return Err(Denied::Query(format!(
+            "{v} can't be used in a row filter on Oracle; use SYSDATE"
+        )));
+    }
     if let Some(m) = missing {
         return Err(Denied::Query(format!(
             "it names {m}, which the table does not have"
         )));
     }
     Ok(expr.to_string())
+}
+
+/// A filter for a single-table edit (`UPDATE t ... WHERE key = ? AND
+/// (filter)`): checked, with each name its last part (`p.district` is the
+/// edited table's `district`), keywords and functions as for reads.
+pub fn edit_filter(text: &str, dialect: SqlDialect) -> Result<String, Denied> {
+    let checked = check_where(text, dialect)?;
+    let mut expr = parse_expr(&checked, dialect)?;
+    let _ = visit_expressions_mut(&mut expr, |e| {
+        if let Expr::CompoundIdentifier(parts) = e {
+            if let Some(last) = parts.last().cloned() {
+                *e = Expr::Identifier(last);
+            }
+        }
+        ControlFlow::<()>::Continue(())
+    });
+    let out = expr.to_string();
+    // The same checks a read's filter gets (bound to an alias only to check).
+    bind_filter(&out, dialect, FILTER_ALIAS, None, &Catalog::default())?;
+    Ok(out)
 }
 
 /// Refuse free SQL that uses one of the server's own names anywhere: as a
@@ -2670,6 +2708,18 @@ mod filter_binding_tests {
             .unwrap();
             assert_eq!(r, "columbus_filtered.EXPIRES > columbus_filtered.SYSDATE");
         }
+        // Not reserved on Oracle: refused rather than left as written.
+        for f in ["EXPIRES > SYSTIMESTAMP", "EXPIRES > CURRENT_DATE"] {
+            let a = access("oracle", f);
+            let cat = catalog(&["ROADS", "PERMITS"], &["ID", "EXPIRES"]);
+            let e = check_select("SELECT ID FROM ROADS.PERMITS", &a, 10, &cat);
+            assert!(e.is_err(), "{f}: {e:?}");
+        }
+        // Edits: one table, so a name's qualifier is dropped.
+        assert_eq!(
+            edit_filter("p.district = 14 AND status <> 'R'", SqlDialect::Postgres).unwrap(),
+            "district = 14 AND status <> 'R'"
+        );
         // A listed table with no known columns: its filter isn't run on trust.
         let a = access("gpkg", "DISTRICT_NBR = 14");
         let cat = catalog(&["main", "secrets"], &[]);
