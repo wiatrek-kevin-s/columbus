@@ -518,9 +518,11 @@ pub fn project_groups(
             .exists();
         let org = state.context.as_ref().and_then(|p| p.data_group(id, today));
         match (mine, org) {
-            (true, Some(_)) => return Err(format!(
+            (true, Some(_)) => {
+                return Err(format!(
                 "data group {id} is both one of yours and one of your organization's; rename yours"
-            )),
+            ))
+            }
             (true, None) => {
                 let g = columbus_shared::datagroups::load(id)?;
                 out.extend(g.to_scope(kind_of)?);
