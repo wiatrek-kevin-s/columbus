@@ -783,9 +783,12 @@ pub async fn chat_start(
         api_base = b;
     }
     let mut env = server_env(&s, &srv);
-    if let Some(id) = &project {
-        env.push(("COLUMBUS_PROJECT".into(), id.clone()));
-    }
+    // Always set, so an Unfiled chat never inherits a project from the
+    // app's own environment (empty means none).
+    env.push((
+        "COLUMBUS_PROJECT".into(),
+        project.clone().unwrap_or_default(),
+    ));
     let cfg = Config {
         server_env: env,
         server: srv,

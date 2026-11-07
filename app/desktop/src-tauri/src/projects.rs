@@ -101,13 +101,23 @@ fn save(form: ProjectForm) -> Result<Project, String> {
             (id, was.created)
         }
         None => {
+            // Its folder is made first, so two saves at once never share an id.
+            std::fs::create_dir_all(&dir)
+                .map_err(|e| format!("cannot make {}: {e}", dir.display()))?;
             let base = pj::id_from_name(&form.name);
             let mut id = base.clone();
             let mut n = 2;
-            while dir.join(&id).exists() {
-                let tail = format!("-{n}");
-                id = format!("{}{tail}", &base[..base.len().min(40 - tail.len())]);
-                n += 1;
+            loop {
+                match std::fs::create_dir(dir.join(&id)) {
+                    Ok(()) => break,
+                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && n < 1000 => {
+                        let tail = format!("-{n}");
+                        let stem = base[..base.len().min(40 - tail.len())].trim_end_matches('-');
+                        id = format!("{stem}{tail}");
+                        n += 1;
+                    }
+                    Err(e) => return Err(format!("cannot make the project's folder: {e}")),
+                }
             }
             (id, None)
         }

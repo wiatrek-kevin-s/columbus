@@ -147,6 +147,12 @@ fn file_in(dir: &Path, id: &str) -> Result<PathBuf, String> {
 /// One project, from its file (only a plain file: never a link).
 pub fn load_in(dir: &Path, id: &str) -> Result<Project, String> {
     let path = file_in(dir, id)?;
+    // Its folder is the project's own, not a link to somewhere else.
+    if let Ok(m) = std::fs::symlink_metadata(dir.join(id)) {
+        if !m.is_dir() {
+            return Err(format!("project {id:?}'s folder is a link or not a folder"));
+        }
+    }
     let meta = std::fs::symlink_metadata(&path).map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             format!("there is no project {id:?}")

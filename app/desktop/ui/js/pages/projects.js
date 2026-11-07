@@ -147,7 +147,7 @@ export async function render(main, rest) {
       h("fieldset", { class: "stack" }, h("legend", { class: "field" }, "Connections its chats may use"),
         h("label", { class: "row", for: "pj-conn-all" }, allR, " All my connections"),
         h("label", { class: "row", for: "pj-conn-some" }, someR, " Only these:"), boxes,
-        h("p", { class: "small muted" }, "Columbus's server enforces this: in this project's chats, the other connections can't be read at all.")),
+        h("p", { class: "small muted" }, "Columbus's server enforces this: in this project's chats, your other Columbus connections can't be read. (Connected apps, such as a drive, aren't narrowed by projects yet.)")),
       h("label", { class: "field", for: "pj-folder" }, "Default export folder", folder),
       acts)));
 
