@@ -1,0 +1,12 @@
+/home/claude/columbus/target-app/debug/deps/markup5ever-1b8002838ae9515a.d: /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/markup5ever-0.39.0/lib.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/markup5ever-0.39.0/interface/mod.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/markup5ever-0.39.0/interface/tree_builder.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/markup5ever-0.39.0/serialize.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/markup5ever-0.39.0/util/buffer_queue.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/markup5ever-0.39.0/util/smallcharset.rs
+
+/home/claude/columbus/target-app/debug/deps/libmarkup5ever-1b8002838ae9515a.rlib: /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/markup5ever-0.39.0/lib.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/markup5ever-0.39.0/interface/mod.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/markup5ever-0.39.0/interface/tree_builder.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/markup5ever-0.39.0/serialize.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/markup5ever-0.39.0/util/buffer_queue.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/markup5ever-0.39.0/util/smallcharset.rs
+
+/home/claude/columbus/target-app/debug/deps/libmarkup5ever-1b8002838ae9515a.rmeta: /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/markup5ever-0.39.0/lib.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/markup5ever-0.39.0/interface/mod.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/markup5ever-0.39.0/interface/tree_builder.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/markup5ever-0.39.0/serialize.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/markup5ever-0.39.0/util/buffer_queue.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/markup5ever-0.39.0/util/smallcharset.rs
+
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/markup5ever-0.39.0/lib.rs:
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/markup5ever-0.39.0/interface/mod.rs:
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/markup5ever-0.39.0/interface/tree_builder.rs:
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/markup5ever-0.39.0/serialize.rs:
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/markup5ever-0.39.0/util/buffer_queue.rs:
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/markup5ever-0.39.0/util/smallcharset.rs:

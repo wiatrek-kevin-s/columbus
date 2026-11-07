@@ -728,6 +728,7 @@ pub async fn chat_start(
     st: State<'_, ChatState>,
     model: Option<String>,
     effort: Option<String>,
+    project: Option<String>,
 ) -> Result<Started, String> {
     let mut slot = st.chat.lock().await;
     if slot.is_some() {
@@ -748,6 +749,14 @@ pub async fn chat_start(
     }
     if !effort_ok(&effort) {
         return Err("unknown thinking level".into());
+    }
+    // A chat in a project: the project must be readable now (the server
+    // refuses to start otherwise; this says why first).
+    let project = project.filter(|p| !p.is_empty());
+    if let Some(id) = project.clone() {
+        tauri::async_runtime::spawn_blocking(move || columbus_shared::projects::load(&id))
+            .await
+            .map_err(|e| e.to_string())??;
     }
     let s2 = s.clone();
     let srv = tauri::async_runtime::spawn_blocking(move || server(&s2))
@@ -773,8 +782,12 @@ pub async fn chat_start(
     if let Ok(b) = std::env::var("COLUMBUS_APP_API_BASE") {
         api_base = b;
     }
+    let mut env = server_env(&s, &srv);
+    if let Some(id) = &project {
+        env.push(("COLUMBUS_PROJECT".into(), id.clone()));
+    }
     let cfg = Config {
-        server_env: server_env(&s, &srv),
+        server_env: env,
         server: srv,
         api_key: key,
         model: model.clone(),
@@ -787,7 +800,14 @@ pub async fn chat_start(
         .await
         .map_err(|e| e.to_string())?;
     let session = chat.session().map(String::from);
-    let id = new_transcript(&app, &st, session.as_deref(), &model, &effort);
+    let id = new_transcript(
+        &app,
+        &st,
+        session.as_deref(),
+        &model,
+        &effort,
+        project.as_deref(),
+    );
     let started = Started {
         session,
         tools: chat.tool_count(),
@@ -992,6 +1012,7 @@ fn new_transcript(
     session: Option<&str>,
     model: &str,
     effort: &str,
+    project: Option<&str>,
 ) -> Option<String> {
     let dir = chats_dir(app)?;
     std::fs::create_dir_all(&dir).ok()?;
@@ -1004,7 +1025,7 @@ fn new_transcript(
     *st.transcript.lock().expect("transcript") = Some(path);
     record(
         app,
-        &serde_json::json!({"kind": "meta", "id": id, "session": session, "model": model, "effort": effort}),
+        &serde_json::json!({"kind": "meta", "id": id, "session": session, "model": model, "effort": effort, "project": project}),
     );
     Some(id)
 }
@@ -1105,7 +1126,7 @@ pub struct ChatSummary {
     started: Option<String>,
     updated: Option<String>,
     messages: usize,
-    /// Projects are not built yet: every chat is unfiled.
+    /// The project it is in; none is Unfiled.
     project: Option<String>,
     live: bool,
 }
@@ -1146,7 +1167,7 @@ fn summary(id: &str, lines: &[serde_json::Value], live: bool) -> ChatSummary {
             .and_then(|l| l["ts"].as_str())
             .map(String::from),
         messages: lines.iter().filter(|l| l["kind"] == "you").count(),
-        project: None,
+        project: meta.and_then(|m| m["project"].as_str()).map(String::from),
         live,
     }
 }

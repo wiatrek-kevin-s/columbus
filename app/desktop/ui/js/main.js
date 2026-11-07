@@ -10,6 +10,7 @@ import * as workflows from "./pages/workflows.js";
 import * as activity from "./pages/activity.js";
 import * as settings from "./pages/settings.js";
 import * as later from "./pages/later.js";
+import * as projects from "./pages/projects.js";
 
 // The rail, as the design groups it (section 4.1).
 const RAIL = [
@@ -26,7 +27,7 @@ const SUBS = {
 const PAGES = {
   home: home.render,
   chats: chats.render,
-  projects: later.projects,
+  projects: projects.render,
   documents: documents.render,
   datagroups: later.dataGroups,
   skills: tools.renderSkills,
@@ -259,6 +260,10 @@ async function refreshInbox() {
 async function refreshTools() {
   try { store.set("tools", await invoke("settings_tools")); } catch (e) { console.error(e); }
 }
+async function refreshProjects() {
+  try { store.set("projects", await invoke("projects_state")); } catch (e) { console.error(e); }
+}
+
 async function refreshWorkflows() {
   try { store.set("workflows", await invoke("workflows_state")); } catch (e) { console.error(e); }
 }
@@ -284,7 +289,7 @@ function workflowsRow() {
 async function refreshChats() {
   try { store.set("chats", await invoke("chats_list")); } catch (e) { console.error(e); }
 }
-const refresh = { info: refreshInfo, sessions: refreshSessions, inbox: refreshInbox, tools: refreshTools, chats: refreshChats, workflows: refreshWorkflows };
+const refresh = { info: refreshInfo, sessions: refreshSessions, inbox: refreshInbox, tools: refreshTools, chats: refreshChats, workflows: refreshWorkflows, projects: refreshProjects };
 store.refresh = refresh;
 chats.setRefresh(refresh);
 
@@ -314,7 +319,7 @@ async function boot() {
     store.prefs = p;
     applyTheme(p.theme);
   } catch (e) { console.error(e); }
-  await Promise.all([refreshInfo(), refreshChats(), refreshSessions(), refreshTools(), refreshWorkflows(),
+  await Promise.all([refreshInfo(), refreshChats(), refreshSessions(), refreshTools(), refreshWorkflows(), refreshProjects(),
     invoke("chat_settings").then((s) => { store.ownSession = s.session || null; }).catch(() => {})]);
   testFrame();
   window.addEventListener("hashchange", show);

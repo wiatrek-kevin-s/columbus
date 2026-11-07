@@ -1,0 +1,13 @@
+/home/claude/columbus/target-app/debug/deps/utf8_iter-d5d87611feaa1ae7.d: /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/utf8_iter-1.1.0/src/lib.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/utf8_iter-1.1.0/src/basic.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/utf8_iter-1.1.0/src/handler.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/utf8_iter-1.1.0/src/indices.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/utf8_iter-1.1.0/src/macros.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/utf8_iter-1.1.0/src/report.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/utf8_iter-1.1.0/src/str.rs
+
+/home/claude/columbus/target-app/debug/deps/libutf8_iter-d5d87611feaa1ae7.rlib: /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/utf8_iter-1.1.0/src/lib.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/utf8_iter-1.1.0/src/basic.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/utf8_iter-1.1.0/src/handler.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/utf8_iter-1.1.0/src/indices.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/utf8_iter-1.1.0/src/macros.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/utf8_iter-1.1.0/src/report.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/utf8_iter-1.1.0/src/str.rs
+
+/home/claude/columbus/target-app/debug/deps/libutf8_iter-d5d87611feaa1ae7.rmeta: /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/utf8_iter-1.1.0/src/lib.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/utf8_iter-1.1.0/src/basic.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/utf8_iter-1.1.0/src/handler.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/utf8_iter-1.1.0/src/indices.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/utf8_iter-1.1.0/src/macros.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/utf8_iter-1.1.0/src/report.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/utf8_iter-1.1.0/src/str.rs
+
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/utf8_iter-1.1.0/src/lib.rs:
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/utf8_iter-1.1.0/src/basic.rs:
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/utf8_iter-1.1.0/src/handler.rs:
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/utf8_iter-1.1.0/src/indices.rs:
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/utf8_iter-1.1.0/src/macros.rs:
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/utf8_iter-1.1.0/src/report.rs:
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/utf8_iter-1.1.0/src/str.rs:

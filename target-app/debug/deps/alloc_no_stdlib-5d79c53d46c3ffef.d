@@ -1,0 +1,10 @@
+/home/claude/columbus/target-app/debug/deps/alloc_no_stdlib-5d79c53d46c3ffef.d: /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/alloc-no-stdlib-3.0.0/src/lib.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/alloc-no-stdlib-3.0.0/src/allocated_memory/mod.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/alloc-no-stdlib-3.0.0/src/allocated_memory/index_macro.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/alloc-no-stdlib-3.0.0/src/stack_allocator.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/alloc-no-stdlib-3.0.0/src/allocated_stack_memory.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/alloc-no-stdlib-3.0.0/src/init.rs
+
+/home/claude/columbus/target-app/debug/deps/liballoc_no_stdlib-5d79c53d46c3ffef.rmeta: /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/alloc-no-stdlib-3.0.0/src/lib.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/alloc-no-stdlib-3.0.0/src/allocated_memory/mod.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/alloc-no-stdlib-3.0.0/src/allocated_memory/index_macro.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/alloc-no-stdlib-3.0.0/src/stack_allocator.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/alloc-no-stdlib-3.0.0/src/allocated_stack_memory.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/alloc-no-stdlib-3.0.0/src/init.rs
+
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/alloc-no-stdlib-3.0.0/src/lib.rs:
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/alloc-no-stdlib-3.0.0/src/allocated_memory/mod.rs:
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/alloc-no-stdlib-3.0.0/src/allocated_memory/index_macro.rs:
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/alloc-no-stdlib-3.0.0/src/stack_allocator.rs:
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/alloc-no-stdlib-3.0.0/src/allocated_stack_memory.rs:
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/alloc-no-stdlib-3.0.0/src/init.rs:

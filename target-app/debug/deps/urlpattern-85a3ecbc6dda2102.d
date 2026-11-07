@@ -1,0 +1,14 @@
+/home/claude/columbus/target-app/debug/deps/urlpattern-85a3ecbc6dda2102.d: /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/urlpattern-0.6.0/src/lib.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/urlpattern-0.6.0/src/canonicalize_and_process.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/urlpattern-0.6.0/src/component.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/urlpattern-0.6.0/src/constructor_parser.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/urlpattern-0.6.0/src/error.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/urlpattern-0.6.0/src/matcher.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/urlpattern-0.6.0/src/parser.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/urlpattern-0.6.0/src/quirks.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/urlpattern-0.6.0/src/regexp.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/urlpattern-0.6.0/src/tokenizer.rs
+
+/home/claude/columbus/target-app/debug/deps/liburlpattern-85a3ecbc6dda2102.rmeta: /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/urlpattern-0.6.0/src/lib.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/urlpattern-0.6.0/src/canonicalize_and_process.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/urlpattern-0.6.0/src/component.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/urlpattern-0.6.0/src/constructor_parser.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/urlpattern-0.6.0/src/error.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/urlpattern-0.6.0/src/matcher.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/urlpattern-0.6.0/src/parser.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/urlpattern-0.6.0/src/quirks.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/urlpattern-0.6.0/src/regexp.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/urlpattern-0.6.0/src/tokenizer.rs
+
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/urlpattern-0.6.0/src/lib.rs:
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/urlpattern-0.6.0/src/canonicalize_and_process.rs:
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/urlpattern-0.6.0/src/component.rs:
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/urlpattern-0.6.0/src/constructor_parser.rs:
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/urlpattern-0.6.0/src/error.rs:
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/urlpattern-0.6.0/src/matcher.rs:
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/urlpattern-0.6.0/src/parser.rs:
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/urlpattern-0.6.0/src/quirks.rs:
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/urlpattern-0.6.0/src/regexp.rs:
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/urlpattern-0.6.0/src/tokenizer.rs:

@@ -1,0 +1,12 @@
+/home/claude/columbus/target-app/debug/deps/derive_more_impl-25d1fd3e4fe8e13d.d: /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/derive_more-impl-2.1.1/src/lib.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/derive_more-impl-2.1.1/src/utils.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/derive_more-impl-2.1.1/src/ops/mod.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/derive_more-impl-2.1.1/src/ops/add.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/derive_more-impl-2.1.1/src/ops/add_assign.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/derive_more-impl-2.1.1/src/../README.md /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/derive_more-impl-2.1.1/src/../doc/add.md /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/derive_more-impl-2.1.1/src/../doc/add_assign.md
+
+/home/claude/columbus/target-app/debug/deps/libderive_more_impl-25d1fd3e4fe8e13d.so: /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/derive_more-impl-2.1.1/src/lib.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/derive_more-impl-2.1.1/src/utils.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/derive_more-impl-2.1.1/src/ops/mod.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/derive_more-impl-2.1.1/src/ops/add.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/derive_more-impl-2.1.1/src/ops/add_assign.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/derive_more-impl-2.1.1/src/../README.md /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/derive_more-impl-2.1.1/src/../doc/add.md /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/derive_more-impl-2.1.1/src/../doc/add_assign.md
+
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/derive_more-impl-2.1.1/src/lib.rs:
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/derive_more-impl-2.1.1/src/utils.rs:
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/derive_more-impl-2.1.1/src/ops/mod.rs:
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/derive_more-impl-2.1.1/src/ops/add.rs:
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/derive_more-impl-2.1.1/src/ops/add_assign.rs:
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/derive_more-impl-2.1.1/src/../README.md:
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/derive_more-impl-2.1.1/src/../doc/add.md:
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/derive_more-impl-2.1.1/src/../doc/add_assign.md:

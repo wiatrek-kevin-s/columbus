@@ -43,6 +43,7 @@ use std::time::Duration;
 use serde::Serialize;
 
 mod chat;
+mod projects;
 mod settings;
 mod shell;
 mod workflows;
@@ -474,6 +475,9 @@ fn main() {
             chat::chat_answer,
             chat::chat_end,
             chat::chats_list,
+            projects::projects_state,
+            projects::project_save,
+            projects::project_remove,
             chat::chat_transcript,
             chat::chats_search,
             chat::chat_rename,
