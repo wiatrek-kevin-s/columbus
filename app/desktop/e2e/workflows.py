@@ -171,7 +171,7 @@ def main():
 
         # Removing it, from its own page: off, its runs kept.
         click(d, By.XPATH, "//ul[@id='wf-installed']/li[@data-id='tract-export']//a")
-        click(d, By.ID, "wf-remove")
+        wait.until(EC.element_to_be_clickable((By.ID, "wf-remove"))).click()
         wait.until(lambda drv: drv.find_elements(By.ID, "wf-installed") and "Tract export" not in text(drv, "wf-installed"))
         assert "tract-export" not in (root / "workflows" / "approved.yaml").read_text()
         assert list((root / "workflows" / "runs" / "tract-export").iterdir()), "runs are kept"
