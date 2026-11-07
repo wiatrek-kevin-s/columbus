@@ -1,11 +1,15 @@
-//! `columbus-mcp registry query '<json>'`: one read-only registry call for
-//! the Columbus app's Registry page, made through Columbus itself (in
+//! `columbus-mcp app query '<json>'` (also `registry query`): one read-only
+//! call for a page of the Columbus app, made through Columbus itself (in
 //! process, like a workflow run) so the page gets exactly what an assistant
-//! would: the checked index, its checks and the same audit record.
+//! would: the same checks, policy and audit record.
 //!
-//! The JSON is `{"tool": "registry_search" | "registry_get", "args": {...}}`;
-//! nothing else can be called this way. It prints one JSON object:
-//! `{"ok": true, "result": …, "checks": […]}` or `{"ok": false, "error": …}`.
+//! The JSON is `{"tool": …, "args": {...}, "project": "<id>"?}`, and only
+//! these can be called: `registry_search`, `registry_get`, and `project_db`
+//! with `{"action": "list"}` and nothing else. With `project`, the call runs
+//! as in that project's chats (its connections and data groups, failing
+//! closed), so a project's databases are listed as its chats see them. It
+//! prints one JSON object: `{"ok": true, "result": …, "checks": […]}` or
+//! `{"ok": false, "error": …}`.
 
 use rmcp::model::{
     CallToolRequestParams, ClientCapabilities, Implementation, InitializeRequestParams,
@@ -15,9 +19,9 @@ use serde_json::{json, Value};
 
 use crate::server::{Gateway, State};
 
-/// The only calls the app's Registry page makes.
-const ALLOWED: &[&str] = &["registry_search", "registry_get"];
-pub const CLIENT: &str = "columbus-app-registry";
+/// The only calls the app's pages make this way.
+const ALLOWED: &[&str] = &["registry_search", "registry_get", "project_db"];
+pub const CLIENT: &str = "columbus-app-page";
 
 struct PageClient;
 
@@ -56,8 +60,32 @@ async fn run(request: &str) -> Result<Value, String> {
         Value::Null => Default::default(),
         _ => return Err("args must be an object".into()),
     };
+    // project_db only lists: exactly {"action": "list"}.
+    if tool == "project_db" && (args.len() != 1 || args.get("action") != Some(&json!("list"))) {
+        return Err("project_db can only list databases this way".into());
+    }
+    let project = match &req["project"] {
+        Value::Null => None,
+        Value::String(p) if !p.is_empty() => Some(p.clone()),
+        _ => return Err("project must be a project id".into()),
+    };
     let paths = crate::config::Paths::from_env();
-    let state = State::load(paths).map_err(|e| e.to_string())?;
+    let mut state = State::load(paths).map_err(|e| e.to_string())?;
+    if let Some(id) = &project {
+        crate::apply_project(&mut state, id)?;
+    }
+    let workspace = state.sandbox.root().to_path_buf();
+    let out = call(state, tool, args).await;
+    // This call's own session folder, if it left it empty.
+    let _ = std::fs::remove_dir(&workspace);
+    out
+}
+
+async fn call(
+    state: State,
+    tool: &str,
+    args: serde_json::Map<String, Value>,
+) -> Result<Value, String> {
     let gateway = Gateway::new(state);
     let (server_io, client_io) = tokio::io::duplex(4 << 20);
     tokio::spawn(async move {

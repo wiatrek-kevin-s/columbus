@@ -111,7 +111,9 @@ async fn main() -> Result<()> {
         ["servers", "approve", id, "--accept-flags"] => review_cli::approve(id, true).await,
         ["servers", "signin", id] => review_cli::signin(id).await,
         ["registry", "update"] => registry_tools::update(None).await,
-        ["registry", "query", request] => registry_cli::query(request).await,
+        ["registry", "query", request] | ["app", "query", request] => {
+            registry_cli::query(request).await
+        }
         ["pack", "lint"] => context::lint_cli(None),
         ["pack", "lint", dir] => context::lint_cli(Some(dir)),
         ["registry", "update", "--from", src] => registry_tools::update(Some(src)).await,
@@ -161,6 +163,22 @@ fn secret_set(id: &str) -> Result<()> {
     Ok(())
 }
 
+/// A session for a project: only the connections it lists (it can only
+/// narrow what the person has), its data groups (then only their datasets
+/// can be read), and its instructions for the assistant. Any failure stops
+/// the session rather than run it wider than the project.
+pub(crate) fn apply_project(state: &mut server::State, id: &str) -> Result<(), String> {
+    let p = columbus_shared::projects::load(id)?;
+    if !p.connections.is_empty() {
+        state.scope.connections = p.connections.clone();
+    }
+    if !p.data_groups.is_empty() {
+        state.scope.data_groups = context::project_groups(state, &p.data_groups)?;
+    }
+    state.project = Some(p);
+    Ok(())
+}
+
 async fn serve() -> Result<()> {
     // Other processes of the same user (a confined server or script among
     // them) must not read this one's memory or environment through /proc.
@@ -170,22 +188,11 @@ async fn serve() -> Result<()> {
     }
     let paths = config::Paths::from_env();
     let mut state = server::State::load(paths)?;
-    // A session for a project: only the connections it lists (it can only
-    // narrow what the person has), and its instructions for the assistant.
     if let Some(id) = std::env::var("COLUMBUS_PROJECT")
         .ok()
         .filter(|v| !v.is_empty())
     {
-        let p = columbus_shared::projects::load(&id).map_err(anyhow::Error::msg)?;
-        if !p.connections.is_empty() {
-            state.scope.connections = p.connections.clone();
-        }
-        // Its data groups: then its chats see only their datasets.
-        if !p.data_groups.is_empty() {
-            state.scope.data_groups =
-                context::project_groups(&state, &p.data_groups).map_err(anyhow::Error::msg)?;
-        }
-        state.project = Some(p);
+        apply_project(&mut state, &id).map_err(anyhow::Error::msg)?;
     }
     tracing::info!(session = %state.session, workspace = %state.sandbox.root().display(), "starting");
     let gateway = server::Gateway::new(state);

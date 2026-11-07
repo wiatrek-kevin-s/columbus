@@ -226,6 +226,50 @@ async fn project_databases_are_kept_apart_per_project() {
         assert_eq!(r.is_error, Some(true), "{project:?}");
         c.cancel().await.unwrap();
     }
+
+    // The app's Projects page lists them through `app query`, as each
+    // project's chats see them, and can do nothing else with them.
+    let page = |req: Value| {
+        let out = command(&env.root, None, Some(&py))
+            .args(["app", "query", &req.to_string()])
+            .as_std_mut()
+            .output()
+            .unwrap();
+        let text = String::from_utf8_lossy(&out.stdout).to_string();
+        serde_json::from_str::<Value>(text.lines().last().unwrap_or("")).unwrap_or(Value::Null)
+    };
+    let list = |project: Option<&str>| {
+        let mut req = json!({"tool": "project_db", "args": {"action": "list"}});
+        if let Some(p) = project {
+            req["project"] = json!(p);
+        }
+        page(req)
+    };
+    let v = list(Some("review"));
+    assert_eq!(v["ok"], true, "{v}");
+    let dbs = v["result"]["result"]["databases"].to_string();
+    assert!(dbs.contains("\"parcels\""), "{v}");
+    for p in [Some("pay-audit"), None] {
+        let v = list(p);
+        assert_eq!(v["ok"], true, "{v}");
+        assert!(!v.to_string().contains("\"parcels\""), "{p:?}: {v}");
+    }
+    // A project that doesn't exist fails closed.
+    let v = list(Some("nope"));
+    assert_eq!(v["ok"], false, "{v}");
+    // Only listing.
+    for args in [
+        json!({"action": "query", "db": "parcels", "scope": "project", "sql": "select 1"}),
+        json!({"action": "delete", "db": "parcels", "scope": "project"}),
+        json!({"action": "list", "db": "parcels"}),
+    ] {
+        let v = page(json!({"tool": "project_db", "args": args, "project": "review"}));
+        assert_eq!(v["ok"], false, "{args}: {v}");
+    }
+    assert!(env
+        .root
+        .join("workspaces/project-dbs/review/parcels")
+        .is_dir());
 }
 
 #[tokio::test]

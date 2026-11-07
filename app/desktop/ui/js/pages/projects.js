@@ -3,11 +3,48 @@
 // server enforces the connections (a project only narrows what you have);
 // the instructions go to the assistant in every chat of the project. Your
 // projects are yours alone: nothing here is shared.
-import { h, el, invoke, store, button, pageHead, showError, toast, emptyState, askConfirm, ago, plural } from "../core.js";
+import { h, el, invoke, store, button, pageHead, showError, toast, emptyState, askConfirm, ago, plural, size } from "../core.js";
 
 const go = (hash) => { location.hash = hash; };
 const projHash = (id) => `#/projects/${encodeURIComponent(id)}`;
 const MAX = 8000;
+
+/** The project databases of a project (or, with null, the shared ones
+ * from before projects), listed by Columbus's server for that project. The
+ * card fills in when the list arrives. */
+function dbsCard(projectId) {
+  const bd = h("div", { class: "bd flush" }, h("p", { class: "pad muted small" }, "Looking for project databases…"));
+  const title = h("h2", {}, projectId ? "Project databases" : "Project databases outside projects");
+  const card = h("section", { class: "card", id: "pj-dbs" }, h("div", { class: "hd" }, title), bd);
+  invoke("project_dbs", { project: projectId }).then((r) => {
+    const dbs = r.databases || [];
+    if (!dbs.length) {
+      if (!projectId) { card.remove(); return; }
+      bd.replaceChildren(h("p", { class: "pad muted small" }, "None yet. Your assistant makes one when you ask it to join or keep large tables (project_db, scope project); it belongs to this project alone."));
+      return;
+    }
+    title.textContent = `${projectId ? "Project databases" : "Project databases outside projects"} (${dbs.length})`;
+    const ul = h("ul", { class: "list", id: "pj-db-list" });
+    for (const d of dbs) {
+      const tables = d.tables || [];
+      const facts = [tables.length ? plural(tables.length, "table") : "no tables yet", d.bytes != null ? size(d.bytes) : null].filter(Boolean).join(" · ");
+      const li = h("li", { class: "tool" }, h("div", { class: "text" },
+        h("b", {}, String(d.db)),
+        h("span", { class: "where" }, facts),
+        d.description ? h("span", { class: "muted small" }, String(d.description)) : null,
+        tables.length ? h("span", { class: "muted small wrap-any" }, tables.join(", ")) : null,
+        d.withheld ? h("span", { class: "small error-text" }, `Withheld here: ${d.withheld}.`) : null),
+      h("div", { class: "acts" }, d.withheld ? el("span", "badge warn", "withheld") : el("span", "badge pass", "usable")));
+      ul.append(li);
+    }
+    bd.replaceChildren(ul, h("p", { class: "pad small muted" }, projectId
+      ? "Your assistant reads and adds to these in this project's chats; ask it to describe one or delete it (deleting asks you first)."
+      : "Made before projects, or in chats not in a project: usable in chats outside projects."));
+  }).catch((e) => {
+    bd.replaceChildren(h("p", { class: "pad small error-text" }, `Couldn't list them: ${e}`));
+  });
+  return card;
+}
 
 async function load() {
   const s = await invoke("projects_state");
@@ -100,7 +137,8 @@ export async function render(main, rest) {
         h("div", { class: "bd" }, h("ul", { class: "small" }, ...state.problems.map(([pid, why]) => el("li", null, `${pid}: ${why}`))),
           h("p", { class: "small muted" }, "Chats can't start in these until their files are fixed or removed."))));
     }
-    body.append(h("p", { class: "small muted" }, "Data groups, documents and skills for each project come with their own pages. Sharing a project with your team comes later."));
+    body.append(dbsCard(null));
+    body.append(h("p", { class: "small muted" }, "Attach data groups on a project's page. Documents and skills for each project, and sharing a project with your team, come later."));
   }
 
   // ---- A project: its settings, and its chats --------------------------
@@ -195,7 +233,7 @@ export async function render(main, rest) {
       }
       body.append(h("section", { class: "card" }, h("div", { class: "hd" }, h("h2", {}, `Chats (${chats.length})`)),
         h("div", { class: "bd flush" }, chats.length ? ul : h("p", { class: "pad muted small" }, "No chats yet. Start one with New chat in this project."))));
-      body.append(h("p", { class: "small muted" }, "Project databases your assistant makes in this project's chats (", h("code", {}, "project_db"), ", scope project) belong to this project alone. Data groups, documents and skills for a project come with their own pages."));
+      body.append(dbsCard(p.id));
     }
     name.focus();
 

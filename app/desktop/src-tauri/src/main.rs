@@ -484,6 +484,7 @@ fn main() {
             datagroups::datagroup_save,
             datagroups::datagroup_remove,
             registry::registry_query,
+            projects::project_dbs,
             registry::registry_update,
             chat::chat_transcript,
             chat::chats_search,

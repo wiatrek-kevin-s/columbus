@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 use tauri::AppHandle;
 
-fn program(app: &AppHandle) -> Result<(std::path::PathBuf, Option<std::path::PathBuf>), String> {
+pub(crate) fn program(app: &AppHandle) -> Result<(std::path::PathBuf, Option<std::path::PathBuf>), String> {
     let s = crate::chat::load(app);
     let server = crate::chat::server(&s).ok_or("Columbus's server was not found")?;
     // Only a Columbus server is started, whatever wrote the settings.
@@ -22,7 +22,7 @@ fn program(app: &AppHandle) -> Result<(std::path::PathBuf, Option<std::path::Pat
 
 /// Run the server with `args`, wait at most `limit`, and return its
 /// standard output (at most 8 MB).
-fn run(
+pub(crate) fn run(
     server: &std::path::Path,
     engine: Option<&std::path::Path>,
     args: &[&str],
@@ -81,6 +81,32 @@ fn run(
     Ok(text)
 }
 
+/// One read-only call through `columbus-mcp app query` (registry_search,
+/// registry_get, or listing project databases), optionally in a project.
+pub(crate) fn app_query(
+    server: &std::path::Path,
+    engine: Option<&std::path::Path>,
+    request: &Value,
+) -> Result<Value, String> {
+    let req = request.to_string();
+    let text = run(
+        server,
+        engine,
+        &["app", "query", &req],
+        Duration::from_secs(90),
+    )?;
+    let v: Value = serde_json::from_str(text.trim())
+        .map_err(|_| "Columbus's answer could not be read".to_string())?;
+    if v["ok"] == true {
+        Ok(v)
+    } else {
+        Err(v["error"]
+            .as_str()
+            .unwrap_or("Columbus could not answer")
+            .to_string())
+    }
+}
+
 /// One registry call: `tool` is registry_search or registry_get.
 #[tauri::command]
 pub async fn registry_query(app: AppHandle, tool: String, args: Value) -> Result<Value, String> {
@@ -89,23 +115,11 @@ pub async fn registry_query(app: AppHandle, tool: String, args: Value) -> Result
     }
     let (server, engine) = program(&app)?;
     tauri::async_runtime::spawn_blocking(move || {
-        let req = serde_json::json!({"tool": tool, "args": args}).to_string();
-        let text = run(
+        app_query(
             &server,
             engine.as_deref(),
-            &["registry", "query", &req],
-            Duration::from_secs(90),
-        )?;
-        let v: Value = serde_json::from_str(text.trim())
-            .map_err(|_| "the registry's answer could not be read".to_string())?;
-        if v["ok"] == true {
-            Ok(v)
-        } else {
-            Err(v["error"]
-                .as_str()
-                .unwrap_or("the registry could not answer")
-                .to_string())
-        }
+            &serde_json::json!({"tool": tool, "args": args}),
+        )
     })
     .await
     .map_err(|e| e.to_string())?

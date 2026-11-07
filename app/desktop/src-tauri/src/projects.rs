@@ -163,3 +163,36 @@ pub async fn project_remove(id: String) -> Result<(), String> {
         .await
         .map_err(|e| e.to_string())?
 }
+
+/// The project databases of one project (or, with no project, the shared
+/// ones from before projects), as Columbus's server lists them for that
+/// project: names, tables, size, and why one is withheld there.
+#[tauri::command]
+pub async fn project_dbs(app: tauri::AppHandle, project: Option<String>) -> Result<Value, String> {
+    let project = project.filter(|p| !p.is_empty());
+    if let Some(id) = &project {
+        // Only a project that exists: the id goes to the server as data,
+        // and it reads the project's file itself.
+        pj::load(id)?;
+    }
+    let (server, engine) = crate::registry::program(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut req = json!({"tool": "project_db", "args": {"action": "list"}});
+        if let Some(id) = project {
+            req["project"] = json!(id);
+        }
+        let v = crate::registry::app_query(&server, engine.as_deref(), &req)?;
+        let dbs: Vec<Value> = v["result"]["result"]["databases"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter(|d| d["scope"] == "project")
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        Ok(json!({"databases": dbs}))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}

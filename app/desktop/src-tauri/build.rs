@@ -24,6 +24,7 @@ fn main() {
             "datagroup_save",
             "datagroup_remove",
             "registry_query",
+            "project_dbs",
             "registry_update",
             "workflows_state",
             "workflow_install",

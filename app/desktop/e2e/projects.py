@@ -81,6 +81,9 @@ def main():
         assert "name: Tract review 2027" in saved and "acres" in saved, saved
         assert "- tiger" in saved and "payroll" not in saved, saved
         assert "export_folder: outbox" in saved, saved
+        # Its project databases, as Columbus's server lists them for it.
+        wait.until(lambda drv: "None yet" in text(drv, "pj-dbs") or "Couldn't" in text(drv, "pj-dbs"))
+        assert "None yet" in text(d, "pj-dbs"), text(d, "pj-dbs")
 
         # A chat in the project says so.
         wait.until(EC.element_to_be_clickable((By.ID, "pj-chat"))).click()
