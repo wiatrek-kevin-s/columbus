@@ -654,6 +654,9 @@ def _apply_source(params: dict, cs: dict) -> dict:
     srid = params.get("srid")
     gpkg_srs = params.get("gpkg_srs_id")
     filt = " AND ".join(f"({f})" for f in params.get("filters") or [])
+    if kind in PG_KINDS:
+        # psycopg reads % as a placeholder: a literal % (LIKE 'A%') is %%.
+        filt = filt.replace("%", "%%")
     scope = f" AND {filt}" if filt else ""
     timeout_s = float(params.get("timeout_s", 120))
     db, m, scrub = _open(conn, timeout_s, write=True)

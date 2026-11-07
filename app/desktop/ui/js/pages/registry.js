@@ -152,7 +152,7 @@ export async function render(main, rest) {
       // Only the id (letters, digits and dashes): the entry's community-written
       // words reach the assistant through registry_get, marked untrusted,
       // never as the person's own message.
-      const text = `Tell me about the registry entry ${e.id}: what it covers, its licence, and how I'd use it in Columbus.`;
+      const text = `Tell me about the registry entry ${eid}: what it covers, its licence, and how I'd use it in Columbus.`;
       try { sessionStorage.setItem("columbus.prefill", JSON.stringify({ text, at: Date.now() })); } catch { /* no prefill */ }
       go("#/chats/fresh");
     }, { id: "rg-ask" });

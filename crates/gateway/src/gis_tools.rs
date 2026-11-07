@@ -643,7 +643,14 @@ impl Gateway {
             checks.push(Check {
                 id: "query.row_filter".into(),
                 severity: Severity::Info,
-                message: format!("Server-applied row filter: {}", r.filters.join(" AND ")),
+                message: format!(
+                    "Server-applied row filter: {}",
+                    r.filters
+                        .iter()
+                        .map(|f| format!("({f})"))
+                        .collect::<Vec<_>>()
+                        .join(" AND ")
+                ),
                 detail: None,
                 fix: None,
             });
@@ -910,7 +917,11 @@ impl Gateway {
                     severity: Severity::Info,
                     message: format!(
                         "Rows counted and returned under the server's row filter: {}",
-                        filters.join(" AND ")
+                        filters
+                            .iter()
+                            .map(|f| format!("({f})"))
+                            .collect::<Vec<_>>()
+                            .join(" AND ")
                     ),
                     detail: None,
                     fix: None,

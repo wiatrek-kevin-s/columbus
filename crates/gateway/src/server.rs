@@ -367,17 +367,22 @@ pub struct ConnectionDetail {
     pub expires: Option<String>,
     pub engine_ready: bool,
     /// In a project with data groups: the only datasets of this connection
-    /// that can be read here, each with the group's filter (ANDed onto the
-    /// row filter). Absent when no data group narrows the session.
+    /// that can be read here, with the filters applied to each. Absent when
+    /// no data group narrows the session.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub data_group_datasets: Option<Vec<GroupDatasetView>>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct GroupDatasetView {
+    /// The first of the project's groups that names it.
     pub group: String,
     pub dataset: String,
-    pub filter: Option<String>,
+    /// Whether the connection allows it at all (a group can't widen that).
+    pub readable: bool,
+    /// Every filter ANDed onto reads of it here, the connection's row filter
+    /// first; the groups' filters for it are one entry, ORed.
+    pub filters: Vec<String>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -2169,17 +2174,22 @@ impl Gateway {
             expires: conn.expires.map(|d| d.to_string()),
             engine_ready: Self::engine_ready(&conn.kind),
             data_group_datasets: (!self.state.scope.data_groups.is_empty()).then(|| {
+                // Each dataset the groups name on this connection, as it is
+                // read here: whether the connection allows it at all, and
+                // every filter applied to it (the row filter included).
+                let mut seen = std::collections::BTreeSet::new();
                 self.state
                     .scope
                     .data_groups
                     .iter()
                     .filter(|g| g.connection == conn.id)
-                    .flat_map(|g| {
-                        g.datasets.iter().map(|d| GroupDatasetView {
-                            group: g.id.clone(),
-                            dataset: d.physical.clone(),
-                            filter: d.filter.clone(),
-                        })
+                    .flat_map(|g| g.datasets.iter().map(move |d| (g, d)))
+                    .filter(|(_, d)| seen.insert(d.physical.to_ascii_uppercase()))
+                    .map(|(g, d)| GroupDatasetView {
+                        group: g.id.clone(),
+                        dataset: d.physical.clone(),
+                        readable: access.dataset_allowed(&d.physical),
+                        filters: access.filters_for(&d.physical),
                     })
                     .collect()
             }),
@@ -2294,6 +2304,8 @@ impl Gateway {
                             json!("Not shown: the stored extent covers rows this session can't read. query_features reports the extent of the rows you can."),
                         );
                     }
+                    // So does the database's estimate of the table's rows.
+                    o.remove("estimated_rows");
                 }
             }
         }
@@ -2915,7 +2927,13 @@ impl Gateway {
             f.dedup();
             checks.push(Check::info(
                 "query.row_filter",
-                format!("Server-applied row filter: {}", f.join(" AND ")),
+                format!(
+                    "Server-applied row filter: {}",
+                    f.iter()
+                        .map(|x| format!("({x})"))
+                        .collect::<Vec<_>>()
+                        .join(" AND ")
+                ),
             ));
         }
         if rows_read == 0 {

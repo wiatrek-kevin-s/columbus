@@ -624,21 +624,10 @@ fn function_name(name: &ObjectName) -> String {
 /// The name a filtered table goes by inside its filter's own query.
 const FILTER_ALIAS: &str = "columbus_filtered";
 
-/// Bare names that Oracle and PostgreSQL read as values, not columns
-/// (`EXPIRES > SYSDATE`): left as they are in a filter. They are reserved
-/// words there, so they never bind to a column of the query around it.
-const FILTER_KEYWORDS: &[&str] = &[
-    "SYSDATE",
-    "SYSTIMESTAMP",
-    "LOCALTIMESTAMP",
-    "LOCALTIME",
-    "CURRENT_DATE",
-    "CURRENT_TIME",
-    "CURRENT_TIMESTAMP",
-    "CURRENT_USER",
-    "SESSION_USER",
-    "USER",
-];
+/// Bare names Oracle reads as values, not columns (`EXPIRES > SYSDATE`):
+/// left as they are in a filter. They are reserved words there, so no
+/// column of the query around the filter can be called that.
+const FILTER_KEYWORDS: &[&str] = &["SYSDATE", "SYSTIMESTAMP", "USER", "UID"];
 
 /// Names the server gives its own parts of a query: free SQL may not use
 /// them anywhere, so no name the caller writes can stand in for them.
@@ -646,7 +635,7 @@ const RESERVED_NAMES: &[&str] = &[FILTER_ALIAS, "columbus_q"];
 
 fn filter_keyword(i: &Ident, dialect: SqlDialect) -> bool {
     i.quote_style.is_none()
-        && matches!(dialect, SqlDialect::Oracle | SqlDialect::Postgres)
+        && dialect == SqlDialect::Oracle
         && FILTER_KEYWORDS.contains(&i.value.to_ascii_uppercase().as_str())
 }
 
@@ -699,24 +688,32 @@ fn bind_filter(
     Ok(expr.to_string())
 }
 
-/// Refuse free SQL that uses one of the server's own names (any case, any
-/// quoting), anywhere.
+/// Refuse free SQL that uses one of the server's own names anywhere: as a
+/// name in any case or quoting, or as a string (SQLite takes `AS 'name'`
+/// as an alias).
 fn refuse_reserved_names(sql: &str, dialect: SqlDialect) -> Result<(), Denied> {
+    use sqlparser::tokenizer::Token;
     let d = dialect.parser_dialect();
     let tokens = sqlparser::tokenizer::Tokenizer::new(d.as_ref(), sql)
         .tokenize()
         .map_err(|e| Denied::Query(format!("could not parse SQL: {e}")))?;
     for t in tokens {
-        if let sqlparser::tokenizer::Token::Word(w) = t {
-            if RESERVED_NAMES
-                .iter()
-                .any(|r| w.value.eq_ignore_ascii_case(r))
-            {
-                return Err(Denied::Query(format!(
-                    "{} is a name Columbus uses inside the queries it runs; use another name",
-                    w.value
-                )));
-            }
+        let value = match &t {
+            Token::Word(w) => w.value.as_str(),
+            Token::SingleQuotedString(v)
+            | Token::DoubleQuotedString(v)
+            | Token::TripleSingleQuotedString(v)
+            | Token::TripleDoubleQuotedString(v)
+            | Token::NationalStringLiteral(v)
+            | Token::EscapedStringLiteral(v)
+            | Token::UnicodeStringLiteral(v) => v.as_str(),
+            _ => continue,
+        };
+        let v = value.trim();
+        if RESERVED_NAMES.iter().any(|r| v.eq_ignore_ascii_case(r)) {
+            return Err(Denied::Query(format!(
+                "{v} is a name Columbus uses inside the queries it runs; use another name"
+            )));
         }
     }
     Ok(())
@@ -1367,7 +1364,15 @@ impl VisitorMut for ApplyFilters<'_> {
         for f in &filters {
             // Every column a filter names is the filtered table's own: one it
             // lacks is an error, never a column of the query around it.
-            let columns = rel.map(|r| r.columns.as_slice()).filter(|c| !c.is_empty());
+            // A listed table whose columns aren't known can't have its
+            // filter checked: refused rather than run on trust.
+            if rel.is_some_and(|r| r.columns.is_empty()) {
+                self.error = Some(Denied::Query(format!(
+                    "the columns of {key} are not known, so its row filter cannot be checked"
+                )));
+                return ControlFlow::Break(());
+            }
+            let columns = rel.map(|r| r.columns.as_slice());
             match check_where(f, self.dialect)
                 .and_then(|c| bind_filter(&c, self.dialect, FILTER_ALIAS, columns, self.catalog))
             {
@@ -2619,6 +2624,8 @@ mod filter_binding_tests {
                 "SELECT s.* FROM (SELECT 14 AS district_nbr) AS columbus_filtered, main.secrets s",
                 "SELECT s.* FROM (SELECT 14 AS district_nbr) AS \"COLUMBUS_FILTERED\", main.secrets s",
                 "WITH columbus_q AS (SELECT 1 AS x) SELECT x FROM columbus_q",
+                "SELECT (SELECT group_concat(secret) FROM main.secrets) FROM (SELECT 14 AS district_nbr) AS 'columbus_filtered'",
+                "SELECT (SELECT group_concat(secret) FROM main.secrets) FROM (SELECT 14 AS district_nbr) 'COLUMBUS_FILTERED'",
             ] {
                 let e = check_select(sql, &a, 10, &cat);
                 assert!(e.is_err(), "{kind}: {sql} -> {e:?}");
@@ -2650,16 +2657,23 @@ mod filter_binding_tests {
             "{}",
             q.sql
         );
-        // Elsewhere a bare name is a column, bound to the table.
-        let r = bind_filter(
-            "EXPIRES > SYSDATE",
-            SqlDialect::Sqlite,
-            FILTER_ALIAS,
-            None,
-            &Catalog::default(),
-        )
-        .unwrap();
-        assert_eq!(r, "columbus_filtered.EXPIRES > columbus_filtered.SYSDATE");
+        // Elsewhere (PostgreSQL included: SYSDATE isn't a keyword there) a
+        // bare name is a column, bound to the table.
+        for dialect in [SqlDialect::Sqlite, SqlDialect::Postgres] {
+            let r = bind_filter(
+                "EXPIRES > SYSDATE",
+                dialect,
+                FILTER_ALIAS,
+                None,
+                &Catalog::default(),
+            )
+            .unwrap();
+            assert_eq!(r, "columbus_filtered.EXPIRES > columbus_filtered.SYSDATE");
+        }
+        // A listed table with no known columns: its filter isn't run on trust.
+        let a = access("gpkg", "DISTRICT_NBR = 14");
+        let cat = catalog(&["main", "secrets"], &[]);
+        assert!(check_select("SELECT id FROM main.secrets", &a, 10, &cat).is_err());
     }
 
     #[test]

@@ -804,6 +804,13 @@ impl Gateway {
             let mut handle = self.handle(&conn)?;
             handle["write"] = json!(true);
             let table_name = cs.dataset.rsplit('.').next().unwrap_or(&cs.dataset).to_string();
+            // The filters as checked: each one exactly as the parser reads it
+            // (a filter that doesn't check stops the edit).
+            let filters = access
+                .filters_for(&cs.dataset)
+                .iter()
+                .map(|f| columbus_shared::sqlcheck::check_where(f, dialect).map_err(|e| format!("the row filter {f:?} can't be checked: {e}")))
+                .collect::<Result<Vec<_>, _>>()?;
             self.state
                 .worker
                 .core(
@@ -816,7 +823,7 @@ impl Gateway {
                         "geometry_sql": info.get("geometry_column").and_then(Value::as_str).map(|g| quote(g, dialect)),
                         "srid": info.get("srs_id").or_else(|| info.get("srid")),
                         "gpkg_srs_id": info.get("srs_id"),
-                        "filters": access.filters_for(&cs.dataset),
+                        "filters": filters,
                         "timeout_s": timeout,
                     }),
                     Duration::from_secs(timeout + 30),

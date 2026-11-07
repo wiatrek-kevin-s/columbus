@@ -254,9 +254,16 @@ async fn project_databases_are_kept_apart_per_project() {
         assert_eq!(v["ok"], true, "{v}");
         assert!(!v.to_string().contains("\"parcels\""), "{p:?}: {v}");
     }
-    // A project that doesn't exist fails closed.
+    // A project that doesn't exist fails closed, leaving nothing behind.
+    let count = || {
+        std::fs::read_dir(env.root.join("workspaces"))
+            .unwrap()
+            .count()
+    };
+    let before = count();
     let v = list(Some("nope"));
     assert_eq!(v["ok"], false, "{v}");
+    assert_eq!(count(), before, "a session folder was left behind");
     // Only listing.
     for args in [
         json!({"action": "query", "db": "parcels", "scope": "project", "sql": "select 1"}),
@@ -386,9 +393,11 @@ async fn a_projects_data_groups_narrow_to_their_datasets_and_rows() {
         "{dc}"
     );
     assert_eq!(
-        dc["result"]["data_group_datasets"][0]["filter"], "parcel_id = 'P1'",
+        dc["result"]["data_group_datasets"][0]["filters"],
+        json!(["parcel_id = 'P1'"]),
         "{dc}"
     );
+    assert_eq!(dc["result"]["data_group_datasets"][0]["readable"], true);
     // No workflow from here yet: it couldn't keep to the groups.
     let r = call(&c, "propose_workflow", json!({"workflow": "id: x-flow\nname: X\npurpose: X.\nscope:\n  connections: [county]\nsteps:\n  - id: rows\n    tool: query_features\n    args: { connection: county, dataset: roads }\n"})).await;
     assert_eq!(r.is_error, Some(true));

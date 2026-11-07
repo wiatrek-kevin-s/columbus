@@ -77,11 +77,14 @@ async fn run(request: &str) -> Result<Value, String> {
     };
     let paths = crate::config::Paths::from_env();
     let mut state = State::load(paths).map_err(|e| e.to_string())?;
-    if let Some(id) = &project {
-        crate::apply_project(&mut state, id)?;
-    }
     let workspace = state.sandbox.root().to_path_buf();
-    let out = call(state, tool, args).await;
+    let out = match &project {
+        Some(id) => match crate::apply_project(&mut state, id) {
+            Ok(()) => call(state, tool, args).await,
+            Err(e) => Err(e),
+        },
+        None => call(state, tool, args).await,
+    };
     // This call's own session folder, if it left it empty.
     let _ = std::fs::remove_dir(&workspace);
     out
