@@ -248,6 +248,7 @@ export const store = {
   inbox: [], // approvals_inbox
   chats: [], // chats_list
   tools: null, // settings_tools
+  projects: null, // projects_state
   listeners: new Set(),
   set(k, v) {
     this[k] = v;

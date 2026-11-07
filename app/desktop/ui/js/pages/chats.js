@@ -11,6 +11,8 @@ const MODEL_NOTE = "The chat sends your messages and the results it reads to the
 
 // ---------- The live chat (one at a time, as before) ----------
 const live = {
+  // The project this chat works in (null: Unfiled). Set before it starts.
+  project: null,
   started: false,
   busy: false,
   chatId: null,
@@ -699,7 +701,8 @@ function buildLive() {
   const sub = h("p", { class: "sub", id: "chat-sub" }, "In the Columbus app · Unfiled");
   const seg = layoutSwitch(view, () => live.chatId);
   const mapBtn = button("Map", "sm sheet-only", () => view.classList.add("sheet-open"), { id: "map", "aria-label": "Show the map and table" });
-  const newBtn = button("New chat", "sm", newChat, { id: "new" });
+  // A new chat in the same project as this one.
+  const newBtn = button("New chat", "sm", () => newChat(live.project), { id: "new" });
   const head = h("header", { class: "chathead" }, h("div", { class: "titlebox" }, title, sub), h("div", { class: "actions" }, seg, mapBtn, newBtn));
   const tray = h("section", { class: "tray", "aria-label": "Waiting for you", hidden: true });
   const log = h("div", { id: "log", role: "log", "aria-live": "polite", "aria-label": "Conversation" });
@@ -781,7 +784,7 @@ async function start() {
   if (live.started) return true;
   $("status").textContent = "Starting a Columbus session…";
   try {
-    const s = await invoke("chat_start", live.pick || {});
+    const s = await invoke("chat_start", { ...(live.pick || {}), project: live.project });
     live.started = true;
     live.session = s.session || null;
     live.chatId = s.chat || null;
@@ -804,8 +807,23 @@ async function start() {
   }
 }
 
-async function newChat() {
+/** A project's name, or "Unfiled". */
+export function projectName(id) {
+  if (!id) return "Unfiled";
+  const p = (store.projects?.projects || []).find((x) => x.id === id);
+  return p ? p.name : id;
+}
+
+function drawSub() {
+  const sub = $("chat-sub");
+  if (!sub) return;
+  sub.replaceChildren("In the Columbus app · ",
+    live.project ? h("a", { href: `#/projects/${encodeURIComponent(live.project)}` }, projectName(live.project)) : "Unfiled");
+}
+
+async function newChat(project = null) {
   const was = live.chatId;
+  live.project = project || null;
   await invoke("chat_end");
   live.started = false;
   live.busy = false;
@@ -817,6 +835,7 @@ async function newChat() {
   live.renderer = new Renderer(live.log, true, (id) => { live.panel.showProvenance(id); live.view.classList.add("sheet-open"); });
   $("chat-title").textContent = "New chat";
   delete $("chat-title").dataset.set;
+  drawSub();
   live.panel.setSession(null);
   setBusy(false);
   await updateChip();
@@ -911,10 +930,12 @@ export async function render(main, rest) {
   const [kind, id] = rest;
   // "fresh": a New chat button anywhere. It always starts a new chat; "new"
   // is the app's current chat (where "Answer in the chat" goes).
+  // "fresh/<project>": a new chat in that project.
   if (kind === "fresh") {
+    const project = id || null;
     history.replaceState(null, "", "#/chats/new");
     const r = await showLive(main);
-    if (live.started || live.chatId || live.log.childElementCount) await newChat();
+    if (live.started || live.chatId || live.log.childElementCount || live.project !== project) await newChat(project);
     return r;
   }
   if (kind === "new" || (kind === "c" && id && id === live.chatId)) return showLive(main);
@@ -972,7 +993,9 @@ async function showSaved(main, id) {
     const meta = lines.find((l) => l.kind === "meta") || {};
     const s = store.chats.find((c) => c.id === id);
     title.textContent = s ? s.title : "Chat";
-    sub.textContent = `In the Columbus app · Unfiled · ${when(lines[0]?.ts)}`;
+    sub.replaceChildren("In the Columbus app · ",
+      meta.project ? h("a", { href: `#/projects/${encodeURIComponent(meta.project)}` }, projectName(meta.project)) : "Unfiled",
+      ` · ${when(lines[0]?.ts)}`);
     const r = new Renderer(logEl, false, (pid) => { panel.showProvenance(pid); view.classList.add("sheet-open"); });
     for (const l of lines) r.event(l);
     logEl.append(ended);
@@ -1036,7 +1059,7 @@ async function showSession(main, session) {
 
 function showIndex(main) {
   const search = h("input", { type: "search", placeholder: "Search titles and content", "aria-label": "Search chats", class: "grow" });
-  const head = pageHead("Chats", "Your chats in the app, and sessions other AI apps run on this computer. Projects come later: every chat is Unfiled for now.",
+  const head = pageHead("Chats", "Your chats in the app, by project, and sessions other AI apps run on this computer.",
     [button("New chat", "primary", () => { location.hash = "#/chats/fresh"; })]);
   const list = h("div", { class: "stack" });
   const body = h("div", { class: "scroll" }, h("div", { class: "pad stack" }, h("div", { class: "row" }, search), list));
@@ -1071,22 +1094,30 @@ function showIndex(main) {
       for (const f of hits) snippets.set(f.id, f.snippet);
       chats = chats.filter((c) => snippets.has(c.id) || c.title.toLowerCase().includes(ql));
     } else if (ql) chats = chats.filter((c) => c.title.toLowerCase().includes(ql));
-    const ul = h("ul", { class: "list" });
-    for (const c of chats) {
-      const href = `#/chats/c/${encodeURIComponent(c.id)}`;
-      const li = h("li", { class: "clickable" }, h("div", { class: "text" }, h("b", {}, c.title),
-        h("span", { class: "where" }, snippets.get(c.id) || `${plural(c.messages, "message")} · ${ago(c.updated)}`)),
-        c.live ? h("span", { class: "badge info" }, "Open now") : null,
-        h("a", { class: "btn sm", href }, "Open"));
-      li.addEventListener("click", (e) => { if (e.target.tagName !== "A") location.hash = href; });
-      ul.append(li);
+    // One card per project with chats (in the projects' order), then Unfiled.
+    const known = new Set((store.projects?.projects || []).map((p) => p.id));
+    const groups = [...(store.projects?.projects || []).map((p) => p.id), null];
+    for (const pid of groups) {
+      const mine = chats.filter((c) => (pid ? c.project === pid : !c.project || !known.has(c.project)));
+      if (pid && !mine.length) continue;
+      const ul = h("ul", { class: "list" });
+      for (const c of mine) {
+        const href = `#/chats/c/${encodeURIComponent(c.id)}`;
+        const li = h("li", { class: "clickable" }, h("div", { class: "text" }, h("b", {}, c.title),
+          h("span", { class: "where" }, snippets.get(c.id) || `${plural(c.messages, "message")} · ${ago(c.updated)}`)),
+          c.live ? h("span", { class: "badge info" }, "Open now") : null,
+          h("a", { class: "btn sm", href }, "Open"));
+        li.addEventListener("click", (e) => { if (e.target.tagName !== "A") location.hash = href; });
+        ul.append(li);
+      }
+      const title = pid ? h("a", { href: `#/projects/${encodeURIComponent(pid)}` }, projectName(pid)) : "Unfiled";
+      const card = h("section", { class: "card", "data-project": pid || "" }, h("div", { class: "hd" }, h("h2", {}, title), h("span", { class: "muted small" }, plural(mine.length, "chat"))));
+      card.append(h("div", { class: "bd flush" }, mine.length ? ul : h("div", { class: "pad" }, h("p", { class: "muted" }, ql ? "No chat matches." : "No saved chats yet. Start one with New chat."))));
+      list.append(card);
     }
-    const unfiled = h("section", { class: "card" }, h("div", { class: "hd" }, h("h2", {}, "Unfiled"), h("span", { class: "muted small" }, plural(chats.length, "chat"))));
-    unfiled.append(h("div", { class: "bd flush" }, chats.length ? ul : h("div", { class: "pad" }, h("p", { class: "muted" }, ql ? "No chat matches." : "No saved chats yet. Start one with New chat."))));
-    list.append(unfiled);
   };
   search.addEventListener("input", draw);
-  const unsub = store.on((k) => { if (k === "chats" || k === "sessions") draw(); });
+  const unsub = store.on((k) => { if (k === "chats" || k === "sessions" || k === "projects") draw(); });
   draw();
   return () => unsub();
 }
