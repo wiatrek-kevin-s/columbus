@@ -222,7 +222,10 @@ pub(crate) fn workflow_problems(
     // Personal tools installed, or coming with it (a shared workflow
     // brings its tools as proposals, installed before it can be).
     for t in w.personal_tools().difference(brings) {
-        let installed = columbus_shared::tools::read_approvals(tools_root).contains_key(t);
+        // Installed, approved and unchanged (its files hash to the approval).
+        let installed = columbus_shared::tools::list_installed(tools_root)
+            .iter()
+            .any(|x| &x.id == t && x.state.as_deref() == Some("ready"));
         if !installed {
             problems.push(format!(
                 "it uses the personal tool {t}, which is not installed; install it first (propose_tool, then the person installs it in the Columbus app)"

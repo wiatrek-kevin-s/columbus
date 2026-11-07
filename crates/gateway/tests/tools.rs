@@ -906,13 +906,44 @@ fn shared_with_a_coworker(env: &Env, py: &str) {
     );
     columbus_shared::tools::decline(&other.tools(), ID).unwrap();
 
-    // Changed after it was shared, and not re-hashed: refused.
+    // An organization that turns off new tools turns off shared ones too.
+    other.policy("allow_personal_tools: true\nallow_shared_tools: true\nallow_workflows: true\ndeny_tools: [propose_tool]\n");
+    let r = share_import(&other, py, &req);
+    assert_eq!(r["ok"], false, "{r}");
+    other.policy("allow_personal_tools: true\nallow_shared_tools: true\nallow_workflows: true\ndeny_tools: [share_import]\n");
+    assert_eq!(share_import(&other, py, &req)["ok"], false);
+    other.policy("allow_personal_tools: true\nallow_shared_tools: true\nallow_workflows: true\n");
+    // Nothing already waiting is replaced.
+    assert_eq!(share_import(&other, py, &req)["ok"], true);
+    let r = share_import(&other, py, &req);
+    assert_eq!(r["ok"], false, "{r}");
+    assert!(
+        r["error"].as_str().unwrap().contains("already waiting"),
+        "{r}"
+    );
+    columbus_shared::tools::decline(&other.tools(), ID).unwrap();
+    // The file must be the one the person was shown.
+    let r = share_import(&other, py, &json!({"file": file, "sha256": "sha256:00"}));
+    assert_eq!(r["ok"], false, "{r}");
+    let audit_lines = || {
+        std::fs::read_dir(other.root.join("audit"))
+            .unwrap()
+            .flatten()
+            .map(|e| std::fs::read_to_string(e.path()).unwrap_or_default())
+            .collect::<String>()
+            .matches("share_import")
+            .count()
+    };
+
+    // Changed after it was shared, and not re-hashed: refused, and audited.
     let mut bad = s.clone();
     bad.tools[0].code = bad.tools[0]
         .code
         .replace("def run(ctx):", "def run(ctx):\n    pass");
     std::fs::write(&file, share::to_json(&bad).unwrap()).unwrap();
+    let before = audit_lines();
     assert_eq!(share_import(&other, py, &req)["ok"], false);
+    assert_eq!(audit_lines(), before + 1, "a refused opening is audited");
     // Re-hashed code that breaks the rules for tools: the lint refuses it.
     bad.tools[0].code = bad.tools[0]
         .code

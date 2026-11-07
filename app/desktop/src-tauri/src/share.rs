@@ -21,7 +21,7 @@ fn who() -> String {
         .or_else(|_| std::env::var("USERNAME"))
         .unwrap_or_else(|_| "a coworker".into())
         .chars()
-        .filter(|c| !c.is_control())
+        .filter(|c| tools::plain_chars(&c.to_string()).is_ok() && *c != '\n')
         .take(100)
         .collect()
 }
@@ -75,7 +75,15 @@ pub async fn share_export(
     let path = if path.extension().is_some_and(|e| e == share::EXTENSION) {
         path
     } else {
-        path.with_extension(share::EXTENSION)
+        // Named here, not in the dialog: never over a file it didn't ask about.
+        let p = path.with_extension(share::EXTENSION);
+        if p.exists() {
+            return Err(format!(
+                "{} already exists; choose another name",
+                p.display()
+            ));
+        }
+        p
     };
     std::fs::write(&path, file).map_err(|e| format!("{}: {e}", path.display()))?;
     Ok(Some(path.display().to_string()))
@@ -102,8 +110,23 @@ pub async fn share_open(app: AppHandle) -> Result<Option<Value>, String> {
 }
 
 fn describe(path: &std::path::Path) -> Result<Value, String> {
-    let s = share::read(path)?;
-    let installed = tools::read_approvals(&tools::tools_dir());
+    let bytes = share::read_bytes(path)?;
+    let sha256 = columbus_shared::canon::sha256_hex(&bytes);
+    let s = share::parse_bytes(&bytes)?;
+    let troot = tools::tools_dir();
+    let installed: BTreeMap<String, (String, bool)> = tools::list_installed(&troot)
+        .into_iter()
+        .map(|t| {
+            (
+                t.id.clone(),
+                (t.hash.clone(), t.state.as_deref() == Some("ready")),
+            )
+        })
+        .collect();
+    let waiting: Vec<String> = tools::list_proposals(&troot)
+        .into_iter()
+        .map(|t| t.id)
+        .collect();
     let tool_list: Vec<Value> = s
         .tools
         .iter()
@@ -119,8 +142,9 @@ fn describe(path: &std::path::Path) -> Result<Value, String> {
                 "version": text(y.get("version")),
                 "description": text(run.and_then(|r| r.get("description"))),
                 "lines": t.code.lines().count(),
-                "already_installed": installed.get(&t.id) == Some(&t.hash),
-                "replaces": installed.contains_key(&t.id) && installed.get(&t.id) != Some(&t.hash),
+                "already_installed": installed.get(&t.id).is_some_and(|(h, ready)| *h == t.hash && *ready),
+                "replaces": installed.get(&t.id).is_some_and(|(h, ready)| *h != t.hash || !*ready),
+                "waiting": waiting.contains(&t.id),
             })
         })
         .collect();
@@ -128,8 +152,16 @@ fn describe(path: &std::path::Path) -> Result<Value, String> {
         Some(text) => {
             let w = wf::check(text)?;
             let needs = share::needs(&w);
+            let root = wf::workflows_dir();
+            let replaces = wf::list_installed(&root, &troot)
+                .iter()
+                .any(|x| x.id == w.id);
+            let waiting = wf::list_proposals(&root, &troot)
+                .iter()
+                .any(|x| x.id == w.id);
             json!({"id": w.id, "name": w.name, "purpose": w.purpose, "plain": wf::describe(&w),
-                "review": w.review.as_ref().map(|r| r.criteria.clone()), "needs": needs})
+                "review": w.review.as_ref().map(|r| r.criteria.clone()), "needs": needs,
+                "replaces": replaces, "waiting": waiting})
         }
         None => Value::Null,
     };
@@ -138,6 +170,8 @@ fn describe(path: &std::path::Path) -> Result<Value, String> {
     let connections: Vec<String> = crate::settings::connection_ids();
     Ok(json!({
         "path": path.display().to_string(),
+        "file": path.file_name().and_then(|n| n.to_str()).unwrap_or(""),
+        "sha256": sha256,
         "kind": s.kind,
         "shared_by": s.shared_by,
         "shared_at": s.shared_at,
@@ -145,7 +179,7 @@ fn describe(path: &std::path::Path) -> Result<Value, String> {
         "tools": tool_list,
         "workflow": workflow,
         "allowed": policy.allow_shared_tools,
-        "mine": {"connections": connections, "exports": policy.exports.iter().map(|e| e.id.clone()).collect::<Vec<_>>()},
+        "mine": {"connections": connections, "exports": policy.exports.iter().map(|e| json!({"id": e.id, "path": e.path.display().to_string()})).collect::<Vec<_>>()},
     }))
 }
 
@@ -155,19 +189,20 @@ fn describe(path: &std::path::Path) -> Result<Value, String> {
 pub async fn share_import(
     app: AppHandle,
     path: String,
+    sha256: String,
     connections: BTreeMap<String, String>,
     export: Option<String>,
 ) -> Result<Value, String> {
     let (server, engine) = crate::registry::program(&app)?;
     tauri::async_runtime::spawn_blocking(move || {
         let req =
-            json!({"file": PathBuf::from(&path), "connections": connections, "export": export})
+            json!({"file": PathBuf::from(&path), "sha256": sha256, "connections": connections, "export": export})
                 .to_string();
         let text = crate::registry::run(
             &server,
             engine.as_deref(),
             &["share", "import", &req],
-            Duration::from_secs(120),
+            Duration::from_secs(600),
         )?;
         let v: Value = serde_json::from_str(text.trim())
             .map_err(|_| "Columbus's answer could not be read".to_string())?;

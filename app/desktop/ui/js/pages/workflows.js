@@ -289,8 +289,8 @@ export async function render(main, rest) {
     $("wf-review-h").textContent = w.name;
     $("wf-review-id").textContent = `${w.id} · ${w.fingerprint}`;
     $("wf-review-purpose").textContent = w.purpose || "";
-    const imp = importedText(w.proposal);
-    $("wf-review-imported").textContent = imp ? `${imp.replace(" Not test-run on your computer: read the code before you approve it.", "")} Its connections are the ones you chose.` : "";
+    const imp = importedText(w.proposal, false);
+    $("wf-review-imported").textContent = imp ? `${imp} Every connection it reads is one you chose when you opened it.` : "";
     $("wf-review-imported").hidden = !imp;
     $("wf-review-plain").replaceChildren(...(w.plain || []).map((t) => el("li", null, t)));
     const f = numbered(w.text || "");

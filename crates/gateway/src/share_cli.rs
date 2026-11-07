@@ -1,21 +1,26 @@
 //! `columbus-mcp share import '<json>'`: file what a shared `.columbus`
 //! file holds as proposals, for the Columbus app's "Open a shared file".
 //!
-//! The JSON is `{"file": "<path>", "connections": {"theirs": "mine"},
-//! "export": "<my export folder>"}` (the last two for a workflow). Nothing
-//! is installed or run here: each tool and the workflow are filed exactly
-//! as the person's own assistant's proposals are, after the same checks,
-//! and wait in the app for the person to read and approve with Touch ID or
-//! Windows Hello.
+//! The JSON is `{"file": "<path>", "sha256": "<what the app showed>",
+//! "connections": {"theirs": "mine"}, "export": "<my export folder>"}` (the
+//! last two for a workflow). Nothing is installed or run here: each tool and
+//! the workflow are filed exactly as the person's own assistant's proposals
+//! are, after the same checks, and wait in the app for the person to read
+//! and approve with Touch ID or Windows Hello.
 //!
 //! - A tool must be exactly what `propose_tool` builds from its own files
 //!   (every rule on names, descriptions and wording), its code passes the
-//!   same lint, and organization policy must allow it. It is not test-run
-//!   here (no data travels with it); the app says so.
+//!   same lint, and organization policy must allow it and `propose_tool`.
+//!   It is not test-run here (no data travels with it); the app says so.
 //! - A workflow is rewritten to the person's connections and export folder
-//!   and then passes the same checks as `propose_workflow`. Its schedule is
-//!   never imported.
-//! - All of it is checked before any of it is filed.
+//!   (every connection it names, its steps' inputs included) and then
+//!   passes the same checks as `propose_workflow`. Its schedule is never
+//!   imported.
+//! - All or nothing: everything is checked, the proposal limits included,
+//!   before anything is filed, and what was filed is taken back if filing
+//!   fails part way. Nothing already waiting for the person is replaced.
+//! - Every opening is audited (`share_import`), refused ones included, with
+//!   the file's hash, who it says it is from, and what was filed.
 //!
 //! Prints `{"ok": true, "filed": [...]}` or `{"ok": false, "error": "..."}`.
 
@@ -32,11 +37,16 @@ use serde_json::{json, Value};
 use crate::server::State;
 
 pub const CLIENT: &str = "columbus-app-share";
+/// As organization policy names it (`deny_tools: [share_import]`).
+pub const TOOL: &str = "share_import";
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Request {
     file: String,
+    /// The hash of the file the person was shown; it must not have changed.
+    #[serde(default)]
+    sha256: Option<String>,
     #[serde(default)]
     connections: BTreeMap<String, String>,
     #[serde(default)]
@@ -48,12 +58,106 @@ pub async fn import(request: &str) -> anyhow::Result<()> {
     unsafe {
         libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0);
     }
-    let out = match run(request).await {
-        Ok(v) => v,
-        Err(e) => json!({"ok": false, "error": e}),
+    let out = match State::load(crate::config::Paths::from_env()) {
+        Ok(state) => {
+            let workspace = state.sandbox.root().to_path_buf();
+            let out = run(&state, request).await;
+            let _ = std::fs::remove_dir(&workspace);
+            match out {
+                Ok(v) => v,
+                Err(e) => json!({"ok": false, "error": e}),
+            }
+        }
+        Err(e) => json!({"ok": false, "error": e.to_string()}),
     };
     println!("{out}");
     Ok(())
+}
+
+/// What one opening is recorded with.
+#[derive(Default)]
+struct Seen {
+    file_sha: Option<String>,
+    from: Option<String>,
+    hashes: Vec<String>,
+}
+
+fn record(state: &State, seen: &Seen, decision: &str, reason: String) -> Result<(), String> {
+    let mut why = reason;
+    if let Some(f) = &seen.from {
+        why = format!("{why} (the file says it is from {f})");
+    }
+    if !seen.hashes.is_empty() {
+        why = format!("{why}; contents {}", seen.hashes.join(", "));
+    }
+    state
+        .audit
+        .append(&AuditRecord {
+            user: state.user.clone(),
+            client: CLIENT.into(),
+            session: Some(state.session.clone()),
+            tool: TOOL.into(),
+            connection: None,
+            dataset: None,
+            rows: None,
+            decision: decision.into(),
+            reason: Some(why),
+            approval: None,
+            prov: None,
+            request: seen.file_sha.clone(),
+            provider: None,
+            provider_version: None,
+            tools_hash: None,
+            labels: vec![],
+            flow_decision: None,
+        })
+        .map(|_| ())
+        .map_err(|e| format!("refused: the audit log could not be written ({e})"))
+}
+
+async fn run(state: &State, request: &str) -> Result<Value, String> {
+    let mut seen = Seen::default();
+    let plan = match check(state, request, &mut seen).await {
+        Ok(p) => p,
+        Err(e) => {
+            record(state, &seen, "denied", e.clone())?;
+            return Err(e);
+        }
+    };
+    if plan.tools.is_empty() && plan.workflow.is_none() {
+        record(
+            state,
+            &seen,
+            "allowed",
+            "nothing new to file: all of it is installed already".into(),
+        )?;
+        return Ok(json!({"ok": true, "filed": [], "already_installed": plan.already}));
+    }
+    let what: Vec<String> = plan
+        .tools
+        .iter()
+        .map(|t| format!("tool {}", t.id))
+        .chain(plan.workflow.as_ref().map(|w| format!("workflow {}", w.id)))
+        .collect();
+    // Recorded before anything is filed: no proposal without its line.
+    record(
+        state,
+        &seen,
+        "allowed",
+        format!("filing for review: {}", what.join(", ")),
+    )?;
+    match file(state, &plan) {
+        Ok(filed) => Ok(json!({"ok": true, "filed": filed, "already_installed": plan.already})),
+        Err(e) => {
+            let _ = record(
+                state,
+                &seen,
+                "error",
+                format!("filing stopped, nothing kept: {e}"),
+            );
+            Err(e)
+        }
+    }
 }
 
 struct ToolToFile {
@@ -63,78 +167,115 @@ struct ToolToFile {
     info: Value,
 }
 
-async fn run(request: &str) -> Result<Value, String> {
+struct WorkflowToFile {
+    id: String,
+    text: String,
+    info: Value,
+}
+
+struct Plan {
+    tools: Vec<ToolToFile>,
+    workflow: Option<WorkflowToFile>,
+    already: Vec<String>,
+}
+
+/// File every part; if one fails, take back the ones filed (none of them
+/// replaced anything: `check` refuses ids already waiting).
+fn file(state: &State, plan: &Plan) -> Result<Vec<Value>, String> {
+    let tools_root = state.tools.root();
+    let mut filed: Vec<Value> = Vec::new();
+    let undo = |filed: &[Value]| {
+        for f in filed {
+            let id = f["id"].as_str().unwrap_or("");
+            if f["kind"] == "tool" {
+                let _ = store::decline(tools_root, id);
+            } else {
+                let _ = wf::decline(&wf::workflows_dir(), id);
+            }
+        }
+    };
+    for t in &plan.tools {
+        if let Err(e) = store::write_proposal(
+            tools_root,
+            &t.id,
+            t.manifest.as_bytes(),
+            t.code.as_bytes(),
+            &t.info,
+        ) {
+            undo(&filed);
+            return Err(e);
+        }
+        filed.push(json!({"kind": "tool", "id": t.id}));
+    }
+    if let Some(w) = &plan.workflow {
+        if let Err(e) = wf::write_proposal(&wf::workflows_dir(), &w.text, &w.info) {
+            undo(&filed);
+            return Err(e);
+        }
+        filed.push(json!({"kind": "workflow", "id": w.id}));
+    }
+    Ok(filed)
+}
+
+/// Whether the person has this exact tool installed, and ready.
+fn installed_ready(tools_root: &Path, id: &str, hash: &str) -> bool {
+    store::list_installed(tools_root)
+        .iter()
+        .any(|t| t.id == id && t.hash == hash && t.state.as_deref() == Some("ready"))
+}
+
+async fn check(state: &State, request: &str, seen: &mut Seen) -> Result<Plan, String> {
     if request.len() > 64 * 1024 {
         return Err("the request is too long".into());
     }
     let req: Request = serde_json::from_str(request).map_err(|e| format!("not a request: {e}"))?;
     let path = Path::new(&req.file);
-    let shared = share::read(path)?;
-    let file_sha = columbus_shared::canon::sha256_hex(
-        &std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?,
-    );
-    let state = State::load(crate::config::Paths::from_env()).map_err(|e| e.to_string())?;
-    let workspace = state.sandbox.root().to_path_buf();
-    let out = check_and_file(&state, &shared, &req, &file_sha, path).await;
-    let _ = std::fs::remove_dir(&workspace);
-    let rec = |decision: &str, reason: Option<String>| AuditRecord {
-        user: state.user.clone(),
-        client: CLIENT.into(),
-        session: Some(state.session.clone()),
-        tool: "share_import".into(),
-        connection: None,
-        dataset: None,
-        rows: None,
-        decision: decision.into(),
-        reason,
-        approval: None,
-        prov: None,
-        request: Some(file_sha.clone()),
-        provider: None,
-        provider_version: None,
-        tools_hash: None,
-        labels: vec![],
-        flow_decision: None,
-    };
-    match &out {
-        Ok(v) => {
-            state
-                .audit
-                .append(&rec(
-                    "allowed",
-                    Some(format!(
-                        "filed for review from a file shared by {}: {}",
-                        shared.shared_by, v["filed"]
-                    )),
-                ))
-                .map_err(|e| format!("the audit log could not be written ({e})"))?;
-        }
-        Err(e) => {
-            let _ = state.audit.append(&rec("denied", Some(e.clone())));
-        }
+    let bytes = share::read_bytes(path)?;
+    let file_sha = columbus_shared::canon::sha256_hex(&bytes);
+    seen.file_sha = Some(file_sha.clone());
+    if req.sha256.as_deref().is_some_and(|s| s != file_sha) {
+        return Err("the file changed after you opened it; open it again".into());
     }
-    out
-}
+    let shared = share::parse_bytes(&bytes)?;
+    seen.from = Some(shared.shared_by.clone());
+    seen.hashes = shared
+        .tools
+        .iter()
+        .map(|t| format!("{} {}", t.id, t.hash))
+        .chain(
+            shared
+                .workflow_sha256
+                .iter()
+                .map(|h| format!("workflow {h}")),
+        )
+        .collect();
 
-async fn check_and_file(
-    state: &State,
-    shared: &share::ShareFile,
-    req: &Request,
-    file_sha: &str,
-    path: &Path,
-) -> Result<Value, String> {
     let settings = state.settings();
     let policy = &settings.policy;
     if !policy.allow_shared_tools {
-        return Err("your organization's settings don't allow opening shared tools and workflows (allow_shared_tools is off). It can be turned on in the Columbus app's Settings if your organization lets you".into());
+        return Err("your organization's settings don't allow opening shared tools and workflows (allow_shared_tools is off). It can be turned on in the Columbus app if your organization lets you".into());
     }
-    if !shared.tools.is_empty() && !policy.allow_personal_tools {
-        return Err(
-            "it brings personal tools, and personal tools are off (allow_personal_tools)".into(),
-        );
+    if !policy.tool_allowed(TOOL) {
+        return Err(format!("organization policy does not allow {TOOL}"));
     }
-    if shared.kind == "workflow" && !policy.allow_workflows {
-        return Err("it's a workflow, and workflows are off (allow_workflows)".into());
+    if !shared.tools.is_empty() {
+        if !policy.allow_personal_tools {
+            return Err(
+                "it brings personal tools, and personal tools are off (allow_personal_tools)"
+                    .into(),
+            );
+        }
+        if !policy.tool_allowed("propose_tool") {
+            return Err("it brings personal tools, and organization policy does not allow new ones (propose_tool)".into());
+        }
+    }
+    if shared.kind == "workflow" {
+        if !policy.allow_workflows {
+            return Err("it's a workflow, and workflows are off (allow_workflows)".into());
+        }
+        if !policy.tool_allowed("propose_workflow") {
+            return Err("it's a workflow, and organization policy does not allow new ones (propose_workflow)".into());
+        }
     }
     let tools_root = state.tools.root();
     let now = chrono::Local::now().to_rfc3339();
@@ -145,16 +286,24 @@ async fn check_and_file(
         "file": path.file_name().and_then(|n| n.to_str()).unwrap_or(""),
         "file_sha256": file_sha,
     });
-    let installed = store::read_approvals(tools_root);
+    let waiting_tools: BTreeSet<String> = store::list_proposals(tools_root)
+        .into_iter()
+        .map(|t| t.id)
+        .collect();
 
     // Every tool, checked as propose_tool checks one (but not test-run).
-    let mut tools_to_file = Vec::new();
+    let mut tools = Vec::new();
     let mut already = Vec::new();
     for t in &shared.tools {
         let label = t.id.clone();
-        if installed.get(&t.id) == Some(&t.hash) {
+        if installed_ready(tools_root, &t.id, &t.hash) {
             already.push(t.id.clone());
             continue;
+        }
+        if waiting_tools.contains(&t.id) {
+            return Err(format!(
+                "{label} is already waiting for your review under Tools: install or decline it first, then open this file again"
+            ));
         }
         let (args, built) = crate::propose_tool::rebuild(&t.id, &t.manifest, &t.code)
             .map_err(|e| format!("{label}: {e}"))?;
@@ -175,7 +324,7 @@ async fn check_and_file(
             .core(
                 "lint_tool",
                 json!({"code": args.code}),
-                std::time::Duration::from_secs(60),
+                std::time::Duration::from_secs(30),
             )
             .await
             .map_err(|e| format!("{label}: its code could not be checked: {e}"))?;
@@ -225,22 +374,28 @@ async fn check_and_file(
             "warnings": warnings,
             "replaces": replaces,
         });
-        tools_to_file.push(ToolToFile {
+        tools.push(ToolToFile {
             id: built.id,
             manifest: built.manifest_text,
             code: built.entry,
             info,
         });
     }
+    if waiting_tools.len() + tools.len() > store::MAX_PROPOSALS {
+        return Err(format!(
+            "it would put more than {} tools waiting for your review; install or decline some under Tools first",
+            store::MAX_PROPOSALS
+        ));
+    }
 
     // The workflow, in the person's own names, checked as propose_workflow
     // checks one.
-    let mut workflow_to_file = None;
+    let mut workflow = None;
     if let Some(text) = &shared.workflow {
         let w = wf::check(text)?;
         let mine = share::remap(&w, &req.connections, req.export.as_deref())?;
         let w2 = wf::check(&mine)?;
-        let brings: BTreeSet<String> = tools_to_file.iter().map(|t| t.id.clone()).collect();
+        let brings: BTreeSet<String> = tools.iter().map(|t| t.id.clone()).collect();
         let problems =
             crate::workflows::workflow_problems(&settings, None, tools_root, &w2, &brings);
         if !problems.is_empty() {
@@ -250,6 +405,19 @@ async fn check_and_file(
             ));
         }
         let root = wf::workflows_dir();
+        let waiting = wf::list_proposals(&root, tools_root);
+        if waiting.iter().any(|x| x.id == w2.id) {
+            return Err(format!(
+                "a workflow {} is already waiting for your review under Workflows: approve or decline it first, then open this file again",
+                w2.id
+            ));
+        }
+        if waiting.len() + 1 > wf::MAX_PROPOSALS {
+            return Err(format!(
+                "{} workflows are already waiting for your review; approve or decline some first",
+                waiting.len()
+            ));
+        }
         let replaces = wf::list_installed(&root, tools_root)
             .into_iter()
             .find(|x| x.id == w2.id)
@@ -265,26 +433,17 @@ async fn check_and_file(
             "mapped": {"connections": req.connections, "export": req.export},
             "replaces": replaces,
         });
-        workflow_to_file = Some((root, mine, info, w2.id));
+        workflow = Some(WorkflowToFile {
+            id: w2.id,
+            text: mine,
+            info,
+        });
     } else if !req.connections.is_empty() || req.export.is_some() {
         return Err("a shared tool takes no connections or export folder".into());
     }
-
-    // Filed only once everything has passed.
-    let mut filed = Vec::new();
-    for t in &tools_to_file {
-        store::write_proposal(
-            tools_root,
-            &t.id,
-            t.manifest.as_bytes(),
-            t.code.as_bytes(),
-            &t.info,
-        )?;
-        filed.push(json!({"kind": "tool", "id": t.id}));
-    }
-    if let Some((root, text, info, id)) = &workflow_to_file {
-        wf::write_proposal(root, text, info)?;
-        filed.push(json!({"kind": "workflow", "id": id}));
-    }
-    Ok(json!({"ok": true, "filed": filed, "already_installed": already}))
+    Ok(Plan {
+        tools,
+        workflow,
+        already,
+    })
 }

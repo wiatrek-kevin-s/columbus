@@ -297,6 +297,90 @@ impl Workflow {
     }
 }
 
+/// Where a step names a dataset of a connection, other than its own
+/// `connection`: vector_op's and raster_op's `inputs` roles and verify's
+/// `layer`, each `"<connection>:<dataset>"` or `{connection, dataset}`.
+fn dataset_refs(step: &Step) -> Vec<&Value> {
+    match step.tool.as_str() {
+        "vector_op" | "raster_op" => step
+            .args
+            .get("inputs")
+            .and_then(Value::as_object)
+            .map(|m| m.values().collect())
+            .unwrap_or_default(),
+        "verify" => step.args.get("layer").into_iter().collect(),
+        _ => vec![],
+    }
+}
+
+/// The connection a dataset reference names, if it names one (a ws://
+/// handle or a `${step}` reference names none).
+fn ref_connection(v: &Value) -> Option<String> {
+    match v {
+        Value::String(t) if !t.starts_with("ws://") && !t.starts_with("${") => {
+            t.split_once(':').map(|(c, _)| c.to_string())
+        }
+        Value::Object(m) => m
+            .get("connection")
+            .and_then(Value::as_str)
+            .map(String::from),
+        _ => None,
+    }
+}
+
+/// Every connection a step reads: its `connection`, and the connection of
+/// each dataset its inputs name.
+pub fn step_connections(step: &Step) -> Vec<String> {
+    let mut out: Vec<String> = step
+        .args
+        .get("connection")
+        .and_then(Value::as_str)
+        .map(String::from)
+        .into_iter()
+        .collect();
+    for r in dataset_refs(step) {
+        if let Some(c) = ref_connection(r) {
+            if !out.contains(&c) {
+                out.push(c);
+            }
+        }
+    }
+    out
+}
+
+/// The step with each connection it names replaced by `map`'s (names not
+/// in `map` are kept).
+pub fn rename_connections(step: &mut Step, map: &dyn Fn(&str) -> String) {
+    if let Some(Value::String(c)) = step.args.get("connection").cloned() {
+        step.args["connection"] = Value::String(map(&c));
+    }
+    let roles: Vec<&mut Value> = match step.tool.as_str() {
+        "vector_op" | "raster_op" => step
+            .args
+            .get_mut("inputs")
+            .and_then(Value::as_object_mut)
+            .map(|m| m.values_mut().collect())
+            .unwrap_or_default(),
+        "verify" => step.args.get_mut("layer").into_iter().collect(),
+        _ => vec![],
+    };
+    for v in roles {
+        match v {
+            Value::String(t) if !t.starts_with("ws://") && !t.starts_with("${") => {
+                if let Some((c, rest)) = t.split_once(':') {
+                    *t = format!("{}:{rest}", map(c));
+                }
+            }
+            Value::Object(m) => {
+                if let Some(Value::String(c)) = m.get("connection").cloned() {
+                    m.insert("connection".into(), Value::String(map(&c)));
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 /// `personal.<name>.run` -> `personal.<name>`.
 pub fn personal_tool_id(tool: &str) -> Option<String> {
     let id = tool.strip_suffix(&format!(".{}", tools::TOOL))?;
@@ -428,10 +512,11 @@ pub fn check(text: &str) -> Result<Workflow, String> {
         }
         check_args(&s.args, &seen, &at, 0, None)?;
         if let Some(c) = s.args.get("connection") {
-            let c = c
-                .as_str()
+            c.as_str()
                 .ok_or_else(|| format!("{at}: connection is a connection id"))?;
-            if !wf.scope.connections.iter().any(|x| x == c) {
+        }
+        for c in step_connections(s) {
+            if !wf.scope.connections.contains(&c) {
                 return Err(format!(
                     "{at}: it reads connection {c:?}, which is not listed in scope.connections"
                 ));
@@ -1252,6 +1337,20 @@ mod tests {
         assert!(bad("tool: verify", "tool: export_output").contains("cannot be a step"));
         assert!(bad("tool: verify", "tool: apply_edits").contains("cannot be a step"));
         assert!(bad("connections: [tiger]", "connections: [other]").contains("scope.connections"));
+        // A dataset named inside a step's inputs counts as read too.
+        let nested = |inputs: &str| {
+            let t = format!("id: nested-read\nname: Nested\nscope:\n  connections: [tiger]\nsteps:\n  - id: a\n    tool: query_features\n    args: {{connection: tiger, dataset: tracts}}\n  - id: b\n    tool: vector_op\n    args: {{op: clip, inputs: {inputs}}}\n");
+            check(&t)
+        };
+        assert!(nested("{layer: \"${a}\", mask: \"secret:zones\"}")
+            .unwrap_err()
+            .contains("secret"));
+        assert!(
+            nested("{layer: \"${a}\", mask: {connection: secret, dataset: zones}}")
+                .unwrap_err()
+                .contains("secret")
+        );
+        assert!(nested("{layer: \"${a}\", mask: \"tiger:zones\"}").is_ok());
         assert!(bad("${tracts}", "${later}").contains("not an earlier step"));
         assert!(bad("${tracts}", "x ${tracts}").contains("whole value"));
         assert!(bad("${tracts}", "${tracts.a b}").contains("not a reference"));

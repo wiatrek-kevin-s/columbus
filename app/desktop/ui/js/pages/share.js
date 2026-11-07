@@ -24,8 +24,9 @@ export async function shareIn(err, done) {
   const problem = h("p", { class: "error-text", role: "alert", hidden: true, id: "share-error" });
   const body = h("div", { class: "stack", id: "share-open" });
   const what = info.kind === "workflow" ? `the workflow "${info.workflow.name}"` : `the tool "${info.tools[0]?.title || info.tools[0]?.id}"`;
-  body.append(h("p", {}, `${info.shared_by} shared ${what} on ${when(info.shared_at)} (from Columbus ${info.columbus}).`),
-    h("p", { class: "small muted" }, "Opening it files it for you to review, as your own assistant's proposals are: nothing is installed or run until you read it and approve it. No data comes with it."));
+  body.append(h("p", {}, `${info.file} holds ${what}. The file says it was shared by ${info.shared_by} on ${when(info.shared_at)}, from Columbus ${info.columbus}: that is the file's own word, so open only files you got from someone you know.`),
+    h("p", { class: "small muted wrap-any" }, `From ${info.path}`),
+    h("p", { class: "notice" }, "Opening it files it for you to review, as your own assistant's proposals are: nothing is installed or run until you read it and approve it. A shared tool was not test-run on your computer, so read its code before you install it."));
   if (!info.allowed) {
     body.append(h("p", { class: "notice warn" }, "Opening shared tools and workflows is off in your organization's settings (Tools, Your organization's switch)."));
   }
@@ -38,27 +39,28 @@ export async function shareIn(err, done) {
   if (info.tools.length) {
     body.append(h("h3", {}, info.kind === "workflow" ? `Tools it brings (${info.tools.length})` : "The tool"),
       h("ul", { class: "small" }, ...info.tools.map((t) => el("li", null,
-        `${t.title || t.id} (${t.id}, version ${t.version || "?"}, ${plural(t.lines, "line")} of code)${t.already_installed ? ": you have this exact tool already" : t.replaces ? ": would replace your installed tool of this name, after you approve it" : ""}`))));
+        `${t.title || t.id} (${t.id}, version ${t.version || "?"}, ${plural(t.lines, "line")} of code)${t.already_installed ? ": you have this exact tool already" : t.waiting ? ": one of this name is already waiting for your review; install or decline it first" : t.replaces ? ": would replace your installed tool of this name, after you approve it" : ""}`))));
   }
+  const blocked = info.tools.some((t) => t.waiting && !t.already_installed) || (info.workflow && info.workflow.waiting);
+  if (info.workflow && info.workflow.waiting) body.append(h("p", { class: "notice warn" }, "A workflow of this name is already waiting for your review: approve or decline it first."));
+  else if (info.workflow && info.workflow.replaces) body.append(h("p", { class: "notice warn" }, "You have a workflow of this name: this one would replace it, after you approve it."));
   const selects = {};
   let exportSel = null;
   if (info.workflow) {
     const need = info.workflow.needs;
     if (need.connections.length) {
-      body.append(h("h3", {}, "Your connections"), h("p", { class: "small muted" }, "It names the connections it was made with. Choose which of yours stands for each; it can only read those."));
+      body.append(h("h3", {}, "Your connections"), h("p", { class: "small muted" }, "It names the connections it was made with. Choose which of yours stands for each: it will read only those, so choose with care."));
       for (const c of need.connections) {
         const s = h("select", { class: "share-conn", "data-from": c, "aria-label": `Your connection for ${c}` },
           h("option", { value: "" }, "Choose…"), ...info.mine.connections.map((m) => h("option", { value: m }, m)));
-        if (info.mine.connections.includes(c)) s.value = c;
         selects[c] = s;
         body.append(h("label", { class: "field" }, `For ${c}`, s));
       }
     }
     if (need.export) {
       exportSel = h("select", { id: "share-export", "aria-label": "Your export folder" },
-        h("option", { value: "" }, "Choose…"), ...info.mine.exports.map((m) => h("option", { value: m }, m)));
-      if (info.mine.exports.includes(need.export)) exportSel.value = need.export;
-      body.append(h("label", { class: "field" }, `It exports to ${need.export}: which of your export folders?`, exportSel));
+        h("option", { value: "" }, "Choose…"), ...info.mine.exports.map((m) => h("option", { value: m.id }, `${m.id} (${m.path})`)));
+      body.append(h("label", { class: "field" }, `It exports its results to a folder (${need.export} where it was made). Which of your export folders? Anyone who can read that folder will see the results.`, exportSel));
     }
     body.append(h("p", { class: "small muted" }, "It comes without a schedule: set one after you approve it."));
   }
@@ -73,7 +75,7 @@ export async function shareIn(err, done) {
     if (exportSel && !exportSel.value) { showError(problem, "Choose your export folder."); return; }
     file.disabled = true;
     try {
-      const r = await invoke("share_import", { path: info.path, connections, export: exportSel ? exportSel.value : null });
+      const r = await invoke("share_import", { path: info.path, sha256: info.sha256, connections, export: exportSel ? exportSel.value : null });
       d.close();
       const n = (r.filed || []).length;
       toast(n ? `Waiting for you: review ${n === 1 ? "it" : `the ${n} parts`} under ${info.kind === "workflow" ? "Workflows (its tools under Tools)" : "Tools"}.` : "You have all of it already.");
@@ -83,14 +85,16 @@ export async function shareIn(err, done) {
       file.disabled = false;
     }
   }, { id: "share-file" });
-  file.disabled = !info.allowed;
+  file.disabled = !info.allowed || blocked;
   const cancel = button("Cancel", "", () => d.close());
   const d = openDialog("Open a shared file", body, [h("span", { class: "spacer" }), cancel, file]);
 }
 
-/** The line a proposal from a shared file shows. */
-export function importedText(p) {
+/** The line a proposal from a shared file shows; `code` adds the reminder
+ * that a shared tool was not test-run here. */
+export function importedText(p, code = true) {
   const i = p && p.imported;
   if (!i) return "";
-  return `Shared by ${i.from} on ${when(i.shared_at)}; opened here ${when(p.proposed)}. Not test-run on your computer: read the code before you approve it.`;
+  const base = `From a shared file (${i.file}) that says it was shared by ${i.from} on ${when(i.shared_at)}; opened here ${when(p.proposed)}.`;
+  return code ? `${base} Not test-run on your computer: read the code before you approve it.` : base;
 }

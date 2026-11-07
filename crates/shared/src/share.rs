@@ -184,20 +184,38 @@ pub fn to_json(s: &ShareFile) -> Result<String, String> {
 /// says of itself (who shared it, the text) is the sharer's word, shown as
 /// such; nothing here trusts it further.
 pub fn read(path: &Path) -> Result<ShareFile, String> {
-    let meta = std::fs::metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    read_bytes(path).and_then(|b| parse_bytes(&b))
+}
+
+/// A shared file's bytes, read once (at most [`MAX_FILE`]): hash and parse
+/// these same bytes, so what is checked is what is recorded.
+pub fn read_bytes(path: &Path) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let f = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let meta = f
+        .metadata()
+        .map_err(|e| format!("{}: {e}", path.display()))?;
     if !meta.is_file() {
         return Err(format!("{} is not a file", path.display()));
     }
-    if meta.len() > MAX_FILE {
+    let mut bytes = Vec::new();
+    f.take(MAX_FILE + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    if bytes.len() as u64 > MAX_FILE {
         return Err(format!(
             "{} is larger than a shared file can be ({} MB)",
             path.display(),
             MAX_FILE / 1024 / 1024
         ));
     }
-    let text = std::fs::read_to_string(path)
-        .map_err(|_| format!("{} is not a Columbus shared file", path.display()))?;
-    parse(&text)
+    Ok(bytes)
+}
+
+pub fn parse_bytes(bytes: &[u8]) -> Result<ShareFile, String> {
+    let text =
+        std::str::from_utf8(bytes).map_err(|_| "this is not a Columbus shared file".to_string())?;
+    parse(text)
 }
 
 pub fn parse(text: &str) -> Result<ShareFile, String> {
@@ -287,9 +305,7 @@ pub struct Needs {
 pub fn needs(w: &wf::Workflow) -> Needs {
     let mut c: BTreeSet<String> = w.scope.connections.iter().cloned().collect();
     for s in &w.steps {
-        if let Some(x) = s.args.get("connection").and_then(|v| v.as_str()) {
-            c.insert(x.to_string());
-        }
+        c.extend(wf::step_connections(s));
     }
     Needs {
         connections: c.into_iter().collect(),
@@ -327,11 +343,7 @@ pub fn remap(
     }
     w.scope.connections = scope;
     for s in &mut w.steps {
-        if let Some(obj) = s.args.as_object_mut() {
-            if let Some(serde_json::Value::String(c)) = obj.get("connection").cloned() {
-                obj.insert("connection".into(), serde_json::Value::String(map(&c)));
-            }
-        }
+        wf::rename_connections(s, &map);
     }
     match (&mut w.outputs.folder, export) {
         (Some(f), Some(e)) => f.export = e.to_string(),
@@ -367,6 +379,21 @@ mod tests {
         assert_eq!(r.scope.connections, vec!["census".to_string()]);
         assert!(r.steps.iter().all(|s| s.args["connection"] == "census"));
         assert_eq!(r.outputs.folder.unwrap().export, "shared");
+        // Inside a step's inputs too.
+        let nested = "id: nested\nname: Nested\nscope:\n  connections: [tiger, roads]\nsteps:\n  - id: a\n    tool: query_features\n    args: {connection: tiger, dataset: tracts}\n  - id: b\n    tool: vector_op\n    args: {op: clip, inputs: {layer: \"${a}\", mask: \"roads:zones\"}}\n  - id: c\n    tool: verify\n    args: {layer: {connection: roads, dataset: zones}}\n";
+        let wn = wf::check(nested).unwrap();
+        assert_eq!(
+            needs(&wn).connections,
+            vec!["roads".to_string(), "tiger".to_string()]
+        );
+        let m = BTreeMap::from([
+            ("tiger".to_string(), "census".to_string()),
+            ("roads".to_string(), "streets".to_string()),
+        ]);
+        let r = wf::check(&remap(&wn, &m, None).unwrap()).unwrap();
+        assert_eq!(r.steps[1].args["inputs"]["mask"], "streets:zones");
+        assert_eq!(r.steps[1].args["inputs"]["layer"], "${a}");
+        assert_eq!(r.steps[2].args["layer"]["connection"], "streets");
         // Every name mapped, and only those.
         assert!(remap(&w, &BTreeMap::new(), Some("x")).is_err());
         let mut more = map.clone();
