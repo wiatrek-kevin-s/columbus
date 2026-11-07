@@ -1278,7 +1278,9 @@ impl Plugins {
                 }
                 .await;
                 let _ = std::fs::remove_dir_all(&code);
-                let _ = std::fs::remove_dir_all(plugin_dir(&self.workspace, &folder));
+                // The worker was just stopped: on Windows its folder may be
+                // held a moment longer.
+                remove_dir_retrying(&plugin_dir(&self.workspace, &folder));
                 result
             })
             .await
@@ -1358,19 +1360,22 @@ impl Plugins {
 
     /// Empty a plugin's own folder: nothing one run left is there for the next.
     pub fn wipe_own(&self, p: &Plugin) {
-        let own = plugin_dir(&self.workspace, &p.folder);
-        // On Windows a folder can't be removed while a stopped worker's
-        // process is still letting go of it, which takes a moment: retry
-        // briefly (the next run also refuses to start on a folder left over).
-        // A virus scanner can hold a file a little longer: up to about ten
-        // seconds in all, waiting longer between tries.
-        for i in 0..60u64 {
-            match std::fs::remove_dir_all(&own) {
-                Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
-                    std::thread::sleep(Duration::from_millis(50 + (i * 5).min(250)))
-                }
-                _ => return,
+        // The next run also refuses to start on a folder left over.
+        remove_dir_retrying(&plugin_dir(&self.workspace, &p.folder));
+    }
+}
+
+/// Remove a folder a stopped worker used. On Windows a folder can't be
+/// removed while that worker's process is still letting go of it, or a
+/// virus scanner holds a file in it: retry, waiting longer between tries,
+/// for up to about ten seconds in all.
+fn remove_dir_retrying(dir: &Path) {
+    for i in 0..60u64 {
+        match std::fs::remove_dir_all(dir) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                std::thread::sleep(Duration::from_millis(50 + (i * 5).min(250)))
             }
+            _ => return,
         }
     }
 }
