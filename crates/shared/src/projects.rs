@@ -34,6 +34,10 @@ pub struct Project {
     /// results go to unless the person says otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub export_folder: Option<String>,
+    /// Data groups (the person's own, or the organization's): when any are
+    /// named, its chats see only their datasets, under their filters.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub data_groups: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -128,6 +132,14 @@ impl Project {
                 return Err(format!("{c:?} is not a connection id"));
             }
         }
+        if self.data_groups.len() > 32 {
+            return Err("a project names at most 32 data groups".into());
+        }
+        for g in &self.data_groups {
+            if !id_ok(g) {
+                return Err(format!("{g:?} is not a data group id"));
+            }
+        }
         if let Some(f) = &self.export_folder {
             if !plain_id_ok(f) {
                 return Err(format!("{f:?} is not an export folder id"));
@@ -217,6 +229,8 @@ pub fn save_in(dir: &Path, p: &Project) -> Result<Project, String> {
     p.instructions = p.instructions.trim().to_string();
     p.connections.sort();
     p.connections.dedup();
+    p.data_groups.sort();
+    p.data_groups.dedup();
     p.check()?;
     let now = chrono::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, false);
     if p.created.is_none() {
@@ -283,6 +297,7 @@ mod tests {
             instructions: "Use district 14 only.\nReport mileage in miles.".into(),
             connections: vec!["roads".into(), "roads".into(), "aaa".into()],
             export_folder: Some("outbox".into()),
+            data_groups: vec![],
             created: None,
             updated: None,
         }

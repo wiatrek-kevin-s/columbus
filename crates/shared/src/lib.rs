@@ -5,6 +5,7 @@
 pub mod approvals;
 pub mod audit;
 pub mod canon;
+pub mod datagroups;
 pub mod error;
 pub mod paths;
 pub mod policy;

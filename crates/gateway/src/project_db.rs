@@ -208,6 +208,9 @@ pub(crate) fn connection_fingerprint(
     Some(sha256_hex(canonical_json(&v).as_bytes()))
 }
 
+/// Where a database records the data groups it was loaded under.
+const GROUPS_KEY: &str = "scope:data-groups";
+
 /// Why the settings in force no longer cover what the database holds, if
 /// they do not.
 ///
@@ -464,6 +467,16 @@ impl Gateway {
         if let Some(why) = withheld(&self.state.settings(), side) {
             return Some(why);
         }
+        // Under data groups, only what was loaded under exactly these.
+        if let Some(gp) = self.groups_print() {
+            let has_data = side.labels.iter().any(|l| l.starts_with("connection:"));
+            if has_data && side.fingerprints.get(GROUPS_KEY) != Some(&gp) {
+                return Some(
+                    "it was built before this project's data groups were set, or under other ones"
+                        .into(),
+                );
+            }
+        }
         let scope = &self.state.scope.connections;
         if scope.is_empty() {
             return None;
@@ -473,6 +486,17 @@ impl Gateway {
             .filter_map(|l| l.strip_prefix("connection:"))
             .find(|c| !scope.iter().any(|s| s == c))
             .map(|c| format!("it holds data from {c}, which this project does not use"))
+    }
+
+    /// What the session's data groups allow, as one fingerprint (none
+    /// outside them).
+    fn groups_print(&self) -> Option<String> {
+        let g = &self.state.scope.data_groups;
+        if g.is_empty() {
+            return None;
+        }
+        let v = serde_json::to_value(g).ok()?;
+        Some(sha256_hex(canonical_json(&v).as_bytes()))
     }
 
     fn workspaces_root(&self) -> Result<PathBuf, String> {
@@ -1009,6 +1033,9 @@ impl Gateway {
                     ))
                 }
             }
+        }
+        if let Some(gp) = self.groups_print() {
+            side.fingerprints.entry(GROUPS_KEY.into()).or_insert(gp);
         }
         let hide = settings.policy.hide_fields.clone();
         side.hidden = Some(match side.hidden.take() {

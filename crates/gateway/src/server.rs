@@ -1759,6 +1759,17 @@ impl Gateway {
                     "instructions": p.instructions,
                     "connections": if p.connections.is_empty() { json!("all of yours") } else { json!(p.connections) },
                     "export_folder": p.export_folder,
+                    // Only these datasets can be read in this project's
+                    // chats, and only the rows their filters keep.
+                    "data_groups": p.data_groups.iter().map(|id| json!({
+                        "id": id,
+                        "datasets": self.state.scope.data_groups.iter()
+                            .filter(|g| &g.id == id)
+                            .flat_map(|g| g.datasets.iter().map(move |d| json!({
+                                "connection": g.connection, "dataset": d.physical, "filter": d.filter,
+                            })))
+                            .collect::<Vec<_>>(),
+                    })).collect::<Vec<_>>(),
                 })
             }),
             session: self.state.session.clone(),

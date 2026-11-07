@@ -491,6 +491,87 @@ impl Pack {
     }
 }
 
+/// A project's data groups as the session's scope: each the person's own
+/// (`data-groups/<id>.yaml`) or the organization's (the context pack's).
+/// Fails closed: a group that can't be found or read, a dataset its pack
+/// entry doesn't resolve, a connection the person doesn't have, or a filter
+/// Columbus wouldn't run, stops the session from starting.
+pub fn project_groups(
+    state: &crate::server::State,
+    ids: &[String],
+) -> Result<Vec<columbus_shared::policy::DataGroup>, String> {
+    use columbus_shared::policy::{DataGroup, GroupDataset, Mode};
+    use columbus_shared::sqlcheck::{check_where, SqlDialect};
+    let settings = state.settings();
+    let kind_of = |c: &str| {
+        settings
+            .connections
+            .iter()
+            .find(|x| x.id == c)
+            .map(|x| x.kind.clone())
+    };
+    let today = chrono::Local::now().date_naive();
+    let mut out = Vec::new();
+    for id in ids {
+        let mine = columbus_shared::datagroups::groups_dir()
+            .join(format!("{id}.yaml"))
+            .exists();
+        let org = state.context.as_ref().and_then(|p| p.data_group(id, today));
+        match (mine, org) {
+            (true, Some(_)) => return Err(format!(
+                "data group {id} is both one of yours and one of your organization's; rename yours"
+            )),
+            (true, None) => {
+                let g = columbus_shared::datagroups::load(id)?;
+                out.extend(g.to_scope(kind_of)?);
+            }
+            (false, Some(g)) => {
+                let mut by_conn: std::collections::BTreeMap<String, Vec<GroupDataset>> =
+                    Default::default();
+                for d in g["datasets"].as_array().cloned().unwrap_or_default() {
+                    let (Some(conn), Some(physical)) =
+                        (d["connection"].as_str(), d["physical"].as_str())
+                    else {
+                        return Err(format!(
+                            "data group {id}: dataset {} is not in the context pack",
+                            d["id"].as_str().unwrap_or("?")
+                        ));
+                    };
+                    let kind = kind_of(conn).ok_or_else(|| {
+                        format!("data group {id} uses {conn}, which is not one of your connections")
+                    })?;
+                    let filter = match d["filter"].as_str() {
+                        Some(f) if !f.trim().is_empty() => Some(
+                            check_where(f, SqlDialect::for_connection_type(&kind)).map_err(
+                                |e| format!("data group {id}: the filter on {physical} is not one Columbus runs: {e}"),
+                            )?,
+                        ),
+                        _ => None,
+                    };
+                    by_conn
+                        .entry(conn.to_string())
+                        .or_default()
+                        .push(GroupDataset {
+                            physical: physical.to_string(),
+                            filter,
+                        });
+                }
+                if by_conn.is_empty() {
+                    return Err(format!("data group {id} lists no datasets"));
+                }
+                out.extend(by_conn.into_iter().map(|(connection, datasets)| DataGroup {
+                    id: id.clone(),
+                    connection,
+                    datasets,
+                    mode: Mode::Read,
+                }));
+            }
+            (false, None) => return Err(format!("there is no data group {id}")),
+        }
+    }
+    Ok(out)
+}
+
 /// Sentences in a summary. A `.`, `!` or `?` ends one when it ends the
 /// text, or is followed by a space and then anything but a lower-case letter
 /// or a digit; so decimals (`0.005 mi`) and abbreviations before lower case
@@ -861,7 +942,7 @@ impl Gateway {
     }
 
     #[tool(
-        description = "Describe a data group from the context pack: the datasets a recurring job uses (with connection, table and any filter), how they join, and the documents that explain them.",
+        description = "Describe a data group (your organization's, from its context pack, or the person's own): the datasets a recurring job uses (with connection, table and any filter), how they join, and the documents that explain them.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn describe_data_group(
@@ -870,13 +951,23 @@ impl Gateway {
         ctx: RequestContext<RoleServer>,
     ) -> Result<Json<Output<Value>>, String> {
         let rec = self.gate(&ctx, "describe_data_group", &json!({"id": args.id}))?;
-        let pack = match self.pack() {
-            Ok(p) => p,
-            Err(e) => return Err(self.deny(&ctx, rec, e)),
-        };
         let today = chrono::Local::now().date_naive();
-        let Some(mut g) = pack.data_group(&args.id, today) else {
-            return Err(self.deny(&ctx, rec, format!("no data group {:?}", args.id)));
+        let org = self.pack().ok().and_then(|p| p.data_group(&args.id, today));
+        // The organization's (from its context pack), else the person's own.
+        let mut g = match org {
+            Some(g) => g,
+            None => match columbus_shared::datagroups::load(&args.id) {
+                Ok(mine) => json!({
+                    "group": {"id": mine.id, "title": mine.name, "summary": mine.description, "owner": "you"},
+                    "datasets": mine.datasets.iter().map(|m| json!({
+                        "connection": m.connection, "physical": m.dataset, "filter": m.filter, "found": true,
+                    })).collect::<Vec<_>>(),
+                    "documents": [],
+                }),
+                Err(_) => {
+                    return Err(self.deny(&ctx, rec, format!("no data group {:?}", args.id)));
+                }
+            },
         };
         // Which of its datasets this session can read at all.
         if let Some(Value::Array(ds)) = g.get_mut("datasets") {

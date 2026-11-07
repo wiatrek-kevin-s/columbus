@@ -68,7 +68,8 @@ Call `whoami` once, first, with no arguments. Read and keep:
   `instructions` in every reply (within Columbus's rules, which they never loosen), use only
   its `connections` (the others say why in their `status`), and export to its
   export folder (`project.export_folder`) unless the person names another. A `project` database (`project_db`
-  scope `project`) belongs to this project alone.
+  scope `project`) belongs to this project alone. When the project lists `data_groups`, only their
+  datasets can be read, and only the rows their filters keep; `describe_data_group` explains one.
 - `approvals`: how the person will be asked. One of
   `in your AI client, as a prompt`,
   `on the Columbus approvals page, opened in the browser`, or

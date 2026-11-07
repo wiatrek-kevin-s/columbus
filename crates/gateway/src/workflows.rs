@@ -166,6 +166,14 @@ impl Gateway {
             }
         }
         // In a project, a workflow reaches no further than the project.
+        if self
+            .state
+            .project
+            .as_ref()
+            .is_some_and(|p| !p.data_groups.is_empty())
+        {
+            problems.push("this project uses data groups, and a workflow can't keep to them yet: propose it from a chat outside the project".into());
+        }
         if let Some(p) = &self.state.project {
             if !p.connections.is_empty() {
                 for c in w

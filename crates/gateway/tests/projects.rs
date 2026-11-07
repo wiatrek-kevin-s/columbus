@@ -44,6 +44,8 @@ import geopandas as gpd
 from shapely.geometry import box
 gpd.GeoDataFrame({"parcel_id": ["P1", "P2"]}, geometry=[box(0, 0, 1, 1), box(1, 1, 2, 2)],
     crs="EPSG:2277").to_file(sys.argv[1], layer="parcels", driver="GPKG", engine="pyogrio")
+gpd.GeoDataFrame({"road": ["R1"]}, geometry=[box(0, 0, 3, 3)],
+    crs="EPSG:2277").to_file(sys.argv[1], layer="roads", driver="GPKG", engine="pyogrio")
 "#;
         assert!(StdCommand::new(py)
             .args(["-c", script])
@@ -85,6 +87,7 @@ fn command(root: &Path, project: Option<&str>, py: Option<&str>) -> tokio::proce
             .env("COLUMBUS_CONNECTIONS", root.join("connections"))
             .env("COLUMBUS_WORKSPACES", root.join("workspaces"))
             .env("COLUMBUS_PROJECTS", root.join("projects"))
+            .env("COLUMBUS_DATA_GROUPS", root.join("data-groups"))
             .env("COLUMBUS_AUDIT_DIR", root.join("audit"))
             .env("COLUMBUS_LIVE_DIR", root.join("live"))
             .env("COLUMBUS_WORKER", &worker)
@@ -248,5 +251,141 @@ async fn a_workflow_proposed_in_a_project_reaches_no_further() {
     );
     let r = call(&c, "propose_workflow", json!({"workflow": wf("county")})).await;
     assert_ne!(r.is_error, Some(true), "{:?}", r.content);
+    c.cancel().await.unwrap();
+}
+
+fn group_project(root: &Path, groups: &str) {
+    std::fs::create_dir_all(root.join("projects/grouped")).unwrap();
+    std::fs::write(
+        root.join("projects/grouped/project.yaml"),
+        format!("id: grouped\nname: Grouped\ndata_groups: [{groups}]\n"),
+    )
+    .unwrap();
+}
+
+#[tokio::test]
+async fn a_projects_data_groups_narrow_to_their_datasets_and_rows() {
+    let Some(py) = python("geopandas, pyogrio, shapely") else {
+        eprintln!("skipped: needs Python with geopandas, pyogrio and shapely");
+        return;
+    };
+    let env = setup(Some(&py));
+    std::fs::create_dir_all(env.root.join("data-groups")).unwrap();
+    std::fs::write(
+        env.root.join("data-groups/one-parcel.yaml"),
+        "id: one-parcel\nname: One parcel\ndatasets:\n  - { connection: county, dataset: parcels, filter: \"parcel_id = 'P1'\" }\n",
+    )
+    .unwrap();
+    group_project(&env.root, "one-parcel");
+    let c = start(&env.root, Some("grouped"), Some(&py)).await;
+    let who = ok(&call(&c, "whoami", json!({})).await);
+    assert_eq!(
+        who["result"]["project"]["data_groups"][0]["id"], "one-parcel",
+        "{who}"
+    );
+    assert_eq!(
+        who["result"]["project"]["data_groups"][0]["datasets"][0]["dataset"],
+        "parcels"
+    );
+    // Only the group's dataset, and only its rows.
+    let q = ok(&call(
+        &c,
+        "query_features",
+        json!({"connection": "county", "dataset": "parcels"}),
+    )
+    .await);
+    assert_eq!(q["result"]["layer"]["summary"]["rows"], 1, "{q}");
+    let r = call(
+        &c,
+        "query_features",
+        json!({"connection": "county", "dataset": "roads"}),
+    )
+    .await;
+    assert_eq!(r.is_error, Some(true), "a dataset outside the group");
+    // A connection with no group in the project gives nothing.
+    let r = call(
+        &c,
+        "query_features",
+        json!({"connection": "payroll", "dataset": "parcels"}),
+    )
+    .await;
+    assert_eq!(r.is_error, Some(true), "a connection outside the groups");
+    // The person's own group, described.
+    let d = ok(&call(&c, "describe_data_group", json!({"id": "one-parcel"})).await);
+    assert_eq!(d["result"]["datasets"][0]["usable_here"], true, "{d}");
+    // No workflow from here yet: it couldn't keep to the groups.
+    let r = call(&c, "propose_workflow", json!({"workflow": "id: x-flow\nname: X\npurpose: X.\nscope:\n  connections: [county]\nsteps:\n  - id: rows\n    tool: query_features\n    args: { connection: county, dataset: roads }\n"})).await;
+    assert_eq!(r.is_error, Some(true));
+    c.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_data_group_that_cannot_be_used_stops_the_session() {
+    let env = setup(None);
+    std::fs::create_dir_all(env.root.join("data-groups")).unwrap();
+    // Missing; a connection the person doesn't have; a filter Columbus won't run.
+    std::fs::write(
+        env.root.join("data-groups/elsewhere.yaml"),
+        "id: elsewhere\nname: E\ndatasets:\n  - { connection: nope, dataset: x }\n",
+    )
+    .unwrap();
+    std::fs::write(env.root.join("data-groups/sneaky.yaml"), "id: sneaky\nname: S\ndatasets:\n  - { connection: county, dataset: parcels, filter: \"1=1) OR (1=1\" }\n").unwrap();
+    for g in ["missing-group", "elsewhere", "sneaky"] {
+        group_project(&env.root, g);
+        let started =
+            ().serve(TokioChildProcess::new(command(&env.root, Some("grouped"), None)).unwrap())
+                .await;
+        assert!(
+            started.is_err(),
+            "{g}: a session started with a data group it can't keep to"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_project_database_is_withheld_once_its_data_groups_change() {
+    let Some(py) = python("geopandas, pyogrio, shapely, duckdb") else {
+        eprintln!("skipped: needs Python with geopandas, pyogrio, shapely and duckdb");
+        return;
+    };
+    let env = setup(Some(&py));
+    std::fs::create_dir_all(env.root.join("data-groups")).unwrap();
+    let group = |filter: &str| {
+        std::fs::write(
+            env.root.join("data-groups/parcels-only.yaml"),
+            format!("id: parcels-only\nname: Parcels\ndatasets:\n  - {{ connection: county, dataset: parcels, filter: \"{filter}\" }}\n"),
+        )
+        .unwrap();
+    };
+    group("parcel_id <> 'zz'");
+    group_project(&env.root, "parcels-only");
+    let c = start(&env.root, Some("grouped"), Some(&py)).await;
+    let q = ok(&call(
+        &c,
+        "query_features",
+        json!({"connection": "county", "dataset": "parcels"}),
+    )
+    .await);
+    let layer = q["result"]["layer"]["handle"].as_str().unwrap().to_string();
+    ok(&call(
+        &c,
+        "project_db",
+        json!({"action": "create", "db": "work", "scope": "project"}),
+    )
+    .await);
+    ok(&call(&c, "project_db", json!({"action": "load", "db": "work", "scope": "project", "layer": layer, "table": "parcels"})).await);
+    ok(&call(&c, "project_db", json!({"action": "query", "db": "work", "scope": "project", "sql": "select count(*) as n from parcels"})).await);
+    c.cancel().await.unwrap();
+
+    // The group narrows: what was built under the wider one is withheld.
+    group("parcel_id = 'P1'");
+    let c = start(&env.root, Some("grouped"), Some(&py)).await;
+    let r = call(&c, "project_db", json!({"action": "query", "db": "work", "scope": "project", "sql": "select count(*) as n from parcels"})).await;
+    assert_eq!(r.is_error, Some(true), "{:?}", r.structured_content);
+    assert!(
+        format!("{:?}", r.content).contains("data groups"),
+        "{:?}",
+        r.content
+    );
     c.cancel().await.unwrap();
 }

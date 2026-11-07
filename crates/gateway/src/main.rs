@@ -177,6 +177,11 @@ async fn serve() -> Result<()> {
         if !p.connections.is_empty() {
             state.scope.connections = p.connections.clone();
         }
+        // Its data groups: then its chats see only their datasets.
+        if !p.data_groups.is_empty() {
+            state.scope.data_groups =
+                context::project_groups(&state, &p.data_groups).map_err(anyhow::Error::msg)?;
+        }
         state.project = Some(p);
     }
     tracing::info!(session = %state.session, workspace = %state.sandbox.root().display(), "starting");
