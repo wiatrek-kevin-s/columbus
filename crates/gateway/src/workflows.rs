@@ -114,89 +114,13 @@ impl Gateway {
                 ))
             }
         };
-        let mut problems = Vec::new();
-        for s in &w.steps {
-            let tool = if wf::personal_tool_id(&s.tool).is_some() {
-                "run_tool"
-            } else {
-                s.tool.as_str()
-            };
-            if !policy.tool_allowed(tool) {
-                problems.push(format!(
-                    "step {:?}: organization policy does not allow {tool}",
-                    s.id
-                ));
-            }
-        }
-        if w.review.is_some() {
-            if !policy.tool_allowed(REVIEW_TOOL) {
-                problems.push(format!(
-                    "it has an AI review, and organization policy does not allow one ({REVIEW_TOOL})"
-                ));
-            }
-            for c in &w.scope.connections {
-                let labels = std::iter::once(columbus_flow::connection_label(c)).collect();
-                match review_flow(&policy.flows, &labels) {
-                    columbus_flow::FlowDecision::Deny { .. } => problems.push(format!(
-                        "it has an AI review, and a flow rule forbids sending data from {c} to {REVIEW_DESTINATION}"
-                    )),
-                    columbus_flow::FlowDecision::Approve { rule: Some(_), .. } => problems.push(format!(
-                        "it has an AI review, and a flow rule needs a person to approve each sending of data from {c} to {REVIEW_DESTINATION}, which a run cannot wait for"
-                    )),
-                    _ => {}
-                }
-            }
-        }
-        if !w.personal_tools().is_empty() && !policy.allow_personal_tools {
-            problems.push(
-                "it uses personal tools, and organization policy turns them off (allow_personal_tools)"
-                    .into(),
-            );
-        }
-        if let Err(e) = wf::tool_hashes(&w, self.state.tools.root()) {
-            problems.push(format!(
-                "{e}; install it first (propose_tool, then the person installs it in the Columbus app)"
-            ));
-        }
-        for c in &w.scope.connections {
-            if !settings.connections.iter().any(|x| &x.id == c) {
-                problems.push(format!(
-                    "scope.connections names {c:?}, which is not one of the person's connections (list_connections)"
-                ));
-            }
-        }
-        // In a project, a workflow reaches no further than the project.
-        if self
-            .state
-            .project
-            .as_ref()
-            .is_some_and(|p| !p.data_groups.is_empty())
-        {
-            problems.push("this project uses data groups, and a workflow can't keep to them yet: propose it from a chat outside the project".into());
-        }
-        if let Some(p) = &self.state.project {
-            if !p.connections.is_empty() {
-                for c in w
-                    .scope
-                    .connections
-                    .iter()
-                    .filter(|c| !p.connections.contains(c))
-                {
-                    problems.push(format!(
-                        "scope.connections names {c:?}, which this project ({}) does not use; propose it outside the project, or ask the person to add the connection to the project",
-                        p.name
-                    ));
-                }
-            }
-        }
-        if let Some(f) = &w.outputs.folder {
-            if !policy.exports.iter().any(|x| x.id == f.export) {
-                problems.push(format!(
-                    "outputs.folder export {:?} is not one of the policy's export folders (whoami lists them)",
-                    f.export
-                ));
-            }
-        }
+        let problems = workflow_problems(
+            &settings,
+            self.state.project.as_ref(),
+            self.state.tools.root(),
+            &w,
+            &std::collections::BTreeSet::new(),
+        );
         if !problems.is_empty() {
             return Err(self.deny(
                 &ctx,
@@ -243,6 +167,103 @@ impl Gateway {
             provenance: None,
         }))
     }
+}
+
+/// What keeps a workflow from being filed for the person: the same checks
+/// whether their assistant proposed it or a coworker shared it. `brings`
+/// are personal tools coming with it (as proposals) rather than installed.
+pub(crate) fn workflow_problems(
+    settings: &crate::config::Settings,
+    project: Option<&columbus_shared::projects::Project>,
+    tools_root: &Path,
+    w: &Workflow,
+    brings: &std::collections::BTreeSet<String>,
+) -> Vec<String> {
+    let policy = &settings.policy;
+    let mut problems = Vec::new();
+    for s in &w.steps {
+        let tool = if wf::personal_tool_id(&s.tool).is_some() {
+            "run_tool"
+        } else {
+            s.tool.as_str()
+        };
+        if !policy.tool_allowed(tool) {
+            problems.push(format!(
+                "step {:?}: organization policy does not allow {tool}",
+                s.id
+            ));
+        }
+    }
+    if w.review.is_some() {
+        if !policy.tool_allowed(REVIEW_TOOL) {
+            problems.push(format!(
+                "it has an AI review, and organization policy does not allow one ({REVIEW_TOOL})"
+            ));
+        }
+        for c in &w.scope.connections {
+            let labels = std::iter::once(columbus_flow::connection_label(c)).collect();
+            match review_flow(&policy.flows, &labels) {
+                columbus_flow::FlowDecision::Deny { .. } => problems.push(format!(
+                    "it has an AI review, and a flow rule forbids sending data from {c} to {REVIEW_DESTINATION}"
+                )),
+                columbus_flow::FlowDecision::Approve { rule: Some(_), .. } => problems.push(format!(
+                    "it has an AI review, and a flow rule needs a person to approve each sending of data from {c} to {REVIEW_DESTINATION}, which a run cannot wait for"
+                )),
+                _ => {}
+            }
+        }
+    }
+    if !w.personal_tools().is_empty() && !policy.allow_personal_tools {
+        problems.push(
+            "it uses personal tools, and organization policy turns them off (allow_personal_tools)"
+                .into(),
+        );
+    }
+    // Personal tools installed, or coming with it (a shared workflow
+    // brings its tools as proposals, installed before it can be).
+    for t in w.personal_tools().difference(brings) {
+        let installed = columbus_shared::tools::read_approvals(tools_root).contains_key(t);
+        if !installed {
+            problems.push(format!(
+                "it uses the personal tool {t}, which is not installed; install it first (propose_tool, then the person installs it in the Columbus app)"
+            ));
+        }
+    }
+    for c in &w.scope.connections {
+        if !settings.connections.iter().any(|x| &x.id == c) {
+            problems.push(format!(
+                "scope.connections names {c:?}, which is not one of the person's connections (list_connections)"
+            ));
+        }
+    }
+    // In a project, a workflow reaches no further than the project.
+    if project.is_some_and(|p| !p.data_groups.is_empty()) {
+        problems.push("this project uses data groups, and a workflow can't keep to them yet: propose it from a chat outside the project".into());
+    }
+    if let Some(p) = project {
+        if !p.connections.is_empty() {
+            for c in w
+                .scope
+                .connections
+                .iter()
+                .filter(|c| !p.connections.contains(c))
+            {
+                problems.push(format!(
+                    "scope.connections names {c:?}, which this project ({}) does not use; propose it outside the project, or ask the person to add the connection to the project",
+                    p.name
+                ));
+            }
+        }
+    }
+    if let Some(f) = &w.outputs.folder {
+        if !policy.exports.iter().any(|x| x.id == f.export) {
+            problems.push(format!(
+                "outputs.folder export {:?} is not one of the policy's export folders (whoami lists them)",
+                f.export
+            ));
+        }
+    }
+    problems
 }
 
 /// The runner's client: itself, in process.

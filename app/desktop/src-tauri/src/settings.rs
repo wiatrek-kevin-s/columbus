@@ -58,6 +58,7 @@ pub struct PolicyView {
     allow_scripts: bool,
     allow_personal_tools: bool,
     allow_workflows: bool,
+    allow_shared_tools: bool,
     connection_types: Vec<String>,
     problem: Option<String>,
 }
@@ -178,6 +179,14 @@ fn secret_may_exist(id: &str) -> bool {
 }
 
 /// Every connection file in the folder, with the file it came from.
+/// The ids of the person's connections that read.
+pub(crate) fn connection_ids() -> Vec<String> {
+    scan(&paths::connections_dir())
+        .into_iter()
+        .filter_map(|(_, c)| c.ok().map(|c| c.id))
+        .collect()
+}
+
 fn scan(dir: &Path) -> Vec<(PathBuf, Result<Connection, String>)> {
     let mut out = vec![];
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -253,6 +262,7 @@ fn state() -> SettingsState {
             allow_scripts: policy.allow_scripts,
             allow_personal_tools: policy.allow_personal_tools,
             allow_workflows: policy.allow_workflows,
+            allow_shared_tools: policy.allow_shared_tools,
             connection_types: policy.connection_types.clone(),
             problem,
         },
@@ -664,9 +674,7 @@ fn build(form: &ConnForm, old: Option<&Connection>) -> Result<Connection, String
                             .extension()
                             .is_some_and(|e| e.eq_ignore_ascii_case("shp")))) =>
             {
-                return Err(format!(
-                    "{p} is not a folder of shapefiles or a .shp file"
-                ))
+                return Err(format!("{p} is not a folder of shapefiles or a .shp file"))
             }
             "gpkg" | "sqlite" if !pb.is_file() => return Err(format!("{p} is not a file")),
             _ => {}
@@ -1094,7 +1102,11 @@ pub async fn settings_set_switch(name: String, on: bool) -> Result<(), String> {
 fn set_switch(name: &str, on: bool) -> Result<(), String> {
     if !matches!(
         name,
-        "allow_edits" | "allow_scripts" | "allow_personal_tools" | "allow_workflows"
+        "allow_edits"
+            | "allow_scripts"
+            | "allow_personal_tools"
+            | "allow_workflows"
+            | "allow_shared_tools"
     ) {
         return Err(format!("unknown setting {name:?}"));
     }
@@ -1123,6 +1135,7 @@ fn set_switch(name: &str, on: bool) -> Result<(), String> {
             }
             "allow_scripts" => "let your assistant run Python scripts, after your approval of each one",
             "allow_workflows" => "let the workflows you approve run by themselves, on their schedule",
+            "allow_shared_tools" => "let you open tools and workflows coworkers share with you, to review and approve each yourself",
             _ => "let your assistant use the tools you install from what it proposes, without asking each time",
         })?;
         if std::fs::read_to_string(&path).ok().as_deref() != Some(before.as_str()) {

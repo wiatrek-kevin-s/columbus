@@ -4,6 +4,7 @@
 // report. Your workflows are yours alone: nothing here is shared.
 import { $, h, el, invoke, store, button, pageHead, showError, when, numbered, emptyState } from "../core.js";
 import { switchRow } from "./settings.js";
+import { shareOut, shareIn, importedText } from "./share.js";
 import { markdown } from "./chats.js";
 
 let state = null;
@@ -93,7 +94,8 @@ export async function render(main, rest) {
 
   // ---- The list: what waits for you, and one row per workflow ----------
   async function listView() {
-    page.append(pageHead("Workflows", "Jobs that run by themselves, without you waiting: your assistant proposes one, you read it and approve it here. They are yours alone."));
+    page.append(pageHead("Workflows", "Jobs that run by themselves, without you waiting: your assistant proposes one, you read it and approve it here. They are yours alone.",
+      [button("Open a shared file…", "", () => shareIn(err, () => refreshList()), { id: "wf-open-shared", title: "A workflow a coworker shared: you review it here before anything runs" })]));
     page.append(h("div", { class: "scroll" }, body));
     const off = h("p", { id: "wf-off", class: "notice warn", role: "status", hidden: true }, "Workflows are turned off in your organization's settings, so none run, and none can be approved. The switch is at the bottom of this page.");
     const noSched = h("p", { id: "wf-nosched", class: "notice", role: "status", hidden: true }, "Schedules are not available on this system yet. Run now works.");
@@ -109,7 +111,7 @@ export async function render(main, rest) {
           "No workflows yet. Ask your assistant, for example: ", h("i", {}, "make what we just did a workflow that runs every weekday at 6"), "."))),
       h("details", { class: "card", id: "wf-about" }, h("summary", { class: "hd" }, h("h2", {}, "How workflows work, and your organization's switch")),
         h("div", { class: "bd stack" },
-          h("p", { class: "small muted" }, "A workflow reads only the connections it lists, runs only the steps it lists (reading and processing tools, and personal tools you installed), and never waits for you: a step that needs an approval stops the run with \"needs you\". Runs happen while you are signed in to this computer; one missed while it slept runs once when it wakes. Sharing a workflow with your team comes later."),
+          h("p", { class: "small muted" }, "A workflow reads only the connections it lists, runs only the steps it lists (reading and processing tools, and personal tools you installed), and never waits for you: a step that needs an approval stops the run with \"needs you\". Runs happen while you are signed in to this computer; one missed while it slept runs once when it wakes. Share one with a coworker from its page: they open the file here, choose their own connections and approve it themselves."),
           sw, h("p", { class: "small muted wrap-any" }, "Stored in ", h("code", { id: "wf-dir" })))));
 
     const draw = () => {
@@ -126,6 +128,7 @@ export async function render(main, rest) {
         const text = el("div", "text");
         text.append(el("b", null, w.name), el("span", "where", `${w.replaces != null ? "A change to your workflow" : "New"}${w.proposal && w.proposal.proposed ? ` · proposed ${when(w.proposal.proposed)}` : ""} · ${w.at ? `would run ${scheduleText({ ...w, schedule_entry: "none" })}` : "would run when you start it"}`));
         if (w.purpose) text.append(el("span", null, w.purpose));
+        if (w.proposal && w.proposal.imported) text.append(el("span", "where", importedText(w.proposal)));
         if (w.problem) text.append(el("span", "where error-text", w.problem));
         const b = button("Review", "primary sm", () => openReview(w, refreshList), { title: "Read what it does, then approve or decline it" });
         b.disabled = !!w.problem;
@@ -155,7 +158,8 @@ export async function render(main, rest) {
     const drawSwitch = async () => {
       try {
         const st = await invoke("settings_state");
-        sw.replaceChildren(switchRow("allow_workflows", st, async () => { await drawSwitch(); await refreshList(); }));
+        sw.replaceChildren(switchRow("allow_workflows", st, async () => { await drawSwitch(); await refreshList(); }),
+          switchRow("allow_shared_tools", st, async () => { await drawSwitch(); }));
       } catch (e) { sw.replaceChildren(el("p", "error-text", String(e))); }
     };
     if (state) draw();
@@ -187,7 +191,9 @@ export async function render(main, rest) {
         acts.append(r);
       }
     }
-    acts.append(h("span", { class: "spacer" }), button("Remove", "danger", removeWf, { id: "wf-remove", title: "It stops running; its past runs' reports are kept" }));
+    const sh = button("Share…", "", () => shareOut("workflow", w.id, err), { id: "wf-share", title: "Save it, with the tools it uses, as a file to send a coworker; they choose their own connections and approve it themselves. Its schedule and runs stay here." });
+    sh.disabled = !ready(w);
+    acts.append(sh, h("span", { class: "spacer" }), button("Remove", "danger", removeWf, { id: "wf-remove", title: "It stops running; its past runs' reports are kept" }));
     body.append(h("section", { class: "card" }, h("div", { class: "bd stack" },
       why ? el("p", "notice warn", why) : null, facts, acts)));
     const runsBd = h("div", { class: "bd flush" });
@@ -262,6 +268,7 @@ export async function render(main, rest) {
       h("h2", { id: "wf-review-h" }, "Workflow"),
       h("p", { id: "wf-review-id", class: "muted small wrap-any" }),
       h("p", { id: "wf-review-purpose" }),
+      h("p", { id: "wf-review-imported", class: "notice", hidden: true }),
       h("h3", {}, "What it does"),
       h("ul", { id: "wf-review-plain", class: "small" }),
       h("p", { id: "wf-review-replaces", class: "notice", hidden: true }),
@@ -282,6 +289,9 @@ export async function render(main, rest) {
     $("wf-review-h").textContent = w.name;
     $("wf-review-id").textContent = `${w.id} · ${w.fingerprint}`;
     $("wf-review-purpose").textContent = w.purpose || "";
+    const imp = importedText(w.proposal);
+    $("wf-review-imported").textContent = imp ? `${imp.replace(" Not test-run on your computer: read the code before you approve it.", "")} Its connections are the ones you chose.` : "";
+    $("wf-review-imported").hidden = !imp;
     $("wf-review-plain").replaceChildren(...(w.plain || []).map((t) => el("li", null, t)));
     const f = numbered(w.text || "");
     f.pre.id = "wf-review-file";

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-share-export"
+description = "Enables the share_export command without any pre-configured scope."
+commands.allow = ["share_export"]
+
+[[permission]]
+identifier = "deny-share-export"
+description = "Denies the share_export command without any pre-configured scope."
+commands.deny = ["share_export"]

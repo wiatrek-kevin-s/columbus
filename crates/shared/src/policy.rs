@@ -244,6 +244,12 @@ pub struct OrgPolicy {
     /// every installed one at once.
     #[serde(default)]
     pub allow_workflows: bool,
+    /// Tools and workflows a coworker shared as a file (Share in the
+    /// Columbus app): when on, the person can open one, and what it holds
+    /// is filed as proposals they review and approve themselves, exactly as
+    /// their own assistant's. Off by default.
+    #[serde(default)]
+    pub allow_shared_tools: bool,
     /// Rows read and seconds per call; see [`OrgLimits`]. Use
     /// [`OrgPolicy::read_limits`] for the values in force.
     #[serde(default)]
@@ -521,6 +527,7 @@ impl Default for OrgPolicy {
             allow_scripts: false,
             allow_edits: false,
             allow_personal_tools: false,
+            allow_shared_tools: false,
             allow_workflows: false,
             limits: OrgLimits::DEFAULT,
             project_db: ProjectDbPolicy::default(),

@@ -145,6 +145,9 @@ def main():
         wait.until(lambda drv: not dlg.is_displayed())
         wait.until(lambda drv: "Tract export" in text(drv, "wf-installed"))
         assert "tract-export" in (root / "workflows" / "approved.yaml").read_text()
+        # Open a shared file is offered on the list (the file dialog itself
+        # is the system's).
+        assert d.find_element(By.ID, "wf-open-shared").is_displayed()
 
         # Run now: the real server runs it, and its report shows.
         click(d, By.XPATH, "//ul[@id='wf-installed']/li[@data-id='tract-export']//button[normalize-space()='Run now']")
@@ -171,6 +174,8 @@ def main():
 
         # Removing it, from its own page: off, its runs kept.
         click(d, By.XPATH, "//ul[@id='wf-installed']/li[@data-id='tract-export']//a")
+        # Share is offered for an approved workflow.
+        assert d.find_element(By.ID, "wf-share").is_enabled()
         wait.until(EC.element_to_be_clickable((By.ID, "wf-remove"))).click()
         wait.until(lambda drv: drv.find_elements(By.ID, "wf-installed") and "Tract export" not in text(drv, "wf-installed"))
         assert "tract-export" not in (root / "workflows" / "approved.yaml").read_text()

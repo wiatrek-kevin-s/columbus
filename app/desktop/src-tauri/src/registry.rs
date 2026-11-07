@@ -11,7 +11,9 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 use tauri::AppHandle;
 
-pub(crate) fn program(app: &AppHandle) -> Result<(std::path::PathBuf, Option<std::path::PathBuf>), String> {
+pub(crate) fn program(
+    app: &AppHandle,
+) -> Result<(std::path::PathBuf, Option<std::path::PathBuf>), String> {
     let s = crate::chat::load(app);
     let server = crate::chat::server(&s).ok_or("Columbus's server was not found")?;
     // Only a Columbus server is started, whatever wrote the settings.

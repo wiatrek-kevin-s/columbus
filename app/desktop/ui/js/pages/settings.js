@@ -8,6 +8,7 @@ const SWITCHES = {
   allow_edits: ["Allow edits.", "Your assistant may write to connections set to read-write, and only after you approve each change set. When off, every connection is read-only."],
   allow_scripts: ["Allow Python scripts.", "Your assistant may run Python scripts it writes, after you read and approve each one. They run in a sandbox with no network."],
   allow_personal_tools: ["Allow personal tools.", "Your assistant may propose tools made from its scripts, and use the ones you install without asking each time. They run in the same sandbox as scripts."],
+  allow_shared_tools: ["Allow shared tools and workflows.", "You may open tools and workflows coworkers share with you as a file. Each arrives as a proposal you read and approve yourself, like your assistant's; nothing from a shared file is installed or run before that."],
   allow_workflows: ["Allow workflows.", "Your assistant may propose workflows, and the ones you approve run by themselves on their schedule, without asking each time, within what they list."],
 };
 

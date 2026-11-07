@@ -3,6 +3,7 @@
 // in the app's own code; and the Skills library, read only.
 import { $, h, el, invoke, store, button, pageHead, showError, when, numbered, emptyState, coming } from "../core.js";
 import { switchRow } from "./settings.js";
+import { shareOut, shareIn, importedText } from "./share.js";
 
 let tools = null;
 let reviewing = null;
@@ -11,6 +12,7 @@ function testText(t) {
   const p = t.proposal || {};
   const test = p.test || {};
   const parts = [];
+  if (p.imported) return importedText(p);
   if (p.proposed) parts.push(`Proposed ${when(p.proposed)}`);
   const outs = (test.outputs || []).map((o) => `${o.kind}${o.rows != null ? ` (${o.rows} rows)` : ""}`);
   if (outs.length) parts.push(`test run made ${outs.join(", ")}`);
@@ -27,7 +29,8 @@ function testText(t) {
 export async function render(main) {
   const page = h("div", { class: "page" });
   main.append(page);
-  page.append(pageHead("Tools", "Tools your assistant made from scripts, for it (and any assistant you use with Columbus) to reuse. You read each one and install it here."));
+  page.append(pageHead("Tools", "Tools your assistant made from scripts, for it (and any assistant you use with Columbus) to reuse. You read each one and install it here.",
+    [button("Open a shared file…", "", () => shareIn($("tools-error"), () => refresh()), { id: "tools-open-shared", title: "A tool or workflow a coworker shared: you review it here before anything is installed" })]));
   const body = h("div", { class: "pad stack" });
   page.append(h("div", { class: "scroll" }, body));
   const notice = h("p", { id: "restart", class: "notice ok", role: "status", hidden: true });
@@ -76,8 +79,10 @@ export async function render(main) {
       text.append(h("div", { class: "chips" }, el("span", t.state === "ready" && tools.allowed ? "chip ro" : "chip off", state)));
       if (t.problem) text.append(el("span", "where error-text", `Not used: ${t.problem}. Remove it, and ask your assistant to propose it again.`));
       const v = button("Code", "sm", () => openInstalled(t));
+      const sh = button("Share…", "sm", () => shareOut("tool", t.id, err), { title: "Save it as a file to send a coworker; they review and install it themselves" });
+      sh.disabled = t.state !== "ready";
       const r = button("Remove", "danger sm", () => removeTool(t.id), { title: "Remove it: your assistant cannot use it from its next request" });
-      li.append(text, h("div", { class: "acts" }, v, r));
+      li.append(text, h("div", { class: "acts" }, v, sh, r));
       installed.append(li);
     }
   };
@@ -92,7 +97,8 @@ export async function render(main) {
   const drawSwitch = async () => {
     try {
       const st = await invoke("settings_state");
-      sw.replaceChildren(switchRow("allow_personal_tools", st, async () => { await drawSwitch(); await refresh(); }));
+      sw.replaceChildren(switchRow("allow_personal_tools", st, async () => { await drawSwitch(); await refresh(); }),
+        switchRow("allow_shared_tools", st, async () => { await drawSwitch(); }));
     } catch (e) { sw.replaceChildren(el("p", "error-text", String(e))); }
   };
   async function decline(id) {

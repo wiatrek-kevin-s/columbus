@@ -12,6 +12,7 @@ pub mod policy;
 pub mod projects;
 pub mod proof;
 pub mod sandbox;
+pub mod share;
 pub mod sqlcheck;
 pub mod tools;
 pub mod workflows;

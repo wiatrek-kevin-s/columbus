@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-share-import"
+description = "Enables the share_import command without any pre-configured scope."
+commands.allow = ["share_import"]
+
+[[permission]]
+identifier = "deny-share-import"
+description = "Denies the share_import command without any pre-configured scope."
+commands.deny = ["share_import"]

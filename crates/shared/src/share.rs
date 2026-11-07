@@ -1,0 +1,419 @@
+//! Sharing a personal tool or a workflow with a coworker as one file.
+//!
+//! **Share** in the Columbus app saves a `.columbus` file: the tool's two
+//! files (or the workflow's text and the personal tools it uses), who shared
+//! it and when, and the hash of every file. No data travels: no rows, no
+//! outputs, no connection details, no schedule.
+//!
+//! **Open a shared file** reads it back, and `columbus-mcp share import`
+//! files what it holds as *proposals*, exactly as if the recipient's own
+//! assistant had proposed them: the recipient reads every line in the app
+//! and approves each with their own Touch ID or Windows Hello. Nothing in a
+//! shared file is ever installed or run by opening it. The organization's
+//! `allow_shared_tools` switch (off by default) decides whether shared
+//! files can be opened at all.
+//!
+//! A workflow names the sharer's connections and export folder. On import
+//! the recipient says which of theirs stands for each, and the workflow is
+//! rewritten to use those before it is filed; it can't run until every name
+//! is one of the recipient's own.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
+
+use serde::{Deserialize, Serialize};
+
+use crate::tools;
+use crate::workflows as wf;
+
+/// What the file says it is.
+pub const FORMAT: &str = "columbus-share";
+pub const VERSION: u32 = 1;
+/// The file name ending the app saves and opens.
+pub const EXTENSION: &str = "columbus";
+/// Largest shared file read, in bytes: a workflow with its tools, as text.
+pub const MAX_FILE: u64 = 4 * 1024 * 1024;
+/// Most personal tools one shared workflow may bring.
+pub const MAX_TOOLS: usize = 20;
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ShareFile {
+    pub format: String,
+    pub version: u32,
+    /// `tool` or `workflow`.
+    pub kind: String,
+    /// Who shared it (their sign-in name on their computer) and when.
+    pub shared_by: String,
+    pub shared_at: String,
+    /// The Columbus version it was shared from.
+    pub columbus: String,
+    /// For a tool: that tool. For a workflow: the personal tools it uses.
+    #[serde(default)]
+    pub tools: Vec<SharedTool>,
+    /// For a workflow: its `workflow.yaml`, without a schedule.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow: Option<String>,
+    /// sha256 of the workflow's text, when there is one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_sha256: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SharedTool {
+    pub id: String,
+    /// `plugin.yaml`, as installed.
+    pub manifest: String,
+    /// `tool.py`, as installed.
+    pub code: String,
+    /// The hash of the two (as `approved.yaml` holds it).
+    pub hash: String,
+}
+
+fn shared_tool(root: &Path, id: &str) -> Result<SharedTool, String> {
+    let t = tools::list_installed(root)
+        .into_iter()
+        .find(|t| t.id == id)
+        .ok_or_else(|| format!("{id} is not one of your installed tools"))?;
+    if t.state.as_deref() != Some("ready") {
+        return Err(format!(
+            "{id} isn't ready ({}), so it can't be shared",
+            t.problem
+                .clone()
+                .or(t.state.clone())
+                .unwrap_or_else(|| "not installed".into())
+        ));
+    }
+    let dir = root.join(id);
+    let manifest = read_text(&dir.join(tools::MANIFEST), tools::MAX_MANIFEST)?;
+    let code = read_text(&dir.join(tools::ENTRY), tools::MAX_CODE)?;
+    let hash = tools::content_hash(manifest.as_bytes(), code.as_bytes());
+    // Exactly what the person installed.
+    if tools::read_approvals(root).get(id) != Some(&hash) {
+        return Err(format!(
+            "{id}'s files are not the ones you installed, so it can't be shared"
+        ));
+    }
+    Ok(SharedTool {
+        id: id.to_string(),
+        manifest,
+        code,
+        hash,
+    })
+}
+
+fn read_text(p: &Path, max: usize) -> Result<String, String> {
+    let b = std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()))?;
+    if b.len() > max {
+        return Err(format!("{} is larger than allowed", p.display()));
+    }
+    String::from_utf8(b).map_err(|_| format!("{} is not UTF-8 text", p.display()))
+}
+
+/// A shared file for one installed, ready tool.
+pub fn export_tool(
+    tools_root: &Path,
+    id: &str,
+    by: &str,
+    now: &str,
+    columbus: &str,
+) -> Result<ShareFile, String> {
+    Ok(ShareFile {
+        format: FORMAT.into(),
+        version: VERSION,
+        kind: "tool".into(),
+        shared_by: by.into(),
+        shared_at: now.into(),
+        columbus: columbus.into(),
+        tools: vec![shared_tool(tools_root, id)?],
+        workflow: None,
+        workflow_sha256: None,
+    })
+}
+
+/// A shared file for one installed, approved workflow, with the personal
+/// tools it uses. Its schedule is left out: the recipient sets their own.
+pub fn export_workflow(
+    wf_root: &Path,
+    tools_root: &Path,
+    id: &str,
+    by: &str,
+    now: &str,
+    columbus: &str,
+) -> Result<ShareFile, String> {
+    let (w, _fingerprint) =
+        wf::ready(wf_root, tools_root, id).map_err(|e| format!("{id} can't be shared: {e}"))?;
+    let mut w = w;
+    w.schedule = None;
+    let text = to_text(&w)?;
+    let mut shared = Vec::new();
+    for t in w.personal_tools() {
+        shared.push(shared_tool(tools_root, &t)?);
+    }
+    Ok(ShareFile {
+        format: FORMAT.into(),
+        version: VERSION,
+        kind: "workflow".into(),
+        shared_by: by.into(),
+        shared_at: now.into(),
+        columbus: columbus.into(),
+        tools: shared,
+        workflow_sha256: Some(crate::canon::sha256_hex(text.as_bytes())),
+        workflow: Some(text),
+    })
+}
+
+/// A workflow as `workflow.yaml` text, checked to read back the same.
+fn to_text(w: &wf::Workflow) -> Result<String, String> {
+    let text = serde_yaml::to_string(w).map_err(|e| e.to_string())?;
+    let back = wf::check(&text)?;
+    if &back != w {
+        return Err("the workflow does not read back the same".into());
+    }
+    Ok(text)
+}
+
+/// The file's JSON, as saved.
+pub fn to_json(s: &ShareFile) -> Result<String, String> {
+    serde_json::to_string_pretty(s).map_err(|e| e.to_string())
+}
+
+/// Read a shared file and check what can be checked without the server:
+/// its shape, sizes, ids, every hash, and the workflow's text. Whatever it
+/// says of itself (who shared it, the text) is the sharer's word, shown as
+/// such; nothing here trusts it further.
+pub fn read(path: &Path) -> Result<ShareFile, String> {
+    let meta = std::fs::metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    if !meta.is_file() {
+        return Err(format!("{} is not a file", path.display()));
+    }
+    if meta.len() > MAX_FILE {
+        return Err(format!(
+            "{} is larger than a shared file can be ({} MB)",
+            path.display(),
+            MAX_FILE / 1024 / 1024
+        ));
+    }
+    let text = std::fs::read_to_string(path)
+        .map_err(|_| format!("{} is not a Columbus shared file", path.display()))?;
+    parse(&text)
+}
+
+pub fn parse(text: &str) -> Result<ShareFile, String> {
+    let s: ShareFile = serde_json::from_str(text)
+        .map_err(|e| format!("this is not a Columbus shared file ({e})"))?;
+    if s.format != FORMAT {
+        return Err("this is not a Columbus shared file".into());
+    }
+    if s.version != VERSION {
+        return Err(format!(
+            "this shared file is version {}, and this Columbus reads version {VERSION}: update Columbus",
+            s.version
+        ));
+    }
+    for (what, v, max) in [
+        ("shared_by", &s.shared_by, 100),
+        ("shared_at", &s.shared_at, 40),
+        ("columbus", &s.columbus, 40),
+    ] {
+        if v.chars().count() > max || v.contains('\n') || tools::plain_chars(v).is_err() {
+            return Err(format!("the shared file's {what} is not one plain line"));
+        }
+    }
+    if s.tools.len() > MAX_TOOLS {
+        return Err(format!("a shared file brings at most {MAX_TOOLS} tools"));
+    }
+    let mut seen = BTreeSet::new();
+    for t in &s.tools {
+        if !seen.insert(t.id.clone()) {
+            return Err(format!("the shared file lists {} twice", t.id));
+        }
+        if t.manifest.len() > tools::MAX_MANIFEST || t.code.len() > tools::MAX_CODE {
+            return Err(format!("{}: its files are larger than allowed", t.id));
+        }
+        tools::check_files(&t.id, t.manifest.as_bytes(), t.code.as_bytes())
+            .map_err(|e| format!("{}: {e}", t.id))?;
+        if tools::content_hash(t.manifest.as_bytes(), t.code.as_bytes()) != t.hash {
+            return Err(format!(
+                "{}: its files don't match the hash the shared file gives (changed after it was shared?)",
+                t.id
+            ));
+        }
+    }
+    match s.kind.as_str() {
+        "tool" => {
+            if s.tools.len() != 1 || s.workflow.is_some() {
+                return Err("a shared tool holds exactly one tool".into());
+            }
+        }
+        "workflow" => {
+            let text = s
+                .workflow
+                .as_deref()
+                .ok_or("a shared workflow holds its workflow")?;
+            if s.workflow_sha256.as_deref() != Some(&crate::canon::sha256_hex(text.as_bytes())) {
+                return Err(
+                    "the workflow doesn't match the hash the shared file gives (changed after it was shared?)"
+                        .into(),
+                );
+            }
+            let w = wf::check(text)?;
+            if w.schedule.is_some() {
+                return Err("a shared workflow has no schedule".into());
+            }
+            // It brings every personal tool it uses, and only those.
+            let uses = w.personal_tools();
+            let brings: BTreeSet<String> = s.tools.iter().map(|t| t.id.clone()).collect();
+            if uses != brings {
+                return Err(
+                    "the shared workflow doesn't bring exactly the personal tools it uses".into(),
+                );
+            }
+        }
+        _ => return Err("a shared file holds a tool or a workflow".into()),
+    }
+    Ok(s)
+}
+
+/// What a shared workflow needs from the recipient before it can be filed:
+/// a connection of theirs for each it names, and an export folder.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct Needs {
+    pub connections: Vec<String>,
+    pub export: Option<String>,
+}
+
+pub fn needs(w: &wf::Workflow) -> Needs {
+    let mut c: BTreeSet<String> = w.scope.connections.iter().cloned().collect();
+    for s in &w.steps {
+        if let Some(x) = s.args.get("connection").and_then(|v| v.as_str()) {
+            c.insert(x.to_string());
+        }
+    }
+    Needs {
+        connections: c.into_iter().collect(),
+        export: w.outputs.folder.as_ref().map(|f| f.export.clone()),
+    }
+}
+
+/// The workflow with the sharer's connection and export ids replaced by the
+/// recipient's: `connections` maps every name `needs` lists, `export` is
+/// the recipient's folder (required when the workflow exports). Returns the
+/// new `workflow.yaml` text, checked.
+pub fn remap(
+    w: &wf::Workflow,
+    connections: &BTreeMap<String, String>,
+    export: Option<&str>,
+) -> Result<String, String> {
+    let need = needs(w);
+    for c in &need.connections {
+        if !connections.contains_key(c) {
+            return Err(format!("say which of your connections stands for {c}"));
+        }
+    }
+    if let Some(extra) = connections.keys().find(|k| !need.connections.contains(k)) {
+        return Err(format!("the workflow doesn't name the connection {extra}"));
+    }
+    let mut w = w.clone();
+    w.schedule = None;
+    let map = |c: &str| connections.get(c).cloned().unwrap_or_else(|| c.to_string());
+    let mut scope: Vec<String> = Vec::new();
+    for c in &w.scope.connections {
+        let m = map(c);
+        if !scope.contains(&m) {
+            scope.push(m);
+        }
+    }
+    w.scope.connections = scope;
+    for s in &mut w.steps {
+        if let Some(obj) = s.args.as_object_mut() {
+            if let Some(serde_json::Value::String(c)) = obj.get("connection").cloned() {
+                obj.insert("connection".into(), serde_json::Value::String(map(&c)));
+            }
+        }
+    }
+    match (&mut w.outputs.folder, export) {
+        (Some(f), Some(e)) => f.export = e.to_string(),
+        (Some(_), None) => return Err("say which of your export folders it exports to".into()),
+        (None, Some(_)) => return Err("the workflow doesn't export to a folder".into()),
+        (None, None) => {}
+    }
+    to_text(&w)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const WF: &str = "id: crash-check\nname: Crash check\npurpose: Check the crash points\nscope:\n  connections: [tiger, roads]\nsteps:\n  - id: crashes\n    tool: query_features\n    args: {connection: tiger, dataset: crashes}\n  - id: routes\n    tool: query_features\n    args: {connection: roads, dataset: routes}\noutputs:\n  folder: {export: outbox, steps: [crashes]}\n";
+
+    #[test]
+    fn a_workflow_is_remapped_to_the_recipients_names() {
+        let w = wf::check(WF).unwrap();
+        assert_eq!(
+            needs(&w),
+            Needs {
+                connections: vec!["roads".into(), "tiger".into()],
+                export: Some("outbox".into())
+            }
+        );
+        let map = BTreeMap::from([
+            ("tiger".to_string(), "census".to_string()),
+            ("roads".to_string(), "census".to_string()),
+        ]);
+        let text = remap(&w, &map, Some("shared")).unwrap();
+        let r = wf::check(&text).unwrap();
+        assert_eq!(r.scope.connections, vec!["census".to_string()]);
+        assert!(r.steps.iter().all(|s| s.args["connection"] == "census"));
+        assert_eq!(r.outputs.folder.unwrap().export, "shared");
+        // Every name mapped, and only those.
+        assert!(remap(&w, &BTreeMap::new(), Some("x")).is_err());
+        let mut more = map.clone();
+        more.insert("other".into(), "x".into());
+        assert!(remap(&w, &more, Some("x")).is_err());
+        assert!(remap(&w, &map, None).is_err());
+    }
+
+    #[test]
+    fn a_shared_file_is_checked_before_anything_else() {
+        let w = wf::check(WF).unwrap();
+        let text = to_text(&w).unwrap();
+        let good = ShareFile {
+            format: FORMAT.into(),
+            version: VERSION,
+            kind: "workflow".into(),
+            shared_by: "kevin".into(),
+            shared_at: "2026-11-07T17:00:00-06:00".into(),
+            columbus: "0.13.0".into(),
+            tools: vec![],
+            workflow_sha256: Some(crate::canon::sha256_hex(text.as_bytes())),
+            workflow: Some(text.clone()),
+        };
+        assert!(parse(&to_json(&good).unwrap()).is_ok());
+        // Changed after sharing.
+        let mut bad = good.clone();
+        bad.workflow = Some(text.replace("Crash check", "Crash check 2"));
+        assert!(parse(&to_json(&bad).unwrap()).is_err());
+        // A schedule never travels.
+        let mut sched = w.clone();
+        sched.schedule = Some(wf::Schedule {
+            days: wf::Days::Named("daily".into()),
+            at: "06:00".into(),
+        });
+        let t2 = serde_yaml::to_string(&sched).unwrap();
+        let mut bad = good.clone();
+        bad.workflow_sha256 = Some(crate::canon::sha256_hex(t2.as_bytes()));
+        bad.workflow = Some(t2);
+        assert!(parse(&to_json(&bad).unwrap()).is_err());
+        // Not ours, or a newer format.
+        assert!(parse("{}").is_err());
+        let mut v = good.clone();
+        v.version = 2;
+        assert!(parse(&to_json(&v).unwrap()).is_err());
+        // A hidden character in who shared it.
+        let mut h = good;
+        h.shared_by = "kev\u{202e}in".into();
+        assert!(parse(&to_json(&h).unwrap()).is_err());
+    }
+}

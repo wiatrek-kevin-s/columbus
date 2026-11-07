@@ -12,7 +12,8 @@
 //! columbus-mcp servers signin ID    sign in to a remote server in the browser (OAuth)
 //! columbus-mcp servers signout ID   remove its tokens
 //! columbus-mcp registry update [--from DIR|URL]   install the registry index (checked)
-//! columbus-mcp registry query JSON                one registry search or entry, as JSON (the app's Registry page)
+//! columbus-mcp app query JSON                     one read-only call for an app page (registry query is the same)
+//! columbus-mcp share import JSON                  file a shared .columbus file's tools and workflow as proposals
 //! columbus-mcp pack lint [DIR]      check a context pack
 //! columbus-mcp plugins list         engine plugins, their versions, hashes and state
 //! columbus-mcp plugins approve ID   approve a plugin's exact contents
@@ -48,6 +49,7 @@ mod safefs;
 mod script_tools;
 mod secrets;
 mod server;
+mod share_cli;
 mod snapshot_tools;
 mod worker;
 mod workflows;
@@ -111,6 +113,7 @@ async fn main() -> Result<()> {
         ["servers", "approve", id, "--accept-flags"] => review_cli::approve(id, true).await,
         ["servers", "signin", id] => review_cli::signin(id).await,
         ["registry", "update"] => registry_tools::update(None).await,
+        ["share", "import", request] => share_cli::import(request).await,
         ["registry", "query", request] | ["app", "query", request] => {
             registry_cli::query(request).await
         }

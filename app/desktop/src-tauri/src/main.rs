@@ -47,6 +47,7 @@ mod datagroups;
 mod projects;
 mod registry;
 mod settings;
+mod share;
 mod shell;
 mod workflows;
 use tauri::{AppHandle, Manager, Url, WebviewUrl, WebviewWindowBuilder};
@@ -484,6 +485,9 @@ fn main() {
             datagroups::datagroup_save,
             datagroups::datagroup_remove,
             registry::registry_query,
+            share::share_export,
+            share::share_open,
+            share::share_import,
             projects::project_dbs,
             registry::registry_update,
             chat::chat_transcript,

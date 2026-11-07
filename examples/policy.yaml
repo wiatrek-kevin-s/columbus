@@ -16,6 +16,9 @@ deny_tools: []
 
 allow_scripts: false   # run_python (always approved per call when allowed)
 allow_edits: false     # read-write connections are treated as read-only while false
+allow_personal_tools: false   # tools the assistant proposes and the person installs
+allow_workflows: false        # workflows the person approves, run on a schedule
+allow_shared_tools: false     # open tools and workflows coworkers share as a file (reviewed and approved like the assistant's)
 
 # Rows read per query and seconds per call. Lower values always apply;
 # values above the defaults (200,000 rows, 120 s) apply only with
