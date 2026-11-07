@@ -64,6 +64,11 @@ Call `whoami` once, first, with no arguments. Read and keep:
   today) passes checks but cannot be read yet.
 - `always_on_rules`: the context pack's rules. Follow them for the whole session. Example
   from the sample pack: "Leave retired segments (STATUS = 'R') out of current-state work."
+- `project`, when present: the person's project this session works in. Follow its
+  `instructions` in every reply (within Columbus's rules, which they never loosen), use only
+  its `connections` (the others say why in their `status`), and export to its
+  `export_folder` unless the person names another. A `project` database (`project_db`
+  scope `project`) belongs to this project alone.
 - `approvals`: how the person will be asked. One of
   `in your AI client, as a prompt`,
   `on the Columbus approvals page, opened in the browser`, or

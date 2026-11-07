@@ -1,0 +1,226 @@
+//! Projects: a session started for a project (`COLUMBUS_PROJECT`) uses only
+//! the connections the project lists, reports the project and its
+//! instructions in whoami, and keeps its project databases apart from
+//! other projects'. A project that cannot be read stops the session from
+//! starting, rather than starting it with everything.
+
+use std::path::{Path, PathBuf};
+use std::process::Command as StdCommand;
+
+use rmcp::model::{CallToolRequestParams, CallToolResult};
+use rmcp::service::RunningService;
+use rmcp::transport::{ConfigureCommandExt, TokioChildProcess};
+use rmcp::{RoleClient, ServiceExt};
+use serde_json::{json, Value};
+
+fn python(modules: &str) -> Option<String> {
+    ["python3", "python"]
+        .into_iter()
+        .map(String::from)
+        .find(|p| {
+            StdCommand::new(p)
+                .args(["-c", &format!("import {modules}")])
+                .output()
+                .is_ok_and(|o| o.status.success())
+        })
+}
+
+struct Env {
+    _dir: tempfile::TempDir,
+    root: PathBuf,
+}
+
+fn setup(py: Option<&str>) -> Env {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_path_buf();
+    for d in ["connections", "projects"] {
+        std::fs::create_dir_all(root.join(d)).unwrap();
+    }
+    let gpkg = root.join("county.gpkg");
+    if let Some(py) = py {
+        let script = r#"
+import sys
+import geopandas as gpd
+from shapely.geometry import box
+gpd.GeoDataFrame({"parcel_id": ["P1", "P2"]}, geometry=[box(0, 0, 1, 1), box(1, 1, 2, 2)],
+    crs="EPSG:2277").to_file(sys.argv[1], layer="parcels", driver="GPKG", engine="pyogrio")
+"#;
+        assert!(StdCommand::new(py)
+            .args(["-c", script])
+            .arg(&gpkg)
+            .status()
+            .unwrap()
+            .success());
+    } else {
+        std::fs::write(&gpkg, b"").unwrap();
+    }
+    let p = serde_json::to_string(&gpkg.display().to_string()).unwrap();
+    for id in ["county", "payroll"] {
+        std::fs::write(
+            root.join(format!("connections/{id}.yaml")),
+            format!("id: {id}\ntype: gpkg\npath: {p}\ndatasets:\n  allow: [\"*\"]\n"),
+        )
+        .unwrap();
+    }
+    std::fs::write(root.join("policy.yaml"), "connection_types: [gpkg]\n").unwrap();
+    for (id, conns) in [("review", "[county]"), ("pay-audit", "[payroll]")] {
+        std::fs::create_dir_all(root.join("projects").join(id)).unwrap();
+        std::fs::write(
+            root.join("projects").join(id).join("project.yaml"),
+            format!("id: {id}\nname: Parcel review\ninstructions: |\n  Report areas in acres.\nconnections: {conns}\nexport_folder: outbox\n"),
+        )
+        .unwrap();
+    }
+    Env { _dir: dir, root }
+}
+
+fn command(root: &Path, project: Option<&str>, py: Option<&str>) -> tokio::process::Command {
+    let worker =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../workers/python/columbus_worker.py");
+    let root = root.to_path_buf();
+    let project = project.map(String::from);
+    let py = py.unwrap_or("python3").to_string();
+    tokio::process::Command::new(env!("CARGO_BIN_EXE_columbus-mcp")).configure(move |cmd| {
+        cmd.env("COLUMBUS_POLICY", root.join("policy.yaml"))
+            .env("COLUMBUS_CONNECTIONS", root.join("connections"))
+            .env("COLUMBUS_WORKSPACES", root.join("workspaces"))
+            .env("COLUMBUS_PROJECTS", root.join("projects"))
+            .env("COLUMBUS_AUDIT_DIR", root.join("audit"))
+            .env("COLUMBUS_LIVE_DIR", root.join("live"))
+            .env("COLUMBUS_WORKER", &worker)
+            .env("COLUMBUS_PYTHON", &py)
+            .env("COLUMBUS_LOG", "warn")
+            .env("COLUMBUS_COMPANION", "off")
+            .env("COLUMBUS_APPROVALS_BROWSER", "none");
+        if let Some(p) = &project {
+            cmd.env("COLUMBUS_PROJECT", p);
+        }
+    })
+}
+
+async fn start(
+    root: &Path,
+    project: Option<&str>,
+    py: Option<&str>,
+) -> RunningService<RoleClient, ()> {
+    ().serve(TokioChildProcess::new(command(root, project, py)).unwrap())
+        .await
+        .unwrap()
+}
+
+async fn call(
+    c: &RunningService<RoleClient, ()>,
+    tool: &'static str,
+    args: Value,
+) -> CallToolResult {
+    let mut p = CallToolRequestParams::new(tool);
+    if let Value::Object(m) = args {
+        p = p.with_arguments(m);
+    }
+    c.call_tool(p).await.unwrap()
+}
+
+fn ok(r: &CallToolResult) -> Value {
+    assert_ne!(r.is_error, Some(true), "unexpected error: {:?}", r.content);
+    r.structured_content.clone().expect("structured output")
+}
+
+#[tokio::test]
+async fn a_project_session_uses_only_its_connections_and_says_so() {
+    let env = setup(None);
+    let c = start(&env.root, Some("review"), None).await;
+    let who = ok(&call(&c, "whoami", json!({})).await);
+    let p = &who["result"]["project"];
+    assert_eq!(p["id"], "review", "{who}");
+    assert_eq!(p["name"], "Parcel review");
+    assert_eq!(p["connections"], json!(["county"]));
+    assert_eq!(p["export_folder"], "outbox");
+    assert!(p["instructions"].as_str().unwrap().contains("acres"));
+    let cards = who["result"]["connections"].as_array().unwrap().clone();
+    let card = |id: &str| cards.iter().find(|c| c["id"] == id).unwrap().clone();
+    assert_eq!(card("county")["status"], "ok", "{cards:?}");
+    assert_ne!(card("payroll")["status"], "ok", "{cards:?}");
+    // The other connection cannot be read in this project.
+    let r = call(&c, "list_datasets", json!({"connection": "payroll"})).await;
+    assert_eq!(r.is_error, Some(true), "{:?}", r.structured_content);
+    c.cancel().await.unwrap();
+
+    // Outside a project: both, and no project in whoami.
+    let c = start(&env.root, None, None).await;
+    let who = ok(&call(&c, "whoami", json!({})).await);
+    assert!(who["result"].get("project").is_none(), "{who}");
+    let cards = who["result"]["connections"].as_array().unwrap();
+    assert!(cards.iter().all(|c| c["status"] == "ok"), "{cards:?}");
+    c.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_project_that_cannot_be_read_stops_the_session() {
+    let env = setup(None);
+    // No such project, a broken file, and a file naming another id.
+    std::fs::create_dir_all(env.root.join("projects/broken")).unwrap();
+    std::fs::write(
+        env.root.join("projects/broken/project.yaml"),
+        "id: broken\nname: X\nloosen: true\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(env.root.join("projects/elsewhere")).unwrap();
+    std::fs::write(
+        env.root.join("projects/elsewhere/project.yaml"),
+        "id: review\nname: X\n",
+    )
+    .unwrap();
+    for id in ["missing", "broken", "elsewhere", "../review"] {
+        let started =
+            ().serve(TokioChildProcess::new(command(&env.root, Some(id), None)).unwrap())
+                .await;
+        assert!(
+            started.is_err(),
+            "{id}: a session started for a project that cannot be read"
+        );
+    }
+}
+
+#[tokio::test]
+async fn project_databases_are_kept_apart_per_project() {
+    let Some(py) = python("geopandas, pyogrio, shapely, duckdb") else {
+        eprintln!("skipped: needs Python with geopandas, pyogrio, shapely and duckdb");
+        return;
+    };
+    let env = setup(Some(&py));
+    let c = start(&env.root, Some("review"), Some(&py)).await;
+    let q = ok(&call(
+        &c,
+        "query_features",
+        json!({"connection": "county", "dataset": "parcels"}),
+    )
+    .await);
+    let layer = q["result"]["layer"]["handle"].as_str().unwrap().to_string();
+    ok(&call(
+        &c,
+        "project_db",
+        json!({"action": "create", "db": "parcels", "scope": "project"}),
+    )
+    .await);
+    ok(&call(&c, "project_db", json!({"action": "load", "db": "parcels", "scope": "project", "layer": layer, "table": "parcels"})).await);
+    assert!(env
+        .root
+        .join("workspaces/project-dbs/review/parcels")
+        .is_dir());
+    let list = ok(&call(&c, "project_db", json!({"action": "list"})).await);
+    assert!(list.to_string().contains("\"parcels\""), "{list}");
+    c.cancel().await.unwrap();
+
+    // Another project does not see it, nor does a session outside projects.
+    for project in [Some("pay-audit"), None] {
+        let c = start(&env.root, project, Some(&py)).await;
+        let list = ok(&call(&c, "project_db", json!({"action": "list"})).await);
+        assert!(
+            !list.to_string().contains("\"parcels\""),
+            "{project:?}: {list}"
+        );
+        let r = call(&c, "project_db", json!({"action": "query", "db": "parcels", "scope": "project", "sql": "select count(*) from parcels"})).await;
+        assert_eq!(r.is_error, Some(true), "{project:?}");
+        c.cancel().await.unwrap();
+    }
+}

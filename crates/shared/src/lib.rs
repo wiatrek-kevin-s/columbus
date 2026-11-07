@@ -8,6 +8,7 @@ pub mod canon;
 pub mod error;
 pub mod paths;
 pub mod policy;
+pub mod projects;
 pub mod proof;
 pub mod sandbox;
 pub mod sqlcheck;

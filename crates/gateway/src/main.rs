@@ -166,7 +166,19 @@ async fn serve() -> Result<()> {
         libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0);
     }
     let paths = config::Paths::from_env();
-    let state = server::State::load(paths)?;
+    let mut state = server::State::load(paths)?;
+    // A session for a project: only the connections it lists (it can only
+    // narrow what the person has), and its instructions for the assistant.
+    if let Some(id) = std::env::var("COLUMBUS_PROJECT")
+        .ok()
+        .filter(|v| !v.is_empty())
+    {
+        let p = columbus_shared::projects::load(&id).map_err(anyhow::Error::msg)?;
+        if !p.connections.is_empty() {
+            state.scope.connections = p.connections.clone();
+        }
+        state.project = Some(p);
+    }
     tracing::info!(session = %state.session, workspace = %state.sandbox.root().display(), "starting");
     let gateway = server::Gateway::new(state);
     gateway.start_companion().await;
