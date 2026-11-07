@@ -1,19 +1,18 @@
 Columbus {{VERSION}}, a test release. Click a link to download that file.
 
-**What's fixed in this version** (from testing 0.10.0):
-- **API key:** Settings now shows a clear **✓ Key saved** with the last four characters of your key, and a message when you save or remove it.
-- **New chat** on the Chats page and on Home always starts a new chat. Before, it reopened the chat you already had open.
-- **Workflows:** the **Workflows** button shows a count when a workflow is waiting for your approval. The page is tidier: one row per workflow with its last run, each workflow's own page with its runs (newest first, 20 at a time), and each run's report on its own page. **Run now** takes you straight to the report.
-- **AI review in workflows** now streams its answer, so a long review at a high thinking level isn't cut off by a network proxy.
-- **Run reports** say what was already exported when a run is stopped at its time limit.
+**New in this version:**
+- **Projects:** a project has its own instructions for your assistant, the connections its chats may use, a default export folder, and data groups. Start a chat in a project and Columbus's server keeps it to the project's connections. The Projects page lists each project's chats and its project databases. The Chats page groups chats by project.
+- **Data groups:** a named set of datasets across your connections, each with an optional filter on which rows count (for example, the roadway inventory, and the centerline without retired segments). Attach groups to a project and its chats can read only those datasets and only those rows. Your connection's own row filter always applies too. Your organization's groups, from its context pack, show read only.
+- **Registry page:** search open data sources and GIS tools by words, kind and theme, and open an entry for its publisher, coverage, licence and how to get it. **Ask my assistant about it** starts a chat about it. If the registry index isn't installed yet, the page installs it.
+- **Fewer password prompts on a Mac:** the app reads each item it keeps in your Keychain once per launch, not every time a page asks. When macOS asks, choose **Always Allow** so it stops asking until the next update.
 
-**Safety fixes** (found by an independent security review):
-- **Windows:** every file Columbus opens or creates in a folder that a connected server, plugin or script can change is checked to be exactly where it was asked for. A folder swapped for a shortcut (a junction) is refused, as are hard links. This works on substituted drives and network shares too.
-- **Project databases** are created by walking from your workspace folder, never from a folder another program could change.
+**Safety fixes** (found by three rounds of independent security review):
+- A row filter now only ever applies to its own table's columns. A filter that names a column the table doesn't have is refused instead of matching something else in the query.
+- Free SQL can't use the names Columbus gives its own parts of a query.
+- For filtered datasets, the table's stored extent and row estimate are no longer shown, since they count rows you can't read.
+- Edits on PostgreSQL work with a `%` in a row filter.
 
-**In 0.10.0:** workflows (scheduled jobs you approve, with an optional AI review), map snapshots your assistant can look at, streamed chat replies, and the new README.
-
-**Since 0.9.0** (in 0.9.1, if you installed it): the app's chat brings its own Columbus server; choose the model and thinking level for each chat; tables in replies show as tables.
+**In 0.10.1:** a clear key-saved state, New chat always new, the workflow approvals badge, and the tidier Workflows page.
 
 ## Mac (Apple Silicon: M1 or later)
 

@@ -358,13 +358,39 @@ fn store() -> Result<(), String> {
     }
 }
 
+/// What this app has read from the credential store since it started, by
+/// account: each item is read once per run. On a Mac every read can ask
+/// for the person's password (until they choose Always Allow, and again
+/// after each update), so pages that ask often must not read again.
+static READ: std::sync::Mutex<Vec<(&'static str, Option<String>)>> =
+    std::sync::Mutex::new(Vec::new());
+
+fn cached(account: &'static str) -> Option<String> {
+    let mut read = READ.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((_, v)) = read.iter().find(|(a, _)| *a == account) {
+        return v.clone();
+    }
+    // Read once; a refusal (the person declined the prompt) also counts,
+    // so the app doesn't ask again this run.
+    let v = store().ok().and_then(|()| {
+        keyring_core::Entry::new(KEY_SERVICE, account)
+            .ok()?
+            .get_password()
+            .ok()
+    });
+    read.push((account, v.clone()));
+    v
+}
+
+fn remember(account: &'static str, v: Option<String>) {
+    let mut read = READ.lock().unwrap_or_else(|e| e.into_inner());
+    read.retain(|(a, _)| *a != account);
+    read.push((account, v));
+}
+
 /// The engine path recorded when the person confirmed it.
 fn confirmed_engine() -> Option<PathBuf> {
-    store().ok()?;
-    keyring_core::Entry::new(KEY_SERVICE, ENGINE_ACCOUNT)
-        .ok()?
-        .get_password()
-        .ok()
+    cached(ENGINE_ACCOUNT)
         .filter(|p| !p.is_empty())
         .map(PathBuf::from)
 }
@@ -373,11 +399,17 @@ fn record_engine(p: Option<&Path>) -> Result<(), String> {
     store()?;
     let e = keyring_core::Entry::new(KEY_SERVICE, ENGINE_ACCOUNT).map_err(|e| e.to_string())?;
     match p {
-        Some(p) => e
-            .set_password(&p.display().to_string())
-            .map_err(|e| e.to_string()),
+        Some(p) => {
+            let v = p.display().to_string();
+            e.set_password(&v).map_err(|e| e.to_string())?;
+            remember(ENGINE_ACCOUNT, Some(v));
+            Ok(())
+        }
         None => match e.delete_credential() {
-            Ok(()) | Err(keyring_core::Error::NoEntry) => Ok(()),
+            Ok(()) | Err(keyring_core::Error::NoEntry) => {
+                remember(ENGINE_ACCOUNT, None);
+                Ok(())
+            }
             Err(e) => Err(e.to_string()),
         },
     }
@@ -389,11 +421,7 @@ pub(crate) fn read_key() -> Option<String> {
     if let Ok(k) = std::env::var("COLUMBUS_APP_API_KEY") {
         return Some(k);
     }
-    store().ok()?;
-    keyring_core::Entry::new(KEY_SERVICE, KEY_ACCOUNT)
-        .ok()?
-        .get_password()
-        .ok()
+    cached(KEY_ACCOUNT)
 }
 
 #[derive(Serialize)]
@@ -638,7 +666,9 @@ pub async fn chat_set_key(key: String) -> Result<(), String> {
         store()?;
         keyring_core::Entry::new(KEY_SERVICE, KEY_ACCOUNT)
             .and_then(|e| e.set_password(&key))
-            .map_err(|e| format!("could not save the key: {e}"))
+            .map_err(|e| format!("could not save the key: {e}"))?;
+        remember(KEY_ACCOUNT, Some(key));
+        Ok(())
     })
     .await
     .map_err(|e| e.to_string())?
@@ -650,7 +680,10 @@ pub async fn chat_clear_key() -> Result<(), String> {
         store()?;
         match keyring_core::Entry::new(KEY_SERVICE, KEY_ACCOUNT).and_then(|e| e.delete_credential())
         {
-            Ok(()) | Err(keyring_core::Error::NoEntry) => Ok(()),
+            Ok(()) | Err(keyring_core::Error::NoEntry) => {
+                remember(KEY_ACCOUNT, None);
+                Ok(())
+            }
             Err(e) => Err(e.to_string()),
         }
     })

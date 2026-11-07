@@ -133,10 +133,36 @@ fn secret_entry(id: &str) -> Result<keyring_core::Entry, String> {
     keyring_core::Entry::new(SECRET_SERVICE, id).map_err(|e| e.to_string())
 }
 
-fn has_password(id: &str) -> bool {
-    secret_entry(id)
+/// The connections whose password this app stored, by id: a note beside
+/// the connection files, so the Connections page can say "Password stored"
+/// without reading every password from the credential store (on a Mac each
+/// read can ask for the person's password). It holds no secret. A password
+/// stored before this note existed shows as not noted until it's saved again.
+fn password_note() -> PathBuf {
+    paths::connections_dir().join(".columbus-passwords.json")
+}
+
+fn noted() -> Vec<String> {
+    std::fs::read_to_string(password_note())
         .ok()
-        .is_some_and(|e| e.get_password().is_ok())
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default()
+}
+
+fn note_password(id: &str, stored: bool) {
+    let mut ids = noted();
+    ids.retain(|i| i != id);
+    if stored {
+        ids.push(id.to_string());
+    }
+    ids.sort();
+    if let Ok(t) = serde_json::to_string(&ids) {
+        let _ = write_atomic(&password_note(), &t);
+    }
+}
+
+fn has_password(id: &str) -> bool {
+    noted().iter().any(|i| i == id)
 }
 
 /// Whether a secret may be stored under this name. Fails closed: an answer
@@ -1001,6 +1027,7 @@ fn save_connection(form: ConnForm) -> Result<String, String> {
         secret_entry(&new.id)?.set_password(p).map_err(|e| {
             format!("the connection is saved, but its password could not be stored: {e}")
         })?;
+        note_password(&new.id, true);
     }
     Ok(file.display().to_string())
 }
@@ -1020,6 +1047,7 @@ pub async fn settings_delete_connection(id: String, forget_password: bool) -> Re
             if let Ok(e) = secret_entry(&id) {
                 let _ = e.delete_credential();
             }
+            note_password(&id, false);
         }
         Ok(())
     })
