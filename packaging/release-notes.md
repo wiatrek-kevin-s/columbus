@@ -1,22 +1,19 @@
 Columbus {{VERSION}}, a test release. Click a link to download that file.
 
-**New in this version: workflows.** Jobs that run by themselves on a schedule, without you waiting: for example, read a dataset, check it and put the results in your export folder every weekday at 06:00.
-- **Ask your assistant** ("make what we just did a workflow that runs every weekday at 6"). It proposes one; you find it under **Workflows**, read what it does in plain words and in full, and approve it with Touch ID or Windows Hello. Nothing runs before that.
-- **It does only what it lists:** it reads only the connections it names, its steps are reading and checking tools or personal tools you installed (never scripts or edits), and it never waits for you: a step that would need your approval stops the run with "needs you". A changed workflow, or a changed tool it uses, is off until you approve it again.
-- **Run now**, **Pause**, and every run's **report** (steps, row counts, checks, what was exported). Home and the menu's foot show workflows that need you.
-- **An optional AI review:** after the steps, a workflow can send a capped number of its result rows (only the fields you choose) with your criteria to Claude, using the API key you saved in the app, and keep its notes in the report, marked as the AI's. The reviewing AI has no tools: it cannot read anything else or change anything. On a Mac, the first **Run now** of such a workflow asks once for access to the key: choose **Always Allow**. If the review can't finish (no key, the service is busy, an incomplete answer), the run still delivers its results and says plainly that the AI review did not run; it never reads as "nothing found". An organization can turn reviews off (`deny_tools: [workflow_review]`) or keep a connection's data from the AI with a flow rule (to `ai:anthropic`; a rule for every outside service, `server:*`, covers it too).
-- Turn them on with **Allow workflows** (Workflows page or Settings › Organization). Scheduled runs happen while you are signed in; one missed while the computer slept runs once when it wakes. Yours alone; sharing with your team comes later.
-- On a Mac, keep a workflow's data and export folders out of Documents, Desktop, Downloads and iCloud Drive (a scheduled run cannot ask for access there), or give `columbus-mcp` Full Disk Access.
+**What's fixed in this version** (from testing 0.10.0):
+- **API key:** Settings now shows a clear **✓ Key saved** with the last four characters of your key, and a message when you save or remove it.
+- **New chat** on the Chats page and on Home always starts a new chat. Before, it reopened the chat you already had open.
+- **Workflows:** the **Workflows** button shows a count when a workflow is waiting for your approval. The page is tidier: one row per workflow with its last run, each workflow's own page with its runs (newest first, 20 at a time), and each run's report on its own page. **Run now** takes you straight to the report.
+- **AI review in workflows** now streams its answer, so a long review at a high thinking level isn't cut off by a network proxy.
+- **Run reports** say what was already exported when a run is stopped at its time limit.
 
-**Also new: your assistant can look at the map.** A new tool, `map_snapshot`, draws the session's layers as a picture the assistant sees, so it can spot slivers, gaps, layers that don't line up or features in the wrong place. It is drawn on your computer from geometry only (no attribute values, labels or web basemap; nothing is downloaded), and the chat shows you what it saw. It can draw your own imagery or elevation underneath: a raster from one of your rasters connections. Your organization can turn it off.
+**Safety fixes** (found by an independent security review):
+- **Windows:** every file Columbus opens or creates in a folder that a connected server, plugin or script can change is checked to be exactly where it was asked for. A folder swapped for a shortcut (a junction) is refused, as are hard links. This works on substituted drives and network shares too.
+- **Project databases** are created by walking from your workspace folder, never from a folder another program could change.
 
-**Also:** the app's chat streams replies, so long answers at a high thinking level are not cut off; a new README with a tour of the app.
+**In 0.10.0:** workflows (scheduled jobs you approve, with an optional AI review), map snapshots your assistant can look at, streamed chat replies, and the new README.
 
-**Smaller fixes:** chat search finds Greek words typed in capitals; the app's own chat is never listed among other AI apps' sessions.
-
-**Also since 0.9.0** (in 0.9.1, if you installed it): the app's chat brings its own Columbus server (so it is never older than the app); choose the model and thinking level for each chat; tables in replies show as tables. If your Columbus folder is somewhere other than your home folder, Settings › Models and accounts shows a **Use …** button for its engine: click it, then **Save settings**.
-
-**Since 0.8.1 (in 0.9.0):** the redesigned Columbus app (one main window: Home, Chats, Documents, Connections, Tools, Workflows, Activity, Settings), and big tables with project databases.
+**Since 0.9.0** (in 0.9.1, if you installed it): the app's chat brings its own Columbus server; choose the model and thinking level for each chat; tables in replies show as tables.
 
 ## Mac (Apple Silicon: M1 or later)
 
