@@ -127,7 +127,8 @@ def main():
         wait.until(lambda drv: "working-with-columbus" in text(drv, "main"))
         go(d, wait, "#/registry", "Registry")
         wait.until(lambda drv: drv.find_elements(By.ID, "rg-q"))
-        go(d, wait, "#/documents/import", "Documents")
+        go(d, wait, "#/documents", "Documents")
+        d.execute_script("location.hash = '#/documents/import'")
         # A part with no backend says it is coming.
         wait.until(lambda drv: "Coming" in text(drv, "main"))
         # The rail's foot: the policy's source, and the workflows.

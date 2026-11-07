@@ -951,8 +951,11 @@ export async function render(main, rest) {
     if (live.started || live.chatId || live.log.childElementCount || live.project !== project) await newChat(project);
     // A question another page left for the new chat (the person sends it).
     try {
-      const pre = sessionStorage.getItem("columbus.prefill");
-      if (pre) { sessionStorage.removeItem("columbus.prefill"); $("text").value = pre; $("text").focus(); }
+      // {text, at}: only one left in the last minute, for this new chat.
+      const raw = sessionStorage.getItem("columbus.prefill");
+      sessionStorage.removeItem("columbus.prefill");
+      const pre = raw ? JSON.parse(raw) : null;
+      if (pre && typeof pre.text === "string" && Date.now() - Number(pre.at) < 60000) { $("text").value = pre.text; $("text").focus(); }
     } catch { /* none */ }
     return r;
   }

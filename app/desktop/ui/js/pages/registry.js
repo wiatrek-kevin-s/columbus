@@ -29,7 +29,7 @@ function checksList(checks) {
 }
 
 export async function render(main, rest) {
-  const [id] = (rest || []).map((x) => decodeURIComponent(x));
+  const [id] = rest || []; // already decoded by the router
   const page = h("div", { class: "page" });
   main.append(page);
   const body = h("div", { class: "pad stack" });
@@ -45,8 +45,10 @@ export async function render(main, rest) {
       try {
         const msg = await invoke("registry_update");
         toast(msg || "Installed.");
-        go("#/registry");
-        location.reload();
+        // Draw this page again, now with the index (not the whole window,
+        // which would lose a chat's unsent text).
+        main.replaceChildren();
+        render(main, rest);
       } catch (x) {
         showError(err, x);
         btn.disabled = false;
@@ -147,7 +149,11 @@ export async function render(main, rest) {
     const access = (e.access || []).map((a) => h("li", { class: "wrap-any" }, [a.type, a.auth && a.auth !== "none" ? `sign-in: ${a.auth}` : null].filter(Boolean).join(" · "), a.url ? h("div", {}, h("code", {}, String(a.url))) : null));
     const install = e.install ? h("pre", { class: "box small wrap-any" }, typeof e.install === "string" ? e.install : JSON.stringify(e.install, null, 2)) : null;
     const ask = button("Ask my assistant about it", "primary", () => {
-      try { sessionStorage.setItem("columbus.prefill", `Tell me about the registry entry ${e.id} (${e.name}): what it covers, its licence, and how I'd use it in Columbus.`); } catch { /* no prefill */ }
+      // Only the id (letters, digits and dashes): the entry's community-written
+      // words reach the assistant through registry_get, marked untrusted,
+      // never as the person's own message.
+      const text = `Tell me about the registry entry ${e.id}: what it covers, its licence, and how I'd use it in Columbus.`;
+      try { sessionStorage.setItem("columbus.prefill", JSON.stringify({ text, at: Date.now() })); } catch { /* no prefill */ }
       go("#/chats/fresh");
     }, { id: "rg-ask" });
     body.append(h("section", { class: "card" }, h("div", { class: "bd stack" },

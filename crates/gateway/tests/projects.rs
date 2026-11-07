@@ -514,11 +514,18 @@ async fn a_filter_naming_a_column_its_table_lacks_never_binds_outside() {
     .unwrap();
     group_project(&env.root, "typo");
     let c = start(&env.root, Some("grouped"), Some(&py)).await;
-    let r = call(&c, "sql_select", json!({"connection": "county", "sql": "SELECT (SELECT group_concat(parcel_id) FROM parcels) AS ids FROM (SELECT 'X' AS status) d"})).await;
-    let out = format!("{:?} {:?}", r.content, r.structured_content);
-    assert!(
-        r.is_error == Some(true) || !out.contains("P1"),
-        "the filter was bypassed: {out}"
-    );
+    for sql in [
+        "SELECT (SELECT group_concat(parcel_id) FROM parcels) AS ids FROM (SELECT 'X' AS status) d",
+        // The server's own name for the filtered table, taken by the query.
+        "SELECT (SELECT group_concat(parcel_id) FROM parcels) AS ids FROM (SELECT 'X' AS status) columbus_filtered",
+        "SELECT p.* FROM (SELECT 'X' AS status) AS columbus_filtered, parcels p",
+    ] {
+        let r = call(&c, "sql_select", json!({"connection": "county", "sql": sql})).await;
+        let out = format!("{:?} {:?}", r.content, r.structured_content);
+        assert!(
+            r.is_error == Some(true) && !out.contains("P1"),
+            "the filter was bypassed: {sql}: {out}"
+        );
+    }
     c.cancel().await.unwrap();
 }

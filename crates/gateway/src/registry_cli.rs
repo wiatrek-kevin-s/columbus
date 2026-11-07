@@ -35,6 +35,12 @@ impl ClientHandler for PageClient {
 }
 
 pub async fn query(request: &str) -> anyhow::Result<()> {
+    // As the server itself: other processes of the same user must not read
+    // this one's memory or environment through /proc.
+    #[cfg(target_os = "linux")]
+    unsafe {
+        libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0);
+    }
     let out = match run(request).await {
         Ok(v) => v,
         Err(e) => json!({"ok": false, "error": e}),

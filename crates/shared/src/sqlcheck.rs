@@ -624,31 +624,121 @@ fn function_name(name: &ObjectName) -> String {
 /// The name a filtered table goes by inside its filter's own query.
 const FILTER_ALIAS: &str = "columbus_filtered";
 
+/// Bare names that Oracle and PostgreSQL read as values, not columns
+/// (`EXPIRES > SYSDATE`): left as they are in a filter. They are reserved
+/// words there, so they never bind to a column of the query around it.
+const FILTER_KEYWORDS: &[&str] = &[
+    "SYSDATE",
+    "SYSTIMESTAMP",
+    "LOCALTIMESTAMP",
+    "LOCALTIME",
+    "CURRENT_DATE",
+    "CURRENT_TIME",
+    "CURRENT_TIMESTAMP",
+    "CURRENT_USER",
+    "SESSION_USER",
+    "USER",
+];
+
+/// Names the server gives its own parts of a query: free SQL may not use
+/// them anywhere, so no name the caller writes can stand in for them.
+const RESERVED_NAMES: &[&str] = &[FILTER_ALIAS, "columbus_q"];
+
+fn filter_keyword(i: &Ident, dialect: SqlDialect) -> bool {
+    i.quote_style.is_none()
+        && matches!(dialect, SqlDialect::Oracle | SqlDialect::Postgres)
+        && FILTER_KEYWORDS.contains(&i.value.to_ascii_uppercase().as_str())
+}
+
 /// A checked filter with each column it names bound to `alias` (the
 /// filtered table): `STATUS <> 'R'` becomes `columbus_filtered.STATUS <>
 /// 'R'`, and `t.STATUS` too. So a name the table doesn't have is an error,
-/// never a column of the query the filtered table sits in.
-pub(crate) fn qualify_filter(
+/// never a column of the query the filtered table sits in. With the
+/// table's `columns` known, a name it lacks is refused here, whatever the
+/// database would make of it (SQLite and DuckDB look further out for a
+/// qualified name the nearest table lacks). Its functions are named as
+/// the query's own are (`pin_function`).
+fn bind_filter(
     checked: &str,
     dialect: SqlDialect,
     alias: &str,
+    columns: Option<&[String]>,
+    catalog: &Catalog,
 ) -> Result<String, Denied> {
     let mut expr = parse_expr(checked, dialect)?;
+    let mut missing: Option<String> = None;
+    let mut note = |i: &Ident| {
+        if let Some(cols) = columns {
+            if missing.is_none() && !cols.iter().any(|c| c.eq_ignore_ascii_case(&i.value)) {
+                missing = Some(i.value.clone());
+            }
+        }
+    };
     let _ = visit_expressions_mut(&mut expr, |e| {
         match e {
+            Expr::Identifier(i) if filter_keyword(i, dialect) => {}
             Expr::Identifier(i) => {
+                note(i);
                 *e = Expr::CompoundIdentifier(vec![Ident::new(alias), i.clone()]);
             }
             Expr::CompoundIdentifier(parts) => {
                 if let Some(last) = parts.last().cloned() {
+                    note(&last);
                     *parts = vec![Ident::new(alias), last];
                 }
             }
-            _ => {}
+            _ => pin_function(e, dialect, catalog),
         }
         ControlFlow::<()>::Continue(())
     });
+    if let Some(m) = missing {
+        return Err(Denied::Query(format!(
+            "it names {m}, which the table does not have"
+        )));
+    }
     Ok(expr.to_string())
+}
+
+/// Refuse free SQL that uses one of the server's own names (any case, any
+/// quoting), anywhere.
+fn refuse_reserved_names(sql: &str, dialect: SqlDialect) -> Result<(), Denied> {
+    let d = dialect.parser_dialect();
+    let tokens = sqlparser::tokenizer::Tokenizer::new(d.as_ref(), sql)
+        .tokenize()
+        .map_err(|e| Denied::Query(format!("could not parse SQL: {e}")))?;
+    for t in tokens {
+        if let sqlparser::tokenizer::Token::Word(w) = t {
+            if RESERVED_NAMES
+                .iter()
+                .any(|r| w.value.eq_ignore_ascii_case(r))
+            {
+                return Err(Denied::Query(format!(
+                    "{} is a name Columbus uses inside the queries it runs; use another name",
+                    w.value
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Whether a function's arguments include `*` or `t.*`: a whole row, from
+/// any table in scope, is never a filter's to name.
+fn wildcard_argument(args: &sqlparser::ast::FunctionArguments) -> bool {
+    use sqlparser::ast::{FunctionArg, FunctionArgExpr, FunctionArguments};
+    let FunctionArguments::List(list) = args else {
+        return false;
+    };
+    list.args.iter().any(|a| {
+        let x = match a {
+            FunctionArg::Unnamed(x) => x,
+            FunctionArg::Named { arg, .. } | FunctionArg::ExprNamed { arg, .. } => arg,
+        };
+        matches!(
+            x,
+            FunctionArgExpr::Wildcard | FunctionArgExpr::QualifiedWildcard(_)
+        )
+    })
 }
 
 /// Check a where clause. Returns it re-rendered from the parsed form, so
@@ -700,6 +790,10 @@ pub fn check_where(text: &str, dialect: SqlDialect) -> Result<String, Denied> {
             }
             Expr::Function(f) => {
                 let name = function_name(&f.name);
+                if wildcard_argument(&f.args) {
+                    problem = Some(format!("`{e}`: * is not allowed in a where clause"));
+                    return ControlFlow::Break(());
+                }
                 if WHERE_FUNCTIONS.contains(&name.as_str()) {
                     true
                 } else {
@@ -1137,51 +1231,59 @@ struct ApplyFilters<'a> {
     error: Option<Denied>,
 }
 
+/// Name a function the way it must run: Oracle Spatial in MDSYS (Oracle
+/// would find a function or synonym of the same name in the login's schema
+/// first), PostGIS functions in their extension's schema and PostgreSQL's
+/// built-ins in pg_catalog, so a function of the same name earlier on the
+/// search path is never the one that runs.
+fn pin_function(e: &mut Expr, dialect: SqlDialect, catalog: &Catalog) {
+    // Oracle Spatial is always called in MDSYS: Oracle would find a
+    // function or synonym of the same name in the login's schema first.
+    if dialect == SqlDialect::Oracle {
+        if let Expr::Function(f) = e {
+            if let Some(parts) = function_parts(&f.name).as_deref().and_then(oracle_spatial) {
+                f.name = ObjectName::from(parts.into_iter().map(Ident::new).collect::<Vec<_>>());
+            }
+        }
+        return;
+    }
+    if !matches!(dialect, SqlDialect::Postgres | SqlDialect::DuckDb) {
+        return;
+    }
+    if let Expr::Function(f) = e {
+        let upper = function_name(&f.name);
+        let bare = upper.rsplit('.').next().unwrap_or(&upper).to_string();
+        if let Some(schema) = catalog.extension_functions.get(&bare) {
+            f.name = ObjectName::from(vec![
+                Ident::with_quote('"', schema.clone()),
+                Ident::new(bare.to_ascii_lowercase()),
+            ]);
+        } else if dialect == SqlDialect::Postgres
+            && !matches!(f.args, sqlparser::ast::FunctionArguments::None)
+            && !PG_SYNTAX_FUNCTIONS.contains(&bare.as_str())
+            && (upper == bare || upper == format!("PG_CATALOG.{bare}"))
+        {
+            // Every other allowed function is the built-in one. PostgreSQL
+            // weighs a function in `public` that takes the argument's
+            // exact type (public.upper(varchar)) above pg_catalog's
+            // (upper(text)) whatever the search path, so name it in full;
+            // a name pg_catalog lacks then fails instead of running
+            // someone's function.
+            f.name = ObjectName::from(vec![
+                Ident::new("pg_catalog"),
+                Ident::new(bare.to_ascii_lowercase()),
+            ]);
+        }
+    }
+}
+
 impl VisitorMut for ApplyFilters<'_> {
     type Break = ();
 
     // Call PostGIS functions by their extension's schema, so a function of
     // the same name earlier on the search path is never the one that runs.
     fn post_visit_expr(&mut self, e: &mut Expr) -> ControlFlow<()> {
-        // Oracle Spatial is always called in MDSYS: Oracle would find a
-        // function or synonym of the same name in the login's schema first.
-        if self.dialect == SqlDialect::Oracle {
-            if let Expr::Function(f) = e {
-                if let Some(parts) = function_parts(&f.name).as_deref().and_then(oracle_spatial) {
-                    f.name =
-                        ObjectName::from(parts.into_iter().map(Ident::new).collect::<Vec<_>>());
-                }
-            }
-            return ControlFlow::Continue(());
-        }
-        if !matches!(self.dialect, SqlDialect::Postgres | SqlDialect::DuckDb) {
-            return ControlFlow::Continue(());
-        }
-        if let Expr::Function(f) = e {
-            let upper = function_name(&f.name);
-            let bare = upper.rsplit('.').next().unwrap_or(&upper).to_string();
-            if let Some(schema) = self.catalog.extension_functions.get(&bare) {
-                f.name = ObjectName::from(vec![
-                    Ident::with_quote('"', schema.clone()),
-                    Ident::new(bare.to_ascii_lowercase()),
-                ]);
-            } else if self.dialect == SqlDialect::Postgres
-                && !matches!(f.args, sqlparser::ast::FunctionArguments::None)
-                && !PG_SYNTAX_FUNCTIONS.contains(&bare.as_str())
-                && (upper == bare || upper == format!("PG_CATALOG.{bare}"))
-            {
-                // Every other allowed function is the built-in one. PostgreSQL
-                // weighs a function in `public` that takes the argument's
-                // exact type (public.upper(varchar)) above pg_catalog's
-                // (upper(text)) whatever the search path, so name it in full;
-                // a name pg_catalog lacks then fails instead of running
-                // someone's function.
-                f.name = ObjectName::from(vec![
-                    Ident::new("pg_catalog"),
-                    Ident::new(bare.to_ascii_lowercase()),
-                ]);
-            }
-        }
+        pin_function(e, self.dialect, self.catalog);
         ControlFlow::Continue(())
     }
 
@@ -1265,8 +1367,9 @@ impl VisitorMut for ApplyFilters<'_> {
         for f in &filters {
             // Every column a filter names is the filtered table's own: one it
             // lacks is an error, never a column of the query around it.
+            let columns = rel.map(|r| r.columns.as_slice()).filter(|c| !c.is_empty());
             match check_where(f, self.dialect)
-                .and_then(|c| qualify_filter(&c, self.dialect, FILTER_ALIAS))
+                .and_then(|c| bind_filter(&c, self.dialect, FILTER_ALIAS, columns, self.catalog))
             {
                 Ok(c) => checked.push(format!("({c})")),
                 Err(e) => {
@@ -1433,6 +1536,7 @@ fn check_select_limited(
     catalog: &Catalog,
 ) -> Result<CheckedQuery, Denied> {
     let dialect = SqlDialect::for_connection_type(&access.kind);
+    refuse_reserved_names(sql, dialect)?;
     let mut query = single_select(sql, dialect)?;
     let tables = check_tables_and_functions(&query, access, dialect, catalog)?;
     check_hidden_references(&query, access)?;
@@ -1539,11 +1643,13 @@ datasets:
             },
             Relation {
                 parts: vec!["roads".into(), "County".into()],
-                columns: ["id", "owner_name"].map(String::from).to_vec(),
+                columns: ["id", "owner_name", "district_nbr"]
+                    .map(String::from)
+                    .to_vec(),
             },
             Relation {
                 parts: vec!["roads".into(), "county".into()],
-                columns: ["id", "county"].map(String::from).to_vec(),
+                columns: ["id", "county", "district_nbr"].map(String::from).to_vec(),
             },
             Relation {
                 parts: vec!["public".into(), "county".into()],
@@ -1707,7 +1813,8 @@ datasets:
         // Quoted mixed case is its own table, with its own hidden column.
         let q = check_select("SELECT * FROM roads.\"County\"", &a, 10, &r).unwrap();
         assert!(
-            q.sql.contains("SELECT \"id\" FROM \"roads\".\"County\""),
+            q.sql
+                .contains("SELECT \"id\", \"district_nbr\" FROM \"roads\".\"County\""),
             "{}",
             q.sql
         );
@@ -1715,7 +1822,7 @@ datasets:
         let q = check_select("SELECT * FROM roads.COUNTY", &a, 10, &r).unwrap();
         assert!(
             q.sql
-                .contains("SELECT \"id\", \"county\" FROM \"roads\".\"county\""),
+                .contains("SELECT \"id\", \"county\", \"district_nbr\" FROM \"roads\".\"county\""),
             "{}",
             q.sql
         );
@@ -2465,5 +2572,118 @@ datasets:
             assert!(r.is_err(), "{kind}: {:?}", r.map(|q| q.sql));
         }
         assert!(check_where("CAST(x AS geometry('1) OR 1=1 --'))", SqlDialect::Postgres).is_err());
+    }
+}
+
+#[cfg(test)]
+mod filter_binding_tests {
+    use super::*;
+    use crate::policy::Connection;
+
+    fn access(kind: &str, filter: &str) -> EffectiveAccess {
+        let mut conn: Connection =
+            serde_yaml::from_str("id: c\ntype: gpkg\ndatasets:\n  allow: [\"*\"]\n").unwrap();
+        conn.kind = kind.into();
+        conn.row_filter = Some(filter.into());
+        let org: crate::policy::OrgPolicy =
+            serde_yaml::from_str(&format!("connection_types: [{kind}]\n")).unwrap();
+        EffectiveAccess::resolve(
+            &org,
+            &conn,
+            &crate::policy::ProjectScope::default(),
+            chrono::Utc::now(),
+        )
+        .unwrap()
+    }
+
+    fn catalog(parts: &[&str], columns: &[&str]) -> Catalog {
+        Catalog {
+            resolve: true,
+            relations: vec![Relation {
+                parts: parts.iter().map(|p| p.to_string()).collect(),
+                columns: columns.iter().map(|c| c.to_string()).collect(),
+            }],
+            extension_functions: Default::default(),
+        }
+    }
+
+    #[test]
+    fn free_sql_cannot_take_the_filtered_tables_name() {
+        // A filter on a column the table lacks, which SQLite and DuckDB
+        // would otherwise bind to a table the caller named columbus_filtered.
+        for kind in ["gpkg", "geoparquet"] {
+            let a = access(kind, "DISTRICT_NBR = 14");
+            let cat = catalog(&["main", "secrets"], &["id", "secret"]);
+            for sql in [
+                "SELECT (SELECT group_concat(secret) FROM main.secrets) AS s FROM (SELECT 14 AS district_nbr) columbus_filtered",
+                "SELECT s.* FROM (SELECT 14 AS district_nbr) AS columbus_filtered, main.secrets s",
+                "SELECT s.* FROM (SELECT 14 AS district_nbr) AS \"COLUMBUS_FILTERED\", main.secrets s",
+                "WITH columbus_q AS (SELECT 1 AS x) SELECT x FROM columbus_q",
+            ] {
+                let e = check_select(sql, &a, 10, &cat);
+                assert!(e.is_err(), "{kind}: {sql} -> {e:?}");
+            }
+            // The table's own query is refused too: the filter names a
+            // column it doesn't have.
+            let e = check_select("SELECT id FROM main.secrets", &a, 10, &cat)
+                .unwrap_err()
+                .to_string();
+            assert!(e.contains("does not have"), "{kind}: {e}");
+            // With the column there, it runs, bound to the table.
+            let cat = catalog(&["main", "secrets"], &["id", "secret", "district_nbr"]);
+            let q = check_select("SELECT id FROM main.secrets", &a, 10, &cat).unwrap();
+            assert!(
+                q.sql.contains("columbus_filtered.DISTRICT_NBR = 14"),
+                "{}",
+                q.sql
+            );
+        }
+    }
+
+    #[test]
+    fn database_keywords_in_a_filter_stay_values() {
+        let a = access("oracle", "EXPIRES > SYSDATE");
+        let cat = catalog(&["ROADS", "PERMITS"], &["ID", "EXPIRES"]);
+        let q = check_select("SELECT ID FROM ROADS.PERMITS", &a, 10, &cat).unwrap();
+        assert!(
+            q.sql.contains("(columbus_filtered.EXPIRES > SYSDATE)"),
+            "{}",
+            q.sql
+        );
+        // Elsewhere a bare name is a column, bound to the table.
+        let r = bind_filter(
+            "EXPIRES > SYSDATE",
+            SqlDialect::Sqlite,
+            FILTER_ALIAS,
+            None,
+            &Catalog::default(),
+        )
+        .unwrap();
+        assert_eq!(r, "columbus_filtered.EXPIRES > columbus_filtered.SYSDATE");
+    }
+
+    #[test]
+    fn a_whole_row_is_never_a_filters_to_name() {
+        for f in [
+            "COALESCE(o.*, NULL) IS NULL",
+            "LENGTH(o.*) > 0",
+            "COALESCE(*) IS NULL",
+        ] {
+            assert!(check_where(f, SqlDialect::Postgres).is_err(), "{f}");
+            assert!(check_where(f, SqlDialect::Sqlite).is_err(), "{f}");
+        }
+    }
+
+    #[test]
+    fn a_filters_functions_are_the_built_in_ones() {
+        let a = access("postgis", "UPPER(status) = 'A'");
+        let cat = catalog(&["public", "parcels"], &["id", "status"]);
+        let q = check_select("SELECT id FROM public.parcels", &a, 10, &cat).unwrap();
+        assert!(
+            q.sql
+                .contains("pg_catalog.upper(columbus_filtered.status) = 'A'"),
+            "{}",
+            q.sql
+        );
     }
 }

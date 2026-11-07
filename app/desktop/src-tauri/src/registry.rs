@@ -46,15 +46,19 @@ pub(crate) fn run(
         .map_err(|e| format!("{}: {e}", server.display()))?;
     let mut out = child.stdout.take().expect("piped");
     let mut err = child.stderr.take().expect("piped");
-    let reader = std::thread::spawn(move || {
+    // The readers report through channels, so a process that keeps a pipe
+    // open past the limit (an engine outliving the server) can't hold this up.
+    let (out_tx, out_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
         let mut s = String::new();
         let _ = (&mut out).take(8 << 20).read_to_string(&mut s);
-        s
+        let _ = out_tx.send(s);
     });
-    let err_reader = std::thread::spawn(move || {
+    let (err_tx, err_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
         let mut s = String::new();
         let _ = (&mut err).take(64 << 10).read_to_string(&mut s);
-        s
+        let _ = err_tx.send(s);
     });
     let start = Instant::now();
     let status = loop {
@@ -64,17 +68,25 @@ pub(crate) fn run(
             _ => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err("the registry took too long to answer".into());
+                return Err("Columbus took too long to answer".into());
             }
         }
     };
-    let text = reader.join().unwrap_or_default();
-    let errs = err_reader.join().unwrap_or_default();
-    if !status.success() && text.trim().is_empty() {
+    let rest = |since: Instant| {
+        limit
+            .saturating_sub(since.elapsed())
+            .max(Duration::from_secs(2))
+    };
+    let text = out_rx.recv_timeout(rest(start)).unwrap_or_default();
+    let errs = err_rx
+        .recv_timeout(Duration::from_secs(2))
+        .unwrap_or_default();
+    if !status.success() {
         let last = errs
             .lines()
             .rev()
             .find(|l| !l.trim().is_empty())
+            .or_else(|| text.lines().rev().find(|l| !l.trim().is_empty()))
             .unwrap_or("it stopped with an error");
         return Err(last.trim().to_string());
     }
