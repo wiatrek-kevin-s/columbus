@@ -213,8 +213,20 @@ async fn shapefiles_and_file_geodatabases_read_under_the_rules() {
         "SELECT ogr_version() FROM parcels",
         // The geodatabase's own tables.
         "SELECT * FROM GDB_Items",
+        // Two-part names: GDAL would read them as a file and a layer.
+        "SELECT * FROM main.parcels",
+        "SELECT * FROM \"county\".\"parcels\"",
+        "SELECT * FROM parcels.parcels",
     ] {
         let r = call(&c, "sql_select", json!({"connection": "gdb", "sql": sql})).await;
+        assert_eq!(r.is_error, Some(true), "{sql}: {:?}", r.content);
+    }
+    // A dotted shapefile isn't offered, however it is named.
+    for sql in [
+        "SELECT * FROM \"parcels.2024\"",
+        "SELECT * FROM parcels.\"2024\"",
+    ] {
+        let r = call(&c, "sql_select", json!({"connection": "shp", "sql": sql})).await;
         assert_eq!(r.is_error, Some(true), "{sql}: {:?}", r.content);
     }
     // The row filter holds in free SQL on the shapefiles too.

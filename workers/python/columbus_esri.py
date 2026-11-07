@@ -72,9 +72,10 @@ def _path(conn: dict[str, Any]) -> str:
             raise w.WorkerError(w.INVALID_PARAMS, f"{path} is not a file geodatabase (a folder ending in .gdb)")
         root = os.path.realpath(path)
         # Every file of the geodatabase is its own, not a link out of it.
-        for entry in os.scandir(path):
-            if not _inside(root, entry.path):
-                raise w.WorkerError(w.INVALID_PARAMS, f"{entry.name} in {path} leads outside the geodatabase; Columbus won't read it")
+        for d, dirs, files in os.walk(path):
+            for n in dirs + files:
+                if not _inside(root, os.path.join(d, n)):
+                    raise w.WorkerError(w.INVALID_PARAMS, f"{n} in {path} leads outside the geodatabase; Columbus won't read it")
     elif os.path.isdir(path):
         pass
     elif os.path.isfile(path) and path.lower().endswith(".shp"):
@@ -86,11 +87,13 @@ def _path(conn: dict[str, Any]) -> str:
 
 def _check_shp(shp: str, root_real: str) -> None:
     """A real shapefile: its own bytes, and its parts inside the folder."""
-    base = shp[:-4]
-    for ext in (".shp", ".shx", ".dbf", ".prj", ".cpg", ".SHP", ".SHX", ".DBF", ".PRJ", ".CPG"):
-        part = base + ext
-        if os.path.lexists(part) and not _inside(root_real, part):
-            raise w.WorkerError(w.INVALID_PARAMS, f"{os.path.basename(part)} leads outside the connection's folder; Columbus won't read it")
+    folder, stem = os.path.split(shp[:-4])
+    # Every file of this shapefile (any extension, any case: GDAL looks for
+    # its parts without regard to case).
+    for n in os.listdir(folder or "."):
+        part = os.path.join(folder, n)
+        if os.path.splitext(n)[0].lower() == stem.lower() and not _inside(root_real, part):
+            raise w.WorkerError(w.INVALID_PARAMS, f"{n} leads outside the connection's folder; Columbus won't read it")
     try:
         with open(shp, "rb") as f:
             head = f.read(4)
@@ -228,7 +231,10 @@ def esri_fetch(conn: dict[str, Any], sql: str, max_rows: int, timeout_s: float, 
     pyogrio = _pyogrio()
     path = _path(conn)
     try:
-        driver = pyogrio.read_info(path).get("driver")
+        # Each layer's driver is the source's; ask by the first layer's name
+        # (asking with none warns when there are several).
+        layers = pyogrio.list_layers(path)
+        driver = pyogrio.read_info(path, layer=str(layers[0][0])).get("driver") if len(layers) else None
     except Exception as e:  # noqa: BLE001
         raise w.WorkerError(w.ENGINE_ERROR, f"cannot open {path}: {e}") from None
     if driver not in _DRIVERS[conn["kind"].lower()]:
