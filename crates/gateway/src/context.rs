@@ -987,6 +987,22 @@ impl Gateway {
             .map(|a| a.iter().filter(|d| d["usable_here"] == false).count())
             .unwrap_or(0);
         let mut checks = Vec::new();
+        // In a project with data groups, say plainly when this isn't one of
+        // them: none of its datasets outside the project's groups can be read.
+        let scope_groups = &self.state.scope.data_groups;
+        if !scope_groups.is_empty() {
+            let in_project = scope_groups.iter().any(|sg| sg.id == args.id);
+            g["in_this_project"] = json!(in_project);
+            if !in_project {
+                checks.push(Check {
+                    id: "context.group_not_in_project".into(),
+                    severity: Severity::Info,
+                    message: "this data group is not one of this project's: only the datasets of the project's own groups can be read here".into(),
+                    detail: None,
+                    fix: Some("Work with the project's data groups (whoami lists them), or ask the person to attach this one to the project".into()),
+                });
+            }
+        }
         if missing > 0 {
             checks.push(Check {
                 id: "context.datasets_unavailable".into(),

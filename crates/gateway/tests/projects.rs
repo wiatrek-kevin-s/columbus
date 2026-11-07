@@ -313,6 +313,31 @@ async fn a_projects_data_groups_narrow_to_their_datasets_and_rows() {
     // The person's own group, described.
     let d = ok(&call(&c, "describe_data_group", json!({"id": "one-parcel"})).await);
     assert_eq!(d["result"]["datasets"][0]["usable_here"], true, "{d}");
+    assert_eq!(d["result"]["in_this_project"], true, "{d}");
+    // Another of the person's groups, not attached here: described, but
+    // marked as outside the project, and its datasets unusable.
+    std::fs::write(
+        env.root.join("data-groups/all-roads.yaml"),
+        "id: all-roads\nname: All roads\ndatasets:\n  - { connection: county, dataset: roads }\n",
+    )
+    .unwrap();
+    let d = ok(&call(&c, "describe_data_group", json!({"id": "all-roads"})).await);
+    assert_eq!(d["result"]["in_this_project"], false, "{d}");
+    assert_eq!(d["result"]["datasets"][0]["usable_here"], false, "{d}");
+    assert!(
+        d["checks"].to_string().contains("group_not_in_project"),
+        "{d}"
+    );
+    // describe_connection shows the narrowing.
+    let dc = ok(&call(&c, "describe_connection", json!({"connection": "county"})).await);
+    assert_eq!(
+        dc["result"]["data_group_datasets"][0]["dataset"], "parcels",
+        "{dc}"
+    );
+    assert_eq!(
+        dc["result"]["data_group_datasets"][0]["filter"], "parcel_id = 'P1'",
+        "{dc}"
+    );
     // No workflow from here yet: it couldn't keep to the groups.
     let r = call(&c, "propose_workflow", json!({"workflow": "id: x-flow\nname: X\npurpose: X.\nscope:\n  connections: [county]\nsteps:\n  - id: rows\n    tool: query_features\n    args: { connection: county, dataset: roads }\n"})).await;
     assert_eq!(r.is_error, Some(true));

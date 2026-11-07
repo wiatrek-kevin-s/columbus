@@ -858,16 +858,35 @@ impl EffectiveAccess {
     }
 
     /// All filters that must be ANDed onto reads of `name`: the connection's
-    /// row filter and any data-group filters for that dataset.
+    /// row filter and, under data groups, the groups' filter for that
+    /// dataset. Groups add up (a dataset in two groups shows the rows either
+    /// keeps, as its datasets add up in `dataset_allowed`), so their filters
+    /// for one dataset are ORed, and a group listing it without a filter
+    /// keeps every row; the connection's own filter always applies.
     pub fn filters_for(&self, name: &str) -> Vec<String> {
         let key = normalize_identifier(name).to_uppercase();
         let mut out: Vec<String> = self.row_filter.iter().cloned().collect();
-        out.extend(
-            self.group_filters
-                .iter()
-                .filter(|(n, _)| *n == key)
-                .filter_map(|(_, f)| f.clone()),
-        );
+        let entries: Vec<&Option<String>> = self
+            .group_filters
+            .iter()
+            .filter(|(n, _)| *n == key)
+            .map(|(_, f)| f)
+            .collect();
+        if entries.is_empty() || entries.iter().any(|f| f.is_none()) {
+            return out;
+        }
+        let mut each: Vec<&str> = entries.iter().filter_map(|f| f.as_deref()).collect();
+        each.sort_unstable();
+        each.dedup();
+        match each.as_slice() {
+            [one] => out.push(one.to_string()),
+            many => out.push(
+                many.iter()
+                    .map(|f| format!("({f})"))
+                    .collect::<Vec<_>>()
+                    .join(" OR "),
+            ),
+        }
         out
     }
 
@@ -1126,6 +1145,62 @@ expires: 2027-06-30
         assert_eq!(
             a.filters_for("roads.roadway_centerline"),
             vec!["DISTRICT_NBR = 14".to_string(), "STATUS <> 'R'".to_string()]
+        );
+    }
+
+    #[test]
+    fn groups_sharing_a_dataset_add_up() {
+        let g = |id: &str, filter: Option<&str>| DataGroup {
+            id: id.into(),
+            connection: "roads-prod".into(),
+            mode: Mode::Read,
+            datasets: vec![GroupDataset {
+                physical: "ROADS.ROADWAY_CENTERLINE".into(),
+                filter: filter.map(String::from),
+            }],
+        };
+        let scope = |groups| ProjectScope {
+            connections: vec![],
+            data_groups: groups,
+        };
+        let a = EffectiveAccess::resolve(
+            &org(),
+            &roads(),
+            &scope(vec![g("a", Some("COUNTY = 1")), g("b", Some("COUNTY = 2"))]),
+            now(),
+        )
+        .unwrap();
+        // Either group's rows, always under the connection's own filter.
+        assert_eq!(
+            a.filters_for("ROADS.ROADWAY_CENTERLINE"),
+            vec![
+                "DISTRICT_NBR = 14".to_string(),
+                "(COUNTY = 1) OR (COUNTY = 2)".to_string()
+            ]
+        );
+        // A group that lists it without a filter keeps all of its rows.
+        let a = EffectiveAccess::resolve(
+            &org(),
+            &roads(),
+            &scope(vec![g("a", Some("COUNTY = 1")), g("b", None)]),
+            now(),
+        )
+        .unwrap();
+        assert_eq!(
+            a.filters_for("ROADS.ROADWAY_CENTERLINE"),
+            vec!["DISTRICT_NBR = 14".to_string()]
+        );
+        // The same filter twice is one filter.
+        let a = EffectiveAccess::resolve(
+            &org(),
+            &roads(),
+            &scope(vec![g("a", Some("COUNTY = 1")), g("b", Some("COUNTY = 1"))]),
+            now(),
+        )
+        .unwrap();
+        assert_eq!(
+            a.filters_for("ROADS.ROADWAY_CENTERLINE"),
+            vec!["DISTRICT_NBR = 14".to_string(), "COUNTY = 1".to_string()]
         );
     }
 

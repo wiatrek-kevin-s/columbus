@@ -366,6 +366,18 @@ pub struct ConnectionDetail {
     pub rows_returned_per_call: u64,
     pub expires: Option<String>,
     pub engine_ready: bool,
+    /// In a project with data groups: the only datasets of this connection
+    /// that can be read here, each with the group's filter (ANDed onto the
+    /// row filter). Absent when no data group narrows the session.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data_group_datasets: Option<Vec<GroupDatasetView>>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct GroupDatasetView {
+    pub group: String,
+    pub dataset: String,
+    pub filter: Option<String>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -2156,6 +2168,21 @@ impl Gateway {
             rows_returned_per_call: access.return_rows,
             expires: conn.expires.map(|d| d.to_string()),
             engine_ready: Self::engine_ready(&conn.kind),
+            data_group_datasets: (!self.state.scope.data_groups.is_empty()).then(|| {
+                self.state
+                    .scope
+                    .data_groups
+                    .iter()
+                    .filter(|g| g.connection == conn.id)
+                    .flat_map(|g| {
+                        g.datasets.iter().map(|d| GroupDatasetView {
+                            group: g.id.clone(),
+                            dataset: d.physical.clone(),
+                            filter: d.filter.clone(),
+                        })
+                    })
+                    .collect()
+            }),
         };
         self.audit(&ctx, rec)?;
         Ok(out(detail))
