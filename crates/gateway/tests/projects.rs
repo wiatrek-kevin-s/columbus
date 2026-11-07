@@ -388,4 +388,61 @@ async fn a_project_database_is_withheld_once_its_data_groups_change() {
         r.content
     );
     c.cancel().await.unwrap();
+
+    // Back to the first group: readable again (every load ran under it).
+    group("parcel_id <> 'zz'");
+    let c = start(&env.root, Some("grouped"), Some(&py)).await;
+    ok(&call(&c, "project_db", json!({"action": "query", "db": "work", "scope": "project", "sql": "select count(*) as n from parcels"})).await);
+    c.cancel().await.unwrap();
+    // Without groups, wider data goes in; the group back again can't read it.
+    std::fs::write(
+        env.root.join("projects/grouped/project.yaml"),
+        "id: grouped\nname: Grouped\n",
+    )
+    .unwrap();
+    let c = start(&env.root, Some("grouped"), Some(&py)).await;
+    let q = ok(&call(
+        &c,
+        "query_features",
+        json!({"connection": "county", "dataset": "roads"}),
+    )
+    .await);
+    let roads = q["result"]["layer"]["handle"].as_str().unwrap().to_string();
+    ok(&call(&c, "project_db", json!({"action": "load", "db": "work", "scope": "project", "layer": roads, "table": "roads"})).await);
+    c.cancel().await.unwrap();
+    group_project(&env.root, "parcels-only");
+    let c = start(&env.root, Some("grouped"), Some(&py)).await;
+    let r = call(&c, "project_db", json!({"action": "query", "db": "work", "scope": "project", "sql": "select count(*) as n from roads"})).await;
+    assert_eq!(
+        r.is_error,
+        Some(true),
+        "wider data loaded without the group: {:?}",
+        r.structured_content
+    );
+    c.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_filter_naming_a_column_its_table_lacks_never_binds_outside() {
+    let Some(py) = python("geopandas, pyogrio, shapely") else {
+        eprintln!("skipped: needs Python with geopandas, pyogrio and shapely");
+        return;
+    };
+    let env = setup(Some(&py));
+    std::fs::create_dir_all(env.root.join("data-groups")).unwrap();
+    // parcels has no `status`: the filter must fail, not match the outer query's.
+    std::fs::write(
+        env.root.join("data-groups/typo.yaml"),
+        "id: typo\nname: Typo\ndatasets:\n  - { connection: county, dataset: parcels, filter: \"status = 'X'\" }\n",
+    )
+    .unwrap();
+    group_project(&env.root, "typo");
+    let c = start(&env.root, Some("grouped"), Some(&py)).await;
+    let r = call(&c, "sql_select", json!({"connection": "county", "sql": "SELECT (SELECT group_concat(parcel_id) FROM parcels) AS ids FROM (SELECT 'X' AS status) d"})).await;
+    let out = format!("{:?} {:?}", r.content, r.structured_content);
+    assert!(
+        r.is_error == Some(true) || !out.contains("P1"),
+        "the filter was bypassed: {out}"
+    );
+    c.cancel().await.unwrap();
 }

@@ -225,7 +225,8 @@ gpd.GeoDataFrame({"RTE": ["IH0035", "US0183"], "district": [14, 12]}, geometry=[
         d.save_screenshot(str(OUT / "settings-tool-review.png"))
         click(d, By.ID, "review-install")
         installed = root / "tools" / "personal.count-rows"
-        wait.until(lambda drv: (installed / "tool.py").exists())
+        # The tool's files, then its approval: written one after the other.
+        wait.until(lambda drv: (installed / "tool.py").exists() and (root / "tools" / "approved.yaml").exists())
         approved = yaml.safe_load((root / "tools" / "approved.yaml").read_text())
         assert approved == {"personal.count-rows": count_hash}, approved
         assert not (root / "tools" / "proposals" / "personal.count-rows").exists()

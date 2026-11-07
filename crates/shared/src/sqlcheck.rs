@@ -17,8 +17,8 @@ use std::ops::ControlFlow;
 
 use serde::Serialize;
 use sqlparser::ast::{
-    visit_expressions, visit_relations, Expr, Ident, ObjectName, Query, SetExpr, Statement,
-    TableAlias, TableFactor, VisitMut, VisitorMut,
+    visit_expressions, visit_expressions_mut, visit_relations, Expr, Ident, ObjectName, Query,
+    SetExpr, Statement, TableAlias, TableFactor, VisitMut, VisitorMut,
 };
 use sqlparser::dialect::{
     Dialect, DuckDbDialect, GenericDialect, MsSqlDialect, OracleDialect, PostgreSqlDialect,
@@ -619,6 +619,36 @@ fn parse_expr(text: &str, dialect: SqlDialect) -> Result<Expr, Denied> {
 
 fn function_name(name: &ObjectName) -> String {
     name.to_string().to_ascii_uppercase()
+}
+
+/// The name a filtered table goes by inside its filter's own query.
+const FILTER_ALIAS: &str = "columbus_filtered";
+
+/// A checked filter with each column it names bound to `alias` (the
+/// filtered table): `STATUS <> 'R'` becomes `columbus_filtered.STATUS <>
+/// 'R'`, and `t.STATUS` too. So a name the table doesn't have is an error,
+/// never a column of the query the filtered table sits in.
+pub(crate) fn qualify_filter(
+    checked: &str,
+    dialect: SqlDialect,
+    alias: &str,
+) -> Result<String, Denied> {
+    let mut expr = parse_expr(checked, dialect)?;
+    let _ = visit_expressions_mut(&mut expr, |e| {
+        match e {
+            Expr::Identifier(i) => {
+                *e = Expr::CompoundIdentifier(vec![Ident::new(alias), i.clone()]);
+            }
+            Expr::CompoundIdentifier(parts) => {
+                if let Some(last) = parts.last().cloned() {
+                    *parts = vec![Ident::new(alias), last];
+                }
+            }
+            _ => {}
+        }
+        ControlFlow::<()>::Continue(())
+    });
+    Ok(expr.to_string())
 }
 
 /// Check a where clause. Returns it re-rendered from the parsed form, so
@@ -1233,7 +1263,11 @@ impl VisitorMut for ApplyFilters<'_> {
         }
         let mut checked = Vec::new();
         for f in &filters {
-            match check_where(f, self.dialect) {
+            // Every column a filter names is the filtered table's own: one it
+            // lacks is an error, never a column of the query around it.
+            match check_where(f, self.dialect)
+                .and_then(|c| qualify_filter(&c, self.dialect, FILTER_ALIAS))
+            {
                 Ok(c) => checked.push(format!("({c})")),
                 Err(e) => {
                     self.error = Some(Denied::Query(format!(
@@ -1251,7 +1285,7 @@ impl VisitorMut for ApplyFilters<'_> {
         } else {
             barrier(self.dialect)
         };
-        let mut inner_sql = format!("SELECT {before}{select} FROM {source}");
+        let mut inner_sql = format!("SELECT {before}{select} FROM {source} {FILTER_ALIAS}");
         if !checked.is_empty() {
             inner_sql.push_str(&format!(" WHERE {}", checked.join(" AND ")));
         }
@@ -1563,9 +1597,10 @@ datasets:
                     .unwrap_or_else(|e| panic!("{kind} hide={hide}: {e:?}"));
                 assert!(c.sql.contains("pid > 0"), "{kind}: {}", c.sql);
                 assert!(
-                    c.sql
-                        .contains(&format!("{} WHERE", name("Tribal Census Tract")))
-                        || c.sql.ends_with(&name("Tribal Census Tract")),
+                    c.sql.contains(&format!(
+                        "{} columbus_filtered WHERE",
+                        name("Tribal Census Tract")
+                    )) || c.sql.ends_with(&name("Tribal Census Tract")),
                     "{kind}: {}",
                     c.sql
                 );
@@ -1635,7 +1670,7 @@ datasets:
             "SELECT * FROM roads.roadway_inventory ORDER BY 3",
         ] {
             let q = check_select(sql, &a, 10, &cat()).unwrap_or_else(|e| panic!("{sql}: {e}"));
-            let inner = "(SELECT \"fid\", \"route_id\", \"district_nbr\", \"geom\" FROM \"roads\".\"roadway_inventory\" WHERE (DISTRICT_NBR = 14) OFFSET 0)";
+            let inner = "(SELECT \"fid\", \"route_id\", \"district_nbr\", \"geom\" FROM \"roads\".\"roadway_inventory\" columbus_filtered WHERE (columbus_filtered.DISTRICT_NBR = 14) OFFSET 0)";
             assert!(q.sql.contains(inner), "{sql}\n=> {}", q.sql);
             assert!(!q.sql.contains("FROM roads.roadway_inventory AS") && !q.sql.contains("FROM roads.roadway_inventory p"), "every reference wrapped: {}", q.sql);
         }
@@ -1826,7 +1861,8 @@ datasets:
         )
         .unwrap();
         assert!(
-            pg.sql.contains("(DISTRICT_NBR = 14) OFFSET 0)"),
+            pg.sql
+                .contains("(columbus_filtered.DISTRICT_NBR = 14) OFFSET 0)"),
             "{}",
             pg.sql
         );
@@ -1881,14 +1917,14 @@ datasets:
         );
         assert!(
             q.sql.contains(
-                "(SELECT * FROM ROADS.ROADWAY_INVENTORY WHERE (DISTRICT_NBR = 14) OFFSET 0) r "
+                "(SELECT * FROM ROADS.ROADWAY_INVENTORY columbus_filtered WHERE (columbus_filtered.DISTRICT_NBR = 14) OFFSET 0) r "
             ),
             "{}",
             q.sql
         );
         assert!(
             q.sql.contains(
-                "(SELECT * FROM ROADS.CONTROL_SECTION WHERE (DISTRICT_NBR = 14) OFFSET 0) c "
+                "(SELECT * FROM ROADS.CONTROL_SECTION columbus_filtered WHERE (columbus_filtered.DISTRICT_NBR = 14) OFFSET 0) c "
             ),
             "{}",
             q.sql
@@ -2147,7 +2183,7 @@ datasets:
         )
         .unwrap();
         assert!(
-            q.sql.contains("(SELECT \"ID\", \"ROUTE_CODE\", \"DISTRICT_NBR\", \"GEOM\" FROM \"ROADS\".\"ROADWAY_INVENTORY\" WHERE (DISTRICT_NBR = 14) AND ROWNUM > 0) roadway_inventory WHERE"),
+            q.sql.contains("(SELECT \"ID\", \"ROUTE_CODE\", \"DISTRICT_NBR\", \"GEOM\" FROM \"ROADS\".\"ROADWAY_INVENTORY\" columbus_filtered WHERE (columbus_filtered.DISTRICT_NBR = 14) AND ROWNUM > 0) roadway_inventory WHERE"),
             "{}",
             q.sql
         );
@@ -2189,7 +2225,7 @@ datasets:
         )
         .unwrap();
         assert!(
-            q.sql.contains("(SELECT TOP (9223372036854775807) [id], [route_code], [district_nbr], [geom] FROM [roads].[roadway_inventory] WHERE (DISTRICT_NBR = 14)) AS roadway_inventory WHERE CAST(route_code AS INT) = 1"),
+            q.sql.contains("(SELECT TOP (9223372036854775807) [id], [route_code], [district_nbr], [geom] FROM [roads].[roadway_inventory] columbus_filtered WHERE (columbus_filtered.DISTRICT_NBR = 14)) AS roadway_inventory WHERE CAST(route_code AS INT) = 1"),
             "{}",
             q.sql
         );

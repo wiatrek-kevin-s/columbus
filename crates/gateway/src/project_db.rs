@@ -148,6 +148,11 @@ pub(crate) struct Sidecar {
     /// connection: the database is withheld from then on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conflict: Option<String>,
+    /// The data groups each load ran under (their fingerprint, or "none"):
+    /// a session under data groups reads it only if every load ran under
+    /// exactly its own.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub groups_seen: BTreeSet<String>,
 }
 
 /// One project database, resolved.
@@ -207,9 +212,6 @@ pub(crate) fn connection_fingerprint(
     }
     Some(sha256_hex(canonical_json(&v).as_bytes()))
 }
-
-/// Where a database records the data groups it was loaded under.
-const GROUPS_KEY: &str = "scope:data-groups";
 
 /// Why the settings in force no longer cover what the database holds, if
 /// they do not.
@@ -428,6 +430,7 @@ fn merge_record(side: &mut Sidecar, disk: Sidecar) {
         (a, b) => a.or(b),
     };
     side.truncated |= disk.truncated;
+    side.groups_seen.extend(disk.groups_seen);
     // Tables another session loaded meanwhile (a table this call dropped is
     // taken out again after the merge, by write_sidecar_dropping).
     for (t, r) in disk.tables {
@@ -470,7 +473,8 @@ impl Gateway {
         // Under data groups, only what was loaded under exactly these.
         if let Some(gp) = self.groups_print() {
             let has_data = side.labels.iter().any(|l| l.starts_with("connection:"));
-            if has_data && side.fingerprints.get(GROUPS_KEY) != Some(&gp) {
+            let only_these = side.groups_seen.len() == 1 && side.groups_seen.contains(&gp);
+            if has_data && !only_these {
                 return Some(
                     "it was built before this project's data groups were set, or under other ones"
                         .into(),
@@ -1034,9 +1038,8 @@ impl Gateway {
                 }
             }
         }
-        if let Some(gp) = self.groups_print() {
-            side.fingerprints.entry(GROUPS_KEY.into()).or_insert(gp);
-        }
+        side.groups_seen
+            .insert(self.groups_print().unwrap_or_else(|| "none".into()));
         let hide = settings.policy.hide_fields.clone();
         side.hidden = Some(match side.hidden.take() {
             None => hide.clone(),
