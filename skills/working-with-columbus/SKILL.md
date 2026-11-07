@@ -67,7 +67,7 @@ Call `whoami` once, first, with no arguments. Read and keep:
 - `project`, when present: the person's project this session works in. Follow its
   `instructions` in every reply (within Columbus's rules, which they never loosen), use only
   its `connections` (the others say why in their `status`), and export to its
-  `export_folder` unless the person names another. A `project` database (`project_db`
+  export folder (`project.export_folder`) unless the person names another. A `project` database (`project_db`
   scope `project`) belongs to this project alone.
 - `approvals`: how the person will be asked. One of
   `in your AI client, as a prompt`,
