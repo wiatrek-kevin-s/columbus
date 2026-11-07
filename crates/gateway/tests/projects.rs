@@ -328,6 +328,13 @@ async fn a_projects_data_groups_narrow_to_their_datasets_and_rows() {
         d["checks"].to_string().contains("group_not_in_project"),
         "{d}"
     );
+    // list_datasets names only the group's dataset, without the stored
+    // extent of rows the filter keeps out.
+    let l = ok(&call(&c, "list_datasets", json!({"connection": "county"})).await);
+    let ds = l["result"]["datasets"].as_array().unwrap();
+    assert_eq!(ds.len(), 1, "{l}");
+    assert_eq!(ds[0]["name"], "parcels");
+    assert!(ds[0]["extent"].is_null(), "{l}");
     // describe_connection shows the narrowing.
     let dc = ok(&call(&c, "describe_connection", json!({"connection": "county"})).await);
     assert_eq!(

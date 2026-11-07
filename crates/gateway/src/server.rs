@@ -2279,6 +2279,23 @@ impl Gateway {
                         .is_some_and(|n| access.field_hidden(n))
                 });
             }
+            // A stored extent covers every row, those a row filter or data
+            // group keeps out included: not shown for a filtered dataset.
+            let filtered = d
+                .get("name")
+                .and_then(Value::as_str)
+                .is_some_and(|n| !access.filters_for(n).is_empty());
+            if filtered {
+                if let Some(o) = d.as_object_mut() {
+                    if o.get("extent").is_some_and(|e| !e.is_null()) {
+                        o.insert("extent".into(), Value::Null);
+                        o.insert(
+                            "extent_note".into(),
+                            json!("Not shown: the stored extent covers rows this session can't read. query_features reports the extent of the rows you can."),
+                        );
+                    }
+                }
+            }
         }
         self.note_read(&conn.id, None, None, None, "list_datasets");
         let result = DatasetList {
