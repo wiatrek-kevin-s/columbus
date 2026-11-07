@@ -224,3 +224,29 @@ async fn project_databases_are_kept_apart_per_project() {
         c.cancel().await.unwrap();
     }
 }
+
+#[tokio::test]
+async fn a_workflow_proposed_in_a_project_reaches_no_further() {
+    let env = setup(None);
+    std::fs::write(
+        env.root.join("policy.yaml"),
+        "connection_types: [gpkg]\nallow_workflows: true\n",
+    )
+    .unwrap();
+    let c = start(&env.root, Some("review"), None).await;
+    let wf = |conn: &str| {
+        format!(
+        "id: parcel-check\nname: Parcel check\npurpose: Check parcels.\nscope:\n  connections: [{conn}]\nsteps:\n  - id: rows\n    tool: query_features\n    args: {{ connection: {conn}, dataset: parcels }}\n"
+    )
+    };
+    let r = call(&c, "propose_workflow", json!({"workflow": wf("payroll")})).await;
+    assert_eq!(r.is_error, Some(true), "{:?}", r.structured_content);
+    assert!(
+        format!("{:?}", r.content).contains("does not use"),
+        "{:?}",
+        r.content
+    );
+    let r = call(&c, "propose_workflow", json!({"workflow": wf("county")})).await;
+    assert_ne!(r.is_error, Some(true), "{:?}", r.content);
+    c.cancel().await.unwrap();
+}

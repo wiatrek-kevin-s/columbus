@@ -376,3 +376,8 @@ dialog .actions .spacer { flex: 1; }
 
 #log figure.snapshot { margin: 6px 0 2px; }
 #log figure.snapshot img { display: block; max-width: 100%; max-height: 360px; border: 1px solid var(--rule); border-radius: 6px; background: var(--paper); }
+
+/* A chat's project instructions, shown under its header. */
+.project-note { margin: 0 16px 8px; padding: 6px 10px; border: 1px solid var(--rule); border-radius: 6px; background: var(--panel-2); }
+.project-note summary { cursor: pointer; font-size: 13px; font-weight: 600; }
+.pre-wrap { white-space: pre-wrap; }

@@ -165,6 +165,22 @@ impl Gateway {
                 ));
             }
         }
+        // In a project, a workflow reaches no further than the project.
+        if let Some(p) = &self.state.project {
+            if !p.connections.is_empty() {
+                for c in w
+                    .scope
+                    .connections
+                    .iter()
+                    .filter(|c| !p.connections.contains(c))
+                {
+                    problems.push(format!(
+                        "scope.connections names {c:?}, which this project ({}) does not use; propose it outside the project, or ask the person to add the connection to the project",
+                        p.name
+                    ));
+                }
+            }
+        }
         if let Some(f) = &w.outputs.folder {
             if !policy.exports.iter().any(|x| x.id == f.export) {
                 problems.push(format!(

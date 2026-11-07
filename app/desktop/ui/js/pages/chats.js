@@ -732,7 +732,8 @@ function buildLive() {
   const composer = h("form", { id: "composer" },
     h("label", { for: "text", class: "visually-hidden" }, "Message"), text,
     h("div", { class: "row" }, status, modelSel, effortSel, chip, stop, send));
-  const col = h("section", { class: "chatcol", "aria-label": "Chat" }, head, tray, log, composer);
+  const projectBox = h("details", { class: "project-note", id: "chat-project", hidden: true });
+  const col = h("section", { class: "chatcol", "aria-label": "Chat" }, head, projectBox, tray, log, composer);
   live.panel = new Panel(() => view.classList.remove("sheet-open"));
   view.append(col, live.panel.el);
   live.view = view;
@@ -768,6 +769,8 @@ function buildLive() {
   });
   stop.addEventListener("click", () => invoke("chat_stop"));
   view.addEventListener("keydown", (e) => { if (e.key === "Escape") view.classList.remove("sheet-open"); });
+  // The project's name and instructions, once projects are loaded or change.
+  store.on((k) => { if (k === "projects") drawSub(); });
   return view;
 }
 
@@ -819,6 +822,16 @@ function drawSub() {
   if (!sub) return;
   sub.replaceChildren("In the Columbus app · ",
     live.project ? h("a", { href: `#/projects/${encodeURIComponent(live.project)}` }, projectName(live.project)) : "Unfiled");
+  // What the assistant is following, in plain sight.
+  const box = $("chat-project");
+  if (!box) return;
+  const p = live.project && (store.projects?.projects || []).find((x) => x.id === live.project);
+  box.hidden = !(p && p.instructions);
+  if (p && p.instructions) {
+    box.replaceChildren(h("summary", {}, "This project's instructions to your assistant"),
+      h("p", { class: "small pre-wrap" }, p.instructions),
+      h("p", { class: "small muted" }, "Not what you wrote? Edit them on the ", h("a", { href: `#/projects/${encodeURIComponent(p.id)}` }, "project's page"), "."));
+  }
 }
 
 async function newChat(project = null) {
