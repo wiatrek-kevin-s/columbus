@@ -1,0 +1,13 @@
+# An Esri file geodatabase (filegdb connection). Read-only. Each feature
+# class and table in it is a dataset, by its name (parcels, roads). OBJECTID
+# and the geometry column (usually SHAPE) are fields. Read through GDAL's
+# OpenFileGDB driver, so no ArcGIS is needed; compressed geodatabases,
+# raster datasets and annotation aren't read. Organization policy must list
+# "filegdb" in connection_types (it's in the defaults).
+id: county
+type: filegdb
+path: C:\GIS\Travis_County.gdb
+description: Travis County parcels and roads
+datasets:
+  allow: ["*"]
+row_filter: "STATUS <> 'R'"

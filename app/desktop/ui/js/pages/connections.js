@@ -7,7 +7,7 @@
 import { $, h, el, invoke, store, button, pageHead, tabs, showError, size, when, plural, emptyState, coming, toast } from "../core.js";
 
 const KIND_NAMES = {
-  gpkg: "GeoPackage", sqlite: "SQLite", rasters: "Rasters folder",
+  gpkg: "GeoPackage", sqlite: "SQLite", rasters: "Rasters folder", shapefile: "Shapefiles", filegdb: "File geodatabase",
   postgis: "PostGIS", sqlserver: "SQL Server", oracle: "Oracle",
 };
 
@@ -73,7 +73,7 @@ async function databases(body) {
   const error = h("p", { id: "error", class: "error-text", role: "alert", hidden: true });
   const conf = h("div", { class: "notice" }, h("div", { id: "confirm-note" }, confirmNote()));
   const list = h("ul", { id: "connections", class: "list", "aria-live": "polite" });
-  const none = h("div", { id: "no-conn", class: "pad", hidden: true }, h("p", { class: "muted" }, "No connections yet. Add a GeoPackage, a folder of rasters, or a database."));
+  const none = h("div", { id: "no-conn", class: "pad", hidden: true }, h("p", { class: "muted" }, "No connections yet. Add a GeoPackage, a file geodatabase, a folder of shapefiles or rasters, or a database."));
   const other = h("p", { id: "other-folders", class: "error-text", hidden: true });
   const foot = h("p", { class: "small muted wrap-any" }, "Stored in ", h("code", { id: "conn-dir" }), ". Passwords are kept in your computer's credential store, never in a file, and never shown again.");
   body.append(notice, error, conf, h("section", { class: "card" }, h("div", { class: "hd" }, h("h2", {}, "Databases and files")), h("div", { class: "bd flush" }, list, none)), other,
@@ -160,7 +160,7 @@ function field(label, input, opts = {}) {
 function buildEditor() {
   const inp = (name, attrs = {}) => h("input", { name, autocomplete: "off", ...attrs });
   const kind = h("select", { name: "kind" },
-    ...Object.entries({ gpkg: "GeoPackage file", sqlite: "SQLite file", rasters: "Folder of rasters (GeoTIFF)", postgis: "PostgreSQL / PostGIS", sqlserver: "SQL Server", oracle: "Oracle" })
+    ...Object.entries({ gpkg: "GeoPackage file", filegdb: "File geodatabase (.gdb)", shapefile: "Folder of shapefiles", sqlite: "SQLite file", rasters: "Folder of rasters (GeoTIFF)", postgis: "PostgreSQL / PostGIS", sqlserver: "SQL Server", oracle: "Oracle" })
       .map(([v, t]) => h("option", { value: v }, t)));
   const ssl = h("select", { name: "sslmode" }, h("option", { value: "" }, "Default (prefer)"), ...["disable", "prefer", "require", "verify-full"].map((v) => h("option", { value: v }, v)));
   const mode = h("select", { name: "mode" }, h("option", { value: "read" }, "Read only"), h("option", { value: "read-write" }, "Read and write (needs edits allowed)"));
@@ -170,7 +170,7 @@ function buildEditor() {
     h("div", { class: "grid2" },
       field("Name", inp("conn_id", { required: true, maxlength: "40" }), { help: "How your assistant refers to it, e.g. roads or parcels-pg." }),
       field("Type", kind),
-      field("Location", h("span", { class: "pick" }, inp("path"), browse), { wide: true, for: "gpkg sqlite rasters" }),
+      field("Location", h("span", { class: "pick" }, inp("path"), browse), { wide: true, for: "gpkg sqlite shapefile filegdb rasters" }),
       field("Host", inp("host"), { for: "postgis sqlserver oracle" }),
       field("Port", inp("port", { type: "number", min: "1", max: "65535" }), { for: "postgis sqlserver oracle" }),
       field("Database", inp("database"), { for: "postgis sqlserver" }),
@@ -211,7 +211,12 @@ function buildEditor() {
 
 function setKind(kind) {
   for (const label of $("form").querySelectorAll("[data-for]")) label.hidden = !label.dataset.for.split(" ").includes(kind);
-  $("browse").textContent = kind === "rasters" ? "Choose folder…" : "Choose file…";
+  $("browse").textContent = ["rasters", "shapefile", "filegdb"].includes(kind) ? "Choose folder…" : "Choose file…";
+  // Shapefiles and file geodatabases are read only here.
+  const ro = kind === "shapefile" || kind === "filegdb";
+  const mode = $("form").mode;
+  if (ro) mode.value = "read";
+  for (const o of mode.options) if (o.value === "read-write") o.disabled = ro;
 }
 
 function showTest(result) {

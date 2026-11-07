@@ -504,10 +504,17 @@ pub struct FlowRule {
 
 impl Default for OrgPolicy {
     /// The policy in force when no file exists: read-only, no scripts, no
-    /// edits, only local file connection types.
+    /// edits, only local file connection types (GeoPackage, SQLite,
+    /// shapefiles and file geodatabases).
     fn default() -> Self {
         OrgPolicy {
-            connection_types: vec!["gpkg".into(), "sqlite".into(), "file".into()],
+            connection_types: vec![
+                "gpkg".into(),
+                "sqlite".into(),
+                "file".into(),
+                "shapefile".into(),
+                "filegdb".into(),
+            ],
             hosts: vec![],
             tools: vec![],
             deny_tools: vec![],
@@ -949,7 +956,11 @@ pub fn is_system_catalog(name: &str, kind: &str) -> bool {
         "sqlserver" | "mssql" | "azure-sql" | "sde-sqlserver" => {
             parts.len() == 1 && last.starts_with("SYS")
         }
-        "gpkg" | "geopackage" | "sqlite" | "spatialite" => last.starts_with("SQLITE_"),
+        "gpkg" | "geopackage" | "sqlite" | "spatialite" | "shapefile" => {
+            last.starts_with("SQLITE_")
+        }
+        // A file geodatabase's own tables (GDB_Items and the like).
+        "filegdb" => last.starts_with("SQLITE_") || last.starts_with("GDB_"),
         _ => false,
     }
 }

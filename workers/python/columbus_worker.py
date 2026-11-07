@@ -97,6 +97,8 @@ def ping(_params: dict[str, Any]) -> dict[str, Any]:
 
 
 SQLITE_KINDS = {"gpkg", "geopackage", "sqlite", "spatialite"}
+# Shapefiles and file geodatabases, through GDAL (columbus_esri).
+ESRI_KINDS = {"shapefile", "filegdb"}
 
 
 def _connection(params: dict[str, Any]) -> dict[str, Any]:
@@ -1217,6 +1219,8 @@ def list_datasets(params: dict[str, Any]) -> dict[str, Any]:
         return {"datasets": _ora_list(conn, timeout_s, params.get("schemas"), only)}
     if kind in MSSQL_KINDS:
         return {"datasets": _ms_list(conn, timeout_s, params.get("schemas"), only)}
+    if kind in ESRI_KINDS:
+        return {"datasets": _esri().esri_list(conn, timeout_s, only)}
     raise WorkerError(UNSUPPORTED, f"list_datasets does not support {conn['kind']!r} yet")
 
 
@@ -1260,6 +1264,8 @@ def _fetch(conn: dict[str, Any], sql: str, max_rows: int, timeout_s: float, keep
         return _ora_fetch(conn, sql, max_rows, timeout_s, keep_factory, sink)
     if kind in MSSQL_KINDS:
         return _ms_fetch(conn, sql, max_rows, timeout_s, keep_factory, sink)
+    if kind in ESRI_KINDS:
+        return _esri().esri_fetch(conn, sql, max_rows, timeout_s, keep_factory, sink)
     raise WorkerError(UNSUPPORTED, f"reading {conn['kind']!r} connections is not supported yet")
 
 
@@ -2038,6 +2044,12 @@ def _edits():
     import columbus_edits
 
     return columbus_edits
+
+
+def _esri():
+    import columbus_esri
+
+    return columbus_esri
 
 
 def _preload_gis() -> None:

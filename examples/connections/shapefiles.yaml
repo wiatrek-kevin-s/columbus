@@ -1,0 +1,12 @@
+# A folder of Esri shapefiles (shapefile connection). Read-only. Each .shp
+# in the folder is a dataset, by its name without .shp (parcels for
+# parcels.shp); path may also be one .shp file. The geometry column is
+# GEOMETRY. Organization policy must list "shapefile" in connection_types
+# (it's in the defaults).
+id: survey
+type: shapefile
+path: C:\GIS\survey_2026
+description: Field survey shapefiles
+datasets:
+  allow: ["*"]
+  deny: ["*_old"]

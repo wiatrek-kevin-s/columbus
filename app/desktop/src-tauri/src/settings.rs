@@ -32,6 +32,8 @@ const SECRET_SERVICE: &str = "columbus";
 const KINDS: &[&str] = &[
     "gpkg",
     "sqlite",
+    "shapefile",
+    "filegdb",
     "rasters",
     "postgis",
     "sqlserver",
@@ -629,7 +631,13 @@ fn build(form: &ConnForm, old: Option<&Connection>) -> Result<Connection, String
     }
     let mode: Mode = serde_json::from_value(json!(form.mode))
         .map_err(|_| "mode must be read or read-write".to_string())?;
-    let file_kind = matches!(form.kind.as_str(), "gpkg" | "sqlite" | "rasters");
+    if matches!(form.kind.as_str(), "shapefile" | "filegdb") && mode != Mode::Read {
+        return Err("shapefiles and file geodatabases are read only in Columbus".into());
+    }
+    let file_kind = matches!(
+        form.kind.as_str(),
+        "gpkg" | "sqlite" | "shapefile" | "filegdb" | "rasters"
+    );
     let path = trimmed(&form.path);
     if file_kind {
         let p = path.as_deref().ok_or("choose the file or folder")?;
@@ -637,12 +645,31 @@ fn build(form: &ConnForm, old: Option<&Connection>) -> Result<Connection, String
         if !pb.is_absolute() {
             return Err("the location must be a full path".into());
         }
-        let want_dir = form.kind == "rasters";
-        if want_dir && !pb.is_dir() {
-            return Err(format!("{p} is not a folder"));
-        }
-        if !want_dir && !pb.is_file() {
-            return Err(format!("{p} is not a file"));
+        match form.kind.as_str() {
+            "rasters" if !pb.is_dir() => return Err(format!("{p} is not a folder")),
+            "filegdb"
+                if !(pb.is_dir()
+                    && pb
+                        .extension()
+                        .is_some_and(|e| e.eq_ignore_ascii_case("gdb"))) =>
+            {
+                return Err(format!(
+                    "{p} is not a file geodatabase (a folder whose name ends in .gdb)"
+                ))
+            }
+            "shapefile"
+                if !(pb.is_dir()
+                    || (pb.is_file()
+                        && pb
+                            .extension()
+                            .is_some_and(|e| e.eq_ignore_ascii_case("shp")))) =>
+            {
+                return Err(format!(
+                    "{p} is not a folder of shapefiles or a .shp file"
+                ))
+            }
+            "gpkg" | "sqlite" if !pb.is_file() => return Err(format!("{p} is not a file")),
+            _ => {}
         }
     } else if form.kind == "oracle" {
         if trimmed(&form.dsn).is_none() && trimmed(&form.host).is_none() {
@@ -1262,6 +1289,12 @@ pub async fn settings_pick(app: tauri::AppHandle, kind: String) -> Result<Option
     let picked = match kind.as_str() {
         "rasters" => d
             .set_title("Choose the folder of rasters")
+            .blocking_pick_folder(),
+        "shapefile" => d
+            .set_title("Choose the folder of shapefiles")
+            .blocking_pick_folder(),
+        "filegdb" => d
+            .set_title("Choose the file geodatabase (the folder ending in .gdb)")
             .blocking_pick_folder(),
         "gpkg" => d
             .set_title("Choose a GeoPackage")

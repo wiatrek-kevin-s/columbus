@@ -252,6 +252,17 @@ def _ms(conn: dict[str, Any], dataset: str, timeout_s: float) -> dict[str, Any]:
             db.close()
 
 
+def _esri(conn: dict[str, Any], dataset: str, timeout_s: float) -> dict[str, Any]:
+    """A shapefile or geodatabase layer: its key is a geodatabase's OBJECTID;
+    neither keeps foreign keys or comments GDAL can read here."""
+    import columbus_esri
+
+    entries = columbus_esri.esri_list(conn, timeout_s, dataset)
+    pk = [f["name"] for f in (entries[0]["fields"] if entries else []) if f.get("pk")]
+    return {"primary_key": pk, "foreign_keys": [], "indexes": [],
+            "comments": {"table": None, "columns": {}}, "domains": {}}
+
+
 def catalog_details(params: dict[str, Any]) -> dict[str, Any]:
     conn = w._connection(params)
     dataset = params.get("dataset")
@@ -267,6 +278,8 @@ def catalog_details(params: dict[str, Any]) -> dict[str, Any]:
         out = _ora(conn, dataset, timeout_s)
     elif kind in w.MSSQL_KINDS:
         out = _ms(conn, dataset, timeout_s)
+    elif kind in w.ESRI_KINDS:
+        out = _esri(conn, dataset, timeout_s)
     else:
         raise w.WorkerError(w.UNSUPPORTED, f"catalog_details does not support {conn['kind']!r}")
     # Distinct values of short fields, by the gateway's checked SELECTs:

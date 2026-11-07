@@ -58,6 +58,8 @@ const ENGINE_READY: &[&str] = &[
     "sde-sqlserver",
     "azure-sql",
     "rasters",
+    "shapefile",
+    "filegdb",
 ];
 
 // ---------- standard output envelope ----------

@@ -47,7 +47,10 @@ impl SqlDialect {
             "oracle" | "sde-oracle" => SqlDialect::Oracle,
             "postgis" | "postgres" | "postgresql" => SqlDialect::Postgres,
             "sqlserver" | "mssql" | "azure-sql" | "sde-sqlserver" => SqlDialect::MsSql,
-            "gpkg" | "geopackage" | "sqlite" | "spatialite" => SqlDialect::Sqlite,
+            // Shapefiles and file geodatabases run in GDAL's SQLite dialect.
+            "gpkg" | "geopackage" | "sqlite" | "spatialite" | "shapefile" | "filegdb" => {
+                SqlDialect::Sqlite
+            }
             "duckdb" | "geoparquet" => SqlDialect::DuckDb,
             _ => SqlDialect::Generic,
         }
