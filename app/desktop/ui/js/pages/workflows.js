@@ -128,7 +128,7 @@ export async function render(main, rest) {
         const text = el("div", "text");
         text.append(el("b", null, w.name), el("span", "where", `${w.replaces != null ? "A change to your workflow" : "New"}${w.proposal && w.proposal.proposed ? ` · proposed ${when(w.proposal.proposed)}` : ""} · ${w.at ? `would run ${scheduleText({ ...w, schedule_entry: "none" })}` : "would run when you start it"}`));
         if (w.purpose) text.append(el("span", null, w.purpose));
-        if (w.proposal && w.proposal.imported) text.append(el("span", "where", importedText(w.proposal)));
+        if (w.proposal && w.proposal.imported) text.append(el("span", "where", importedText(w.proposal, false)));
         if (w.problem) text.append(el("span", "where error-text", w.problem));
         const b = button("Review", "primary sm", () => openReview(w, refreshList), { title: "Read what it does, then approve or decline it" });
         b.disabled = !!w.problem;

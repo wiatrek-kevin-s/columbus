@@ -191,7 +191,22 @@ pub fn read(path: &Path) -> Result<ShareFile, String> {
 /// these same bytes, so what is checked is what is recorded.
 pub fn read_bytes(path: &Path) -> Result<Vec<u8>, String> {
     use std::io::Read;
-    let f = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    // A regular file before it is opened (opening a named pipe would wait
+    // for a writer), and opened without waiting in case it was swapped.
+    let first = std::fs::metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    if !first.is_file() {
+        return Err(format!("{} is not a file", path.display()));
+    }
+    let mut opts = std::fs::OpenOptions::new();
+    opts.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.custom_flags(libc::O_NONBLOCK);
+    }
+    let f = opts
+        .open(path)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
     let meta = f
         .metadata()
         .map_err(|e| format!("{}: {e}", path.display()))?;
@@ -400,6 +415,17 @@ mod tests {
         more.insert("other".into(), "x".into());
         assert!(remap(&w, &more, Some("x")).is_err());
         assert!(remap(&w, &map, None).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_named_pipe_is_refused_without_waiting() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("x.columbus");
+        let c = std::ffi::CString::new(p.to_str().unwrap()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        assert!(read_bytes(&p).unwrap_err().contains("not a file"));
+        assert!(read_bytes(dir.path()).is_err());
     }
 
     #[test]

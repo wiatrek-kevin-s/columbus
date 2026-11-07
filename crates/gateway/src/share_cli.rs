@@ -179,22 +179,40 @@ struct Plan {
     already: Vec<String>,
 }
 
-/// File every part; if one fails, take back the ones filed (none of them
-/// replaced anything: `check` refuses ids already waiting).
+/// File every part; if one fails, take back the ones filed. Before each
+/// write the id is checked again: something filed for the person since the
+/// checks (their own assistant's proposal, say) is never replaced, and only
+/// a proposal that is still exactly ours is taken back.
 fn file(state: &State, plan: &Plan) -> Result<Vec<Value>, String> {
     let tools_root = state.tools.root();
+    let wroot = wf::workflows_dir();
     let mut filed: Vec<Value> = Vec::new();
     let undo = |filed: &[Value]| {
         for f in filed {
             let id = f["id"].as_str().unwrap_or("");
+            let ours = f["mark"].as_str().unwrap_or("");
             if f["kind"] == "tool" {
-                let _ = store::decline(tools_root, id);
-            } else {
-                let _ = wf::decline(&wf::workflows_dir(), id);
+                if store::read_proposal(tools_root, id).is_ok_and(|p| p.hash == ours) {
+                    let _ = store::decline(tools_root, id);
+                }
+            } else if std::fs::read(wroot.join(wf::PROPOSALS).join(id).join(wf::FILE))
+                .is_ok_and(|b| columbus_shared::canon::sha256_hex(&b) == ours)
+            {
+                let _ = wf::decline(&wroot, id);
             }
         }
     };
     for t in &plan.tools {
+        if store::list_proposals(tools_root)
+            .iter()
+            .any(|p| p.id == t.id)
+        {
+            undo(&filed);
+            return Err(format!(
+                "{} was filed for your review by something else just now; review it first, then open this file again",
+                t.id
+            ));
+        }
         if let Err(e) = store::write_proposal(
             tools_root,
             &t.id,
@@ -205,16 +223,31 @@ fn file(state: &State, plan: &Plan) -> Result<Vec<Value>, String> {
             undo(&filed);
             return Err(e);
         }
-        filed.push(json!({"kind": "tool", "id": t.id}));
+        let hash = store::content_hash(t.manifest.as_bytes(), t.code.as_bytes());
+        filed.push(json!({"kind": "tool", "id": t.id, "mark": hash}));
     }
     if let Some(w) = &plan.workflow {
-        if let Err(e) = wf::write_proposal(&wf::workflows_dir(), &w.text, &w.info) {
+        if wf::list_proposals(&wroot, tools_root)
+            .iter()
+            .any(|p| p.id == w.id)
+        {
+            undo(&filed);
+            return Err(format!(
+                "a workflow {} was filed for your review by something else just now; review it first, then open this file again",
+                w.id
+            ));
+        }
+        if let Err(e) = wf::write_proposal(&wroot, &w.text, &w.info) {
             undo(&filed);
             return Err(e);
         }
-        filed.push(json!({"kind": "workflow", "id": w.id}));
+        let mark = columbus_shared::canon::sha256_hex(w.text.as_bytes());
+        filed.push(json!({"kind": "workflow", "id": w.id, "mark": mark}));
     }
-    Ok(filed)
+    Ok(filed
+        .into_iter()
+        .map(|f| json!({"kind": f["kind"], "id": f["id"]}))
+        .collect())
 }
 
 /// Whether the person has this exact tool installed, and ready.
@@ -283,7 +316,14 @@ async fn check(state: &State, request: &str, seen: &mut Seen) -> Result<Plan, St
         "from": shared.shared_by,
         "shared_at": shared.shared_at,
         "columbus": shared.columbus,
-        "file": path.file_name().and_then(|n| n.to_str()).unwrap_or(""),
+        "file": path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .chars()
+            .filter(|c| store::plain_chars(&c.to_string()).is_ok())
+            .take(120)
+            .collect::<String>(),
         "file_sha256": file_sha,
     });
     let waiting_tools: BTreeSet<String> = store::list_proposals(tools_root)

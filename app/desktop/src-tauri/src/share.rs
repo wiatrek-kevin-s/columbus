@@ -202,7 +202,7 @@ pub async fn share_import(
             &server,
             engine.as_deref(),
             &["share", "import", &req],
-            Duration::from_secs(600),
+            Duration::from_secs(900),
         )?;
         let v: Value = serde_json::from_str(text.trim())
             .map_err(|_| "Columbus's answer could not be read".to_string())?;
