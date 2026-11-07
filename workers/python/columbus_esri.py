@@ -49,6 +49,10 @@ _TEXT_DATE_TYPES = {"OFTDate", "OFTDateTime", "OFTTime"}
 
 
 def _pyogrio():
+    # Through the GIS engine's own import first: the worker loads it in the
+    # background at start-up, and importing pyogrio alongside that (each
+    # import waiting on the other's modules) leaves numpy half loaded.
+    w._gis()
     try:
         import pyogrio
     except ImportError:
