@@ -43,6 +43,7 @@ use std::time::Duration;
 use serde::Serialize;
 
 mod chat;
+mod datagroups;
 mod projects;
 mod settings;
 mod shell;
@@ -478,6 +479,9 @@ fn main() {
             projects::projects_state,
             projects::project_save,
             projects::project_remove,
+            datagroups::datagroups_state,
+            datagroups::datagroup_save,
+            datagroups::datagroup_remove,
             chat::chat_transcript,
             chat::chats_search,
             chat::chat_rename,

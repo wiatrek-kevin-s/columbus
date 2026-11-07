@@ -11,6 +11,7 @@ import * as activity from "./pages/activity.js";
 import * as settings from "./pages/settings.js";
 import * as later from "./pages/later.js";
 import * as projects from "./pages/projects.js";
+import * as datagroups from "./pages/datagroups.js";
 
 // The rail, as the design groups it (section 4.1).
 const RAIL = [
@@ -29,7 +30,7 @@ const PAGES = {
   chats: chats.render,
   projects: projects.render,
   documents: documents.render,
-  datagroups: later.dataGroups,
+  datagroups: datagroups.render,
   skills: tools.renderSkills,
   connections: connections.render,
   registry: later.registry,

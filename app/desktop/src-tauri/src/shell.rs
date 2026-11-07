@@ -38,7 +38,7 @@ pub struct Places {
     audit: String,
     workspaces: String,
     notes: String,
-    context: String,
+    pub(crate) context: String,
     /// Whether these came from a running session (else defaults).
     from_session: bool,
 }
@@ -82,7 +82,7 @@ fn places_from(live: &[LiveSession]) -> Places {
     }
 }
 
-fn places() -> Places {
+pub(crate) fn places() -> Places {
     places_from(&settings::live_all())
 }
 

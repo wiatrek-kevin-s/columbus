@@ -8,13 +8,6 @@ function page(main, title, lede, ...content) {
   main.append(p);
 }
 
-export function dataGroups(main) {
-  page(main, "Data groups", "Named sets of datasets across connections, with their filters.",
-    coming("datagroups", "Data groups are coming",
-      "Build a named set of datasets across your connections (for example the District 14 roadway core), attach it to a project, or mention it in a chat (@d14-roadway-core) instead of listing tables. A group can only narrow what each connection allows; Columbus's server enforces it.",
-      ["Your groups start private to you; sharing comes later.", "Your organization's groups will come from its context pack, read only."], "Coming in stage 3"));
-}
-
 export function registry(main) {
   page(main, "Registry", "Open data and geoprocessing tools, compared across engines.",
     coming("registry", "The registry page is coming",

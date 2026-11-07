@@ -381,3 +381,7 @@ dialog .actions .spacer { flex: 1; }
 .project-note { margin: 0 16px 8px; padding: 6px 10px; border: 1px solid var(--rule); border-radius: 6px; background: var(--panel-2); }
 .project-note summary { cursor: pointer; font-size: 13px; font-weight: 600; }
 .pre-wrap { white-space: pre-wrap; }
+
+/* A data group's datasets, edited in a table. */
+.dg-table td { padding: 4px 6px 4px 0; vertical-align: middle; }
+.dg-table td input, .dg-table td select { width: 100%; }

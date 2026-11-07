@@ -79,12 +79,23 @@ pub struct ProjectForm {
     connections: Vec<String>,
     #[serde(default)]
     export_folder: Option<String>,
+    #[serde(default)]
+    data_groups: Vec<String>,
 }
 
 fn save(form: ProjectForm) -> Result<Project, String> {
     let known = connection_ids();
     if let Some(c) = form.connections.iter().find(|c| !known.contains(c)) {
         return Err(format!("{c} is not one of your connections"));
+    }
+    let org = crate::datagroups::organization();
+    for g in &form.data_groups {
+        let theirs = org.iter().any(|o| o["id"].as_str() == Some(g.as_str()));
+        if !theirs && columbus_shared::datagroups::load(g).is_err() {
+            return Err(format!(
+                "{g} is not one of your data groups or your organization's"
+            ));
+        }
     }
     let folder = form.export_folder.filter(|f| !f.is_empty());
     if let Some(f) = &folder {
@@ -130,6 +141,7 @@ fn save(form: ProjectForm) -> Result<Project, String> {
             instructions: form.instructions,
             connections: form.connections,
             export_folder: folder,
+            data_groups: form.data_groups,
             created,
             updated: None,
         },

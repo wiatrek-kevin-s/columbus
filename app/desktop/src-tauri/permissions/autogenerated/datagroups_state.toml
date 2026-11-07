@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-datagroups-state"
+description = "Enables the datagroups_state command without any pre-configured scope."
+commands.allow = ["datagroups_state"]
+
+[[permission]]
+identifier = "deny-datagroups-state"
+description = "Denies the datagroups_state command without any pre-configured scope."
+commands.deny = ["datagroups_state"]

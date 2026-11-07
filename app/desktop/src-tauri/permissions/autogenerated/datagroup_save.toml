@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-datagroup-save"
+description = "Enables the datagroup_save command without any pre-configured scope."
+commands.allow = ["datagroup_save"]
+
+[[permission]]
+identifier = "deny-datagroup-save"
+description = "Denies the datagroup_save command without any pre-configured scope."
+commands.deny = ["datagroup_save"]

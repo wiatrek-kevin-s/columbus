@@ -26,8 +26,13 @@ function lastActivity(p) {
   return times.length ? times[times.length - 1] : null;
 }
 
+/** The data groups the project form offers (loaded with the page). */
+let groupsCache = { mine: [], org: [] };
+function state_groups() { return groupsCache; }
+
 function connectionsText(p) {
-  return p.connections && p.connections.length ? `Uses ${p.connections.join(", ")}` : "Uses all your connections";
+  const c = p.connections && p.connections.length ? `Uses ${p.connections.join(", ")}` : "Uses all your connections";
+  return p.data_groups && p.data_groups.length ? `${c} · data groups ${p.data_groups.join(", ")}` : c;
 }
 
 export async function render(main, rest) {
@@ -37,7 +42,14 @@ export async function render(main, rest) {
   const body = h("div", { class: "pad stack" });
   const err = h("p", { id: "pj-error", class: "error-text", role: "alert", hidden: true });
   let state;
-  try { state = await load(); } catch (e) {
+  try {
+    state = await load();
+    try {
+      const g = await invoke("datagroups_state");
+      store.set("datagroups", g);
+      groupsCache = { mine: g.groups, org: g.organization };
+    } catch { groupsCache = { mine: [], org: [] }; }
+  } catch (e) {
     page.append(pageHead("Projects"), h("div", { class: "scroll" }, body));
     body.append(err);
     showError(err, e);
@@ -137,6 +149,22 @@ export async function render(main, rest) {
       folder.append(h("option", { value: p.export_folder, selected: true }, `${p.export_folder} (no longer one of your organization's export folders)`));
     }
 
+    // Data groups: yours and your organization's.
+    const groups = h("div", { class: "stack", id: "pj-groups" });
+    const dg = state_groups();
+    const chosen = new Set(p ? p.data_groups || [] : []);
+    const known = new Set([...dg.mine.map((g) => g.id), ...dg.org.map((g) => g.id)]);
+    for (const [gid, label, note] of [
+      ...dg.mine.map((g) => [g.id, g.name, `${g.datasets.length} datasets · yours`]),
+      ...dg.org.map((g) => [g.id, g.title || g.id, "your organization's"]),
+      ...[...chosen].filter((x) => !known.has(x)).map((x) => [x, x, "no longer found: chats won't start until you remove it"]),
+    ]) {
+      const box = h("input", { type: "checkbox", value: gid, id: `pj-g-${gid}` });
+      box.checked = chosen.has(gid);
+      groups.append(h("label", { class: "row", for: `pj-g-${gid}` }, box, " ", label, h("span", { class: "muted small" }, ` (${note})`)));
+    }
+    if (!known.size && !chosen.size) groups.append(h("p", { class: "small muted" }, "You have no data groups yet. ", h("a", { href: "#/datagroups/new" }, "Make one"), "."));
+
     const save = button(isNew ? "Create project" : "Save changes", "primary", onSave, { id: "pj-save" });
     const acts = h("div", { class: "row wrap" }, save, isNew ? button("Cancel", "", () => go("#/projects")) : null,
       h("span", { class: "spacer" }), isNew ? null : button("Delete project", "danger", onDelete, { id: "pj-delete" }));
@@ -148,6 +176,9 @@ export async function render(main, rest) {
         h("label", { class: "row", for: "pj-conn-all" }, allR, " All my connections"),
         h("label", { class: "row", for: "pj-conn-some" }, someR, " Only these:"), boxes,
         h("p", { class: "small muted" }, "Columbus's server enforces this: in this project's chats, your other Columbus connections can't be read. (Connected apps, such as a drive, aren't narrowed by projects yet.)")),
+      h("fieldset", { class: "stack" }, h("legend", { class: "field" }, "Data groups"),
+        h("p", { class: "small muted" }, "Choose any to keep this project's chats to their datasets, and only the rows their filters keep. None: every dataset its connections allow."),
+        groups),
       h("label", { class: "field", for: "pj-folder" }, "Default export folder", folder),
       acts)));
 
@@ -176,6 +207,7 @@ export async function render(main, rest) {
         instructions: instr.value,
         connections: someR.checked ? [...boxes.querySelectorAll("input:checked")].map((b) => b.value) : [],
         export_folder: folder.value || null,
+        data_groups: [...groups.querySelectorAll("input:checked")].map((b) => b.value),
       };
       if (someR.checked && !form.connections.length) { showError(err, "Choose at least one connection, or All my connections."); return; }
       save.disabled = true;

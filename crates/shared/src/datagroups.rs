@@ -226,7 +226,7 @@ pub fn list_in(dir: &Path) -> (Vec<Group>, Vec<(String, String)>) {
             Err(why) => bad.push((id.to_string(), why)),
         }
     }
-    ok.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    ok.sort_by_key(|g| g.name.to_lowercase());
     bad.sort();
     (ok, bad)
 }
