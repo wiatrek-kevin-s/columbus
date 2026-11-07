@@ -1,18 +1,12 @@
 Columbus {{VERSION}}, a test release. Click a link to download that file.
 
 **New in this version:**
-- **Projects:** a project has its own instructions for your assistant, the connections its chats may use, a default export folder, and data groups. Start a chat in a project and Columbus's server keeps it to the project's connections. The Projects page lists each project's chats and its project databases. The Chats page groups chats by project.
-- **Data groups:** a named set of datasets across your connections, each with an optional filter on which rows count (for example, the roadway inventory, and the centerline without retired segments). Attach groups to a project and its chats can read only those datasets and only those rows. Your connection's own row filter always applies too. Your organization's groups, from its context pack, show read only.
-- **Registry page:** search open data sources and GIS tools by words, kind and theme, and open an entry for its publisher, coverage, licence and how to get it. **Ask my assistant about it** starts a chat about it. If the registry index isn't installed yet, the page installs it.
-- **Fewer password prompts on a Mac:** the app reads each item it keeps in your Keychain once per launch, not every time a page asks. When macOS asks, choose **Always Allow** so it stops asking until the next update.
+- **Esri shapefiles and file geodatabases:** two new kinds of connection, added on the Connections page with **Choose folder…**: a folder of shapefiles (each shapefile is a dataset), and a `.gdb` file geodatabase (each feature class or table is a dataset). No ArcGIS is needed: Columbus reads them with the GIS engine it already installs. They follow the same rules as your other connections (allowed datasets, hidden fields, row filters, data groups, the SQL checks), and are read only for now.
+- **One edit to your policy file:** if your `policy.yaml` lists `connection_types`, add `shapefile` and `filegdb` to that line. If you have no policy file, both are allowed already.
+- **Limits:** a shapefile whose name has a dot (like `parcels.2024.shp`) isn't offered, so rename it without dots. A row filter can't use a shapefile date field, because shapefile dates are compared as text. Compressed geodatabases, rasters inside a geodatabase and annotation aren't read yet.
+- **Faster reading:** the engine now installs `pyarrow` so large shapefile and geodatabase reads stream. An engine set up before this version still works, just more slowly. To update it, run the engine setup again.
 
-**Safety fixes** (found by three rounds of independent security review):
-- A row filter now only ever applies to its own table's columns. A filter that names a column the table doesn't have is refused instead of matching something else in the query.
-- Free SQL can't use the names Columbus gives its own parts of a query.
-- For filtered datasets, the table's stored extent and row estimate are no longer shown, since they count rows you can't read.
-- Edits on PostgreSQL work with a `%` in a row filter.
-
-**In 0.10.1:** a clear key-saved state, New chat always new, the workflow approvals badge, and the tidier Workflows page.
+**In 0.11.0:** Projects, Data groups, the Registry page, project databases on the Projects page, filter security fixes, and fewer Keychain prompts on a Mac.
 
 ## Mac (Apple Silicon: M1 or later)
 
