@@ -23,6 +23,8 @@ fn main() {
             "datagroups_state",
             "datagroup_save",
             "datagroup_remove",
+            "registry_query",
+            "registry_update",
             "workflows_state",
             "workflow_install",
             "workflow_decline",

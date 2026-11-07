@@ -949,6 +949,11 @@ export async function render(main, rest) {
     history.replaceState(null, "", "#/chats/new");
     const r = await showLive(main);
     if (live.started || live.chatId || live.log.childElementCount || live.project !== project) await newChat(project);
+    // A question another page left for the new chat (the person sends it).
+    try {
+      const pre = sessionStorage.getItem("columbus.prefill");
+      if (pre) { sessionStorage.removeItem("columbus.prefill"); $("text").value = pre; $("text").focus(); }
+    } catch { /* none */ }
     return r;
   }
   if (kind === "new" || (kind === "c" && id && id === live.chatId)) return showLive(main);

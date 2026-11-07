@@ -45,6 +45,7 @@ use serde::Serialize;
 mod chat;
 mod datagroups;
 mod projects;
+mod registry;
 mod settings;
 mod shell;
 mod workflows;
@@ -482,6 +483,8 @@ fn main() {
             datagroups::datagroups_state,
             datagroups::datagroup_save,
             datagroups::datagroup_remove,
+            registry::registry_query,
+            registry::registry_update,
             chat::chat_transcript,
             chat::chats_search,
             chat::chat_rename,

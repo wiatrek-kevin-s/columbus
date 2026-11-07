@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-registry-update"
+description = "Enables the registry_update command without any pre-configured scope."
+commands.allow = ["registry_update"]
+
+[[permission]]
+identifier = "deny-registry-update"
+description = "Denies the registry_update command without any pre-configured scope."
+commands.deny = ["registry_update"]

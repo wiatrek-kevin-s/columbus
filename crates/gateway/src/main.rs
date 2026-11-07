@@ -12,6 +12,7 @@
 //! columbus-mcp servers signin ID    sign in to a remote server in the browser (OAuth)
 //! columbus-mcp servers signout ID   remove its tokens
 //! columbus-mcp registry update [--from DIR|URL]   install the registry index (checked)
+//! columbus-mcp registry query JSON                one registry search or entry, as JSON (the app's Registry page)
 //! columbus-mcp pack lint [DIR]      check a context pack
 //! columbus-mcp plugins list         engine plugins, their versions, hashes and state
 //! columbus-mcp plugins approve ID   approve a plugin's exact contents
@@ -40,6 +41,7 @@ mod project_db;
 mod propose_tool;
 mod providers;
 mod raster_tools;
+mod registry_cli;
 mod registry_tools;
 mod review_cli;
 mod safefs;
@@ -109,6 +111,7 @@ async fn main() -> Result<()> {
         ["servers", "approve", id, "--accept-flags"] => review_cli::approve(id, true).await,
         ["servers", "signin", id] => review_cli::signin(id).await,
         ["registry", "update"] => registry_tools::update(None).await,
+        ["registry", "query", request] => registry_cli::query(request).await,
         ["pack", "lint"] => context::lint_cli(None),
         ["pack", "lint", dir] => context::lint_cli(Some(dir)),
         ["registry", "update", "--from", src] => registry_tools::update(Some(src)).await,
@@ -127,7 +130,7 @@ async fn main() -> Result<()> {
             Ok(())
         }
         _ => bail!(
-            "usage: columbus-mcp [serve] | audit verify FILE | secret set|delete ID | servers list|review|approve|signin|signout ID | registry update [--from DIR|URL] | plugins list|approve ID | tools list|show|install|decline|remove ID | workflow run ID [--scheduled]|validate FILE|list | --version"
+            "usage: columbus-mcp [serve] | audit verify FILE | secret set|delete ID | servers list|review|approve|signin|signout ID | registry update [--from DIR|URL]|query JSON | plugins list|approve ID | tools list|show|install|decline|remove ID | workflow run ID [--scheduled]|validate FILE|list | --version"
         ),
     }
 }

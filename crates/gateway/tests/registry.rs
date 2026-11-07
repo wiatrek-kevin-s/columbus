@@ -251,3 +251,47 @@ async fn registry_search_and_get() {
     assert!(e.contains("does not match"), "{e}");
     c.cancel().await.unwrap();
 }
+
+/// The app's Registry page asks through `registry query`: the same checked
+/// index and checks, and only the two registry calls.
+#[tokio::test]
+async fn the_registry_page_query_answers_as_the_tools_do_and_only_them() {
+    let Some(py) = python() else { return };
+    let env = setup();
+    let src = env.root.join("build-output");
+    make_index(&py, &src);
+    let q = |req: &str| {
+        let (_, out) = cli(&env, &py, &["registry", "query", req]);
+        serde_json::from_str::<Value>(out.lines().last().unwrap_or("")).unwrap_or(Value::Null)
+    };
+    // Not installed: said so.
+    let v = q(r#"{"tool":"registry_search","args":{"query":"lidar"}}"#);
+    assert_eq!(v["ok"], false, "{v}");
+    assert!(
+        v["error"].as_str().unwrap().contains("registry update"),
+        "{v}"
+    );
+    let (okay, out) = cli(
+        &env,
+        &py,
+        &["registry", "update", "--from", src.to_str().unwrap()],
+    );
+    assert!(okay, "{out}");
+    let v = q(r#"{"tool":"registry_search","args":{"query":"lidar","kind":"data"}}"#);
+    assert_eq!(v["ok"], true, "{v}");
+    assert!(!ids(&v).is_empty(), "{v}");
+    let first = ids(&v)[0].clone();
+    let v = q(&format!(
+        r#"{{"tool":"registry_get","args":{{"id":"{first}"}}}}"#
+    ));
+    assert_eq!(v["result"]["entry"]["id"], first.as_str(), "{v}");
+    // Anything else: refused, whatever it is.
+    for req in [
+        r#"{"tool":"run_python","args":{"code":"1"}}"#,
+        r#"{"tool":"query_features","args":{}}"#,
+        "not json",
+    ] {
+        let v = q(req);
+        assert_eq!(v["ok"], false, "{req}: {v}");
+    }
+}

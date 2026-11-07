@@ -9,9 +9,9 @@ import * as tools from "./pages/tools.js";
 import * as workflows from "./pages/workflows.js";
 import * as activity from "./pages/activity.js";
 import * as settings from "./pages/settings.js";
-import * as later from "./pages/later.js";
 import * as projects from "./pages/projects.js";
 import * as datagroups from "./pages/datagroups.js";
+import * as registry from "./pages/registry.js";
 
 // The rail, as the design groups it (section 4.1).
 const RAIL = [
@@ -33,7 +33,7 @@ const PAGES = {
   datagroups: datagroups.render,
   skills: tools.renderSkills,
   connections: connections.render,
-  registry: later.registry,
+  registry: registry.render,
   tools: tools.render,
   workflows: workflows.render,
   activity: activity.render,

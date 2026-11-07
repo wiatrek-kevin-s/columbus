@@ -26,6 +26,8 @@
     "allow-datagroups-state",
     "allow-datagroup-save",
     "allow-datagroup-remove",
+    "allow-registry-query",
+    "allow-registry-update",
     "allow-workflows-state",
     "allow-workflow-install",
     "allow-workflow-decline",
