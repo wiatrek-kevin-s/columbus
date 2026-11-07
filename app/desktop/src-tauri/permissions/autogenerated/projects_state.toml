@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-projects-state"
+description = "Enables the projects_state command without any pre-configured scope."
+commands.allow = ["projects_state"]
+
+[[permission]]
+identifier = "deny-projects-state"
+description = "Denies the projects_state command without any pre-configured scope."
+commands.deny = ["projects_state"]
