@@ -213,12 +213,9 @@ pub(crate) fn connection_fingerprint(
 ///
 /// It compares what decides which data a connection gives: the connection
 /// itself (a fingerprint of everything but its description and mode), its
-/// type being allowed, and the hidden fields. Sessions have no project
-/// scope or data groups of their own yet (`State::scope` is always the
-/// default); once they do, this must also check that the scope and data
-/// groups in force still cover each connection and dataset the database
-/// holds, or a narrower project could read a database built under a wider
-/// one.
+/// type being allowed, and the hidden fields. A project's narrower
+/// connections are checked by `withheld_here`; data groups, once sessions
+/// have them, must be checked there too.
 pub(crate) fn withheld(settings: &crate::config::Settings, side: &Sidecar) -> Option<String> {
     if let Some(c) = &side.conflict {
         return Some(c.clone());
@@ -450,6 +447,34 @@ pub(crate) fn remove_db_dir(dir: &Path) -> bool {
 }
 
 impl Gateway {
+    /// Where "project" databases live, below the workspaces folder: each
+    /// project's own (`project-dbs/<id>`) in a project, else the shared
+    /// `projects` folder (as before projects existed).
+    fn project_comps(&self) -> Vec<String> {
+        match &self.state.project {
+            Some(p) => vec!["project-dbs".into(), p.id.clone()],
+            None => vec!["projects".into()],
+        }
+    }
+
+    /// Why a database is withheld here: as `withheld`, and also when it
+    /// holds data from a connection this session's project does not use (a
+    /// narrower project never reads what a wider one built).
+    fn withheld_here(&self, side: &Sidecar) -> Option<String> {
+        if let Some(why) = withheld(&self.state.settings(), side) {
+            return Some(why);
+        }
+        let scope = &self.state.scope.connections;
+        if scope.is_empty() {
+            return None;
+        }
+        side.labels
+            .iter()
+            .filter_map(|l| l.strip_prefix("connection:"))
+            .find(|c| !scope.iter().any(|s| s == c))
+            .map(|c| format!("it holds data from {c}, which this project does not use"))
+    }
+
     fn workspaces_root(&self) -> Result<PathBuf, String> {
         self.state
             .paths
@@ -464,11 +489,19 @@ impl Gateway {
         if !name_ok(name) {
             return Err("db must be a name of lower-case letters, digits, _ and -, starting with a letter or digit (at most 63)".into());
         }
-        let (root, comps): (PathBuf, [&str; 2]) = match scope {
-            "session" => (self.state.sandbox.root().to_path_buf(), ["projectdb", name]),
-            "project" => (self.workspaces_root()?, ["projects", name]),
+        let (root, comps): (PathBuf, Vec<String>) = match scope {
+            "session" => (
+                self.state.sandbox.root().to_path_buf(),
+                vec!["projectdb".into(), name.into()],
+            ),
+            "project" => {
+                let mut c = self.project_comps();
+                c.push(name.into());
+                (self.workspaces_root()?, c)
+            }
             _ => return Err("scope must be session or project".into()),
         };
+        let comps: Vec<&str> = comps.iter().map(String::as_str).collect();
         let dir = match crate::safefs::Dir::open_beneath(&root, &comps, create) {
             Ok(d) => d.path().to_path_buf(),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -529,7 +562,7 @@ impl Gateway {
         if !had && side.conflict.is_some() {
             let _ = write_sidecar(db, side);
         }
-        match withheld(&self.state.settings(), side) {
+        match self.withheld_here(side) {
             Some(why) => Err(format!(
                 "this project database is now withheld: {why}. Ask the person whether to delete it (action delete) and build it again"
             )),
@@ -610,7 +643,6 @@ impl Gateway {
     }
 
     fn list_dbs(&self) -> Vec<Value> {
-        let settings = self.state.settings();
         let mut out = Vec::new();
         let roots: Vec<(String, Option<PathBuf>)> = vec![
             (
@@ -619,7 +651,9 @@ impl Gateway {
             ),
             (
                 "project".into(),
-                self.workspaces_root().ok().map(|r| r.join("projects")),
+                self.workspaces_root()
+                    .ok()
+                    .map(|r| self.project_comps().iter().fold(r, |p, c| p.join(c))),
             ),
         ];
         for (scope, dir) in roots {
@@ -647,7 +681,7 @@ impl Gateway {
                     "labels": side.as_ref().map(|s| s.labels.clone()),
                     "description": side.as_ref().and_then(|s| s.description.clone()),
                     "withheld": match &side {
-                        Some(s) => withheld(&settings, s),
+                        Some(s) => self.withheld_here(s),
                         None if db.file.exists() => Some("its file is there without Columbus's record of what it holds".to_string()),
                         None => None,
                     },
@@ -791,7 +825,7 @@ impl Gateway {
                 "the project database's record names another database; it is not used",
             ));
         }
-        if let Some(why) = withheld(&self.state.settings(), &side) {
+        if let Some(why) = self.withheld_here(&side) {
             return Err(self.deny(
                 &ctx,
                 rec,

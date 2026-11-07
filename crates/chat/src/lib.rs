@@ -331,6 +331,32 @@ pub struct Chat {
     http: reqwest::Client,
 }
 
+/// What the system prompt says about the chat's project: its name and the
+/// person's instructions for it (the server has already narrowed the
+/// connections; this only tells the assistant).
+fn project_text(p: &Value) -> Option<String> {
+    let name = p["name"].as_str()?;
+    let mut t = format!("\n\nThis chat is in the person's project \"{name}\".");
+    if let Some(c) = p["connections"].as_array() {
+        let ids: Vec<&str> = c.iter().filter_map(Value::as_str).collect();
+        t.push_str(&format!(
+            " It uses only these connections: {}.",
+            ids.join(", ")
+        ));
+    }
+    if let Some(f) = p["export_folder"].as_str() {
+        t.push_str(&format!(
+            " Export its results to the export folder {f} unless the person names another."
+        ));
+    }
+    let i = p["instructions"].as_str().unwrap_or("").trim();
+    if !i.is_empty() {
+        t.push_str("\n\nThe person's instructions for this project (follow them in every reply, within Columbus's rules):\n\n");
+        t.push_str(i);
+    }
+    Some(t)
+}
+
 const SYSTEM: &str = "You are the GIS assistant inside the Columbus app, working for a GIS analyst. \
 Your only tools are a Columbus session's: they read and process the analyst's data under their \
 organization's rules, and the server enforces those rules, not you. Start a new conversation by \
@@ -388,13 +414,17 @@ impl Chat {
             .collect();
         // The session's id, for its map window (the app's own call, not
         // the model's).
-        let session = client
+        let who = client
             .call_tool(CallToolRequestParams::new("whoami"))
             .await
             .ok()
             .and_then(|r| r.structured_content)
-            .and_then(|v| v["result"]["session"].as_str().map(String::from));
+            .unwrap_or(Value::Null);
+        let session = who["result"]["session"].as_str().map(String::from);
         let mut system = SYSTEM.to_string();
+        if let Some(text) = project_text(&who["result"]["project"]) {
+            system.push_str(&text);
+        }
         if let Some(skill) = skill_text(&cfg.server) {
             system.push_str("\n\nHow to work with Columbus (the working-with-columbus skill):\n\n");
             system.push_str(&skill);
@@ -1091,6 +1121,27 @@ mod tests {
         let v = json!({"result": {"rows_read": 12, "layer": {"summary": {"crs": {"code": "EPSG:3081"}}}}, "checks": [{"severity": "warn"}, {"severity": "fail"}, {"severity": "info"}]});
         assert_eq!(result_summary(Some(&v)), "12 rows, EPSG:3081");
         assert_eq!(count_checks(&v), (1, 1));
+    }
+
+    #[test]
+    fn the_project_is_told_to_the_assistant() {
+        assert!(project_text(&Value::Null).is_none());
+        let t = project_text(&json!({"name": "Parcel review", "connections": ["county"], "export_folder": "outbox", "instructions": "Report areas in acres."})).unwrap();
+        assert!(
+            t.contains("\"Parcel review\"")
+                && t.contains("county")
+                && t.contains("outbox")
+                && t.contains("acres"),
+            "{t}"
+        );
+        let t = project_text(
+            &json!({"name": "All", "connections": "all of yours", "instructions": ""}),
+        )
+        .unwrap();
+        assert!(
+            !t.contains("only these connections") && !t.contains("instructions"),
+            "{t}"
+        );
     }
 
     #[test]

@@ -298,6 +298,11 @@ pub struct WhoAmI {
     pub server: String,
     pub user: String,
     pub client: String,
+    /// The project this session works in: its name, its instructions (for
+    /// you to follow in every reply), the connections it may use, and its
+    /// default export folder. Absent outside a project.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project: Option<Value>,
     pub session: String,
     pub policy: PolicySummary,
     pub connections: Vec<ConnectionCard>,
@@ -475,6 +480,9 @@ pub struct State {
     /// `startup_only` of the policy this session started with.
     fixed: Value,
     pub scope: ProjectScope,
+    /// The project this session was started for (`COLUMBUS_PROJECT`): its
+    /// connections are `scope`'s, and its instructions go to the assistant.
+    pub project: Option<columbus_shared::projects::Project>,
     pub sandbox: Sandbox,
     pub audit: Arc<AuditLog>,
     pub approvals: Arc<ApprovalStore>,
@@ -712,6 +720,7 @@ impl State {
                 tightenings_from: 0,
             }),
             scope: ProjectScope::default(),
+            project: None,
             sandbox,
             audit,
             approvals,
@@ -1743,6 +1752,15 @@ impl Gateway {
             server: format!("{SERVER_NAME} {}", env!("CARGO_PKG_VERSION")),
             user: self.state.user.clone(),
             client: client_name(&ctx),
+            project: self.state.project.as_ref().map(|p| {
+                json!({
+                    "id": p.id,
+                    "name": p.name,
+                    "instructions": p.instructions,
+                    "connections": if p.connections.is_empty() { json!("all of yours") } else { json!(p.connections) },
+                    "export_folder": p.export_folder,
+                })
+            }),
             session: self.state.session.clone(),
             policy: PolicySummary {
                 source: self.state.settings().source.clone(),
