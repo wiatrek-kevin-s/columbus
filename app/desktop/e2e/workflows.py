@@ -90,7 +90,8 @@ def click(d, how, what):
 
 
 def text(d, eid):
-    return d.execute_script("return document.getElementById(arguments[0]).textContent", eid)
+    # "" while the page is still drawing (a page is rendered after the hash changes).
+    return d.execute_script("const e = document.getElementById(arguments[0]); return e ? e.textContent : ''", eid)
 
 
 def main():
