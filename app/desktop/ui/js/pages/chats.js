@@ -909,6 +909,14 @@ export function liveHost() {
 
 export async function render(main, rest) {
   const [kind, id] = rest;
+  // "fresh": a New chat button anywhere. It always starts a new chat; "new"
+  // is the app's current chat (where "Answer in the chat" goes).
+  if (kind === "fresh") {
+    history.replaceState(null, "", "#/chats/new");
+    const r = await showLive(main);
+    if (live.started || live.chatId || live.log.childElementCount) await newChat();
+    return r;
+  }
   if (kind === "new" || (kind === "c" && id && id === live.chatId)) return showLive(main);
   if (kind === "c" && id) return showSaved(main, id);
   if (kind === "s" && id) return showSession(main, id);
@@ -953,7 +961,7 @@ async function showSaved(main, id) {
   });
   const mapBtn = button("Map", "sm sheet-only", () => view.classList.add("sheet-open"));
   const head = h("header", { class: "chathead" }, h("div", { class: "titlebox" }, title, sub), h("div", { class: "actions" }, seg, mapBtn, rename, del));
-  const ended = h("div", { class: "ended" }, "This chat has ended. Its conversation is kept here; Columbus cannot continue it.", button("New chat", "sm primary", () => { location.hash = "#/chats/new"; }));
+  const ended = h("div", { class: "ended" }, "This chat has ended. Its conversation is kept here; Columbus cannot continue it.", button("New chat", "sm primary", () => { location.hash = "#/chats/fresh"; }));
   const logEl = h("div", { id: "saved-log", class: "log", role: "log", "aria-label": "Saved conversation" });
   const col = h("section", { class: "chatcol", "aria-label": "Saved chat" }, head, logEl);
   view.append(col, panel.el);
@@ -1029,7 +1037,7 @@ async function showSession(main, session) {
 function showIndex(main) {
   const search = h("input", { type: "search", placeholder: "Search titles and content", "aria-label": "Search chats", class: "grow" });
   const head = pageHead("Chats", "Your chats in the app, and sessions other AI apps run on this computer. Projects come later: every chat is Unfiled for now.",
-    [button("New chat", "primary", () => { location.hash = "#/chats/new"; })]);
+    [button("New chat", "primary", () => { location.hash = "#/chats/fresh"; })]);
   const list = h("div", { class: "stack" });
   const body = h("div", { class: "scroll" }, h("div", { class: "pad stack" }, h("div", { class: "row" }, search), list));
   main.append(h("div", { class: "page" }, head, body));

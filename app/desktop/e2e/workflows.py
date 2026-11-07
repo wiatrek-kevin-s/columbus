@@ -156,16 +156,22 @@ def main():
         assert "exported to the outbox folder" in report, report
         assert any(p.name.startswith("tract-export-tracts-") for p in (root / "outbox").iterdir()), list((root / "outbox").iterdir())
         d.save_screenshot(str(OUT / "workflows-run.png"))
-        wait.until(lambda drv: "Last run" in text(drv, "wf-installed"))
+        # The report is its own page; the workflow's page lists the run.
+        click(d, By.ID, "wf-back")
+        wait.until(lambda drv: drv.find_elements(By.XPATH, "//ul[@id='wf-run-list']/li"))
+        assert "Started by you" in text(d, "wf-run-list")
+        d.execute_script("location.hash = '#/workflows'")
+        wait.until(lambda drv: "last run" in text(drv, "wf-installed"))
 
         # The other is declined.
         click(d, By.XPATH, "//ul[@id='wf-waiting']/li[.//b[text()='Tract copy']]//button[normalize-space()='Decline']")
         wait.until(lambda drv: "Tract copy" not in text(drv, "wf-waiting"))
         assert not (root / "workflows" / "proposals" / "tract-copy").exists()
 
-        # Removing it: off, its runs kept.
-        click(d, By.XPATH, "//ul[@id='wf-installed']/li[@data-id='tract-export']//button[normalize-space()='Remove']")
-        wait.until(lambda drv: "Tract export" not in text(drv, "wf-installed"))
+        # Removing it, from its own page: off, its runs kept.
+        click(d, By.XPATH, "//ul[@id='wf-installed']/li[@data-id='tract-export']//a")
+        click(d, By.ID, "wf-remove")
+        wait.until(lambda drv: drv.find_elements(By.ID, "wf-installed") and "Tract export" not in text(drv, "wf-installed"))
         assert "tract-export" not in (root / "workflows" / "approved.yaml").read_text()
         assert list((root / "workflows" / "runs" / "tract-export").iterdir()), "runs are kept"
         print("desktop workflows e2e: ok")

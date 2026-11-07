@@ -399,6 +399,9 @@ pub(crate) fn read_key() -> Option<String> {
 #[derive(Serialize)]
 pub struct SettingsView {
     has_key: bool,
+    /// The saved key's last four characters, so the person can tell which
+    /// key it is; the key itself never reaches the window.
+    key_hint: Option<String>,
     model: String,
     models: Vec<(String, String)>,
     effort: String,
@@ -459,12 +462,24 @@ pub async fn chat_settings(
     let info = tauri::async_runtime::spawn_blocking(move || server_info(&s2))
         .await
         .map_err(|e| e.to_string())?;
-    let has_key =
-        tauri::async_runtime::spawn_blocking(|| read_key().is_some_and(|k| !k.is_empty()))
-            .await
-            .unwrap_or(false);
+    let key_hint = tauri::async_runtime::spawn_blocking(|| {
+        read_key().filter(|k| !k.is_empty()).map(|k| {
+            let tail: String = k
+                .chars()
+                .rev()
+                .take(4)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            tail
+        })
+    })
+    .await
+    .unwrap_or(None);
     Ok(SettingsView {
-        has_key,
+        has_key: key_hint.is_some(),
+        key_hint,
         model: s.model(),
         models: MODELS
             .iter()

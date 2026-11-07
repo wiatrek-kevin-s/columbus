@@ -116,7 +116,7 @@ def main():
     d = webdriver.Remote("http://127.0.0.1:4444", options=opts)
     try:
         wait = WebDriverWait(d, 60)
-        wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "a.btn.primary[href='#/chats/new']"))).click()
+        wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "a.btn.primary[href='#/chats/fresh']"))).click()
         box = wait.until(EC.visibility_of_element_located((By.ID, "text")))
         # With a key and the server found, the chat says nothing about setup.
         wait.until(lambda drv: drv.execute_script("return document.querySelector('.chat-empty') !== null"))
@@ -217,8 +217,10 @@ def main():
         assert kinds[0] == "meta" and "you" in kinds and "approval" in kinds and "answer" in kinds, kinds
         assert not any("sk-ant" in json.dumps(x) for x in lines), "the key is never in a transcript"
         # A new chat ends this one; the saved one reads back, and cannot be continued.
-        d.execute_script("location.hash = '#/chats/new'")
-        WebDriverWait(d, 10).until(EC.element_to_be_clickable((By.ID, "new"))).click()
+        # From the Chats page, as the person found: New chat is a new chat,
+        # never the one they had open.
+        d.execute_script("location.hash = '#/chats'")
+        WebDriverWait(d, 10).until(EC.element_to_be_clickable((By.XPATH, "//header[contains(@class,'pagehead')]//button[normalize-space()='New chat']"))).click()
         try:
             WebDriverWait(d, 30).until(lambda drv: drv.execute_script("return document.getElementById('chat-title').textContent") == "New chat")
         except Exception:

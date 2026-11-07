@@ -84,8 +84,10 @@ function drawRail(r = route()) {
   const rail = $("rail");
   const pending = chats.otherInbox().reduce((n, s) => n + (s.pending || []).length, 0) + chats.waitingCount();
   const toolsWaiting = store.tools ? store.tools.waiting.length : 0;
+  // Workflows waiting for your approval (new ones, and changed ones).
+  const wfWaiting = store.workflows ? store.workflows.waiting.length : 0;
   // Redrawn only when something it shows changed, keeping the focus.
-  const key = JSON.stringify([location.hash, r.page, r.rest, pending, toolsWaiting, store.info && store.info.policy.source,
+  const key = JSON.stringify([location.hash, r.page, r.rest, pending, toolsWaiting, wfWaiting, store.info && store.info.policy.source,
     r.page === "chats" ? chats.recent(5).map((c) => [c.href, c.title]) : 0]);
   if (key === railKey) return;
   railKey = key;
@@ -94,7 +96,7 @@ function drawRail(r = route()) {
   for (const [head, items] of RAIL) {
     nav.append(head ? h("div", { class: "navhead", "aria-hidden": "true" }, head) : h("div", { class: "navgap" }));
     for (const [key, label] of items) {
-      const n = key === "activity" ? pending : key === "tools" ? toolsWaiting : 0;
+      const n = key === "activity" ? pending : key === "tools" ? toolsWaiting : key === "workflows" ? wfWaiting : 0;
       const a = h("a", { href: `#/${key}`, title: label, "aria-label": n ? `${label}, ${n} waiting` : label },
         icon(key), h("span", { class: "label" }, label), count(n));
       if (r.page === key) a.setAttribute("aria-current", "page");
@@ -321,7 +323,7 @@ async function boot() {
   refreshInbox();
   setInterval(refreshSessions, 4000);
   setInterval(refreshInbox, 5000);
-  setInterval(refreshWorkflows, 60000);
+  setInterval(refreshWorkflows, 15000);
   setInterval(refreshTools, 15000);
   setInterval(refreshInfo, 20000);
   // New proposals or settings changed elsewhere while the app was away.

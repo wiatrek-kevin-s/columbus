@@ -101,8 +101,12 @@ async function ai(body) {
 
   const load = async () => {
     const s = await invoke("chat_settings");
-    keyState.textContent = s.has_key ? "A key is saved." : "No key saved yet.";
-    keyState.className = s.has_key ? "small muted" : "small error-text";
+    keyState.replaceChildren(...(s.has_key
+      ? [h("span", { class: "badge pass" }, "✓ Key saved"), ` A key ending in ${s.key_hint || "…"} is saved in your computer's credential store. Chats use it; paste a new one to replace it.`]
+      : ["No key saved yet: chats can't use the AI until you save one."]));
+    keyState.className = s.has_key ? "small" : "small error-text";
+    key.placeholder = s.has_key ? `Saved (ends in ${s.key_hint || "…"}); paste a new key to replace it` : "sk-ant-…";
+    $("key-clear").hidden = !s.has_key;
     model.replaceChildren(...s.models.map(([id, label]) => { const o = el("option", null, label); o.value = id; o.selected = id === s.model; return o; }));
     effort.replaceChildren(...s.efforts.map(([id, label]) => { const o = el("option", null, label); o.value = id; o.selected = id === s.effort; return o; }));
     engine.value = s.engine_chosen || "";
@@ -113,9 +117,9 @@ async function ai(body) {
   };
   keyForm.addEventListener("submit", async (ev) => {
     ev.preventDefault();
-    try { await invoke("chat_set_key", { key: key.value }); key.value = ""; await load(); } catch (err) { keyState.textContent = String(err); keyState.className = "small error-text"; }
+    try { await invoke("chat_set_key", { key: key.value }); key.value = ""; await load(); toast("Key saved. New chats will use it."); } catch (err) { keyState.textContent = String(err); keyState.className = "small error-text"; }
   });
-  $("key-clear").addEventListener("click", async () => { await invoke("chat_clear_key"); await load(); });
+  $("key-clear").addEventListener("click", async () => { await invoke("chat_clear_key"); await load(); toast("Key removed."); });
   prefs.addEventListener("submit", async (ev) => {
     ev.preventDefault();
     try {

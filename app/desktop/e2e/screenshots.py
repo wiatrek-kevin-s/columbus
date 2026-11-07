@@ -222,7 +222,7 @@ def main():
         wait.until(lambda drv: drv.execute_script("return !!document.getElementById('page-title')"))
 
         # A chat: the assistant reads the layers and looks at them on a map.
-        wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "a.btn.primary[href='#/chats/new']"))).click()
+        wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "a.btn.primary[href='#/chats/fresh']"))).click()
         box = wait.until(EC.visibility_of_element_located((By.ID, "text")))
         time.sleep(1)
         box.send_keys("Where are the serious crashes on District 14's roads, and do they line up with the road network?")

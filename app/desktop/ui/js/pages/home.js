@@ -9,7 +9,7 @@ export async function render(main) {
   const body = h("div", { class: "pad stack" });
   main.append(h("div", { class: "page" },
     pageHead("Home", "What needs you, across your chats and the AI apps that use Columbus on this computer.",
-      [h("a", { class: "btn primary", href: "#/chats/new" }, "New chat")]),
+      [h("a", { class: "btn primary", href: "#/chats/fresh" }, "New chat")]),
     h("div", { class: "scroll" }, body)));
 
   const [chat, st, notes, engine] = await Promise.all([
