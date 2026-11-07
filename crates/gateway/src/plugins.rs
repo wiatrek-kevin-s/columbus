@@ -1362,10 +1362,12 @@ impl Plugins {
         // On Windows a folder can't be removed while a stopped worker's
         // process is still letting go of it, which takes a moment: retry
         // briefly (the next run also refuses to start on a folder left over).
-        for _ in 0..40 {
+        // A virus scanner can hold a file a little longer: up to about ten
+        // seconds in all, waiting longer between tries.
+        for i in 0..60u64 {
             match std::fs::remove_dir_all(&own) {
                 Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
-                    std::thread::sleep(Duration::from_millis(50))
+                    std::thread::sleep(Duration::from_millis(50 + (i * 5).min(250)))
                 }
                 _ => return,
             }
