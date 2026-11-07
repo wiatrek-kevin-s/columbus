@@ -45,6 +45,16 @@ parcels = gpd.GeoDataFrame(
 parcels.to_file(os.path.join(root, "shp", "parcels.shp"), engine="pyogrio")
 gpd.GeoDataFrame({"ROAD": ["R1"]}, geometry=[Point(0, 0)], crs="EPSG:2277").to_file(
     os.path.join(root, "shp", "roads.shp"), engine="pyogrio")
+# A dot in the name: not offered (SQL would read it as a file and a layer).
+parcels.to_file(os.path.join(root, "shp", "parcels.2024.shp"), engine="pyogrio")
+# A Date field, which GDAL's SQLite dialect compares as text YYYY/MM/DD.
+import numpy as np, shapely
+from pyogrio.raw import write
+os.makedirs(os.path.join(root, "dated"))
+write(os.path.join(root, "dated", "visits.shp"),
+      geometry=np.array([shapely.to_wkb(Point(0, 0)), shapely.to_wkb(Point(1, 1))], dtype=object),
+      field_data=[np.array(["2024-01-02", "2024-05-06"], dtype="datetime64[D]")], fields=["SEEN"],
+      geometry_type="Point", crs="EPSG:2277", driver="ESRI Shapefile")
 gdb = os.path.join(root, "county.gdb")
 parcels.to_file(gdb, layer="parcels", driver="OpenFileGDB", engine="pyogrio")
 gpd.GeoDataFrame({"ROAD": ["R1"]}, geometry=[Point(0, 0)], crs="EPSG:2277").to_file(
@@ -70,6 +80,22 @@ gpd.GeoDataFrame({"ROAD": ["R1"]}, geometry=[Point(0, 0)], crs="EPSG:2277").to_f
         format!(
             "id: gdb\ntype: filegdb\npath: {}\ndatasets:\n  allow: [\"*\"]\n",
             q(root.join("county.gdb"))
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("connections/dated.yaml"),
+        format!(
+            "id: dated\ntype: shapefile\npath: {}\ndatasets:\n  allow: [\"*\"]\nrow_filter: \"SEEN >= '2024-03-01'\"\n",
+            q(root.join("dated"))
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("connections/dated-open.yaml"),
+        format!(
+            "id: dated-open\ntype: shapefile\npath: {}\ndatasets:\n  allow: [\"*\"]\n",
+            q(root.join("dated"))
         ),
     )
     .unwrap();
@@ -212,6 +238,29 @@ async fn shapefiles_and_file_geodatabases_read_under_the_rules() {
         d["result"]["extent"].is_null(),
         "a filtered dataset's stored extent: {d}"
     );
+
+    // A row filter on a shapefile date is refused: it would compare text
+    // "2024/01/02" with "2024-03-01" and keep both rows.
+    let r = call(
+        &c,
+        "query_features",
+        json!({"connection": "dated", "dataset": "visits"}),
+    )
+    .await;
+    assert_eq!(r.is_error, Some(true), "{:?}", r.content);
+    assert!(
+        format!("{:?}", r.content).contains("date"),
+        "{:?}",
+        r.content
+    );
+    // Without a filter it reads, and describe_dataset warns.
+    let d = ok(&call(
+        &c,
+        "describe_dataset",
+        json!({"connection": "dated-open", "dataset": "visits"}),
+    )
+    .await);
+    assert!(d.to_string().contains("fields.text_dates"), "{d}");
 
     // Read only, whatever the policy allows.
     let r = call(

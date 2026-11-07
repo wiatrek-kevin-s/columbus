@@ -659,14 +659,31 @@ fn bind_filter(
     columns: Option<&[String]>,
     catalog: &Catalog,
 ) -> Result<String, Denied> {
+    bind_filter_dates(checked, dialect, alias, columns, catalog, &[])
+}
+
+/// As [`bind_filter`], refusing a filter that names one of `text_dates`
+/// (lower case): dates that compare as text in another form.
+fn bind_filter_dates(
+    checked: &str,
+    dialect: SqlDialect,
+    alias: &str,
+    columns: Option<&[String]>,
+    catalog: &Catalog,
+    text_dates: &[String],
+) -> Result<String, Denied> {
     let mut expr = parse_expr(checked, dialect)?;
     let mut missing: Option<String> = None;
     let mut bare_value: Option<String> = None;
+    let mut text_date: Option<String> = None;
     let mut note = |i: &Ident| {
         if let Some(cols) = columns {
             if missing.is_none() && !cols.iter().any(|c| c.eq_ignore_ascii_case(&i.value)) {
                 missing = Some(i.value.clone());
             }
+        }
+        if text_date.is_none() && text_dates.iter().any(|d| d.eq_ignore_ascii_case(&i.value)) {
+            text_date = Some(i.value.clone());
         }
     };
     let _ = visit_expressions_mut(&mut expr, |e| {
@@ -704,6 +721,11 @@ fn bind_filter(
     if let Some(m) = missing {
         return Err(Denied::Query(format!(
             "it names {m}, which the table does not have"
+        )));
+    }
+    if let Some(d) = text_date {
+        return Err(Denied::Query(format!(
+            "it names {d}, a date this source reads as text (YYYY/MM/DD), so the filter could keep rows it means to drop"
         )));
     }
     Ok(expr.to_string())
@@ -1145,6 +1167,11 @@ pub struct Catalog {
     /// Functions installed by the PostGIS extensions, by upper-case name,
     /// with the schema they live in.
     pub extension_functions: std::collections::BTreeMap<String, String>,
+    /// Columns that hold dates but compare as text in another form
+    /// (a shapefile's dates are "YYYY/MM/DD" in GDAL's SQLite dialect), as
+    /// (relation's parts joined by ".", column), both in lower case: a row
+    /// filter naming one could keep rows it means to drop, so it is refused.
+    pub text_dates: std::collections::BTreeSet<(String, String)>,
 }
 
 /// No catalog: table names are taken as written. For unit tests and
@@ -1153,6 +1180,7 @@ pub static NO_CATALOG: Catalog = Catalog {
     resolve: false,
     relations: Vec::new(),
     extension_functions: std::collections::BTreeMap::new(),
+    text_dates: std::collections::BTreeSet::new(),
 };
 
 /// Does a name part as the query writes it denote `listed`, by the
@@ -1414,9 +1442,27 @@ impl VisitorMut for ApplyFilters<'_> {
                 return ControlFlow::Break(());
             }
             let columns = rel.map(|r| r.columns.as_slice());
-            match check_where(f, self.dialect)
-                .and_then(|c| bind_filter(&c, self.dialect, FILTER_ALIAS, columns, self.catalog))
-            {
+            let text_dates: Vec<String> = rel
+                .map(|r| {
+                    let rk = r.parts.join(".").to_lowercase();
+                    self.catalog
+                        .text_dates
+                        .iter()
+                        .filter(|(t, _)| *t == rk)
+                        .map(|(_, c)| c.clone())
+                        .collect()
+                })
+                .unwrap_or_default();
+            match check_where(f, self.dialect).and_then(|c| {
+                bind_filter_dates(
+                    &c,
+                    self.dialect,
+                    FILTER_ALIAS,
+                    columns,
+                    self.catalog,
+                    &text_dates,
+                )
+            }) {
                 Ok(c) => checked.push(format!("({c})")),
                 Err(e) => {
                     self.error = Some(Denied::Query(format!(
@@ -1669,6 +1715,7 @@ datasets:
             resolve: true,
             relations,
             extension_functions,
+            text_dates: Default::default(),
         }
     }
 
@@ -1722,6 +1769,7 @@ datasets:
                 one_part("Owners"),
             ],
             extension_functions: Default::default(),
+            text_dates: Default::default(),
         };
         for (kind, q) in [
             ("gpkg", ('"', '"')),
@@ -2650,6 +2698,7 @@ mod filter_binding_tests {
                 columns: columns.iter().map(|c| c.to_string()).collect(),
             }],
             extension_functions: Default::default(),
+            text_dates: Default::default(),
         }
     }
 

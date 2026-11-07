@@ -1554,6 +1554,13 @@ def describe_dataset(params: dict[str, Any]) -> dict[str, Any]:
             f"Column {u['column']} is {u['type']}, a geometry type Columbus cannot read here: its values come back as a placeholder, not shapes",
             detail={"column": u["column"], "type": u["type"]},
             fix="Read this layer through ArcGIS (the ArcPy worker, when available), or ask the DBA for a view or copy with SDO_GEOMETRY; the Esri ST_ functions are database code and are not called"))
+    dates = [d for d in entry.pop("text_dates", None) or [] if d in visible]
+    if dates:
+        checks.append(g.check(
+            "fields.text_dates", "warn",
+            f"In this shapefile, {', '.join(dates)} {'is a date' if len(dates) == 1 else 'are dates'} that SQL reads as text YYYY/MM/DD, so comparing with '2024-03-01' or using date functions gives wrong answers",
+            detail={"fields": dates},
+            fix="Compare with the same form ('2024/03/01'), or read the rows with query_features and filter them in vector_op; a row filter on these fields is refused"))
     entry.update({"rows": rows, "crs": g.crs_facts(crs), "checks": checks})
     return entry
 

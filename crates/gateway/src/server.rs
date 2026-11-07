@@ -1472,10 +1472,32 @@ impl Gateway {
                     .collect()
             })
             .unwrap_or_default();
+        // Shapefile dates that SQL compares as text (columbus_esri).
+        let text_dates = reply
+            .get("datasets")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .flat_map(|d| {
+                let name = d
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_lowercase();
+                d.get("text_dates")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .map(move |c| (name.clone(), c.to_lowercase()))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
         let cat = Catalog {
             resolve: true,
             relations,
             extension_functions,
+            text_dates,
         };
         self.state
             .columns

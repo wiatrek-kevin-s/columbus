@@ -7,10 +7,18 @@ datasets. Both are read only.
 
 SQL arrives checked and rewritten by the gateway in the SQLite dialect, as
 for a GeoPackage, and runs in GDAL's SQLite dialect: real SQLite over the
-layers, which never writes to them. The gateway resolves every table to a
-dataset this module listed, so a query can't name another file (GDAL's
-SQLite dialect would otherwise open ``"other.shp"."layer"`` by path), and
-its function allowlist keeps out GDAL's own functions (``ogr_*``).
+layers, which never writes to them. GDAL's SQLite dialect opens any file a
+query names as ``"path"."layer"`` (or ``a.b``), so the one barrier is the
+gateway: it resolves every table to a single-part dataset name this module
+listed, and its function allowlist keeps out GDAL's own (``ogr_*``) and
+SpatiaLite's spatial functions. So no layer whose name holds a dot is
+listed: ``roads.v2`` would read layer ``v2`` of a file ``roads``.
+
+Only the expected driver may open a connection (ESRI Shapefile, or
+OpenFileGDB for a geodatabase), a ``.shp`` must start with a shapefile's
+own bytes (GDAL picks a driver by content, and VRT XML can read any file),
+and no file of a layer may be a link leading out of the connection's
+folder.
 
 Geometry comes back as EWKB with the layer's EPSG code, as from PostGIS.
 """
@@ -24,10 +32,20 @@ import columbus_worker as w
 
 ESRI_KINDS = w.ESRI_KINDS
 
-# GDAL's SQLite dialect may otherwise open other files a query names; the
-# gateway already refuses any table it didn't list, and this says the same
-# to GDAL.
+# Extra caution only (it's GDAL's default, and gates functions such as
+# gdal_get_pixel_value): it does not stop the SQLite dialect opening a file
+# a query names. The gateway's table checks do that.
 _OPEN_OPTIONS = {"OGR_SQLITE_ALLOW_EXTERNAL_ACCESS": "NO"}
+
+# The drivers each kind may be opened with.
+_DRIVERS = {"shapefile": {"ESRI Shapefile"}, "filegdb": {"OpenFileGDB", "FileGDB"}}
+
+# A shapefile's file code (big-endian 9994), its first four bytes.
+_SHP_MAGIC = b"\x00\x00\x27\x0a"
+
+# OGR field types that GDAL's SQLite dialect hands over as text
+# "YYYY/MM/DD": they don't compare as dates.
+_TEXT_DATE_TYPES = {"OFTDate", "OFTDateTime", "OFTTime"}
 
 
 def _pyogrio():
@@ -39,6 +57,11 @@ def _pyogrio():
     return pyogrio
 
 
+def _inside(root_real: str, p: str) -> bool:
+    real = os.path.realpath(p)
+    return real == root_real or real.startswith(root_real.rstrip(os.sep) + os.sep)
+
+
 def _path(conn: dict[str, Any]) -> str:
     path = conn.get("path")
     if not isinstance(path, str) or not path:
@@ -47,9 +70,51 @@ def _path(conn: dict[str, Any]) -> str:
     if kind == "filegdb":
         if not (os.path.isdir(path) and path.rstrip("/\\").lower().endswith(".gdb")):
             raise w.WorkerError(w.INVALID_PARAMS, f"{path} is not a file geodatabase (a folder ending in .gdb)")
-    elif not (os.path.isdir(path) or (os.path.isfile(path) and path.lower().endswith(".shp"))):
+        root = os.path.realpath(path)
+        # Every file of the geodatabase is its own, not a link out of it.
+        for entry in os.scandir(path):
+            if not _inside(root, entry.path):
+                raise w.WorkerError(w.INVALID_PARAMS, f"{entry.name} in {path} leads outside the geodatabase; Columbus won't read it")
+    elif os.path.isdir(path):
+        pass
+    elif os.path.isfile(path) and path.lower().endswith(".shp"):
+        _check_shp(path, os.path.realpath(os.path.dirname(path)))
+    else:
         raise w.WorkerError(w.INVALID_PARAMS, f"{path} is not a folder of shapefiles or a .shp file")
     return path
+
+
+def _check_shp(shp: str, root_real: str) -> None:
+    """A real shapefile: its own bytes, and its parts inside the folder."""
+    base = shp[:-4]
+    for ext in (".shp", ".shx", ".dbf", ".prj", ".cpg", ".SHP", ".SHX", ".DBF", ".PRJ", ".CPG"):
+        part = base + ext
+        if os.path.lexists(part) and not _inside(root_real, part):
+            raise w.WorkerError(w.INVALID_PARAMS, f"{os.path.basename(part)} leads outside the connection's folder; Columbus won't read it")
+    try:
+        with open(shp, "rb") as f:
+            head = f.read(4)
+    except OSError as e:
+        raise w.WorkerError(w.ENGINE_ERROR, f"cannot read {shp}: {e}") from None
+    if head != _SHP_MAGIC:
+        raise w.WorkerError(w.INVALID_PARAMS, f"{os.path.basename(shp)} is not a shapefile (its content isn't one)")
+
+
+def _layer_ok(kind: str, path: str, name: str, info: dict[str, Any]) -> str | None:
+    """Why a layer can't be offered, or None."""
+    if "." in name:
+        return "its name has a dot, which SQL would read as a file and a layer; rename it without dots"
+    if info.get("driver") not in _DRIVERS[kind]:
+        return f"GDAL opened it as {info.get('driver')!r}, not as the {kind} it should be"
+    if kind == "shapefile" and os.path.isdir(path):
+        shp = next((os.path.join(path, n) for n in (name + ".shp", name + ".SHP") if os.path.exists(os.path.join(path, n))), None)
+        if shp is None:
+            return "its .shp file isn't directly in the folder"
+        try:
+            _check_shp(shp, os.path.realpath(path))
+        except w.WorkerError as e:
+            return str(e)
+    return None
 
 
 def _crs(crs: str | None):
@@ -74,6 +139,7 @@ def _crs(crs: str | None):
 def esri_list(conn: dict[str, Any], timeout_s: float, only: str | None = None) -> list[dict[str, Any]]:
     pyogrio = _pyogrio()
     path = _path(conn)
+    kind = conn["kind"].lower()
     try:
         layers = pyogrio.list_layers(path)
     except Exception as e:  # noqa: BLE001
@@ -85,15 +151,28 @@ def esri_list(conn: dict[str, Any], timeout_s: float, only: str | None = None) -
             continue
         try:
             info = pyogrio.read_info(path, layer=name)
-        except Exception as e:  # noqa: BLE001
-            out.append({"name": name, "type": "table", "fields": [], "problem": str(e)})
+        except Exception:  # noqa: BLE001
+            continue  # unreadable: not offered
+        if _layer_ok(kind, path, name, info) is not None:
+            # Not offered at all: the gateway would otherwise put the name
+            # into SQL.
             continue
-        fields = [{"name": str(f), "type": str(t)} for f, t in zip(info["fields"], info["dtypes"])]
+        types = list(info.get("ogr_types") or [])
+        fields = []
+        text_dates = []
+        for i, (f, t) in enumerate(zip(info["fields"], info["dtypes"])):
+            fields.append({"name": str(f), "type": str(t)})
+            if kind == "shapefile" and i < len(types) and types[i] in _TEXT_DATE_TYPES:
+                text_dates.append(str(f))
         fid = info.get("fid_column") or ""
         if fid:
             # A geodatabase's OBJECTID: readable by name in the SQLite dialect.
             fields.insert(0, {"name": fid, "type": "int64", "not_null": True, "pk": True})
         entry: dict[str, Any] = {"name": name, "type": "table", "fields": fields}
+        if text_dates:
+            # Compared as text YYYY/MM/DD: the gateway refuses row filters
+            # on them, and describe_dataset warns.
+            entry["text_dates"] = text_dates
         if info.get("geometry_type"):
             # The SQLite dialect names a shapefile's geometry GEOMETRY.
             col = info.get("geometry_name") or "GEOMETRY"
@@ -119,8 +198,12 @@ def _value(v: Any) -> Any:
             v = v.item()
         except (ValueError, TypeError):
             pass
+        if v is None:  # NaT: a null date
+            return None
     if isinstance(v, float) and v != v:  # NaN: a null number
         return None
+    if hasattr(v, "isoformat"):  # date, datetime, time
+        return v.isoformat()
     if isinstance(v, (bytes, bytearray, memoryview)):
         return bytes(v)
     if isinstance(v, (int, float, str, bool)):
@@ -144,6 +227,12 @@ def esri_fetch(conn: dict[str, Any], sql: str, max_rows: int, timeout_s: float, 
     geometry formats by column), as the other engines' fetches."""
     pyogrio = _pyogrio()
     path = _path(conn)
+    try:
+        driver = pyogrio.read_info(path).get("driver")
+    except Exception as e:  # noqa: BLE001
+        raise w.WorkerError(w.ENGINE_ERROR, f"cannot open {path}: {e}") from None
+    if driver not in _DRIVERS[conn["kind"].lower()]:
+        raise w.WorkerError(w.INVALID_PARAMS, f"GDAL opened {path} as {driver!r}, not as a {conn['kind']}")
     collect = sink is None
     sink = w._Collect() if sink is None else sink
     try:
@@ -189,8 +278,10 @@ def _fetch_arrow(pyogrio, path, sql, max_rows, keep_factory, sink):
     with pyogrio.raw.open_arrow(path, sql=sql, sql_dialect="SQLITE", batch_size=w.FETCH_CHUNK, use_pyarrow=True) as (meta, reader):
         geom_name = meta.get("geometry_name") or "wkb_geometry"
         srid, _ = _crs(meta.get("crs"))
-        names = [n for n in reader.schema.names if n != geom_name]
-        has_geom = geom_name in reader.schema.names
+        # A geometry only where GDAL says the result has one (a field may
+        # be called wkb_geometry).
+        has_geom = bool(meta.get("geometry_type")) and geom_name in reader.schema.names
+        names = [n for n in reader.schema.names if not (has_geom and n == geom_name)]
         label = _GeomName(geom_name if meta.get("geometry_name") else "GEOMETRY")
         columns = names + ([label] if has_geom else [])
         st = _Starter(sink, columns, keep_factory)

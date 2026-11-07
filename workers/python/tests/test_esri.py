@@ -108,6 +108,52 @@ class EsriTests(unittest.TestCase):
         one = self.e.esri_list({"kind": "shapefile", "path": os.path.join(self.shp, "parcels.shp")}, 30)
         self.assertEqual([e["name"] for e in one], ["parcels"])
 
+    def test_what_isnt_offered(self):
+        root = tempfile.mkdtemp(dir=self.dir.name)
+        g = gpd.GeoDataFrame({"N": [1]}, geometry=[Point(0, 0)], crs="EPSG:2277")
+        g.to_file(os.path.join(root, "good.shp"), engine="pyogrio")
+        # A dot in the name: SQL would read roads.v2 as file roads, layer v2.
+        g.to_file(os.path.join(root, "roads.v2.shp"), engine="pyogrio")
+        names = [e["name"] for e in self.e.esri_list({"kind": "shapefile", "path": root}, 30)]
+        self.assertEqual(names, ["good"])
+        # A .shp that is really VRT XML (GDAL picks a driver by content).
+        vrt = os.path.join(root, "looks.shp")
+        with open(vrt, "w") as f:
+            f.write('<OGRVRTDataSource><OGRVRTLayer name="x"><SrcDataSource>/etc/passwd</SrcDataSource></OGRVRTLayer></OGRVRTDataSource>')
+        with self.assertRaises(w.WorkerError):
+            self.e.esri_list({"kind": "shapefile", "path": vrt}, 30)
+        # A folder of CSVs opens with another driver: nothing offered.
+        csvs = tempfile.mkdtemp(dir=self.dir.name)
+        with open(os.path.join(csvs, "t.csv"), "w") as f:
+            f.write("a,b\n1,2\n")
+        self.assertEqual(self.e.esri_list({"kind": "shapefile", "path": csvs}, 30), [])
+        with self.assertRaises(w.WorkerError):
+            self.e.esri_fetch({"kind": "shapefile", "path": csvs}, 'SELECT * FROM "t"', 10, 30)
+        # A shapefile whose .dbf is a link out of the folder.
+        linked = tempfile.mkdtemp(dir=self.dir.name)
+        outside = tempfile.mkdtemp(dir=self.dir.name)
+        g.to_file(os.path.join(outside, "secret.shp"), engine="pyogrio")
+        for ext in (".shp", ".shx"):
+            os.link(os.path.join(outside, "secret" + ext), os.path.join(linked, "secret" + ext))
+        os.symlink(os.path.join(outside, "secret.dbf"), os.path.join(linked, "secret.dbf"))
+        self.assertEqual(self.e.esri_list({"kind": "shapefile", "path": linked}, 30), [])
+        # Dates: as ISO text, a null one as null, and listed as text dates.
+        dated = tempfile.mkdtemp(dir=self.dir.name)
+        import numpy as np
+        import shapely
+        from pyogrio.raw import write
+
+        write(os.path.join(dated, "visits.shp"),
+              geometry=np.array([shapely.to_wkb(Point(0, 0)), shapely.to_wkb(Point(1, 1))], dtype=object),
+              field_data=[np.array(["2024-01-02", "NaT"], dtype="datetime64[D]")], fields=["D"],
+              geometry_type="Point", crs="EPSG:2277", driver="ESRI Shapefile")
+        entry = self.e.esri_list({"kind": "shapefile", "path": dated}, 30)[0]
+        self.assertEqual(entry["text_dates"], ["D"])
+        with mock.patch.dict(sys.modules, {"pyarrow": None}):
+            _, rows, _, _, _ = self.e.esri_fetch({"kind": "shapefile", "path": dated}, 'SELECT "D" FROM "visits"', 10, 30)
+        self.assertEqual(rows[0][0], "2024-01-02")
+        self.assertIsNone(rows[1][0])
+
     def test_dispatch_through_the_worker(self):
         out = w.list_datasets({"connection": {"kind": "filegdb", "path": self.gdb}, "timeout_s": 30})
         self.assertEqual(sorted(e["name"] for e in out["datasets"]), ["parcels", "pts"])
