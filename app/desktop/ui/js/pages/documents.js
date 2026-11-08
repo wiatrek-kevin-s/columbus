@@ -4,6 +4,8 @@
 // longer change the note.
 import { h, el, invoke, button, pageHead, tabs, showError, when, plural, emptyState, coming, toast } from "../core.js";
 
+const go = (hash) => { location.hash = hash; };
+
 export async function render(main, rest) {
   const tab = rest[0] || "notes";
   const page = h("div", { class: "page" });
@@ -13,12 +15,7 @@ export async function render(main, rest) {
   const body = h("div", { class: "pad stack" });
   page.append(h("div", { class: "scroll" }, body));
   if (tab === "pack") return pack(body);
-  if (tab === "proposals") {
-    body.append(coming("documents", "Proposals",
-      "An inbox of suggested changes that do not hold your assistant up: schema drift (a database changed since its note was drafted, with Update note), suggestions your assistant made in a chat (Accept or Dismiss), and entries past their review date.",
-      ["Today, your assistant's note changes are approvals, decided in your AI app or on the browser page (or answered in this app's own chat)."], "Coming in stage 2"));
-    return;
-  }
+  if (tab === "proposals") return proposals(body);
   if (tab === "import") return importView(body);
   return notes(body);
 }
@@ -107,6 +104,11 @@ async function notes(body) {
     } catch (e) { showError(error, e); }
   };
   await load();
+  // Arriving from Proposals with a note to open.
+  let want = null;
+  try { want = sessionStorage.getItem("columbus.note"); sessionStorage.removeItem("columbus.note"); } catch { /* none */ }
+  const n = want && data && data.notes.find((x) => x.path === want);
+  if (n) show(n);
 }
 
 async function pack(body) {
@@ -211,5 +213,114 @@ function importView(body) {
         h("pre", { class: "box", id: "imp-text" }, p.markdown || "(no text found)"),
         h("div", { class: "row wrap" }, add, button("Cancel", "", () => out.replaceChildren())), problem)));
     title.focus();
+  }
+}
+
+// ---- Proposals: what in your notes needs you --------------------------
+// Notes whose database changed since they were drafted (checked through
+// Columbus, under the rules in force), and notes due for review. Nothing
+// here changes your notes or your data until you choose an action.
+function proposals(body) {
+  const err = h("p", { id: "pr-error", class: "error-text", role: "alert", hidden: true });
+  const out = h("div", { id: "pr-results", class: "stack" });
+  const check = button("Check my notes", "primary", run, { id: "pr-check" });
+  body.append(h("section", { class: "card" }, h("div", { class: "bd stack" },
+    h("p", {}, "Finds notes whose database changed since they were drafted (fields added, gone or of another type, or a dataset no longer there), and notes past their review date."),
+    h("p", { class: "small muted" }, "It reads each connection's list of datasets through Columbus, under the rules in force now, like your assistant would; nothing is changed. Suggestions from your assistant in a chat come later; today its note changes are approvals."),
+    h("div", { class: "row" }, check), err)), out);
+  run();
+
+  async function run() {
+    showError(err, null);
+    check.disabled = true;
+    check.textContent = "Checking…";
+    out.replaceChildren(el("p", "muted small", "Checking your notes against your databases…"));
+    let r;
+    try {
+      r = await invoke("notes_check");
+    } catch (e) {
+      out.replaceChildren();
+      showError(err, e);
+      return;
+    } finally {
+      check.disabled = false;
+      check.textContent = "Check my notes";
+    }
+    draw(r);
+  }
+
+  function noteLink(n) {
+    return h("a", { href: "#/documents/notes", title: n.path, onclick: () => { try { sessionStorage.setItem("columbus.note", n.path); } catch { /* none */ } } }, n.title || n.id);
+  }
+
+  function draw(r) {
+    out.replaceChildren();
+    if (!r.notes) { out.append(emptyState("No notes yet", "Draft notes from a connection (Connections › Draft notes), or import a document (the Import tab).")); return; }
+    for (const p of r.problems || []) out.append(h("p", { class: "notice warn small" }, `${p.connection} couldn't be checked: ${p.error}`));
+    const changed = r.changed || [];
+    const sec = h("section", { class: "card", id: "pr-changed" }, h("div", { class: "hd" }, h("h2", {}, `Changed since drafted (${changed.length})`)));
+    const bd = h("div", { class: "bd flush" });
+    sec.append(bd);
+    if (!changed.length) bd.append(h("p", { class: "pad muted small" }, "Every note about a dataset matches what its database has now."));
+    else {
+      const ul = h("ul", { class: "list" });
+      for (const n of changed) {
+        const what = n.gone ? [`${n.dataset} is no longer there, or the connection no longer allows it`]
+          : [n.added?.length ? `new: ${n.added.join(", ")}` : null,
+            n.removed?.length ? `gone or now hidden: ${n.removed.join(", ")}` : null,
+            ...(n.retyped || []).map((t) => `${t.field}: ${t.was} → ${t.now}`)].filter(Boolean);
+        const err2 = h("p", { class: "error-text small", role: "alert", hidden: true });
+        let act;
+        if (n.untouched && !n.gone) {
+          act = button("Draft again", "sm", async () => {
+            act.disabled = true;
+            try {
+              await invoke("settings_draft_notes", { id: n.connection });
+              toast(`Drafted ${n.connection}'s notes again.`);
+              run();
+            } catch (e) { showError(err2, e); act.disabled = false; }
+          }, { title: "No one has edited this draft, so Columbus can simply draft it again from the database" });
+        } else {
+          act = button("Ask my assistant", "sm", () => {
+            try { sessionStorage.setItem("columbus.prefill", JSON.stringify({ text: `My note ${n.id} about ${n.connection}'s ${n.dataset} no longer matches the database (${what.join("; ")}). Look at the dataset and tell me what to change in the note.`, at: Date.now() })); } catch { /* none */ }
+            go("#/chats/fresh");
+          }, { title: n.status === "reviewed" ? "It's reviewed (or edited), so it's yours to update: your assistant can look and tell you what to change" : "It's been edited, so drafting again would leave it alone" });
+        }
+        ul.append(h("li", { class: "tool" }, h("div", { class: "text" },
+          h("b", {}, noteLink(n)),
+          h("span", { class: "where" }, `${n.connection} · ${n.dataset} · ${n.status}${n.untouched ? ", not edited" : ""}`),
+          h("span", { class: "small" }, what.join(" · ")), err2),
+          h("div", { class: "acts" }, act)));
+      }
+      bd.append(ul);
+    }
+    out.append(sec);
+
+    const due = r.due || [];
+    const sec2 = h("section", { class: "card", id: "pr-due" }, h("div", { class: "hd" }, h("h2", {}, `Due for review (${due.length})`)));
+    const bd2 = h("div", { class: "bd flush" });
+    sec2.append(bd2);
+    if (!due.length) bd2.append(h("p", { class: "pad muted small" }, `Every note was confirmed within the last ${plural(r.interval_months, "month")}.`));
+    else {
+      const ul = h("ul", { class: "list" });
+      for (const n of due) {
+        const err2 = h("p", { class: "error-text small", role: "alert", hidden: true });
+        const ok = button("Still right", "sm", async () => {
+          ok.disabled = true;
+          try {
+            const read = await invoke("note_read", { path: n.path });
+            await invoke("note_confirm", { path: n.path, sha256: read.sha256 });
+            toast(`Confirmed ${n.title} as of today.`);
+            run();
+          } catch (e) { showError(err2, e); ok.disabled = false; }
+        }, { title: "You've checked it and it's still right: its last-confirmed date becomes today" });
+        ul.append(h("li", { class: "tool" }, h("div", { class: "text" },
+          h("b", {}, noteLink(n)),
+          h("span", { class: "where" }, `last confirmed ${n.last_confirmed}, ${plural(n.months, "month")} ago · ${n.status}`), err2),
+          h("div", { class: "acts" }, ok)));
+      }
+      bd2.append(ul);
+    }
+    out.append(sec2);
   }
 }

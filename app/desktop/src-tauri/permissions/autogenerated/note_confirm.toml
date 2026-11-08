@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-note-confirm"
+description = "Enables the note_confirm command without any pre-configured scope."
+commands.allow = ["note_confirm"]
+
+[[permission]]
+identifier = "deny-note-confirm"
+description = "Denies the note_confirm command without any pre-configured scope."
+commands.deny = ["note_confirm"]

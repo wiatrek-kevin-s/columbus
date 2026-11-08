@@ -26,6 +26,8 @@ fn main() {
             "registry_query",
             "share_export",
             "doc_preview",
+            "note_confirm",
+            "notes_check",
             "doc_import",
             "share_open",
             "share_import",

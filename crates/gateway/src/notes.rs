@@ -126,7 +126,7 @@ fn with_hash(text: &str) -> String {
 }
 
 /// Whether `path` is a draft Columbus wrote that no one has changed.
-fn untouched_draft(path: &Path) -> bool {
+pub(crate) fn untouched_draft(path: &Path) -> bool {
     let Ok(text) = std::fs::read_to_string(path) else {
         return false;
     };

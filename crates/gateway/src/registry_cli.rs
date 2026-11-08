@@ -95,6 +95,19 @@ async fn call(
     tool: &str,
     args: serde_json::Map<String, Value>,
 ) -> Result<Value, String> {
+    calls(state, vec![(tool.to_string(), args)])
+        .await
+        .pop()
+        .unwrap_or_else(|| Err("no answer".into()))
+}
+
+/// Several read-only calls, in order, through one in-process session of
+/// Columbus (the same router, policy checks and audit as any client's),
+/// for the app's pages. Each is `{"ok", "result", "checks"}` or an error.
+pub(crate) async fn calls(
+    state: State,
+    list: Vec<(String, serde_json::Map<String, Value>)>,
+) -> Vec<Result<Value, String>> {
     let gateway = Gateway::new(state);
     let (server_io, client_io) = tokio::io::duplex(4 << 20);
     tokio::spawn(async move {
@@ -102,27 +115,32 @@ async fn call(
             let _ = s.waiting().await;
         }
     });
-    let client = PageClient
-        .serve(client_io)
-        .await
-        .map_err(|e| e.to_string())?;
-    let r = tokio::time::timeout(
-        std::time::Duration::from_secs(60),
-        client.call_tool(CallToolRequestParams::new(tool.to_string()).with_arguments(args)),
-    )
-    .await
-    .map_err(|_| "the registry took too long to answer".to_string())?
-    .map_err(|e| e.to_string())?;
-    let _ = client.cancel().await;
-    if r.is_error == Some(true) {
-        let text = r
-            .content
-            .iter()
-            .filter_map(|c| c.as_text().map(|t| t.text.clone()))
-            .collect::<Vec<_>>()
-            .join("\n");
-        return Err(text);
+    let client = match PageClient.serve(client_io).await {
+        Ok(c) => c,
+        Err(e) => return list.iter().map(|_| Err(e.to_string())).collect(),
+    };
+    let mut out = Vec::new();
+    for (tool, args) in list {
+        let r = tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            client.call_tool(CallToolRequestParams::new(tool).with_arguments(args)),
+        )
+        .await;
+        out.push(match r {
+            Err(_) => Err("Columbus took too long to answer".to_string()),
+            Ok(Err(e)) => Err(e.to_string()),
+            Ok(Ok(r)) if r.is_error == Some(true) => Err(r
+                .content
+                .iter()
+                .filter_map(|c| c.as_text().map(|t| t.text.clone()))
+                .collect::<Vec<_>>()
+                .join("\n")),
+            Ok(Ok(r)) => {
+                let v = r.structured_content.unwrap_or(Value::Null);
+                Ok(json!({"ok": true, "result": v["result"], "checks": v["checks"]}))
+            }
+        });
     }
-    let v = r.structured_content.unwrap_or(Value::Null);
-    Ok(json!({"ok": true, "result": v["result"], "checks": v["checks"]}))
+    let _ = client.cancel().await;
+    out
 }

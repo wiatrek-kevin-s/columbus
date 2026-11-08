@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-notes-check"
+description = "Enables the notes_check command without any pre-configured scope."
+commands.allow = ["notes_check"]
+
+[[permission]]
+identifier = "deny-notes-check"
+description = "Denies the notes_check command without any pre-configured scope."
+commands.deny = ["notes_check"]

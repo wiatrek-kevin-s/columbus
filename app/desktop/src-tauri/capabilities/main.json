@@ -29,6 +29,8 @@
     "allow-registry-query",
     "allow-share-export",
     "allow-doc-preview",
+    "allow-note-confirm",
+    "allow-notes-check",
     "allow-doc-import",
     "allow-share-open",
     "allow-share-import",

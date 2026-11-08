@@ -725,3 +725,122 @@ fn audit_text(root: &Path) -> String {
         .map(|p| std::fs::read_to_string(p).unwrap_or_default())
         .collect()
 }
+
+/// `columbus-mcp notes check`, as the app's Documents > Proposals runs it.
+fn notes_check(root: &Path, py: &str) -> Value {
+    let worker = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../workers/python/columbus_worker.py")
+        .canonicalize()
+        .unwrap();
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_columbus-mcp"))
+        .args(["notes", "check", "{}"])
+        .env("COLUMBUS_POLICY", root.join("policy.yaml"))
+        .env("COLUMBUS_CONNECTIONS", root.join("connections"))
+        .env("COLUMBUS_WORKSPACES", root.join("workspaces"))
+        .env("COLUMBUS_AUDIT_DIR", root.join("audit"))
+        .env("COLUMBUS_LIVE_DIR", root.join("live"))
+        .env("COLUMBUS_NOTES", root.join("notes"))
+        .env("COLUMBUS_WORKER", &worker)
+        .env("COLUMBUS_PYTHON", py)
+        .env("COLUMBUS_LOG", "warn")
+        .env("COLUMBUS_COMPANION", "off")
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    serde_json::from_str(text.lines().last().unwrap_or(""))
+        .unwrap_or_else(|_| panic!("not JSON: {text} {}", String::from_utf8_lossy(&out.stderr)))
+}
+
+#[tokio::test]
+async fn the_inbox_finds_notes_whose_database_changed_and_notes_due() {
+    let Some(py) = python() else {
+        eprintln!("skipped: needs Python with geopandas, pyogrio and shapely");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let root: PathBuf = dir.path().to_path_buf();
+    std::fs::create_dir_all(root.join("connections")).unwrap();
+    let file = gpkg(&py, &root);
+    put(
+        &root.join("policy.yaml"),
+        "connection_types: [gpkg]\nhide_fields: [\"*ssn*\"]\n",
+    );
+    put(
+        &root.join("connections/roads.yaml"),
+        &conn_yaml("roads", &file, "").replace("allow: [\"*\"]", "allow: [roadway, segments]"),
+    );
+    let c = start(&root, &py, Person::default()).await;
+    ok(&call(&c, "draft_notes", json!({"connection": "roads"})).await);
+    c.cancel().await.unwrap();
+
+    // Nothing changed yet; the hidden field is no change either.
+    let r = notes_check(&root, &py);
+    assert_eq!(r["ok"], true, "{r}");
+    assert_eq!(r["changed"], json!([]), "{r}");
+    assert_eq!(r["due"], json!([]), "{r}");
+
+    // The database changes: a field added, one dropped, a table refused.
+    let script = format!(
+        "import sqlite3; db = sqlite3.connect({:?}); db.execute('ALTER TABLE roadway ADD COLUMN SPEED INTEGER'); db.execute('ALTER TABLE segments DROP COLUMN kind'); db.commit()",
+        file.display().to_string()
+    );
+    assert!(std::process::Command::new(&py)
+        .args(["-c", &script])
+        .status()
+        .unwrap()
+        .success());
+    let r = notes_check(&root, &py);
+    let changed = r["changed"].as_array().unwrap();
+    let road = changed
+        .iter()
+        .find(|n| n["dataset"] == "roadway")
+        .expect("roadway changed");
+    assert_eq!(road["added"], json!(["SPEED"]), "{r}");
+    assert_eq!(
+        road["untouched"], true,
+        "a draft no one edited can be drafted again"
+    );
+    let seg = changed
+        .iter()
+        .find(|n| n["dataset"] == "segments")
+        .expect("segments changed");
+    assert_eq!(seg["removed"], json!(["kind"]), "{r}");
+    // A table the connection no longer allows is gone, as far as notes go.
+    put(
+        &root.join("connections/roads.yaml"),
+        &conn_yaml("roads", &file, "").replace("allow: [\"*\"]", "allow: [roadway]"),
+    );
+    let r = notes_check(&root, &py);
+    assert!(
+        r["changed"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|n| n["dataset"] == "segments" && n["gone"] == true),
+        "{r}"
+    );
+    // Each listing went through Columbus, audited.
+    assert!(audit_text(&root).contains("columbus-app-page"));
+
+    // A note confirmed long ago is due for review.
+    let notes = root.join("notes/datasets/roads/roadway.md");
+    let text = std::fs::read_to_string(&notes).unwrap();
+    let old = text
+        .lines()
+        .map(|l| {
+            if l.starts_with("last_confirmed:") {
+                "last_confirmed: 2020-01-01".to_string()
+            } else {
+                l.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(&notes, old).unwrap();
+    let r = notes_check(&root, &py);
+    let due = r["due"].as_array().unwrap();
+    assert!(
+        due.iter().any(|n| n["last_confirmed"] == "2020-01-01"),
+        "{r}"
+    );
+}

@@ -488,6 +488,8 @@ fn main() {
             registry::registry_query,
             share::share_export,
             doc_import::doc_preview,
+            shell::note_confirm,
+            shell::notes_check,
             doc_import::doc_import,
             share::share_open,
             share::share_import,

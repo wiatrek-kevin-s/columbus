@@ -1013,6 +1013,112 @@ fn mark_reviewed(f: &Path, sha256: &str) -> Result<(), String> {
     settings::write_atomic(f, &after)
 }
 
+/// The note with its front matter's `last_confirmed` set to `today`: only
+/// that value changes (every other byte stays). None if it has none.
+pub(crate) fn confirmed_on(text: &str, today: &str) -> Option<String> {
+    let mut lines = text.split_inclusive('\n');
+    let first = lines.next()?;
+    if first.trim() != "---" {
+        return None;
+    }
+    let mut offset = first.len();
+    for line in lines {
+        if line.trim() == "---" {
+            return None;
+        }
+        if let Some(rest) = line.strip_prefix("last_confirmed:") {
+            let lead = rest.len() - rest.trim_start().len();
+            let value = rest.trim_start();
+            let end = value
+                .find(|c: char| c.is_whitespace() || c == '#')
+                .unwrap_or(value.len());
+            let at = offset + "last_confirmed:".len() + lead;
+            let mut out = String::with_capacity(text.len() + 10);
+            out.push_str(&text[..at]);
+            out.push_str(today);
+            out.push_str(&text[at + end..]);
+            return Some(out);
+        }
+        offset += line.len();
+    }
+    None
+}
+
+fn same_but_confirmed(before: &str, after: &str, today: &str) -> bool {
+    let (Some(mut b), Some(mut a)) = (yaml_front(before), yaml_front(after)) else {
+        return false;
+    };
+    let key = serde_yaml::Value::from("last_confirmed");
+    b.remove(&key);
+    let now = a.remove(&key);
+    let as_text = |v: Option<serde_yaml::Value>| match v {
+        Some(serde_yaml::Value::String(s)) => Some(s),
+        Some(other) => serde_yaml::to_string(&other)
+            .ok()
+            .map(|t| t.trim().to_string()),
+        None => None,
+    };
+    as_text(now).as_deref() == Some(today) && a == b
+}
+
+/// Confirm one of the person's own notes as still right today (its
+/// `last_confirmed`): their own file and decision, like Mark reviewed, and
+/// bound the same way to the exact text they read.
+#[tauri::command]
+pub async fn note_confirm(path: String, sha256: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let f = inside(Path::new(&places().notes), &path)?;
+        if f.extension().is_none_or(|e| e != "md") {
+            return Err("not a note".into());
+        }
+        let changed = || "the note changed after you read it; nothing was changed. Read it again".to_string();
+        let bytes = read_whole(&f)?;
+        if !columbus_shared::proof::same(&columbus_shared::canon::sha256_hex(&bytes), &sha256) {
+            return Err(changed());
+        }
+        let before = String::from_utf8(bytes).map_err(|_| "not a text file".to_string())?;
+        let today: String = columbus_shared::tools::now().chars().take(10).collect();
+        let after = confirmed_on(&before, &today).ok_or("this note has no last_confirmed date to update")?;
+        if !same_but_confirmed(&before, &after, &today) {
+            return Err("this note's front matter is unusual, so it was not changed; update last_confirmed by editing the file".into());
+        }
+        if read_whole(&f).ok().as_deref() != Some(before.as_bytes()) {
+            return Err(changed());
+        }
+        settings::write_atomic(&f, &after)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// The Proposals inbox: notes whose database changed since they were
+/// drafted, and notes due for review, as Columbus's server finds them
+/// (`columbus-mcp notes check`; read only).
+#[tauri::command]
+pub async fn notes_check(app: tauri::AppHandle) -> Result<Value, String> {
+    let (server, engine) = crate::registry::program(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let text = crate::registry::run(
+            &server,
+            engine.as_deref(),
+            &["notes", "check", "{}"],
+            std::time::Duration::from_secs(300),
+        )?;
+        let v: Value = serde_json::from_str(text.trim())
+            .map_err(|_| "Columbus's answer could not be read".to_string())?;
+        if v["ok"] == true {
+            Ok(v)
+        } else {
+            Err(v["error"]
+                .as_str()
+                .unwrap_or("the notes could not be checked")
+                .to_string())
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// The organization's context pack: its entries, read only here.
 #[tauri::command]
 pub async fn context_pack() -> Result<Value, String> {
@@ -1118,6 +1224,21 @@ pub async fn skills_list(app: AppHandle) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn confirming_changes_only_the_date() {
+        let t = "---\nid: a\nlast_confirmed: 2020-01-01   # by Kevin\nstatus: reviewed\n---\n\nlast_confirmed: 1999-01-01\n";
+        let a = confirmed_on(t, "2026-11-08").unwrap();
+        assert_eq!(a, t.replacen("2020-01-01", "2026-11-08", 1));
+        assert!(same_but_confirmed(t, &a, "2026-11-08"));
+        assert!(confirmed_on("---\nid: a\n---\nlast_confirmed: x\n", "2026-11-08").is_none());
+        // Anything else changed is refused.
+        assert!(!same_but_confirmed(
+            t,
+            &a.replace("status: reviewed", "status: draft"),
+            "2026-11-08"
+        ));
+    }
 
     #[test]
     fn paths_stay_inside_their_folder() {

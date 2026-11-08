@@ -15,6 +15,7 @@
 //! columbus-mcp app query JSON                     one read-only call for an app page (registry query is the same)
 //! columbus-mcp share import JSON                  file a shared .columbus file's tools and workflow as proposals
 //! columbus-mcp notes import JSON                  a document (Word, Excel, PDF, CSV, Markdown) as a draft note
+//! columbus-mcp notes check JSON                   notes whose database changed since, and notes due for review
 //! columbus-mcp pack lint [DIR]      check a context pack
 //! columbus-mcp plugins list         engine plugins, their versions, hashes and state
 //! columbus-mcp plugins approve ID   approve a plugin's exact contents
@@ -37,6 +38,7 @@ mod export_tools;
 mod fetch_tools;
 mod gis_tools;
 mod notes;
+mod notes_check;
 mod personal_tools;
 mod plugin_run;
 mod plugins;
@@ -117,6 +119,7 @@ async fn main() -> Result<()> {
         ["registry", "update"] => registry_tools::update(None).await,
         ["share", "import", request] => share_cli::import(request).await,
         ["notes", "import", request] => doc_import_cli::import(request).await,
+        ["notes", "check", request] => notes_check::check(request).await,
         ["registry", "query", request] | ["app", "query", request] => {
             registry_cli::query(request).await
         }

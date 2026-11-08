@@ -128,8 +128,13 @@ def main():
         go(d, wait, "#/registry", "Registry")
         wait.until(lambda drv: drv.find_elements(By.ID, "rg-q"))
         go(d, wait, "#/documents", "Documents")
+        d.execute_script("location.hash = '#/documents/import'")
+        wait.until(lambda drv: drv.find_elements(By.ID, "imp-choose"))
         d.execute_script("location.hash = '#/documents/proposals'")
+        wait.until(lambda drv: drv.find_elements(By.ID, "pr-check"))
         # A part with no backend says it is coming.
+        go(d, wait, "#/connections", "Connections")
+        d.execute_script("location.hash = '#/connections/accounts'")
         wait.until(lambda drv: "Coming" in text(drv, "main"))
         # The rail's foot: the policy's source, and the workflows.
         foot = text(d, ".rail-foot")
