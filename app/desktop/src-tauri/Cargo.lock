@@ -578,6 +578,7 @@ dependencies = [
  "apple-native-keyring-store",
  "columbus-chat",
  "columbus-shared",
+ "hex",
  "keyring-core",
  "libc",
  "robius-authentication",

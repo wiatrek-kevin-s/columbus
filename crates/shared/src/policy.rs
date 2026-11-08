@@ -255,6 +255,18 @@ pub struct OrgPolicy {
     /// default; `false` keeps snapshots to geometry only.
     #[serde(default = "yes")]
     pub snapshot_labels: bool,
+    /// Sharing keys the organization vouches for, by name: a shared file
+    /// signed by one shows as from that person for everyone.
+    #[serde(default)]
+    pub share_signers: Vec<crate::share::TrustedSender>,
+    /// Open only shared files signed by a key the person or the
+    /// organization trusts. Off by default.
+    #[serde(default)]
+    pub require_signed_shares: bool,
+    /// Tools the organization installed for everyone (in its tools folder,
+    /// approved by whoever administers it). On by default; off hides them.
+    #[serde(default = "yes")]
+    pub allow_org_tools: bool,
     /// Rows read and seconds per call; see [`OrgLimits`]. Use
     /// [`OrgPolicy::read_limits`] for the values in force.
     #[serde(default)]
@@ -534,6 +546,9 @@ impl Default for OrgPolicy {
             allow_personal_tools: false,
             allow_shared_tools: false,
             snapshot_labels: true,
+            share_signers: vec![],
+            require_signed_shares: false,
+            allow_org_tools: true,
             allow_workflows: false,
             limits: OrgLimits::DEFAULT,
             project_db: ProjectDbPolicy::default(),

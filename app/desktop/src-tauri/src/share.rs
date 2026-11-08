@@ -33,14 +33,14 @@ pub async fn share_export(
     app: AppHandle,
     kind: String,
     id: String,
-) -> Result<Option<String>, String> {
+) -> Result<Option<Value>, String> {
     use tauri_plugin_dialog::DialogExt;
-    let file = tauri::async_runtime::spawn_blocking({
+    let (file, signed) = tauri::async_runtime::spawn_blocking({
         let (kind, id) = (kind.clone(), id.clone());
         move || {
             let now = tools::now();
             let v = env!("CARGO_PKG_VERSION");
-            let s = match kind.as_str() {
+            let mut s = match kind.as_str() {
                 "tool" => share::export_tool(&tools::tools_dir(), &id, &who(), &now, v)?,
                 "workflow" => share::export_workflow(
                     &wf::workflows_dir(),
@@ -52,7 +52,12 @@ pub async fn share_export(
                 )?,
                 _ => return Err("only a tool or a workflow can be shared".to_string()),
             };
-            share::to_json(&s)
+            // Signed with the person's own key, when this computer keeps one.
+            let signed = match signing_key() {
+                Ok(k) => share::sign(&mut s, &k).map(|_| None).unwrap_or_else(Some),
+                Err(e) => Some(e),
+            };
+            Ok::<_, String>((share::to_json(&s)?, signed))
         }
     })
     .await
@@ -62,13 +67,16 @@ pub async fn share_export(
         id.trim_start_matches(tools::ID_PREFIX),
         share::EXTENSION
     );
-    let picked = app
+    let mut dialog = app
         .dialog()
         .file()
         .set_title("Save the shared file")
         .set_file_name(&name)
-        .add_filter("Columbus shared file", &[share::EXTENSION])
-        .blocking_save_file();
+        .add_filter("Columbus shared file", &[share::EXTENSION]);
+    if let Some(team) = team_folder() {
+        dialog = dialog.set_directory(team);
+    }
+    let picked = dialog.blocking_save_file();
     let Some(path) = picked.and_then(|p| p.into_path().ok()) else {
         return Ok(None);
     };
@@ -86,7 +94,183 @@ pub async fn share_export(
         p
     };
     std::fs::write(&path, file).map_err(|e| format!("{}: {e}", path.display()))?;
-    Ok(Some(path.display().to_string()))
+    Ok(Some(json!({
+        "path": path.display().to_string(),
+        "signed": signed.is_none(),
+        "unsigned_why": signed,
+    })))
+}
+
+// ---- signing keys and trusted senders ----------------------------------
+
+const KEY_SERVICE: &str = "Columbus sharing";
+const KEY_ACCOUNT: &str = "signing-key";
+
+/// The person's sharing key (PKCS#8), made the first time they share.
+fn signing_key() -> Result<Vec<u8>, String> {
+    crate::chat::ensure_store()?;
+    let e = keyring_core::Entry::new(KEY_SERVICE, KEY_ACCOUNT).map_err(|e| e.to_string())?;
+    match e.get_password() {
+        Ok(h) => hex::decode(h.trim())
+            .map_err(|_| "the sharing key in the keychain isn't readable".to_string()),
+        Err(keyring_core::Error::NoEntry) => {
+            let k = share::new_key()?;
+            e.set_password(&hex::encode(&k))
+                .map_err(|e| e.to_string())?;
+            Ok(k)
+        }
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// The person's own sharing key, to read to a coworker (made if needed).
+#[tauri::command]
+pub async fn share_my_key() -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let k = signing_key()?;
+        let public = share::public_key(&k)?;
+        Ok(json!({"key": public, "fingerprint": share::fingerprint(&public)}))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Trust a sender's key under a name: files they sign then show as theirs.
+#[tauri::command]
+pub fn share_trust(name: String, key: String) -> Result<(), String> {
+    share::trust(&share::trust_file(), &name, &key, &tools::now())
+}
+
+#[tauri::command]
+pub fn share_untrust(key: String) -> Result<(), String> {
+    share::untrust(&share::trust_file(), &key)
+}
+
+// ---- the team library --------------------------------------------------
+
+fn settings_file() -> PathBuf {
+    let f = share::trust_file();
+    f.with_file_name("sharing.json")
+}
+
+/// The team library folder, if the person chose one and it is there.
+fn team_folder() -> Option<PathBuf> {
+    let v: Value = serde_json::from_slice(&std::fs::read(settings_file()).ok()?).ok()?;
+    let p = PathBuf::from(v["team_folder"].as_str()?);
+    p.is_dir().then_some(p)
+}
+
+/// Sharing as the person has it set up: the team folder, who they trust,
+/// whom their organization vouches for, and whether it requires signatures.
+#[tauri::command]
+pub fn share_settings() -> Value {
+    let policy =
+        columbus_shared::policy::OrgPolicy::load(&paths::policy_file()).unwrap_or_default();
+    let named = |t: &share::TrustedSender| json!({"name": t.name, "key": t.key, "fingerprint": share::fingerprint(&t.key), "added": t.added});
+    json!({
+        "team_folder": team_folder().map(|p| p.display().to_string()),
+        "trusted": share::trusted(&share::trust_file()).iter().map(named).collect::<Vec<_>>(),
+        "organization": policy.share_signers.iter().map(named).collect::<Vec<_>>(),
+        "require_signed": policy.require_signed_shares,
+    })
+}
+
+/// Choose (or, with `clear`, stop using) the team library folder.
+#[tauri::command]
+pub async fn share_team_folder(
+    app: AppHandle,
+    clear: Option<bool>,
+) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let chosen = if clear == Some(true) {
+        None
+    } else {
+        let picked = app
+            .dialog()
+            .file()
+            .set_title("Choose the team library folder (a shared drive or a synced folder)")
+            .blocking_pick_folder();
+        match picked.and_then(|p| p.into_path().ok()) {
+            Some(p) => Some(p),
+            None => return Ok(team_folder().map(|p| p.display().to_string())),
+        }
+    };
+    let v = json!({"team_folder": chosen.as_ref().map(|p| p.display().to_string())});
+    tools::write_atomic(&settings_file(), v.to_string().as_bytes())?;
+    Ok(chosen.map(|p| p.display().to_string()))
+}
+
+/// The library's file of this name: a plain `.columbus` file directly in
+/// the folder (no other folder, no link).
+fn team_file(name: &str) -> Result<PathBuf, String> {
+    let dir = team_folder().ok_or("choose a team library folder first")?;
+    if name.is_empty()
+        || name.contains(['/', '\\'])
+        || name.starts_with('.')
+        || !name.ends_with(&format!(".{}", share::EXTENSION))
+    {
+        return Err("not a file in the team library".into());
+    }
+    let p = dir.join(name);
+    match std::fs::symlink_metadata(&p) {
+        Ok(m) if m.is_file() => Ok(p),
+        _ => Err("not a file in the team library".into()),
+    }
+}
+
+/// The shared files in the team library: what each holds, who signed it,
+/// and how it stands against what the person has installed.
+#[tauri::command]
+pub async fn share_team_list() -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let Some(dir) = team_folder() else {
+            return Ok(json!({"folder": null, "files": []}));
+        };
+        let mut names: Vec<String> = std::fs::read_dir(&dir)
+            .map_err(|e| format!("{}: {e}", dir.display()))?
+            .flatten()
+            .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+            .filter_map(|e| e.file_name().to_str().map(String::from))
+            .filter(|n| n.ends_with(&format!(".{}", share::EXTENSION)) && !n.starts_with('.'))
+            .collect();
+        names.sort();
+        let more = names.len() > 200;
+        names.truncate(200);
+        let files: Vec<Value> = names
+            .iter()
+            .map(|n| match team_file(n).and_then(|p| describe(&p)) {
+                Ok(mut v) => {
+                    v["name"] = json!(n);
+                    v
+                }
+                Err(e) => json!({"name": n, "problem": e}),
+            })
+            .collect();
+        Ok(json!({"folder": dir.display().to_string(), "files": files, "more": more}))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Open a file from the team library, as Open a shared file does.
+#[tauri::command]
+pub async fn share_team_open(name: String) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || describe(&team_file(&name)?))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Tools the organization installed for everyone on this computer.
+#[tauri::command]
+pub fn org_tools_list() -> Value {
+    let policy =
+        columbus_shared::policy::OrgPolicy::load(&paths::policy_file()).unwrap_or_default();
+    let root = tools::org_tools_dir();
+    json!({
+        "on": policy.allow_org_tools,
+        "folder": root.display().to_string(),
+        "tools": tools::list_installed(&root),
+    })
 }
 
 /// Choose a shared file and read it: what it holds, who shared it, and
@@ -175,6 +359,8 @@ fn describe(path: &std::path::Path) -> Result<Value, String> {
         "kind": s.kind,
         "shared_by": s.shared_by,
         "shared_at": s.shared_at,
+        "signer": share::signer(&s, &share::trusted(&share::trust_file()), &policy.share_signers),
+        "require_signed": policy.require_signed_shares,
         "columbus": s.columbus,
         "tools": tool_list,
         "workflow": workflow,

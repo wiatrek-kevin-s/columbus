@@ -134,6 +134,7 @@ async fn start(env: &Env, py: &str) -> RunningService<RoleClient, ()> {
                 .env("COLUMBUS_PERSONAL_PLUGINS", root.join("personal-plugins"))
                 .env("COLUMBUS_WORKSPACES", root.join("workspaces"))
                 .env("COLUMBUS_TOOLS", &tools)
+                .env("COLUMBUS_ORG_TOOLS", root.join("org-tools"))
                 .env("COLUMBUS_AUDIT_DIR", root.join("audit"))
                 .env("COLUMBUS_WORKER", &worker)
                 .env("COLUMBUS_PYTHON", &py)
@@ -534,6 +535,7 @@ async fn propose_test_install_run_and_remove_a_personal_tool() {
     assert!(columbus_shared::tools::install(&env.tools(), ID, "sha256:00", "now").is_err());
     columbus_shared::tools::install(&env.tools(), ID, &hash, "2026-11-05T12:00:00Z").unwrap();
     shared_with_a_coworker(&env, &py);
+    signed_and_installed_for_everyone(&env, &py).await;
     let found = ok(&call(
         &c,
         "search_tools",
@@ -837,14 +839,22 @@ async fn personal_tools_refuse_a_connected_servers_file() {
 
 /// `columbus-mcp share import`, as the app's "Open a shared file" runs it.
 fn share_import(env: &Env, py: &str, req: &Value) -> Value {
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_columbus-mcp"))
-        .args(["share", "import", &req.to_string()])
+    let out = cli(env, py, &["share", "import", &req.to_string()]);
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    serde_json::from_str(text.lines().last().unwrap_or(""))
+        .unwrap_or_else(|_| panic!("not JSON: {text} {}", String::from_utf8_lossy(&out.stderr)))
+}
+
+fn cli(env: &Env, py: &str, args: &[&str]) -> std::process::Output {
+    std::process::Command::new(env!("CARGO_BIN_EXE_columbus-mcp"))
+        .args(args)
         .env("COLUMBUS_POLICY", env.root.join("policy.yaml"))
         .env("COLUMBUS_CONNECTIONS", env.root.join("connections"))
         .env("COLUMBUS_SERVERS", env.root.join("servers"))
         .env("COLUMBUS_PLUGINS", env.root.join("plugins"))
         .env("COLUMBUS_WORKSPACES", env.root.join("workspaces"))
         .env("COLUMBUS_TOOLS", env.tools())
+        .env("COLUMBUS_ORG_TOOLS", env.root.join("org-tools"))
         .env("COLUMBUS_AUDIT_DIR", env.root.join("audit"))
         .env(
             "COLUMBUS_WORKER",
@@ -854,10 +864,99 @@ fn share_import(env: &Env, py: &str, req: &Value) -> Value {
         .env("COLUMBUS_COMPANION", "off")
         .env("COLUMBUS_LOG", "warn")
         .output()
-        .unwrap();
-    let text = String::from_utf8_lossy(&out.stdout).to_string();
-    serde_json::from_str(text.lines().last().unwrap_or(""))
-        .unwrap_or_else(|_| panic!("not JSON: {text} {}", String::from_utf8_lossy(&out.stderr)))
+        .unwrap()
+}
+
+/// A signed file: refused where signatures are required until its key is
+/// trusted, refused always once changed; and installed for everyone by an
+/// administrator, which every session then offers as the organization's.
+async fn signed_and_installed_for_everyone(env: &Env, py: &str) {
+    use columbus_shared::share;
+    let mut s = share::export_tool(
+        &env.tools(),
+        ID,
+        "ana",
+        "2026-11-08T09:00:00-06:00",
+        "0.14.0",
+    )
+    .unwrap();
+    let key = share::new_key().unwrap();
+    share::sign(&mut s, &key).unwrap();
+    let file = env.root.join("signed.columbus");
+    std::fs::write(&file, share::to_json(&s).unwrap()).unwrap();
+    let other = setup(
+        py,
+        "allow_personal_tools: true\nallow_shared_tools: true\nrequire_signed_shares: true\n",
+    );
+    let req = json!({"file": file});
+    let r = share_import(&other, py, &req);
+    assert_eq!(r["ok"], false, "{r}");
+    assert!(
+        r["error"]
+            .as_str()
+            .unwrap()
+            .contains("require_signed_shares"),
+        "{r}"
+    );
+    share::trust(
+        &other.root.join("trusted-senders.yaml"),
+        "Ana",
+        &share::public_key(&key).unwrap(),
+        "now",
+    )
+    .unwrap();
+    let r = share_import(&other, py, &req);
+    assert_eq!(r["ok"], true, "{r}");
+    let audit: String = std::fs::read_dir(other.root.join("audit"))
+        .unwrap()
+        .flatten()
+        .map(|e| std::fs::read_to_string(e.path()).unwrap_or_default())
+        .collect();
+    assert!(audit.contains("signed by Ana"), "{audit}");
+    columbus_shared::tools::decline(&other.tools(), ID).unwrap();
+    let mut changed = s.clone();
+    changed.shared_by = "someone".into();
+    let bad = other.root.join("changed.columbus");
+    std::fs::write(&bad, share::to_json(&changed).unwrap()).unwrap();
+    let r = share_import(&other, py, &json!({"file": bad}));
+    assert!(r["error"].as_str().unwrap().contains("signature"), "{r}");
+
+    // Installed for everyone, from the same file; a changed one is refused.
+    let out = cli(&other, py, &["tools", "org-install", bad.to_str().unwrap()]);
+    assert!(!out.status.success());
+    let out = cli(
+        &other,
+        py,
+        &["tools", "org-install", file.to_str().unwrap()],
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("signed by Ana"));
+    let org = columbus_shared::tools::list_installed(&other.root.join("org-tools"));
+    assert_eq!(org.len(), 1);
+    assert_eq!(org[0].state.as_deref(), Some("ready"));
+    let c = start(&other, py).await;
+    let d = call(&c, "describe_tool", json!({"name": TOOL})).await;
+    if can_confine() {
+        assert!(
+            ok(&d).to_string().contains("organization"),
+            "{:?}",
+            d.content
+        );
+    }
+    c.cancel().await.unwrap();
+    // Policy can turn them off.
+    other.policy("allow_org_tools: false\n");
+    let c = start(&other, py).await;
+    let d = call(&c, "describe_tool", json!({"name": TOOL})).await;
+    assert_eq!(d.is_error, Some(true), "{:?}", d.content);
+    c.cancel().await.unwrap();
+    let out = cli(&other, py, &["tools", "org-remove", ID]);
+    assert!(out.status.success());
+    assert!(columbus_shared::tools::list_installed(&other.root.join("org-tools")).is_empty());
 }
 
 /// The installed tool, and a workflow that uses it, shared as files and

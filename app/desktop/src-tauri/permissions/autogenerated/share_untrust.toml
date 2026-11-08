@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-share-untrust"
+description = "Enables the share_untrust command without any pre-configured scope."
+commands.allow = ["share_untrust"]
+
+[[permission]]
+identifier = "deny-share-untrust"
+description = "Denies the share_untrust command without any pre-configured scope."
+commands.deny = ["share_untrust"]

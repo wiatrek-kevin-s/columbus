@@ -127,6 +127,8 @@ def main():
         wait.until(lambda drv: "working-with-columbus" in text(drv, "main"))
         go(d, wait, "#/registry", "Registry")
         wait.until(lambda drv: drv.find_elements(By.ID, "rg-q"))
+        go(d, wait, "#/tools", "Tools")
+        wait.until(lambda drv: drv.find_elements(By.ID, "team-choose"))
         go(d, wait, "#/documents", "Documents")
         d.execute_script("location.hash = '#/documents/import'")
         wait.until(lambda drv: drv.find_elements(By.ID, "imp-choose"))

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-org-tools-list"
+description = "Enables the org_tools_list command without any pre-configured scope."
+commands.allow = ["org_tools_list"]
+
+[[permission]]
+identifier = "deny-org-tools-list"
+description = "Denies the org_tools_list command without any pre-configured scope."
+commands.deny = ["org_tools_list"]

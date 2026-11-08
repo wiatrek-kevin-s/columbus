@@ -41,6 +41,7 @@ mod gis_tools;
 mod note_suggestions;
 mod notes;
 mod notes_check;
+mod org_tools_cli;
 mod personal_tools;
 mod plugin_run;
 mod plugins;
@@ -113,6 +114,9 @@ async fn main() -> Result<()> {
         ["tools", "install", id] => review_cli::tools_install(id),
         ["tools", "decline", id] => review_cli::tools_decline(id),
         ["tools", "remove", id] => review_cli::tools_remove(id),
+        ["tools", "org-install", file] => org_tools_cli::install(file).await,
+        ["tools", "org-remove", id] => org_tools_cli::remove(id),
+        ["tools", "org-list"] => org_tools_cli::list(),
         ["servers", "list"] => review_cli::list().await,
         ["servers", "review", id] => review_cli::review(id).await.map(|_| ()),
         ["servers", "approve", id] => review_cli::approve(id, false).await,
@@ -144,7 +148,7 @@ async fn main() -> Result<()> {
             Ok(())
         }
         _ => bail!(
-            "usage: columbus-mcp [serve] | audit verify FILE | secret set|delete ID | servers list|review|approve|signin|signout ID | registry update [--from DIR|URL]|query JSON | plugins list|approve ID | tools list|show|install|decline|remove ID | workflow run ID [--scheduled]|validate FILE|list | --version"
+            "usage: columbus-mcp [serve] | audit verify FILE | secret set|delete ID | servers list|review|approve|signin|signout ID | registry update [--from DIR|URL]|query JSON | plugins list|approve ID | tools list|show|install|decline|remove ID|org-install FILE|org-remove ID|org-list | workflow run ID [--scheduled]|validate FILE|list | --version"
         ),
     }
 }

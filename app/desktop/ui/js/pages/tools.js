@@ -3,7 +3,7 @@
 // in the app's own code; and the Skills library, read only.
 import { $, h, el, invoke, store, button, pageHead, showError, when, numbered, emptyState, coming } from "../core.js";
 import { switchRow } from "./settings.js";
-import { shareOut, shareIn, importedText } from "./share.js";
+import { shareOut, shareIn, importedText, teamLibrary } from "./share.js";
 
 let tools = null;
 let reviewing = null;
@@ -39,10 +39,27 @@ export async function render(main) {
   const waiting = h("ul", { id: "tools-waiting", class: "list", "aria-live": "polite" });
   const installed = h("ul", { id: "tools-installed", class: "list", "aria-live": "polite" });
   const sw = h("div", {});
+  const orgList = h("div", { id: "org-tools", class: "bd stack" });
+  const orgCard = h("section", { class: "card", hidden: true }, h("div", { class: "hd" }, h("h2", {}, "From your organization")), orgList);
+  const teamBody = h("div", { class: "bd stack" });
+  const teamCard = h("section", { class: "card", id: "team-library" }, h("div", { class: "hd" }, h("h2", {}, "Team library")), teamBody);
+  teamLibrary(teamBody, err, () => refresh());
+  invoke("org_tools_list").then((o) => {
+    const list = o.tools || [];
+    if (!list.length) return;
+    orgCard.hidden = false;
+    orgList.replaceChildren(
+      h("p", { class: "small muted" }, `Installed for everyone on this computer by whoever administers it. They run like your own tools (confined, no network) and need no approval.${o.on ? "" : " Turned off in your organization's settings, so none of them are used."}`),
+      ...list.map((t) => h("div", { class: "tool" }, h("div", { class: "text" }, h("b", {}, t.title || t.id),
+        h("span", { class: "where" }, `${t.tool} · version ${t.version || "?"} · ${t.state === "ready" ? "ready" : "not approved"}`),
+        t.description ? h("span", {}, t.description) : null))));
+  }).catch(() => {});
   body.append(notice, err, off,
     h("p", { class: "small muted" }, "An installed tool runs whenever it is needed, without asking, in the same sandbox as scripts: no network; each run starts afresh, reads only the layers it is given for that run (and the Python installation) and writes only its own folder, which is deleted when the run ends. Ask your assistant, for example: ", h("i", {}, "add the script we just made as a tool"), "."),
     h("section", { class: "card" }, h("div", { class: "hd" }, h("h2", {}, "Waiting for you")), h("div", { class: "bd flush" }, waiting, h("p", { id: "no-waiting", class: "pad muted small", hidden: true }, "Nothing is waiting."))),
     h("section", { class: "card" }, h("div", { class: "hd" }, h("h2", {}, "Installed")), h("div", { class: "bd flush" }, installed, h("p", { id: "no-installed", class: "pad muted small", hidden: true }, "No tools installed yet."))),
+    orgCard,
+    teamCard,
     h("section", { class: "card" }, h("div", { class: "hd" }, h("h2", {}, "Your organization's switch")), h("div", { class: "bd" }, sw)),
     h("p", { class: "small muted wrap-any" }, "Stored in ", h("code", { id: "tools-dir" })),
     h("p", { class: "small muted" }, "Built-in tools, engine plugins and connected servers are listed by your assistant (list_providers); a page for them comes later."));

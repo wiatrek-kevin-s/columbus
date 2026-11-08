@@ -54,6 +54,14 @@ pub const MAX_LINE: usize = 200;
 /// The person's tools folder: `COLUMBUS_TOOLS`, else `tools/` beside the
 /// session workspaces (`COLUMBUS_WORKSPACES`'s parent, or the person's
 /// local Columbus folder).
+/// Where the organization's tools are (installed for everyone by whoever
+/// administers the computer): `COLUMBUS_ORG_TOOLS`, or `tools` in the
+/// organization's folder (ProgramData, /Library/Application Support).
+pub fn org_tools_dir() -> PathBuf {
+    crate::paths::env_path("COLUMBUS_ORG_TOOLS")
+        .unwrap_or_else(|| crate::paths::platform_dirs().0.join("tools"))
+}
+
 pub fn tools_dir() -> PathBuf {
     if let Some(d) = crate::paths::env_path("COLUMBUS_TOOLS") {
         return d;
@@ -609,6 +617,43 @@ pub fn install(root: &Path, id: &str, want: &str, now: &str) -> Result<ToolView,
         .into_iter()
         .find(|t| t.id == id)
         .ok_or_else(|| format!("{id} was installed but does not list"))
+}
+
+/// Put a tool's two files in `root` (an organization's tools folder) and
+/// approve exactly them, after the same checks as any tool's files: what an
+/// administrator installs for everyone (`columbus-mcp tools org-install`).
+/// `info` is kept beside it as `install.json`. The hash installed.
+pub fn place(
+    root: &Path,
+    id: &str,
+    manifest: &[u8],
+    entry: &[u8],
+    info: Value,
+) -> Result<String, String> {
+    check_files(id, manifest, entry)?;
+    let hash = content_hash(manifest, entry);
+    std::fs::create_dir_all(root).map_err(|e| format!("{}: {e}", root.display()))?;
+    let staging = root.join(format!(".install-{id}-{}", uuid::Uuid::new_v4().simple()));
+    std::fs::create_dir_all(&staging).map_err(|e| format!("{}: {e}", staging.display()))?;
+    let placed = (|| {
+        write_atomic(&staging.join(MANIFEST), manifest)?;
+        write_atomic(&staging.join(ENTRY), entry)?;
+        let mut info = info;
+        info["hash"] = json!(hash);
+        write_atomic(
+            &staging.join(INSTALL),
+            &serde_json::to_vec_pretty(&info).map_err(|e| e.to_string())?,
+        )?;
+        replace_dir(&staging, &root.join(id))
+    })();
+    if let Err(e) = placed {
+        let _ = std::fs::remove_dir_all(&staging);
+        return Err(e);
+    }
+    let mut approvals = read_approvals(root);
+    approvals.insert(id.to_string(), hash.clone());
+    write_approvals(root, &approvals)?;
+    Ok(hash)
 }
 
 /// Decline a waiting proposal: it is deleted.

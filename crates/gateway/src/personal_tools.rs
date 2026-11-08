@@ -27,6 +27,8 @@ pub struct PersonalTools {
     host_script: PathBuf,
     workspace: PathBuf,
     taken: std::collections::BTreeSet<String>,
+    /// The organization's tools folder rather than the person's own.
+    org: bool,
     inner: Mutex<(Option<[u8; 32]>, Arc<Plugins>)>,
 }
 
@@ -37,15 +39,21 @@ impl PersonalTools {
         host_script: PathBuf,
         workspace: PathBuf,
         taken: std::collections::BTreeSet<String>,
+        org: bool,
     ) -> Self {
+        let off = OrgPolicy {
+            allow_org_tools: false,
+            ..OrgPolicy::default()
+        };
         let empty = Plugins::load_personal_tools(
-            &OrgPolicy::default(),
+            &off,
             &root,
             python.clone(),
             host_script.clone(),
             workspace.clone(),
             &taken,
             &[],
+            org,
         );
         PersonalTools {
             root,
@@ -53,6 +61,7 @@ impl PersonalTools {
             host_script,
             workspace,
             taken,
+            org,
             inner: Mutex::new((None, Arc::new(empty))),
         }
     }
@@ -96,6 +105,7 @@ impl PersonalTools {
             self.workspace.clone(),
             &self.taken,
             &reuse,
+            self.org,
         );
         for n in &loaded.notes {
             tracing::warn!("{n}");
@@ -109,7 +119,7 @@ impl PersonalTools {
         let mut h = Sha256::new();
         h.update(
             serde_json::json!({
-                "on": policy.allow_personal_tools,
+                "on": if self.org { policy.allow_org_tools } else { policy.allow_personal_tools },
                 "levels": policy.plugins.levels,
                 "memory": policy.plugins.memory_mb,
             })

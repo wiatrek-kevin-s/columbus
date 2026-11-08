@@ -57,6 +57,18 @@ pub struct ShareFile {
     /// sha256 of the workflow's text, when there is one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workflow_sha256: Option<String>,
+    /// The sharer's signature over everything above, when signed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<ShareSignature>,
+}
+
+/// An Ed25519 signature over a shared file (see [`sign`]): the sharer's
+/// public key and the signature, both hex.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ShareSignature {
+    pub key: String,
+    pub sig: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -129,6 +141,7 @@ pub fn export_tool(
         tools: vec![shared_tool(tools_root, id)?],
         workflow: None,
         workflow_sha256: None,
+        signature: None,
     })
 }
 
@@ -161,6 +174,7 @@ pub fn export_workflow(
         tools: shared,
         workflow_sha256: Some(crate::canon::sha256_hex(text.as_bytes())),
         workflow: Some(text),
+        signature: None,
     })
 }
 
@@ -442,6 +456,7 @@ mod tests {
             tools: vec![],
             workflow_sha256: Some(crate::canon::sha256_hex(text.as_bytes())),
             workflow: Some(text.clone()),
+            signature: None,
         };
         assert!(parse(&to_json(&good).unwrap()).is_ok());
         // Changed after sharing.
@@ -468,5 +483,259 @@ mod tests {
         let mut h = good;
         h.shared_by = "kev\u{202e}in".into();
         assert!(parse(&to_json(&h).unwrap()).is_err());
+    }
+}
+
+// ---- signatures --------------------------------------------------------
+//
+// A shared file can be signed with the sharer's own key (made on their
+// computer the first time they share, kept in the system keychain). The
+// recipient sees who signed it only as a key's fingerprint, until they
+// choose to trust that key under a name (after the sharer reads them the
+// fingerprint, by phone or in person), or their organization lists it.
+// A signature says the file is exactly as that key's owner saved it; it
+// never makes the contents trusted: everything in it is still reviewed and
+// approved by the recipient.
+
+const SIG_CONTEXT: &[u8] = b"columbus-share-signature-v1\n";
+
+/// What is signed: a fixed prefix and the hash of the file's JSON without
+/// its signature.
+fn signed_message(s: &ShareFile) -> Result<Vec<u8>, String> {
+    let mut u = s.clone();
+    u.signature = None;
+    let mut m = SIG_CONTEXT.to_vec();
+    m.extend(crate::canon::sha256_hex(to_json(&u)?.as_bytes()).as_bytes());
+    Ok(m)
+}
+
+/// A new signing key (PKCS#8 bytes, to keep in the keychain).
+pub fn new_key() -> Result<Vec<u8>, String> {
+    let rng = ring::rand::SystemRandom::new();
+    ring::signature::Ed25519KeyPair::generate_pkcs8(&rng)
+        .map(|k| k.as_ref().to_vec())
+        .map_err(|_| "a signing key could not be made".to_string())
+}
+
+/// A signing key's public half, hex.
+pub fn public_key(pkcs8: &[u8]) -> Result<String, String> {
+    use ring::signature::KeyPair;
+    let k = ring::signature::Ed25519KeyPair::from_pkcs8(pkcs8)
+        .map_err(|_| "the signing key is not readable".to_string())?;
+    Ok(hex::encode(k.public_key().as_ref()))
+}
+
+/// Sign a shared file with a key (PKCS#8).
+pub fn sign(s: &mut ShareFile, pkcs8: &[u8]) -> Result<(), String> {
+    let k = ring::signature::Ed25519KeyPair::from_pkcs8(pkcs8)
+        .map_err(|_| "the signing key is not readable".to_string())?;
+    let msg = signed_message(s)?;
+    s.signature = Some(ShareSignature {
+        key: public_key(pkcs8)?,
+        sig: hex::encode(k.sign(&msg).as_ref()),
+    });
+    Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Signed {
+    Unsigned,
+    /// A good signature by this key (hex).
+    Valid(String),
+    /// A signature that doesn't match the file or isn't readable.
+    Invalid,
+}
+
+pub fn verify(s: &ShareFile) -> Signed {
+    let Some(sig) = &s.signature else {
+        return Signed::Unsigned;
+    };
+    let (Ok(key), Ok(bytes), Ok(msg)) = (
+        hex::decode(&sig.key),
+        hex::decode(&sig.sig),
+        signed_message(s),
+    ) else {
+        return Signed::Invalid;
+    };
+    if key.len() != 32 || bytes.len() != 64 {
+        return Signed::Invalid;
+    }
+    match ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, &key)
+        .verify(&msg, &bytes)
+    {
+        Ok(()) => Signed::Valid(sig.key.clone()),
+        Err(_) => Signed::Invalid,
+    }
+}
+
+/// A key's fingerprint, as people read it to each other: the first 16 hex
+/// digits of its SHA-256, in groups of four.
+pub fn fingerprint(key_hex: &str) -> String {
+    let h = crate::canon::sha256_hex(key_hex.to_ascii_lowercase().as_bytes()).to_ascii_uppercase();
+    h.as_bytes()[..16]
+        .chunks(4)
+        .map(|c| std::str::from_utf8(c).unwrap_or(""))
+        .collect::<Vec<_>>()
+        .join("-")
+}
+
+/// A key the person (or their organization) trusts, under a name.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TrustedSender {
+    pub name: String,
+    pub key: String,
+    #[serde(default)]
+    pub added: String,
+}
+
+fn key_ok(key: &str) -> bool {
+    key.len() == 64
+        && key
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+}
+
+/// Where the person's trusted senders are kept (beside their tools).
+pub fn trust_file() -> std::path::PathBuf {
+    let t = tools::tools_dir();
+    t.parent()
+        .map(Path::to_path_buf)
+        .unwrap_or(t)
+        .join("trusted-senders.yaml")
+}
+
+/// The person's trusted senders (unreadable entries left out).
+pub fn trusted(file: &Path) -> Vec<TrustedSender> {
+    std::fs::read_to_string(file)
+        .ok()
+        .and_then(|t| serde_yaml::from_str::<Vec<TrustedSender>>(&t).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|t| key_ok(&t.key) && name_ok(&t.name))
+        .collect()
+}
+
+fn name_ok(name: &str) -> bool {
+    !name.trim().is_empty()
+        && name.chars().count() <= 80
+        && !name.contains('\n')
+        && tools::plain_chars(name).is_ok()
+}
+
+/// Trust a key under a name (replacing an earlier name for it).
+pub fn trust(file: &Path, name: &str, key: &str, now: &str) -> Result<(), String> {
+    let name = name.trim();
+    if !name_ok(name) {
+        return Err("give the sender's name: one plain line of at most 80 characters".into());
+    }
+    if !key_ok(key) {
+        return Err("that is not a sharing key".into());
+    }
+    let mut all = trusted(file);
+    all.retain(|t| t.key != key);
+    all.push(TrustedSender {
+        name: name.to_string(),
+        key: key.to_string(),
+        added: now.to_string(),
+    });
+    let text = serde_yaml::to_string(&all).map_err(|e| e.to_string())?;
+    tools::write_atomic(file, text.as_bytes())
+}
+
+/// Stop trusting a key.
+pub fn untrust(file: &Path, key: &str) -> Result<(), String> {
+    let mut all = trusted(file);
+    let n = all.len();
+    all.retain(|t| t.key != key);
+    if all.len() == n {
+        return Err("that key is not one you trust".into());
+    }
+    let text = serde_yaml::to_string(&all).map_err(|e| e.to_string())?;
+    tools::write_atomic(file, text.as_bytes())
+}
+
+/// Who signed a shared file, as the recipient should be told: `status` is
+/// `unsigned`, `invalid`, `trusted` (with `name`, and `by`: `you` or
+/// `organization`) or `unknown` (a good signature by a key not trusted).
+pub fn signer(s: &ShareFile, mine: &[TrustedSender], org: &[TrustedSender]) -> serde_json::Value {
+    use serde_json::json;
+    match verify(s) {
+        Signed::Unsigned => json!({"status": "unsigned"}),
+        Signed::Invalid => json!({"status": "invalid"}),
+        Signed::Valid(key) => {
+            let fp = fingerprint(&key);
+            if let Some(t) = org.iter().find(|t| t.key == key) {
+                json!({"status": "trusted", "by": "organization", "name": t.name, "key": key, "fingerprint": fp})
+            } else if let Some(t) = mine.iter().find(|t| t.key == key) {
+                json!({"status": "trusted", "by": "you", "name": t.name, "key": key, "fingerprint": fp})
+            } else {
+                json!({"status": "unknown", "key": key, "fingerprint": fp})
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod signing_tests {
+    use super::*;
+
+    fn file() -> ShareFile {
+        ShareFile {
+            format: FORMAT.into(),
+            version: VERSION,
+            kind: "tool".into(),
+            shared_by: "kevin".into(),
+            shared_at: "2026-11-08T09:00:00Z".into(),
+            columbus: "0.14.0".into(),
+            tools: vec![],
+            workflow: None,
+            workflow_sha256: None,
+            signature: None,
+        }
+    }
+
+    #[test]
+    fn a_signature_covers_the_whole_file() {
+        let key = new_key().unwrap();
+        let mut f = file();
+        assert_eq!(verify(&f), Signed::Unsigned);
+        sign(&mut f, &key).unwrap();
+        let pk = public_key(&key).unwrap();
+        assert_eq!(verify(&f), Signed::Valid(pk.clone()));
+        // Read back from its JSON, it still verifies.
+        let back = parse(&to_json(&f).unwrap());
+        if let Ok(b) = back {
+            assert_eq!(verify(&b), Signed::Valid(pk.clone()));
+        }
+        // Any change breaks it; so does another key's name on it.
+        let mut changed = f.clone();
+        changed.shared_by = "someone else".into();
+        assert_eq!(verify(&changed), Signed::Invalid);
+        let mut swapped = f.clone();
+        swapped.signature.as_mut().unwrap().key = public_key(&new_key().unwrap()).unwrap();
+        assert_eq!(verify(&swapped), Signed::Invalid);
+        assert_eq!(fingerprint(&pk).len(), 19);
+    }
+
+    #[test]
+    fn trusted_senders_are_named_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("t.yaml");
+        let pk = public_key(&new_key().unwrap()).unwrap();
+        assert!(trust(&f, "Ana\u{202e}", &pk, "now").is_err());
+        assert!(trust(&f, "Ana", "zz", "now").is_err());
+        trust(&f, "Ana", &pk, "now").unwrap();
+        trust(&f, "Ana Ruiz", &pk, "now").unwrap();
+        let t = trusted(&f);
+        assert_eq!(t.len(), 1);
+        assert_eq!(t[0].name, "Ana Ruiz");
+        let mut s = file();
+        let k = new_key().unwrap();
+        sign(&mut s, &k).unwrap();
+        assert_eq!(signer(&s, &t, &[])["status"], "unknown");
+        trust(&f, "Bo", &public_key(&k).unwrap(), "now").unwrap();
+        assert_eq!(signer(&s, &trusted(&f), &[])["name"], "Bo");
+        untrust(&f, &public_key(&k).unwrap()).unwrap();
+        assert_eq!(trusted(&f).len(), 1);
     }
 }

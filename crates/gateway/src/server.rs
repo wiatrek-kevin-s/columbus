@@ -512,6 +512,8 @@ pub struct State {
     pub plugins: Arc<crate::plugins::Plugins>,
     /// The person's own tools, read again whenever their folder changes.
     pub tools: crate::personal_tools::PersonalTools,
+    /// Tools the organization installed for everyone, read the same way.
+    pub org_tools: crate::personal_tools::PersonalTools,
     /// `describe_dataset` answers, per (connection, dataset), for this session.
     /// Keyed by (settings version, connection, dataset).
     pub datasets: std::sync::Mutex<std::collections::HashMap<(u64, String, String), Value>>,
@@ -679,12 +681,22 @@ impl State {
         notes.extend(plugins.notes.iter().cloned());
         let mut taken = server_ids.clone();
         taken.extend(plugins.all().iter().map(|p| p.id().to_string()));
+        let org_tools = crate::personal_tools::PersonalTools::new(
+            columbus_shared::tools::org_tools_dir(),
+            paths.python.clone(),
+            host_script.clone(),
+            sandbox.root().to_path_buf(),
+            taken.clone(),
+            true,
+        );
+        org_tools.refresh(&policy);
         let tools = crate::personal_tools::PersonalTools::new(
             paths.tools.clone(),
             paths.python.clone(),
             host_script,
             sandbox.root().to_path_buf(),
             taken,
+            false,
         );
         tools.refresh(&policy);
         let context = if paths.context.join("pack.yaml").is_file() {
@@ -712,6 +724,7 @@ impl State {
             broker,
             plugins: Arc::new(plugins),
             tools,
+            org_tools,
             context,
             datasets: Default::default(),
             columns: Default::default(),
@@ -1205,6 +1218,7 @@ impl Gateway {
             st.refresh();
             // Tools the person installed or removed in the app, from this call on.
             st.tools.refresh(&st.policy());
+            st.org_tools.refresh(&st.policy());
         })
         .await
         {
@@ -1629,11 +1643,21 @@ impl Gateway {
         &self,
     ) -> Vec<(Arc<crate::plugins::Plugins>, Arc<crate::plugins::Plugin>)> {
         let org = self.state.plugins.clone();
+        let everyone = self.state.org_tools.current();
         let mine = self.state.tools.current();
+        // The organization's tool wins over a personal one with its id.
+        let theirs: std::collections::BTreeSet<String> =
+            everyone.all().iter().map(|p| p.id().to_string()).collect();
         org.all()
             .iter()
             .map(|p| (org.clone(), p.clone()))
-            .chain(mine.all().iter().map(|p| (mine.clone(), p.clone())))
+            .chain(everyone.all().iter().map(|p| (everyone.clone(), p.clone())))
+            .chain(
+                mine.all()
+                    .iter()
+                    .filter(|p| !theirs.contains(p.id()))
+                    .map(|p| (mine.clone(), p.clone())),
+            )
             .collect()
     }
 
@@ -1666,7 +1690,9 @@ impl Gateway {
             out.push(ProviderCard {
                 id: p.id().to_string(),
                 name: p.manifest.display_name(),
-                kind: if p.personal_tool {
+                kind: if p.org_tool {
+                    "organization"
+                } else if p.personal_tool {
                     "personal"
                 } else {
                     "native"
@@ -2043,7 +2069,9 @@ impl Gateway {
                     ));
                 };
                 let mut description = crate::plugins::describe_text(t);
-                if pl.personal_tool {
+                if pl.org_tool {
+                    description.push_str("\n\nThis tool was installed for everyone by the person's organization. It runs confined (no network; it reads only the inputs it is given) and needs no approval to run.");
+                } else if pl.personal_tool {
                     description.push_str("\n\nThis is one of the person's own tools: proposed by an assistant with propose_tool and installed by the person. It runs confined (no network; it reads only the inputs it is given) and needs no approval to run.");
                 }
                 let detail = ToolDetail {

@@ -19,6 +19,8 @@ chrono.workspace = true
 sqlparser.workspace = true
 uuid.workspace = true
 schemars.workspace = true
+# Ed25519 signatures on shared files.
+ring = "0.17"
 
 [dev-dependencies]
 tempfile.workspace = true

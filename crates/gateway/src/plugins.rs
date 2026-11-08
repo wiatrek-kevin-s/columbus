@@ -703,6 +703,9 @@ pub struct Plugin {
     /// A personal tool: proposed by an assistant with `propose_tool` and
     /// installed by the person in the Columbus app (see personal_tools.rs).
     pub personal_tool: bool,
+    /// A tool in the personal-tool format that the organization installed
+    /// for everyone (its tools folder, approved by its administrator).
+    pub org_tool: bool,
     /// The name of its own folder in the workspace (`plugins/<folder>`):
     /// its id, or for a proposed tool's test run an id of its own, so a test
     /// never shares a folder with the installed tool.
@@ -943,6 +946,7 @@ impl Plugins {
                     hash,
                     personal,
                     personal_tool: false,
+                    org_tool: false,
                     folder,
                     gate,
                     confine,
@@ -976,7 +980,13 @@ impl Plugins {
         workspace: PathBuf,
         taken: &BTreeSet<String>,
         reuse: &[Arc<Plugin>],
+        org: bool,
     ) -> Self {
+        let what = if org {
+            "Organization tool"
+        } else {
+            "Personal tool"
+        };
         use columbus_shared::tools;
         let mut notes = Vec::new();
         let mut plugins: Vec<Arc<Plugin>> = Vec::new();
@@ -988,7 +998,7 @@ impl Plugins {
             memory_mb: policy.plugins.memory_mb,
             notes,
         };
-        if !policy.allow_personal_tools {
+        if (org && !policy.allow_org_tools) || (!org && !policy.allow_personal_tools) {
             return host(plugins, notes);
         }
         let approvals = tools::read_approvals(root);
@@ -1005,7 +1015,7 @@ impl Plugins {
                 .and_then(|m| std::fs::read(dir.join(tools::ENTRY)).map(|e| (m, e)));
             let Ok((mtext, entry)) = read else {
                 notes.push(format!(
-                    "Personal tool {} not loaded: its files cannot be read.",
+                    "{what} {} not loaded: its files cannot be read.",
                     v.id
                 ));
                 continue;
@@ -1016,13 +1026,13 @@ impl Plugins {
             {
                 Ok(m) => m,
                 Err(e) => {
-                    notes.push(format!("Personal tool {} not loaded: {e}", v.id));
+                    notes.push(format!("{what} {} not loaded: {e}", v.id));
                     continue;
                 }
             };
             if taken.contains(&manifest.id) {
                 notes.push(format!(
-                    "Personal tool {:?} not loaded: another provider uses that id.",
+                    "{what} {:?} not loaded: another provider uses that id.",
                     manifest.id
                 ));
                 continue;
@@ -1052,8 +1062,9 @@ impl Plugins {
                 manifest,
                 dir,
                 hash,
-                personal: true,
+                personal: !org,
                 personal_tool: true,
+                org_tool: org,
                 gate,
                 confine: confine.as_ref().ok().cloned(),
                 worker: OnceCell::new(),
@@ -1099,6 +1110,7 @@ impl Plugins {
             hash,
             personal: true,
             personal_tool: true,
+            org_tool: false,
             gate: None,
             confine: Some((launcher, columbus_confine::Level::A)),
             worker: OnceCell::new(),

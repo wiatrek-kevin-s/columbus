@@ -1323,6 +1323,23 @@ impl Gateway {
                 ),
             ));
         }
+        if self
+            .state
+            .org_tools
+            .current()
+            .all()
+            .iter()
+            .any(|p| p.id() == built.id)
+        {
+            return Err(self.deny(
+                &ctx,
+                rec,
+                format!(
+                    "your organization installed a tool {} for everyone; use it, or choose another name",
+                    built.id
+                ),
+            ));
+        }
 
         // The code: read by the engine (parsed, never run).
         let lint = match self

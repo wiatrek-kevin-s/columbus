@@ -79,13 +79,36 @@ pub async fn import(request: &str) -> anyhow::Result<()> {
 struct Seen {
     file_sha: Option<String>,
     from: Option<String>,
+    signer: Option<String>,
     hashes: Vec<String>,
+}
+
+/// Who signed a shared file, in words for the audit and the proposal.
+pub fn signer_text(s: &Value) -> String {
+    let fp = s["fingerprint"].as_str().unwrap_or("");
+    match s["status"].as_str() {
+        Some("trusted") => format!(
+            "signed by {} (key {fp}, trusted by {})",
+            s["name"].as_str().unwrap_or(""),
+            if s["by"] == "organization" {
+                "the organization"
+            } else {
+                "the person"
+            }
+        ),
+        Some("unknown") => format!("signed by a key not trusted here ({fp})"),
+        Some("invalid") => "with a signature that doesn't match it".into(),
+        _ => "not signed".into(),
+    }
 }
 
 fn record(state: &State, seen: &Seen, decision: &str, reason: String) -> Result<(), String> {
     let mut why = reason;
     if let Some(f) = &seen.from {
         why = format!("{why} (the file says it is from {f})");
+    }
+    if let Some(sg) = &seen.signer {
+        why = format!("{why}; {sg}");
     }
     if !seen.hashes.is_empty() {
         why = format!("{why}; contents {}", seen.hashes.join(", "));
@@ -271,6 +294,22 @@ async fn check(state: &State, request: &str, seen: &mut Seen) -> Result<Plan, St
     }
     let shared = share::parse_bytes(&bytes)?;
     seen.from = Some(shared.shared_by.clone());
+    let signer = share::signer(
+        &shared,
+        &share::trusted(&share::trust_file()),
+        &state.settings().policy.share_signers,
+    );
+    seen.signer = Some(signer_text(&signer));
+    match signer["status"].as_str() {
+        Some("invalid") => {
+            return Err("its signature doesn't match it: the file was changed after it was signed, so it can't be opened".into())
+        }
+        Some("trusted") => {}
+        _ if state.settings().policy.require_signed_shares => {
+            return Err("your organization opens only shared files signed by someone you or it trust (require_signed_shares), and this one isn't".into())
+        }
+        _ => {}
+    }
     seen.hashes = shared
         .tools
         .iter()
@@ -325,6 +364,7 @@ async fn check(state: &State, request: &str, seen: &mut Seen) -> Result<Plan, St
             .take(120)
             .collect::<String>(),
         "file_sha256": file_sha,
+        "signed": seen.signer,
     });
     let waiting_tools: BTreeSet<String> = store::list_proposals(tools_root)
         .into_iter()
@@ -359,41 +399,7 @@ async fn check(state: &State, request: &str, seen: &mut Seen) -> Result<Plan, St
                 built.id
             ));
         }
-        let lint = state
-            .worker
-            .core(
-                "lint_tool",
-                json!({"code": args.code}),
-                std::time::Duration::from_secs(30),
-            )
-            .await
-            .map_err(|e| format!("{label}: its code could not be checked: {e}"))?;
-        let line = |e: &Value| {
-            format!(
-                "line {}: {}",
-                e["line"].as_u64().unwrap_or(0),
-                e["message"].as_str().unwrap_or("")
-            )
-        };
-        let mut problems: Vec<String> = lint["errors"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .map(line)
-            .collect();
-        let mut warnings: Vec<String> = lint["warnings"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .map(line)
-            .collect();
-        crate::propose_tool::compare_uses(&args, &lint, &mut problems, &mut warnings);
-        if !problems.is_empty() {
-            return Err(format!(
-                "{label}: its code breaks Columbus's rules for tools:\n- {}",
-                problems.join("\n- ")
-            ));
-        }
+        let warnings = lint_tool(state, &args, &label).await?;
         let replaces = store::list_installed(tools_root)
             .into_iter()
             .find(|x| x.id == built.id)
@@ -486,4 +492,49 @@ async fn check(state: &State, request: &str, seen: &mut Seen) -> Result<Plan, St
         workflow,
         already,
     })
+}
+
+/// A tool's code, checked as propose_tool checks it (Columbus's rules for
+/// tools, and that it uses what its manifest says): its warnings, or why not.
+pub(crate) async fn lint_tool(
+    state: &State,
+    args: &crate::propose_tool::ProposeToolArgs,
+    label: &str,
+) -> Result<Vec<String>, String> {
+    let lint = state
+        .worker
+        .core(
+            "lint_tool",
+            json!({"code": args.code}),
+            std::time::Duration::from_secs(30),
+        )
+        .await
+        .map_err(|e| format!("{label}: its code could not be checked: {e}"))?;
+    let line = |e: &Value| {
+        format!(
+            "line {}: {}",
+            e["line"].as_u64().unwrap_or(0),
+            e["message"].as_str().unwrap_or("")
+        )
+    };
+    let mut problems: Vec<String> = lint["errors"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(line)
+        .collect();
+    let mut warnings: Vec<String> = lint["warnings"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(line)
+        .collect();
+    crate::propose_tool::compare_uses(args, &lint, &mut problems, &mut warnings);
+    if !problems.is_empty() {
+        return Err(format!(
+            "{label}: its code breaks Columbus's rules for tools:\n- {}",
+            problems.join("\n- ")
+        ));
+    }
+    Ok(warnings)
 }

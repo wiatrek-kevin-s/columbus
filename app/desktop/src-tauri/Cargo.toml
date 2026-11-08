@@ -26,6 +26,7 @@ serde_yaml = "0.9"
 tauri-plugin-dialog = "=2.8.4"
 tokio = { version = "1", features = ["sync", "time"] }
 keyring-core = "1"
+hex = "0.4"
 # Random challenges for connection tests.
 uuid = { version = "1", features = ["v4"] }
 

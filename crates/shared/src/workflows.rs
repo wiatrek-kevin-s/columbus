@@ -698,10 +698,17 @@ pub fn fingerprint(file: &[u8], tool_hashes: &BTreeMap<String, String>) -> Strin
 /// The installed hash of each personal tool `wf` uses, or why one is not
 /// ready.
 pub fn tool_hashes(wf: &Workflow, tools_root: &Path) -> Result<BTreeMap<String, String>, String> {
+    // The organization's tool of an id is the one that runs, as in a
+    // session; then the person's own.
+    let org = tools::list_installed(&tools::org_tools_dir());
     let installed = tools::list_installed(tools_root);
     let mut out = BTreeMap::new();
     for id in wf.personal_tools() {
-        match installed.iter().find(|t| t.id == id) {
+        let found = org
+            .iter()
+            .find(|t| t.id == id && t.state.as_deref() == Some("ready"))
+            .or_else(|| installed.iter().find(|t| t.id == id));
+        match found {
             Some(t) if t.state.as_deref() == Some("ready") => {
                 out.insert(id, t.hash.clone());
             }
