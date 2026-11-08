@@ -249,10 +249,20 @@ async fn gdb_export() {
     assert!(share.join("crash_hotspots.prov.json").is_file());
     let files = x["result"]["files"].as_array().unwrap();
     assert!(files.len() > 1, "{x}");
-    assert!(files
-        .iter()
-        .all(|f| Path::new(f["path"].as_str().unwrap()).starts_with(&gdb)
-            && f["sha256"].as_str().unwrap().len() == 64));
+    // Every format reports paths in the export folder's canonical form
+    // (macOS /private/var, Windows \\?\ and long names), so compare with
+    // the .gdb folder's canonical path.
+    let gdb_real = gdb.canonicalize().unwrap();
+    assert!(
+        files.iter().all(
+            |f| Path::new(f["path"].as_str().unwrap()).starts_with(&gdb_real)
+                && f["sha256"].as_str().unwrap().len() == 64
+        ),
+        "{x}"
+    );
+    for f in files {
+        assert!(Path::new(f["path"].as_str().unwrap()).is_file(), "{f}");
+    }
     let info = probe(
         &py,
         "import sys, pyogrio\nl = pyogrio.list_layers(sys.argv[1])\ni = pyogrio.read_info(sys.argv[1])\nprint(len(l), l[0][0], i['features'], i['crs'])",
