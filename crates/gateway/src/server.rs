@@ -1487,7 +1487,13 @@ impl Gateway {
                     "status": v.status.as_str(),
                     "python_version": e.probe.python_version,
                     "arcpy": e.arcpy_line(),
-                    "confinement": e.confinement.as_str(),
+                    // REQ-16: "ArcGIS Pro licence: Advanced", or the
+                    // not-initialized sentence; null without arcpy.
+                    "licence": e.licence_line(),
+                    // D-13: arcpy and trusted are experimental until H-2.
+                    "trust_line": e.trust_line(),
+                    "experimental": e.experimental(),
+                    "confinement": if e.trust == columbus_shared::environments::Trust::Trusted { "none" } else { e.confinement.as_str() },
                     "description": e.description,
                     "reason": v.status.reason().map(|r| if matches!(v.status, columbus_shared::environments::Status::Changed(_)) {
                         format!("{r}; the person must {}", columbus_shared::environments::CONFIRM_AGAIN)

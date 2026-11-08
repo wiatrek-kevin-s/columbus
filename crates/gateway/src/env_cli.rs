@@ -6,7 +6,6 @@
 //! of this.
 
 use std::path::PathBuf;
-use std::time::Duration;
 
 use anyhow::{anyhow, bail, Result};
 use columbus_shared::environments::{self as envs, Confinement, CreatedBy, Registration, Trust};
@@ -27,23 +26,24 @@ fn show_probe(found: &envs::Found) {
     if let Some(cm) = &found.conda_meta {
         println!("  conda-meta: {} files", cm.len());
     }
-    println!(
-        "  arcpy: {}",
-        match (found.arcpy, &found.licence) {
-            (false, _) => "no".to_string(),
-            (true, Some(l)) => format!("yes, licence {l}"),
-            (true, None) => "yes, licence unknown".to_string(),
-        }
-    );
+    if found.arcpy {
+        println!("  arcpy: yes {}", envs::EXPERIMENTAL);
+        println!(
+            "  ArcGIS Pro licence: {}",
+            envs::licence_words(found.licence.as_deref())
+        );
+    } else {
+        println!("  arcpy: no");
+    }
 }
 
 fn probe(python: &std::path::Path) -> Result<envs::Found> {
     println!(
         "Probing {} (at most {} s)...",
         python.display(),
-        envs::PROBE_SECONDS
+        envs::probe_limit().as_secs()
     );
-    envs::probe(python, Duration::from_secs(envs::PROBE_SECONDS)).map_err(|e| anyhow!(e))
+    envs::probe(python, envs::probe_limit()).map_err(|e| anyhow!(e))
 }
 
 /// `env add <id> --python <path> [--trust governed|trusted]
@@ -110,6 +110,12 @@ pub fn add(id: &str, rest: &[&str]) -> Result<()> {
             } else {
                 "no network"
             }
+        );
+    } else {
+        println!(
+            "  Trusted {}: scripts in it run unconfined, as you, and every run is approved. {}",
+            envs::EXPERIMENTAL,
+            envs::TRUSTED_CARD
         );
     }
     let typed = crate::review_cli::confirm_typed(&format!(

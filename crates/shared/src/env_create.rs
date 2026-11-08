@@ -1069,7 +1069,7 @@ pub fn approve(
             return Err(failure(&gate, &r.output, &policy.index_hosts));
         }
         drop(gate);
-        let found = envs::probe(&python, Duration::from_secs(envs::PROBE_SECONDS))?;
+        let found = envs::probe(&python, envs::probe_limit())?;
         // What was asked for is what is there.
         let have: BTreeMap<String, String> = found
             .packages
