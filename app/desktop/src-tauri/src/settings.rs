@@ -758,6 +758,11 @@ fn build(form: &ConnForm, old: Option<&Connection>) -> Result<Connection, String
         limits: old.map(|o| o.limits).unwrap_or_default(),
         expires: old.and_then(|o| o.expires),
         description: trimmed(&form.description),
+        // The files settings (F-2) aren't on this form yet.
+        recursive: None,
+        crs: None,
+        x: None,
+        y: None,
     })
 }
 

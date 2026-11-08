@@ -17,8 +17,8 @@
           "expected": "0 failures and 0 'skipping: the GIS engine' lines; database tests may skip locally (CI runs them) and are listed; counts recorded (audit, with the engine: columbus-mcp 136 passed, Python 115 passed)"
         }
       ],
-      "status": "todo",
-      "evidence": ""
+      "status": "done",
+      "evidence": "Access 2026-11-08: push ok (rework/s1-files), Actions runs readable, workflow dispatch ok (CI run 42514607603), merge ok (admin, no branch protection or rulesets on main); Dependabot alerts off, owner replied 'skip'. Baseline at 9749c8f with engine (Python 3.12, COLUMBUS_PYTHON set): cargo test --workspace 287 passed 0 failed, 0 'skipping: the GIS engine' lines, 5 database skips (PG x3, MSSQL, ORA); pytest 149 passed 0 failed, 35 skipped (all database: PG/ORA/MSSQL host unset); CI run 42514607603 green on all 13 jobs."
     },
     {
       "id": "T-2",
@@ -38,8 +38,8 @@
           "expected": "`roads_v2` is listed; the lock file and the outside link are listed under skipped with reasons; the .xls is refused with 'save as .xlsx'"
         }
       ],
-      "status": "todo",
-      "evidence": ""
+      "status": "done",
+      "evidence": "Commit b12ef7d. crates/gateway/tests/files.rs: csv_folder_is_read_buffered_and_exported_under_the_rules (2 datasets, EPSG:4326 points, row filter applied in query_features and sql_select, hidden OWNER refused, reproject+buffer+gpkg export ok) and files_it_cannot_offer_are_skipped_with_the_reason (roads_v2 listed; ~$book.xlsx and outside link under skipped with reasons; .xls skipped and refused with 'save as .xlsx'). Workspace 292 passed 0 failed; pytest 159 passed 35 skipped (database)."
     },
     {
       "id": "T-3",
@@ -63,8 +63,8 @@
           "expected": "a files connection is allowed"
         }
       ],
-      "status": "todo",
-      "evidence": ""
+      "status": "done",
+      "evidence": "Commit 4bfc56c. Python test_files.py 22 passed (Formats, FormatEdges, TypingAndNames, Freshness incl. two-process single rebuild); gateway files.rs 4 passed incl. every_format_lists_describes_and_queries and the_old_file_type_in_policy_allows_files_connections. CSV/XLSX/GeoJSON/FGB/GeoParquet/KML list, describe, query; 000123456 text, 12.500 real; cp1252 with file.encoding warn; Name_2; header-only 0 rows; append seen, touch no rebuild, delete drops dataset, two processes one rebuild; connection_types [file] allows files. A-5 confirmed. Workspace 295 passed; pytest 171 passed 35 skipped."
     },
     {
       "id": "T-4",

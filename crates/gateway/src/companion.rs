@@ -361,7 +361,7 @@ async fn test_connection(
             }
             None => None,
         };
-        let handle = crate::server::connection_handle(&conn, secret);
+        let handle = crate::server::connection_handle(&conn, secret, &s.paths.workspaces);
         let reply = s
             .worker
             .core(

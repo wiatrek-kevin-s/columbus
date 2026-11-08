@@ -280,6 +280,12 @@ def catalog_details(params: dict[str, Any]) -> dict[str, Any]:
         out = _ms(conn, dataset, timeout_s)
     elif kind in w.ESRI_KINDS:
         out = _esri(conn, dataset, timeout_s)
+    elif kind in w.FILES_KINDS:
+        # The cache GeoPackage, brought up to date first.
+        import columbus_files
+
+        columbus_files.sync(conn, timeout_s)
+        out = _sqlite(columbus_files.cache_conn(conn), dataset, timeout_s)
     else:
         raise w.WorkerError(w.UNSUPPORTED, f"catalog_details does not support {conn['kind']!r}")
     # Distinct values of short fields, by the gateway's checked SELECTs:

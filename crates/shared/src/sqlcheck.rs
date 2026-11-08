@@ -48,7 +48,9 @@ impl SqlDialect {
             "postgis" | "postgres" | "postgresql" => SqlDialect::Postgres,
             "sqlserver" | "mssql" | "azure-sql" | "sde-sqlserver" => SqlDialect::MsSql,
             // Shapefiles and file geodatabases run in GDAL's SQLite dialect.
-            "gpkg" | "geopackage" | "sqlite" | "spatialite" | "shapefile" | "filegdb" => {
+            "gpkg" | "geopackage" | "sqlite" | "spatialite" | "shapefile" | "filegdb"
+            // A files connection reads its cache GeoPackage.
+            | "files" => {
                 SqlDialect::Sqlite
             }
             "duckdb" | "geoparquet" => SqlDialect::DuckDb,
@@ -968,7 +970,20 @@ fn check_tables_and_functions(
                 // Not a table the connection lists (system catalogs, other
                 // schemas, tables the login cannot see): not allowed.
                 Err(e) if e.starts_with("cannot check") => {
-                    problem = Some(Denied::Dataset(normalize_identifier(&rel.to_string())));
+                    let written = normalize_identifier(&rel.to_string());
+                    if let Some(why) = catalog.skipped.get(&written.to_lowercase()) {
+                        problem = Some(Denied::Query(why.clone()));
+                        return ControlFlow::Break(());
+                    }
+                    // A files dataset whose file has gone (R-7c), or that
+                    // never existed, under a name the allow list permits.
+                    if crate::policy::is_files(&access.kind) && access.dataset_allowed(&written) {
+                        problem = Some(Denied::Query(format!(
+                            "no dataset {written} on this connection"
+                        )));
+                        return ControlFlow::Break(());
+                    }
+                    problem = Some(Denied::Dataset(written));
                     return ControlFlow::Break(());
                 }
                 Err(e) => {
@@ -1172,6 +1187,10 @@ pub struct Catalog {
     /// (relation's parts joined by ".", column), both in lower case: a row
     /// filter naming one could keep rows it means to drop, so it is refused.
     pub text_dates: std::collections::BTreeSet<(String, String)>,
+    /// Names a files connection would give files it doesn't offer (lock
+    /// files, `.xls`, links out of the folder), in lower case, with why: a
+    /// query naming one is refused with that reason.
+    pub skipped: std::collections::BTreeMap<String, String>,
 }
 
 /// No catalog: table names are taken as written. For unit tests and
@@ -1181,6 +1200,7 @@ pub static NO_CATALOG: Catalog = Catalog {
     relations: Vec::new(),
     extension_functions: std::collections::BTreeMap::new(),
     text_dates: std::collections::BTreeSet::new(),
+    skipped: std::collections::BTreeMap::new(),
 };
 
 /// Does a name part as the query writes it denote `listed`, by the
@@ -1716,6 +1736,7 @@ datasets:
             relations,
             extension_functions,
             text_dates: Default::default(),
+            skipped: Default::default(),
         }
     }
 
@@ -1770,6 +1791,7 @@ datasets:
             ],
             extension_functions: Default::default(),
             text_dates: Default::default(),
+            skipped: Default::default(),
         };
         for (kind, q) in [
             ("gpkg", ('"', '"')),
@@ -2699,7 +2721,30 @@ mod filter_binding_tests {
             }],
             extension_functions: Default::default(),
             text_dates: Default::default(),
+            skipped: Default::default(),
         }
+    }
+
+    #[test]
+    fn a_skipped_file_is_refused_with_its_reason() {
+        let a = access("files", "STATUS <> 'R'");
+        let mut cat = catalog(&["crashes"], &["id", "STATUS"]);
+        cat.skipped.insert(
+            "book".into(),
+            "book.xls is not offered: save as .xlsx".into(),
+        );
+        let e = check_select("SELECT * FROM Book", &a, 10, &cat)
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("save as .xlsx"), "{e}");
+        // The cache's own tables are never datasets.
+        for sql in [
+            "SELECT * FROM gpkg_contents",
+            "SELECT * FROM columbus_sources",
+        ] {
+            assert!(check_select(sql, &a, 10, &cat).is_err(), "{sql}");
+        }
+        assert!(check_select("SELECT id FROM crashes", &a, 10, &cat).is_ok());
     }
 
     #[test]

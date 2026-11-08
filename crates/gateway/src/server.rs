@@ -60,6 +60,7 @@ const ENGINE_READY: &[&str] = &[
     "rasters",
     "shapefile",
     "filegdb",
+    "files",
 ];
 
 // ---------- standard output envelope ----------
@@ -427,6 +428,10 @@ pub struct DatasetList {
     pub datasets: Vec<Value>,
     /// Datasets present but outside this connection's allow list (count only).
     pub not_allowed: usize,
+    /// Files a files connection doesn't offer, each with its `file`, the
+    /// dataset `name` it would have had and the `reason` (F-1, R-16).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skipped: Option<Vec<Value>>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -580,6 +585,7 @@ impl State {
             );
         }
         let policy = settings.policy.clone();
+        sweep_files_caches(&paths.workspaces, &settings.connections);
         let session = format!(
             "{}-{}",
             Local::now().format("%Y%m%d-%H%M%S"),
@@ -829,11 +835,7 @@ fn tightened(
     let mut out = std::collections::BTreeSet::new();
     for c in &old.connections {
         let still = new.connections.iter().find(|n| n.id == c.id);
-        let type_ok = new
-            .policy
-            .connection_types
-            .iter()
-            .any(|t| t.eq_ignore_ascii_case(&c.kind));
+        let type_ok = columbus_shared::policy::type_allowed(&new.policy.connection_types, &c.kind);
         match still {
             Some(n) if type_ok && reach(n) == reach(c) => {}
             _ => {
@@ -973,6 +975,26 @@ impl State {
     }
 }
 
+/// Delete the files caches of connections that no longer exist (removed
+/// while no session was running, or tried out in the app and never saved).
+fn sweep_files_caches(workspaces: &std::path::Path, connections: &[Connection]) {
+    let dir = workspaces.join("cache").join("files");
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return;
+    };
+    let keep: std::collections::BTreeSet<PathBuf> = connections
+        .iter()
+        .filter(|c| columbus_shared::policy::is_files(&c.kind))
+        .map(|c| files_cache_path(workspaces, &c.id))
+        .collect();
+    let stale: Vec<PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|e| e == "gpkg") && !keep.contains(p))
+        .collect();
+    let _ = remove_files(&stale);
+}
+
 /// Delete files (and a GeoPackage's -wal and -shm); the ones still there.
 fn remove_files(paths: &[PathBuf]) -> Vec<PathBuf> {
     let mut failed = Vec::new();
@@ -1109,6 +1131,18 @@ impl State {
             }
             Ok(new) => {
                 let (everything, narrowed) = tightened(&live.settings, &new);
+                // A files connection removed or narrowed loses its cache, as
+                // workspace files made from it do.
+                let caches: Vec<PathBuf> = live
+                    .settings
+                    .connections
+                    .iter()
+                    .filter(|c| columbus_shared::policy::is_files(&c.kind))
+                    .filter(|c| {
+                        everything || narrowed.contains(&columbus_flow::connection_label(&c.id))
+                    })
+                    .map(|c| files_cache_path(&self.paths.workspaces, &c.id))
+                    .collect();
                 let shrank = limits_shrank(&live.settings.policy, &new.policy);
                 live.policy_required |= new.source.found;
                 live.settings = Arc::new(new);
@@ -1140,6 +1174,10 @@ impl State {
                 let (dbs, dbs_failed) = self.withdraw_project_dbs(everything, &narrowed);
                 removed.extend(dbs);
                 failed.extend(dbs_failed);
+                let caches: Vec<PathBuf> = caches.into_iter().filter(|p| p.exists()).collect();
+                let caches_failed = remove_files(&caches);
+                removed.extend(caches.into_iter().filter(|p| !caches_failed.contains(p)));
+                failed.extend(caches_failed);
                 live.leftovers.extend(failed.iter().cloned());
                 Reload::Applied {
                     generation: live.generation,
@@ -1245,9 +1283,51 @@ impl Gateway {
     }
 }
 
-pub(crate) fn connection_handle(conn: &Connection, secret: Option<String>) -> Value {
+/// Where a files connection's cache GeoPackage lives:
+/// `<workspaces root>/cache/files/<connection id>.gpkg`. An id that isn't
+/// plain lower-case letters, digits, `-` and `_` is named by its hash
+/// instead, so no id can reach outside the folder and two ids that differ
+/// only by case never share a file on Windows or macOS.
+pub(crate) fn files_cache_path(workspaces: &std::path::Path, id: &str) -> PathBuf {
+    let plain = !id.is_empty()
+        && id.len() <= 64
+        && !id.starts_with(['-', '.'])
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_');
+    let name = if plain {
+        id.to_string()
+    } else {
+        use sha2::Digest;
+        let h = sha2::Sha256::digest(id.as_bytes());
+        let hex: String = h.iter().take(8).map(|b| format!("{b:02x}")).collect();
+        format!("id-{hex}")
+    };
+    workspaces
+        .join("cache")
+        .join("files")
+        .join(format!("{name}.gpkg"))
+}
+
+pub(crate) fn connection_handle(
+    conn: &Connection,
+    secret: Option<String>,
+    workspaces: &std::path::Path,
+) -> Value {
     let mut h = json!({"kind": conn.kind});
     let m = h.as_object_mut().expect("object");
+    if columbus_shared::policy::is_files(&conn.kind) {
+        m.insert(
+            "cache".into(),
+            json!(files_cache_path(workspaces, &conn.id).display().to_string()),
+        );
+        m.insert("recursive".into(), json!(conn.recursive.unwrap_or(false)));
+        for (k, v) in [("crs", &conn.crs), ("x", &conn.x), ("y", &conn.y)] {
+            if let Some(v) = v {
+                m.insert(k.into(), json!(v));
+            }
+        }
+    }
     for (k, v) in [
         ("path", conn.path.clone()),
         ("host", conn.host.clone()),
@@ -1509,11 +1589,26 @@ impl Gateway {
                     .collect::<Vec<_>>()
             })
             .collect();
+        // A files connection's skipped files, so naming one is refused with
+        // the reason (".xls: save as .xlsx") rather than "not allowed".
+        let skipped = reply
+            .get("skipped")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|d| {
+                let name = d.get("name").and_then(Value::as_str)?;
+                let file = d.get("file").and_then(Value::as_str).unwrap_or(name);
+                let why = d.get("reason").and_then(Value::as_str)?;
+                Some((name.to_lowercase(), format!("{file} is not offered: {why}")))
+            })
+            .collect();
         let cat = Catalog {
             resolve: true,
             relations,
             extension_functions,
             text_dates,
+            skipped,
         };
         self.state
             .columns
@@ -1557,7 +1652,11 @@ impl Gateway {
         } else {
             None
         };
-        Ok(connection_handle(conn, secret))
+        Ok(connection_handle(
+            conn,
+            secret,
+            &self.state.paths.workspaces,
+        ))
     }
 
     fn worker_error(e: WorkerError) -> String {
@@ -2303,6 +2402,7 @@ impl Gateway {
                 connection: conn.id.clone(),
                 not_allowed: total - datasets.len(),
                 datasets,
+                skipped: None,
             };
             self.audit(&ctx, rec)?;
             return Ok(out(result));
@@ -2378,11 +2478,24 @@ impl Gateway {
                 }
             }
         }
+        // Skipped files are shown only where their would-be name is allowed,
+        // so the list says no more about the folder than the datasets do.
+        let skipped = reply.get("skipped").and_then(Value::as_array).map(|a| {
+            a.iter()
+                .filter(|d| {
+                    d.get("name")
+                        .and_then(Value::as_str)
+                        .is_some_and(|n| access.dataset_allowed(n))
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+        });
         self.note_read(&conn.id, None, None, None, "list_datasets");
         let result = DatasetList {
             connection: conn.id.clone(),
             not_allowed: total - datasets.len(),
             datasets,
+            skipped,
         };
         self.audit(&ctx, rec)?;
         Ok(out(result))
@@ -3236,5 +3349,31 @@ impl ServerHandler for Gateway {
                  columbus_guide has Columbus's guides (working-with-columbus first; \
                  designing-tools before propose_tool).",
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::files_cache_path;
+    use std::path::Path;
+
+    #[test]
+    fn files_cache_names_stay_in_the_cache_folder() {
+        let ws = Path::new("ws");
+        let dir = ws.join("cache").join("files");
+        assert_eq!(
+            files_cache_path(ws, "crash-csvs"),
+            dir.join("crash-csvs.gpkg")
+        );
+        // Anything but plain lower-case names is hashed: no way out of the
+        // folder, and no two ids differing by case share a file.
+        let a = files_cache_path(ws, "Roads");
+        let b = files_cache_path(ws, "roads");
+        assert_ne!(a, b);
+        for id in ["../../x", "a/b", "C:\\x", "Roads", ".hidden"] {
+            let p = files_cache_path(ws, id);
+            assert_eq!(p.parent(), Some(dir.as_path()), "{id}");
+            assert!(p.file_name().unwrap().to_str().unwrap().starts_with("id-"));
+        }
     }
 }
