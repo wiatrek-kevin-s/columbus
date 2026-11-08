@@ -17,8 +17,8 @@
           "expected": "0 failures and 0 'skipping: the GIS engine' lines; database tests may skip locally (CI runs them) and are listed; counts recorded (audit, with the engine: columbus-mcp 136 passed, Python 115 passed)"
         }
       ],
-      "status": "todo",
-      "evidence": ""
+      "status": "done",
+      "evidence": "Access 2026-11-08: push ok (rework/s1-files), Actions runs readable, workflow dispatch ok (CI run 42514607603), merge ok (admin, no branch protection or rulesets on main); Dependabot alerts off, owner replied 'skip'. Baseline at 9749c8f with engine (Python 3.12, COLUMBUS_PYTHON set): cargo test --workspace 287 passed 0 failed, 0 'skipping: the GIS engine' lines, 5 database skips (PG x3, MSSQL, ORA); pytest 149 passed 0 failed, 35 skipped (all database: PG/ORA/MSSQL host unset); CI run 42514607603 green on all 13 jobs."
     },
     {
       "id": "T-2",
