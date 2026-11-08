@@ -140,6 +140,22 @@ class OracleTests(unittest.TestCase):
     def test_query_layer_streams_in_batches(self):
         streamed_layer(self, ora_conn(), "SELECT id, route_code, owner_name, geom FROM roads.roads WHERE district = 14", "GEOM")
 
+    def test_lrs_routes_keep_their_measures_end_to_end(self):
+        """REQ-24 on Oracle: SDO_GTYPE 3302 routes (x, y, m) through
+        query_layer (in memory and streamed), reproject, join,
+        spatial_join, dissolve, a plugin extract, a personal tool and
+        exports to gpkg, gdb and shp; buffer drops M with a check."""
+        try:
+            import test_measures as tm
+        except ImportError:
+            sys.path.insert(0, HERE)
+            import test_measures as tm
+        if not tm.HAVE_GIS:
+            self.skipTest("GIS engine (with shapely 2.1+) not installed")
+        with tempfile.TemporaryDirectory() as d:
+            tm.measure_chain(self, ora_conn(), "SELECT id, route_id, district, geom FROM roads.routes ORDER BY id",
+                             "GEOM", d, 400, key="ROUTE_ID", district="DISTRICT")
+
     def test_read_limit_on_server_cursor(self):
         r = sel(ora_conn(), "SELECT id FROM roads.roads", max_rows=1000)
         self.assertEqual(r["rows_read"], 1000)

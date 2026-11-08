@@ -572,6 +572,62 @@ def _ewkb(wkb, srid) -> bytes | None:
     return raw[:1] + struct.pack(endian + "I", base | flags) + raw[5:]
 
 
+def _wkb_z_as_m(raw: bytes) -> bytes:
+    """(E)WKB whose third ordinate is a measure written as Z: the same
+    bytes with every type code (nested ones too) saying M instead of Z."""
+    out = bytearray(raw)
+
+    def geom(o: int) -> int:
+        endian = "<" if raw[o] == 1 else ">"
+        (code,) = struct.unpack_from(endian + "I", raw, o + 1)
+        flags, base = code & 0xF0000000, code & 0x0FFFFFFF
+        z = bool(flags & 0x80000000) or 1000 <= base < 2000
+        base %= 1000
+        if z:
+            flags = (flags & ~0x80000000) | 0x40000000
+        struct.pack_into(endian + "I", out, o + 1, base | flags)
+        o += 5
+        if flags & 0x20000000:
+            o += 4
+        width = 8 * (2 + z)
+        count = lambda at: struct.unpack_from(endian + "I", raw, at)[0]  # noqa: E731
+        if base == 1:
+            return o + width
+        if base == 2:
+            return o + 4 + count(o) * width
+        if base == 3:
+            n, o = count(o), o + 4
+            for _ in range(n):
+                o += 4 + count(o) * width
+            return o
+        n, o = count(o), o + 4
+        for _ in range(n):
+            o = geom(o)
+        return o
+
+    geom(0)
+    return bytes(out)
+
+
+def _ora_measured(ewkb: bytes | None, gtype) -> bytes | None:
+    """An Oracle geometry's EWKB with its LRS measures as M. SDO_GTYPE
+    DLTT: an L digit names the measure's dimension. When the database
+    wrote a 3-dimension LRS geometry (3302) as Z, that Z is the measure."""
+    if ewkb is None or not isinstance(gtype, (int, float)) or len(ewkb) < 5:
+        return ewkb
+    g = int(gtype)
+    dims, lrs = g // 1000, (g // 100) % 10
+    if not lrs:
+        return ewkb
+    endian = "<" if ewkb[0] == 1 else ">"
+    (code,) = struct.unpack_from(endian + "I", ewkb, 1)
+    if code & 0x40000000 or (code & 0x0FFFFFFF) >= 2000:
+        return ewkb  # M already
+    if dims == 3 and lrs == 3 and (code & 0x80000000 or 1000 <= (code & 0x0FFFFFFF) < 2000):
+        return _wkb_z_as_m(ewkb)
+    return ewkb
+
+
 def _like_patterns(globs) -> list[str] | None:
     """Dataset allow patterns' schema parts (`ROADS`, `GIS_*`) as LIKE
     patterns, or None when one of them could match any schema."""
@@ -769,6 +825,8 @@ def _ora_fetch(conn: dict[str, Any], sql: str, max_rows: int, timeout_s: float, 
                     if p[0] == "sdo":
                         items.append(f"CASE WHEN {col} IS NULL THEN NULL ELSE MDSYS.SDO_UTIL.TO_WKBGEOMETRY({col}) END AS {_quote_dq(p[1])}")
                         items.append(f"{col}.SDO_SRID AS \"COLUMBUS_SRID_{i}\"")
+                        # The geometry's type: its L digit marks LRS measures.
+                        items.append(f"{col}.SDO_GTYPE AS \"COLUMBUS_GTYPE_{i}\"")
                     elif p[0] == "object":
                         label = f"unsupported: {p[2]}".replace("'", "")
                         items.append(f"CASE WHEN {col} IS NULL THEN NULL ELSE '{label}' END AS {_quote_dq(p[1])}")
@@ -780,13 +838,13 @@ def _ora_fetch(conn: dict[str, Any], sql: str, max_rows: int, timeout_s: float, 
                 raise WorkerError(ENGINE_ERROR, "the statement returned no rows; only a SELECT can run")
             raw_cols = [d.name for d in cur.description]
             if any(p[0] == "sdo" for p in plan):
-                # Output column -> (WKB index, SRID index)
+                # Output column -> (WKB index, SRID index, GTYPE index)
                 out_idx, geoms, j = [], {}, 0
                 for i, p in enumerate(plan):
                     if p[0] == "sdo":
-                        geoms[len(out_idx)] = (j, j + 1)
+                        geoms[len(out_idx)] = (j, j + 1, j + 2)
                         out_idx.append(j)
-                        j += 2
+                        j += 3
                     else:
                         out_idx.append(j)
                         j += 1
@@ -796,8 +854,8 @@ def _ora_fetch(conn: dict[str, Any], sql: str, max_rows: int, timeout_s: float, 
                     out = []
                     for k, idx in enumerate(out_idx):
                         if k in geoms:
-                            w, s = geoms[k]
-                            out.append(_ewkb(r[w], r[s]))
+                            w, s, t = geoms[k]
+                            out.append(_ora_measured(_ewkb(r[w], r[s]), r[t]))
                         else:
                             out.append(r[idx])
                     return out
@@ -1090,7 +1148,8 @@ def _ms_fetch(conn: dict[str, Any], sql: str, max_rows: int, timeout_s: float, k
                 for i, (n, k) in enumerate(cols):
                     c = "columbus_g." + _quote_br(n)
                     if k:
-                        items += [f"{c}.STAsBinary() AS {_quote_br(n)}", f"{c}.STSrid AS [columbus_srid_{i}]"]
+                        # AsBinaryZM, not STAsBinary: Z and M stay (ISO WKB).
+                        items += [f"{c}.AsBinaryZM() AS {_quote_br(n)}", f"{c}.STSrid AS [columbus_srid_{i}]"]
                     else:
                         items.append(f"{c} AS {_quote_br(n)}")
                 run = f"SELECT {', '.join(items)} FROM ({sql}) AS columbus_g"

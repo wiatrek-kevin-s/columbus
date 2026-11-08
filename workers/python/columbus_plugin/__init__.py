@@ -107,11 +107,22 @@ class GeometryError(ValueError):
 
 @dataclass
 class Geometry:
-    """A decoded geometry: its type and coordinates as nested lists of (x, y)."""
+    """A decoded geometry: its type and coordinates as nested lists of (x, y).
+
+    Z and M values, when the geometry has them, are in ``vertices``: every
+    vertex in order as (x, y), (x, y, z), (x, y, m) or (x, y, z, m), as
+    ``has_z`` and ``has_m`` say; ``measures()`` gives the M values alone."""
 
     type: str
     parts: list = field(default_factory=list)  # Point: [(x, y)]; LineString: [[...]]; Polygon: [[ring], ...]; multi: list of those
     srid: int | None = None
+    has_z: bool = False
+    has_m: bool = False
+    vertices: list = field(default_factory=list, repr=False)
+
+    def measures(self) -> list[float]:
+        """The M value of every vertex, in order (empty without M)."""
+        return [v[-1] for v in self.vertices] if self.has_m else []
 
     def points(self) -> Iterator[tuple[float, float]]:
         def walk(v):
@@ -159,7 +170,7 @@ class Geometry:
         return True
 
 
-def _read_wkb(buf: bytes, off: int) -> tuple[Geometry, int]:
+def _read_wkb(buf: bytes, off: int, full: list | None = None) -> tuple[Geometry, int]:
     if off + 5 > len(buf):
         raise GeometryError("truncated WKB")
     endian = "<" if buf[off] == 1 else ">"
@@ -185,11 +196,20 @@ def _read_wkb(buf: bytes, off: int) -> tuple[Geometry, int]:
         raise GeometryError(f"unknown WKB type {code}")
     dims = 2 + has_z + has_m
     pt = struct.Struct(endian + "d" * dims)
+    top = full is None
+    full = [] if full is None else full
+
+    def done(g: Geometry, o: int) -> tuple[Geometry, int]:
+        g.has_z, g.has_m = has_z, has_m
+        if top:
+            g.vertices = full
+        return g, o
 
     def point(o):
         if o + pt.size > len(buf):
             raise GeometryError("truncated WKB")
         v = pt.unpack_from(buf, o)
+        full.append(v)
         return (v[0], v[1]), o + pt.size
 
     def count(o):
@@ -218,19 +238,19 @@ def _read_wkb(buf: bytes, off: int) -> tuple[Geometry, int]:
     t = _TYPES[code]
     if t == "Point":
         p, off = point(off)
-        return Geometry(t, [p], srid), off
+        return done(Geometry(t, [p], srid), off)
     if t == "LineString":
         pts, off = line(off)
-        return Geometry(t, pts, srid), off
+        return done(Geometry(t, pts, srid), off)
     if t == "Polygon":
         rings, off = polygon(off)
-        return Geometry(t, rings, srid), off
+        return done(Geometry(t, rings, srid), off)
     n, off = count(off)
     members = []
     for _ in range(n):
-        g, off = _read_wkb(buf, off)
+        g, off = _read_wkb(buf, off, full)
         members.append(g if t == "GeometryCollection" else (g.parts[0] if g.type == "Point" else g.parts))
-    return Geometry(t, members, srid), off
+    return done(Geometry(t, members, srid), off)
 
 
 def decode_geometry(blob: bytes | memoryview | None, fmt: str = "auto") -> Geometry | None:

@@ -54,7 +54,7 @@ FILES_KINDS = w.FILES_KINDS
 
 # Raise when what a build writes changes, so caches made by an older engine
 # are rebuilt rather than read.
-BUILD = 2
+BUILD = 3  # 3: M values kept (T-19)
 
 # Supported formats: extension -> reader(path, conn, layer). A reader
 # returns a ``Table`` or raises ``Unreadable``.
@@ -483,13 +483,26 @@ def _shapes_to_blobs(shapes, srs_id: int):
 
     real = [s for s in shapes if s is not None and not s.is_empty]
     has_z = bool(real) and bool(shapely.has_z(real).any())
-    wkbs = shapely.to_wkb(shapes, byte_order=1, output_dimension=3 if has_z else 2, flavor="iso")
+    # Dimension 4: each geometry keeps its own Z and M (a 2D one stays 2D).
+    wkbs = shapely.to_wkb(shapes, byte_order=1, output_dimension=4, flavor="iso")
     bounds = shapely.bounds(shapes)
     geoms = [None if s is None else _geom_blob(b, bd, srs_id) for s, b, bd in zip(shapes, wkbs, bounds)]
     kinds = {int(shapely.get_type_id(s)) for s in real}
     geom_type = _TYPE_NAMES.get(kinds.pop(), "GEOMETRY") if len(kinds) == 1 else "GEOMETRY"
     extent = [float(v) for v in shapely.total_bounds(real)] if real else None
     return geoms, geom_type, extent, has_z
+
+
+def _blob_has_m(blob: bytes | None) -> bool:
+    """Whether a GeoPackage blob's (little-endian ISO) WKB has M."""
+    if not blob or len(blob) < 8:
+        return False
+    env = {0: 0, 1: 32, 2: 48, 3: 48, 4: 64}.get((blob[3] >> 1) & 0x07, 0)
+    at = 8 + env
+    if len(blob) < at + 5:
+        return False
+    code = struct.unpack_from("<I" if blob[at] == 1 else ">I", blob, at + 1)[0]
+    return bool(code & 0x40000000) or (code & 0x0FFFFFFF) // 1000 in (2, 3)
 
 
 def _epsg(conn: dict[str, Any]) -> int | None:
@@ -1241,8 +1254,9 @@ def _build(db: sqlite3.Connection, d: dict[str, Any], t: Table, stamp: tuple[str
     if gcol:
         db.execute("INSERT INTO gpkg_contents VALUES (?,?,?,?,?,?,?,?,?,?)",
                    (name, "features", name, "", now, *ext, srs_id))
-        db.execute("INSERT INTO gpkg_geometry_columns VALUES (?,?,?,?,?,0)",
-                   (name, gcol, t.geom_type or "GEOMETRY", srs_id, 1 if t.has_z else 0))
+        has_m = any(_blob_has_m(g) for g in geoms)
+        db.execute("INSERT INTO gpkg_geometry_columns VALUES (?,?,?,?,?,?)",
+                   (name, gcol, t.geom_type or "GEOMETRY", srs_id, 1 if t.has_z else 0, 1 if has_m else 0))
     else:
         db.execute("INSERT INTO gpkg_contents VALUES (?,?,?,?,?,NULL,NULL,NULL,NULL,NULL)", (name, "attributes", name, "", now))
     db.execute(f"INSERT INTO {META} VALUES (?,?,?,?,?,?,?,?,?,?)",
