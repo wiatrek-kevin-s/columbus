@@ -1,12 +1,15 @@
 Columbus {{VERSION}}, a test release. Click a link to download that file.
 
 **New in this version:**
-- **Esri shapefiles and file geodatabases:** two new kinds of connection, added on the Connections page with **Choose folder…**: a folder of shapefiles (each shapefile is a dataset), and a `.gdb` file geodatabase (each feature class or table is a dataset). No ArcGIS is needed: Columbus reads them with the GIS engine it already installs. They follow the same rules as your other connections (allowed datasets, hidden fields, row filters, data groups, the SQL checks), and are read only for now.
-- **One edit to your policy file:** if your `policy.yaml` lists `connection_types`, add `shapefile` and `filegdb` to that line. If you have no policy file, both are allowed already.
-- **Limits:** a shapefile whose name has a dot (like `parcels.2024.shp`) isn't offered, so rename it without dots. A row filter can't use a shapefile date field, because shapefile dates are compared as text. Compressed geodatabases, rasters inside a geodatabase and annotation aren't read yet.
-- **Faster reading:** the engine now installs `pyarrow` so large shapefile and geodatabase reads stream. An engine set up before this version still works, just more slowly. To update it, run the engine setup again.
+- **Share tools and workflows with coworkers:**
+  - **Share…** on an installed tool, or on an approved workflow's page, saves a `.columbus` file. Send it any way you like.
+  - A workflow's file brings the tools it uses. Its schedule, past runs, data, connection details and passwords never travel.
+  - Your coworker opens it with **Open a shared file…** on their Tools or Workflows page. For a workflow, they choose which of their own connections stands for each one it names, and their export folder.
+  - Each part then waits for them to read and approve with their own Touch ID or Windows Hello, exactly like their own assistant's proposals. Nothing is installed or run by opening the file.
+  - Off by default: turn on **Allow shared tools and workflows** on the Tools page.
+- **Workflows list every connection they read:** a workflow must now list every connection its steps use, including ones named inside a step's inputs.
 
-**In 0.11.0:** Projects, Data groups, the Registry page, project databases on the Projects page, filter security fixes, and fewer Keychain prompts on a Mac.
+**In 0.12.0:** Esri shapefiles and file geodatabases.
 
 ## Mac (Apple Silicon: M1 or later)
 
