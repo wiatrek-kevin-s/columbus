@@ -877,7 +877,7 @@ pub async fn notes_list() -> Result<Value, String> {
                 !Path::new(rel).components().any(|c| {
                     matches!(
                         c.as_os_str().to_str(),
-                        Some("sources" | "scripts" | "checks")
+                        Some("sources" | "scripts" | "checks" | "proposals")
                     )
                 })
             })
@@ -1115,6 +1115,45 @@ pub async fn notes_check(app: tauri::AppHandle) -> Result<Value, String> {
             Err(v["error"]
                 .as_str()
                 .unwrap_or("the notes could not be checked")
+                .to_string())
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// The assistants' suggested changes to the notes (Documents > Proposals):
+/// listed, or one accepted or dismissed, by Columbus's server
+/// (`columbus-mcp notes suggestions`), which checks and audits each.
+#[tauri::command]
+pub async fn note_suggestions(
+    app: tauri::AppHandle,
+    accept: Option<String>,
+    dismiss: Option<String>,
+) -> Result<Value, String> {
+    let request = match (accept, dismiss) {
+        (Some(id), None) => json!({"accept": id}),
+        (None, Some(id)) => json!({"dismiss": id}),
+        (None, None) => json!({}),
+        _ => return Err("accept or dismiss, not both".into()),
+    }
+    .to_string();
+    let (server, engine) = crate::registry::program(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let text = crate::registry::run(
+            &server,
+            engine.as_deref(),
+            &["notes", "suggestions", &request],
+            std::time::Duration::from_secs(120),
+        )?;
+        let v: Value = serde_json::from_str(text.trim())
+            .map_err(|_| "Columbus's answer could not be read".to_string())?;
+        if v["ok"] == true {
+            Ok(v)
+        } else {
+            Err(v["error"]
+                .as_str()
+                .unwrap_or("the suggestion could not be handled")
                 .to_string())
         }
     })

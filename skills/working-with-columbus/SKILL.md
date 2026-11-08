@@ -119,6 +119,11 @@ person's own notes (cards say `"pack": "the person's own notes"`, with the
   `fields: {NAME: {alias, note}}` for a dataset, `labels: {code: label}` for a code
   list, `add_to_body` for how to read it. Say where each fact came from ("from the
   2024 roadway data dictionary, p. 12"). Never invent a meaning; leave it blank and ask.
+- **Reviewed notes, or "later".** A note the person has reviewed can't be changed by
+  you. Use `suggest_note_changes` (same `changes`, plus `why`: where it came from): it
+  waits in Documents > Proposals for them to accept or dismiss, and asks nothing now.
+  Also use it when they'd rather look later than approve during the chat. Don't wait
+  for an answer.
 - **Batch.** Work out everything first, then send it in ONE `update_notes` call:
   `{"changes": [{"id": ..., ...}, {"id": ..., ...}]}` (up to 200 notes). The person
   approves the batch once and may allow note changes for the rest of the session. Never

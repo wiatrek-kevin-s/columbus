@@ -179,6 +179,7 @@ export function describe(name, input) {
     case "context_get": return "Reading a note";
     case "draft_notes": return `Drafting notes${conn}`;
     case "update_notes": return "Changing your notes";
+    case "suggest_note_changes": return "Suggesting a change to your notes";
     case "run_python": return "Running a Python script";
     case "propose_tool": return `Testing a tool to save${i.title ? `: ${q(i.title)}` : ""}`;
     case "run_tool": return `Running ${i.name ? q(i.name) : "a tool"}`;

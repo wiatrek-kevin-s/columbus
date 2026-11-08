@@ -490,6 +490,7 @@ fn main() {
             doc_import::doc_preview,
             shell::note_confirm,
             shell::notes_check,
+            shell::note_suggestions,
             doc_import::doc_import,
             share::share_open,
             share::share_import,

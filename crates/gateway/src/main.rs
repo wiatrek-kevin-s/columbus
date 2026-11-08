@@ -16,6 +16,7 @@
 //! columbus-mcp share import JSON                  file a shared .columbus file's tools and workflow as proposals
 //! columbus-mcp notes import JSON                  a document (Word, Excel, PDF, CSV, Markdown) as a draft note
 //! columbus-mcp notes check JSON                   notes whose database changed since, and notes due for review
+//! columbus-mcp notes suggestions JSON             assistants' suggested note changes: list, accept, dismiss
 //! columbus-mcp pack lint [DIR]      check a context pack
 //! columbus-mcp plugins list         engine plugins, their versions, hashes and state
 //! columbus-mcp plugins approve ID   approve a plugin's exact contents
@@ -37,6 +38,7 @@ mod edit_tools;
 mod export_tools;
 mod fetch_tools;
 mod gis_tools;
+mod note_suggestions;
 mod notes;
 mod notes_check;
 mod personal_tools;
@@ -120,6 +122,7 @@ async fn main() -> Result<()> {
         ["share", "import", request] => share_cli::import(request).await,
         ["notes", "import", request] => doc_import_cli::import(request).await,
         ["notes", "check", request] => notes_check::check(request).await,
+        ["notes", "suggestions", request] => note_suggestions::cli(request).await,
         ["registry", "query", request] | ["app", "query", request] => {
             registry_cli::query(request).await
         }

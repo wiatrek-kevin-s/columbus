@@ -132,6 +132,7 @@ def main():
         wait.until(lambda drv: drv.find_elements(By.ID, "imp-choose"))
         d.execute_script("location.hash = '#/documents/proposals'")
         wait.until(lambda drv: drv.find_elements(By.ID, "pr-check"))
+        wait.until(lambda drv: drv.find_elements(By.ID, "sg-list"))
         # A part with no backend says it is coming.
         go(d, wait, "#/connections", "Connections")
         d.execute_script("location.hash = '#/connections/accounts'")

@@ -231,13 +231,70 @@ function shown(s, max) {
   return chars.length > max ? `${chars.slice(0, max).join("")}…` : t;
 }
 
+// Changes your assistant suggested in a chat, waiting for you.
+function suggestions(body) {
+  const err = h("p", { class: "error-text", role: "alert", hidden: true });
+  const list = h("div", { id: "sg-list", class: "stack" });
+  body.append(h("section", { class: "card" }, h("div", { class: "hd" }, h("h3", {}, "From your assistant")),
+    h("div", { class: "bd stack" },
+      h("p", { class: "small muted" }, "Changes an assistant suggested in a chat, for you to accept or dismiss when you get to them. Nothing in a note changes until you accept; accepting checks the change again against the note as it is now."),
+      err, list)));
+  load();
+
+  async function load() {
+    showError(err, null);
+    let r;
+    try { r = await invoke("note_suggestions", {}); } catch (e) { showError(err, e); return; }
+    const all = r.suggestions || [];
+    if (!all.length) {
+      list.replaceChildren(el("p", "muted small", "No suggestions waiting."));
+      return;
+    }
+    list.replaceChildren(...all.map(card));
+  }
+
+  function card(sg) {
+    const e2 = h("p", { class: "error-text small", role: "alert", hidden: true });
+    const act = async (what) => {
+      accept.disabled = dismiss.disabled = true;
+      try {
+        await invoke("note_suggestions", what === "accept" ? { accept: sg.id } : { dismiss: sg.id });
+        toast(what === "accept" ? "Done: the note is changed." : "Dismissed.");
+        load();
+      } catch (e) { showError(e2, e); accept.disabled = dismiss.disabled = false; }
+    };
+    const accept = button("Accept", "primary sm", () => act("accept"), { title: "Make these changes to your notes" });
+    const dismiss = button("Dismiss", "sm", () => act("dismiss"), { title: "Drop the suggestion; nothing changes" });
+    const when = (sg.created || "").slice(0, 16).replace("T", " ");
+    const notes = (sg.notes || []).map((n) => {
+      const flags = [];
+      if (n.gone) flags.push("this note isn't there any more");
+      if (n.changed_since) flags.push("the note changed after this was suggested");
+      if (n.status === "reviewed") flags.push("you've reviewed this note: accepting changes it anyway");
+      if ((n.carries || []).length) flags.push(`the note will count as holding data from ${n.carries.map((c) => c.replace(/^connection:/, "")).join(", ")}`);
+      return h("div", { class: "stack" },
+        h("b", {}, n.path
+          ? h("a", { href: "#/documents/notes", title: n.path, onclick: () => { try { sessionStorage.setItem("columbus.note", n.path); } catch { /* none */ } } }, shown(n.title, 200))
+          : shown(n.title, 200)),
+        ...flags.map((f) => h("p", { class: "small notice warn" }, f)),
+        h("pre", { class: "box" }, (n.lines || []).join("\n")));
+    });
+    return h("div", { class: "tool stack" },
+      h("p", { class: "small muted" }, `${shown(sg.client, 80)} · ${when}`),
+      h("p", {}, h("span", { class: "muted" }, "Why, in the assistant's words: "), shown(sg.why, 600)),
+      ...notes, e2,
+      h("div", { class: "row" }, accept, dismiss));
+  }
+}
+
 function proposals(body) {
+  suggestions(body);
   const err = h("p", { id: "pr-error", class: "error-text", role: "alert", hidden: true });
   const out = h("div", { id: "pr-results", class: "stack" });
   const check = button("Check my notes", "primary", run, { id: "pr-check" });
   body.append(h("section", { class: "card" }, h("div", { class: "bd stack" },
     h("p", {}, "Finds notes whose database changed since they were drafted (fields added, gone or of another type, or a dataset no longer there), and notes past their review date."),
-    h("p", { class: "small muted" }, "It reads each connection's list of datasets through Columbus, under the rules in force now, like your assistant would; nothing is changed. Suggestions from your assistant in a chat come later; today its note changes are approvals."),
+    h("p", { class: "small muted" }, "It reads each connection's list of datasets through Columbus, under the rules in force now, like your assistant would; nothing is changed."),
     h("div", { class: "row" }, check), err)), out);
   run();
 

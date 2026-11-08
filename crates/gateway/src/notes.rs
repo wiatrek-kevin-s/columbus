@@ -393,7 +393,7 @@ pub struct DraftArgs {
 }
 
 /// One note's changes.
-#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize, JsonSchema)]
 pub struct NoteChange {
     /// The note's id (from context_search or draft_notes).
     pub id: String,
@@ -439,12 +439,20 @@ pub struct UpdateArgs {
     pub approval_id: Option<String>,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SuggestArgs {
+    /// The changes, one entry per note (as update_notes' `changes`).
+    pub changes: Vec<NoteChange>,
+    /// Where the information came from and why it's right (one line).
+    pub why: String,
+}
+
 /// The most text one approval of note changes may show the person.
 const MAX_NOTES_SUMMARY: usize = 20_000;
 /// Most notes one update_notes call changes.
 const MAX_NOTE_CHANGES: usize = 200;
 
-#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize, JsonSchema)]
 pub struct FieldUpdate {
     #[serde(default)]
     pub alias: Option<String>,
@@ -1375,7 +1383,8 @@ impl Gateway {
         let mut rule_asks: BTreeSet<usize> = BTreeSet::new();
         let mut planned: Vec<Planned> = Vec::new();
         for c in &changes {
-            match self.plan_change(&pack, &root, c, &session, &policy.flows, &ctx) {
+            let editor = crate::server::client_name(&ctx);
+            match self.plan_change(&pack, &root, c, &session, &policy.flows, &editor, false) {
                 Ok((p, asks)) => {
                     if let Some(r) = asks {
                         rule_asks.insert(r);
@@ -1540,22 +1549,168 @@ impl Gateway {
             provenance: None,
         }))
     }
+
+    #[tool(
+        description = "Suggest changes to the person's notes for them to accept or dismiss later (Documents > Proposals), without asking them now: the same changes as update_notes (`changes`: one entry per note, up to 200, with title, summary, fields, labels, add_to_body), and `why`: where the information came from and why the change is right, in a sentence or two. Use it for a note the person has reviewed (you can't change those yourself), or when they'd rather look later than approve now. Nothing changes until they accept; checked now as update_notes checks.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            open_world_hint = false
+        )
+    )]
+    async fn suggest_note_changes(
+        &self,
+        Parameters(args): Parameters<SuggestArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<Json<Output<Value>>, String> {
+        let asked: Vec<Value> = args.changes.iter().map(change_json).collect();
+        let rec = self.gate(
+            &ctx,
+            "suggest_note_changes",
+            &json!({"changes": asked, "why": args.why}),
+        )?;
+        let why = args.why.trim().replace('\r', "");
+        if why.is_empty() {
+            return Err(self.deny(&ctx, rec, "say `why`: where the information came from"));
+        }
+        if why.chars().count() > crate::note_suggestions::MAX_WHY
+            || why.contains('\n')
+            || why.chars().any(crate::edit_tools::hidden_char)
+        {
+            return Err(self.deny(
+                &ctx,
+                rec,
+                format!(
+                    "`why` is one line of plain text, at most {} characters",
+                    crate::note_suggestions::MAX_WHY
+                ),
+            ));
+        }
+        if args.changes.is_empty() || args.changes.len() > MAX_NOTE_CHANGES {
+            return Err(self.deny(
+                &ctx,
+                rec,
+                format!("give between 1 and {MAX_NOTE_CHANGES} entries in `changes`"),
+            ));
+        }
+        let mut seen_ids = BTreeSet::new();
+        if let Some(c) = args.changes.iter().find(|c| !seen_ids.insert(c.id.clone())) {
+            return Err(self.deny(
+                &ctx,
+                rec,
+                format!(
+                    "{} appears twice: put all of a note's changes in one entry",
+                    c.id
+                ),
+            ));
+        }
+        let Some(pack) = self.notes_pack() else {
+            return Err(self.deny(
+                &ctx,
+                rec,
+                "there are no notes yet: draft some with draft_notes",
+            ));
+        };
+        let Ok(root) = notes_root(&self.state.paths) else {
+            return Err(self.deny(&ctx, rec, "the notes folder is not usable"));
+        };
+        // As update_notes: reading these notes adds their labels first.
+        for c in &args.changes {
+            if let Some(raw) = pack.get(&c.id) {
+                if self.visible_note(raw).is_some() {
+                    self.note_served(raw);
+                }
+            }
+        }
+        let session = self.state.flow.session_labels();
+        let policy = self.state.policy();
+        let editor = crate::server::client_name(&ctx);
+        let mut planned = Vec::new();
+        for c in &args.changes {
+            match self.plan_change(&pack, &root, c, &session, &policy.flows, &editor, true) {
+                Ok((p, _)) => planned.push(p),
+                Err(e) => return Err(self.deny(&ctx, rec, e)),
+            }
+        }
+        drop(policy);
+        let shown: usize = planned
+            .iter()
+            .flat_map(|p| p.lines.iter())
+            .map(|l| l.chars().count())
+            .sum();
+        if shown > MAX_NOTES_SUMMARY {
+            return Err(self.deny(
+                &ctx,
+                rec,
+                format!("these changes are too long for the person to read as one suggestion (more than {MAX_NOTES_SUMMARY} characters): suggest them in smaller batches"),
+            ));
+        }
+        let suggestion = crate::note_suggestions::Suggestion {
+            id: uuid::Uuid::new_v4().hyphenated().to_string(),
+            created: chrono::Local::now().to_rfc3339(),
+            client: editor,
+            session: self.state.session.clone(),
+            why,
+            changes: args.changes.clone(),
+            lines: planned
+                .iter()
+                .map(|p| (p.id.clone(), p.lines.clone()))
+                .collect(),
+            carries: planned
+                .iter()
+                .map(|p| (p.id.clone(), p.carries.iter().cloned().collect()))
+                .collect(),
+            files: planned
+                .iter()
+                .map(|p| (p.id.clone(), p.file_sha.clone()))
+                .collect(),
+        };
+        if let Err(e) = crate::note_suggestions::keep(&root, &suggestion) {
+            return Err(self.deny(&ctx, rec, e));
+        }
+        let mut rec = rec;
+        rec.reason = Some(format!(
+            "suggested changes to {} note(s): {}",
+            planned.len(),
+            planned
+                .iter()
+                .map(|p| p.id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+        self.audit(&ctx, rec)?;
+        Ok(Json(Output {
+            result: json!({
+                "status": "suggested",
+                "suggestion": suggestion.id,
+                "notes": planned.iter().map(|p| json!({"id": p.id, "changes": p.lines})).collect::<Vec<_>>(),
+            }),
+            checks: vec![Check {
+                id: "notes.suggested".into(),
+                severity: Severity::Info,
+                message: "Nothing has changed yet: the person sees this in Documents > Proposals and accepts or dismisses it when they get to it. Don't wait for it or ask them to approve it now".into(),
+                detail: None,
+                fix: None,
+            }],
+            provenance: None,
+        }))
+    }
 }
 
 /// One note's change, checked and ready to write.
-struct Planned {
-    id: String,
+pub(crate) struct Planned {
+    pub(crate) id: String,
     /// The connection the note is about.
-    connection: String,
-    rel: PathBuf,
-    before: Vec<u8>,
-    file_sha: String,
-    text: String,
-    lines: Vec<String>,
-    carries: BTreeSet<String>,
+    pub(crate) connection: String,
+    pub(crate) rel: PathBuf,
+    pub(crate) before: Vec<u8>,
+    pub(crate) file_sha: String,
+    pub(crate) text: String,
+    pub(crate) lines: Vec<String>,
+    pub(crate) carries: BTreeSet<String>,
 }
 
-fn change_json(c: &NoteChange) -> Value {
+pub(crate) fn change_json(c: &NoteChange) -> Value {
     json!({
         "id": c.id, "title": c.title, "summary": c.summary, "add_to_body": c.add_to_body,
         "fields": c.fields.as_ref().map(|m| m.iter().map(|(k, v)| (k.clone(), json!({"alias": v.alias, "note": v.note}))).collect::<serde_json::Map<_, _>>()),
@@ -1566,14 +1721,16 @@ fn change_json(c: &NoteChange) -> Value {
 impl Gateway {
     /// Check one note's change against the rules and the file as it is now,
     /// and make the text to write; the flow rule asking for approval, if any.
-    fn plan_change(
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn plan_change(
         &self,
         pack: &Pack,
         root: &Path,
         c: &NoteChange,
         session: &BTreeSet<String>,
         flows: &[columbus_shared::policy::FlowRule],
-        ctx: &RequestContext<RoleServer>,
+        editor: &str,
+        by_person: bool,
     ) -> Result<(Planned, Option<usize>), String> {
         let missing = || format!("no note {:?} among the person's notes", c.id);
         let raw = pack.get(&c.id).cloned().ok_or_else(missing)?;
@@ -1586,7 +1743,10 @@ impl Gateway {
                 c.id
             )
         })?;
-        if raw.str_field("status").as_deref() != Some("draft") {
+        // The assistant changes drafts only; the person, accepting its
+        // suggestion, any note of theirs but a retired one.
+        let status = raw.str_field("status").unwrap_or_default();
+        if (by_person && status == "retired") || (!by_person && status != "draft") {
             return Err(format!(
                 "{} is marked {}: only the person changes it now",
                 c.id,
@@ -1673,8 +1833,7 @@ impl Gateway {
         card.insert(
             k("edited_by"),
             k(&format!(
-                "{} for {} on {}",
-                crate::server::client_name(ctx),
+                "{editor} for {} on {}",
                 self.state.user,
                 chrono::Local::now().date_naive()
             )),

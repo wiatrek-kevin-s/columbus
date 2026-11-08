@@ -728,12 +728,16 @@ fn audit_text(root: &Path) -> String {
 
 /// `columbus-mcp notes check`, as the app's Documents > Proposals runs it.
 fn notes_check(root: &Path, py: &str) -> Value {
+    notes_cli(root, py, &["notes", "check", "{}"])
+}
+
+fn notes_cli(root: &Path, py: &str, args: &[&str]) -> Value {
     let worker = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../workers/python/columbus_worker.py")
         .canonicalize()
         .unwrap();
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_columbus-mcp"))
-        .args(["notes", "check", "{}"])
+        .args(args)
         .env("COLUMBUS_POLICY", root.join("policy.yaml"))
         .env("COLUMBUS_CONNECTIONS", root.join("connections"))
         .env("COLUMBUS_WORKSPACES", root.join("workspaces"))
@@ -860,5 +864,135 @@ async fn the_inbox_finds_notes_whose_database_changed_and_notes_due() {
         std::os::unix::fs::symlink(".", root.join("notes/loop")).unwrap();
         std::os::unix::fs::symlink(".", root.join("notes/loop2")).unwrap();
         assert_eq!(notes_check(&root, &py)["ok"], true);
+    }
+}
+
+#[tokio::test]
+async fn suggestions_wait_for_the_person_to_accept_or_dismiss() {
+    let Some(py) = python() else {
+        eprintln!("skipped: needs Python with geopandas, pyogrio and shapely");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let root: PathBuf = dir.path().to_path_buf();
+    std::fs::create_dir_all(root.join("connections")).unwrap();
+    let file = gpkg(&py, &root);
+    put(&root.join("policy.yaml"), "connection_types: [gpkg]\n");
+    put(
+        &root.join("connections/roads.yaml"),
+        &conn_yaml("roads", &file, "").replace("allow: [\"*\"]", "allow: [roadway, segments]"),
+    );
+    let person = Person::default();
+    let c = start(&root, &py, person.clone()).await;
+    ok(&call(&c, "draft_notes", json!({"connection": "roads"})).await);
+    let asked = person.asked.load(Ordering::SeqCst);
+    let note = root.join("notes/datasets/roads/roadway.md");
+    let reviewed = std::fs::read_to_string(&note)
+        .unwrap()
+        .replace("status: draft", "status: reviewed");
+    std::fs::write(&note, &reviewed).unwrap();
+    c.cancel().await.unwrap();
+    let c = start(&root, &py, person.clone()).await;
+
+    // The assistant can't change a reviewed note, but can suggest a change,
+    // without asking the person now.
+    let e = err(&call(
+        &c,
+        "update_notes",
+        json!({"id": "roads--roadway", "summary": "x"}),
+    )
+    .await);
+    assert!(e.contains("reviewed"), "{e}");
+    let one = json!({"changes": [{"id": "roads--roadway", "summary": "Roadway centerlines, one row per segment."}],
+        "why": "From the 2024 roadway data dictionary, page 3."});
+    let r = ok(&call(&c, "suggest_note_changes", one.clone()).await);
+    assert_eq!(r["result"]["status"], "suggested", "{r}");
+    assert_eq!(
+        person.asked.load(Ordering::SeqCst),
+        asked,
+        "nothing asked now"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&note).unwrap(),
+        reviewed,
+        "nothing changed yet"
+    );
+    // Checked when suggested: plain text, the note's own fields.
+    let mut bad = one.clone();
+    bad["why"] = json!("From the dictionary\u{202e}");
+    assert!(call(&c, "suggest_note_changes", bad).await.is_error == Some(true));
+    let bad = json!({"changes": [{"id": "roads--roadway", "fields": {"NOPE": {"note": "x"}}}], "why": "w"});
+    assert!(call(&c, "suggest_note_changes", bad).await.is_error == Some(true));
+    // Not read as a note by the context tools.
+    let s = ok(&call(
+        &c,
+        "context_search",
+        json!({"query": "data dictionary page 3"}),
+    )
+    .await);
+    assert!(
+        !s.to_string().contains("2024 roadway data dictionary"),
+        "{s}"
+    );
+    c.cancel().await.unwrap();
+
+    // The app lists it, with what it changes.
+    let l = notes_cli(&root, &py, &["notes", "suggestions", "{}"]);
+    let list = l["suggestions"].as_array().unwrap();
+    assert_eq!(list.len(), 1, "{l}");
+    assert!(
+        l.to_string().contains("summary: Roadway centerlines"),
+        "{l}"
+    );
+    let id = list[0]["id"].as_str().unwrap().to_string();
+    // Accepting makes the change, as the person; the note stays reviewed.
+    let a = notes_cli(
+        &root,
+        &py,
+        &["notes", "suggestions", &json!({"accept": id}).to_string()],
+    );
+    assert_eq!(a["ok"], true, "{a}");
+    let now = std::fs::read_to_string(&note).unwrap();
+    assert!(
+        now.contains("Roadway centerlines, one row per segment."),
+        "{now}"
+    );
+    assert!(
+        now.contains("status: reviewed") && now.contains("accepting"),
+        "{now}"
+    );
+    assert_eq!(
+        notes_cli(&root, &py, &["notes", "suggestions", "{}"])["suggestions"],
+        json!([])
+    );
+    let again = notes_cli(
+        &root,
+        &py,
+        &["notes", "suggestions", &json!({"accept": id}).to_string()],
+    );
+    assert_eq!(again["ok"], false, "{again}");
+
+    // Dismissing drops it, changing nothing.
+    let c = start(&root, &py, person.clone()).await;
+    let mut two = one.clone();
+    two["changes"][0]["summary"] = json!("Something else.");
+    ok(&call(&c, "suggest_note_changes", two).await);
+    c.cancel().await.unwrap();
+    let l = notes_cli(&root, &py, &["notes", "suggestions", "{}"]);
+    let id = l["suggestions"][0]["id"].as_str().unwrap().to_string();
+    let d = notes_cli(
+        &root,
+        &py,
+        &["notes", "suggestions", &json!({"dismiss": id}).to_string()],
+    );
+    assert_eq!(d["ok"], true, "{d}");
+    assert_eq!(std::fs::read_to_string(&note).unwrap(), now);
+    let a = audit_text(&root);
+    for t in [
+        "suggest_note_changes",
+        "accept_note_suggestion",
+        "dismiss_note_suggestion",
+    ] {
+        assert!(a.contains(t), "{t}");
     }
 }

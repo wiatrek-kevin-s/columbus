@@ -169,7 +169,7 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
         }
         if is_dir {
             // Originals and scripts are not entries.
-            if matches!(name, "sources" | "scripts" | "checks") {
+            if matches!(name, "sources" | "scripts" | "checks" | "proposals") {
                 continue;
             }
             walk(&p, out);
