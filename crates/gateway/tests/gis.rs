@@ -472,7 +472,9 @@ async fn gis_session_on_a_geopackage() {
     columbus_shared::audit::verify(&audit).expect("audit chain intact");
     let text = std::fs::read_to_string(&audit).unwrap();
     assert!(
-        !text.contains("45-67") && !text.contains("Secret Owner"),
+        // Each full hidden value: a bare "45-67" also matches random ids.
+        !(0..10).any(|i| text.contains(&format!("10{i}-45-67{i:02}")))
+            && !text.contains("Secret Owner"),
         "hidden values never reach the audit log"
     );
     for tool in ["describe_dataset", "query_features", "vector_op", "verify"] {
