@@ -314,6 +314,8 @@ pub struct WhoAmI {
     /// Where export_output may write: {id, path, granted}. Granted folders
     /// need no approval when every check passes.
     pub export_folders: Vec<Value>,
+    /// Whether workflows may email their reports, and to which domains.
+    pub workflow_email: Value,
     pub audit_log: String,
     /// Where connection passwords are kept.
     pub secret_store: String,
@@ -1872,6 +1874,10 @@ impl Gateway {
                 .iter()
                 .map(|f| json!({"id": f.id, "path": f.path, "granted": f.granted}))
                 .collect(),
+            workflow_email: match &p.email {
+                Some(e) => json!({"allowed_domains": e.allowed_domains, "attachments": e.attachments, "max_attachment_mb": e.max_attachment_mb}),
+                None => Value::Null,
+            },
             audit_log: self.state.audit.dir().display().to_string(),
             secret_store: self.state.secrets.describe(),
             approvals: self.approval_channel(&ctx),

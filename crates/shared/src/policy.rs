@@ -215,6 +215,53 @@ pub fn normalize_identifier(name: &str) -> String {
         .join(".")
 }
 
+/// How workflows may email their reports: the organization's mail server
+/// and who may be sent to. The password, if the server needs one, is kept
+/// in the credential store under `email-smtp` (the app's Workflows page).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct EmailPolicy {
+    pub smtp_host: String,
+    #[serde(default = "smtp_port")]
+    pub smtp_port: u16,
+    /// `starttls` (default, port 587) or `tls` (port 465). Never plain.
+    #[serde(default = "starttls")]
+    pub security: String,
+    /// The From address.
+    pub from: String,
+    /// The sign-in name, when the server needs one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+    /// Domains a workflow may email (`agency.gov`): exact, no others.
+    pub allowed_domains: Vec<String>,
+    /// Whether a report may carry the files the run exported (already
+    /// through the export rules). Off by default: the report only.
+    #[serde(default)]
+    pub attachments: bool,
+    /// The most the attachments of one email may add up to, in MB.
+    #[serde(default = "attachment_mb")]
+    pub max_attachment_mb: u32,
+}
+
+fn smtp_port() -> u16 {
+    587
+}
+fn starttls() -> String {
+    "starttls".into()
+}
+fn attachment_mb() -> u32 {
+    10
+}
+
+impl EmailPolicy {
+    /// Whether this address may be emailed: its domain is one listed.
+    pub fn allows(&self, address: &str) -> bool {
+        address
+            .rsplit_once('@')
+            .is_some_and(|(_, d)| self.allowed_domains.iter().any(|a| a.eq_ignore_ascii_case(d)))
+    }
+}
+
 /// Layer 1: organization policy, written only by administrators.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OrgPolicy {
@@ -267,6 +314,9 @@ pub struct OrgPolicy {
     /// approved by whoever administers it). On by default; off hides them.
     #[serde(default = "yes")]
     pub allow_org_tools: bool,
+    /// Email for workflows' reports, as IT sets it up; none means no email.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<EmailPolicy>,
     /// Rows read and seconds per call; see [`OrgLimits`]. Use
     /// [`OrgPolicy::read_limits`] for the values in force.
     #[serde(default)]
@@ -549,6 +599,7 @@ impl Default for OrgPolicy {
             share_signers: vec![],
             require_signed_shares: false,
             allow_org_tools: true,
+            email: None,
             allow_workflows: false,
             limits: OrgLimits::DEFAULT,
             project_db: ProjectDbPolicy::default(),

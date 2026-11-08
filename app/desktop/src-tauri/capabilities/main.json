@@ -35,6 +35,8 @@
     "allow-doc-import",
     "allow-share-open",
     "allow-share-import",
+    "allow-email-settings",
+    "allow-email-password-set",
     "allow-share-my-key",
     "allow-share-trust",
     "allow-share-untrust",

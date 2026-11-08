@@ -158,7 +158,9 @@ pub fn export_workflow(
     let (w, _fingerprint) =
         wf::ready(wf_root, tools_root, id).map_err(|e| format!("{id} can't be shared: {e}"))?;
     let mut w = w;
+    // Never the sharer's schedule, nor whom they email.
     w.schedule = None;
+    w.outputs.email = None;
     let text = to_text(&w)?;
     let mut shared = Vec::new();
     for t in w.personal_tools() {
@@ -362,6 +364,7 @@ pub fn remap(
     }
     let mut w = w.clone();
     w.schedule = None;
+    w.outputs.email = None;
     let map = |c: &str| connections.get(c).cloned().unwrap_or_else(|| c.to_string());
     let mut scope: Vec<String> = Vec::new();
     for c in &w.scope.connections {

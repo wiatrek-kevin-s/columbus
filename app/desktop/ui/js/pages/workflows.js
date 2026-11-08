@@ -112,7 +112,8 @@ export async function render(main, rest) {
       h("details", { class: "card", id: "wf-about" }, h("summary", { class: "hd" }, h("h2", {}, "How workflows work, and your organization's switch")),
         h("div", { class: "bd stack" },
           h("p", { class: "small muted" }, "A workflow reads only the connections it lists, runs only the steps it lists (reading and processing tools, and personal tools you installed), and never waits for you: a step that needs an approval stops the run with \"needs you\". Runs happen while you are signed in to this computer; one missed while it slept runs once when it wakes. Share one with a coworker from its page: they open the file here, choose their own connections and approve it themselves."),
-          sw, h("p", { class: "small muted wrap-any" }, "Stored in ", h("code", { id: "wf-dir" })))));
+          sw, h("p", { class: "small muted wrap-any" }, "Stored in ", h("code", { id: "wf-dir" })))),
+      emailCard());
 
     const draw = () => {
       $("wf-dir").textContent = state.dir;
@@ -327,4 +328,28 @@ export async function render(main, rest) {
   let focusFn = () => onFocus && onFocus();
   window.addEventListener("focus", focusFn);
   return () => window.removeEventListener("focus", focusFn);
+}
+
+// Email for workflows' reports: as the organization set it up, and the mail
+// server's password (kept in the credential store, never shown again).
+function emailCard() {
+  const bd = h("div", { class: "bd stack", id: "wf-email" });
+  const card = h("details", { class: "card" }, h("summary", { class: "hd" }, h("h2", {}, "Email")), bd);
+  invoke("email_settings").then((e) => {
+    if (!e.on) {
+      bd.append(h("p", { class: "small muted" }, "Your organization hasn't set up email for workflows (the policy's email section), so a workflow can't send its report by email. Exports to folders work as before."));
+      return;
+    }
+    bd.append(h("p", { class: "small" }, `Workflows can email their report through ${e.host}:${e.port} (${e.security === "tls" ? "TLS" : "STARTTLS"}), from ${e.from}, to addresses in ${e.allowed_domains.join(", ")} only. ${e.attachments ? `A report can carry the files the run exported, up to ${e.max_attachment_mb} MB.` : "Reports go without attachments."} Your assistant adds email to a workflow when it proposes one; you see the addresses when you approve it.`));
+    if (e.username) {
+      const pw = h("input", { type: "password", autocomplete: "off", "aria-label": "Mail server password", id: "wf-email-pw" });
+      const err = h("p", { class: "error-text small", role: "alert", hidden: true });
+      const save = button("Save password", "sm", async () => {
+        showError(err, null);
+        try { await invoke("email_password_set", { password: pw.value }); pw.value = ""; save.textContent = "Saved"; } catch (x) { showError(err, x); }
+      });
+      bd.append(h("label", { class: "field" }, `Password for ${e.username} on the mail server (kept in your credential store; leave empty and save to forget it)`, pw), h("div", { class: "row" }, save), err);
+    }
+  }).catch(() => {});
+  return card;
 }

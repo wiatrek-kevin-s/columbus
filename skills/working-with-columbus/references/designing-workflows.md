@@ -43,8 +43,15 @@ steps:
     args: { layer: "${tracts}" }
 outputs:
   folder: { export: outbox, steps: [tracts], format: gpkg }
+  email: { to: [ana@agency.gov], when: problems }   # only if whoami.workflow_email allows
   keep_runs: 60                  # runs kept (default 100)
 ```
+
+`email` sends the run's report (`when: always`, the default, or `problems`: only when a run
+doesn't simply succeed). Only addresses in the domains `whoami` lists under `workflow_email`;
+when that is null, the organization hasn't set up email: leave it out. `attach: true` adds the
+files the run exported, if the organization allows attachments. Ask the person whom to email;
+never guess an address.
 
 ### Steps
 

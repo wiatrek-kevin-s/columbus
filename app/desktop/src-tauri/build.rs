@@ -32,6 +32,8 @@ fn main() {
             "doc_import",
             "share_open",
             "share_import",
+            "email_settings",
+            "email_password_set",
             "share_my_key",
             "share_trust",
             "share_untrust",

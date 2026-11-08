@@ -241,9 +241,46 @@ pub struct Outputs {
     /// Export the layers of these steps to one of the policy's export folders.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub folder: Option<FolderOut>,
+    /// Email the run's report.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<EmailOut>,
     /// Runs kept (default 100, at most 500).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keep_runs: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EmailOut {
+    /// 1 to 10 addresses, each in a domain the organization allows.
+    pub to: Vec<String>,
+    /// `always` (default) or `problems` (only when a run didn't simply
+    /// succeed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub when: Option<String>,
+    /// Attach the files the run exported, when the organization allows.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub attach: bool,
+}
+
+/// A plain email address: ASCII, one `@`, no spaces, quotes, commas or
+/// angle brackets, at most 254 characters.
+pub fn address_ok(a: &str) -> bool {
+    let Some((local, domain)) = a.split_once('@') else {
+        return false;
+    };
+    a.len() <= 254
+        && !local.is_empty()
+        && local.len() <= 64
+        && domain.contains('.')
+        && !domain.starts_with(['.', '-'])
+        && !domain.ends_with(['.', '-'])
+        && local
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "._+-".contains(c))
+        && domain
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || ".-".contains(c))
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -566,6 +603,20 @@ pub fn check(text: &str) -> Result<Workflow, String> {
             return Err("review criteria: what to flag, at most 4000 characters".into());
         }
     }
+    if let Some(e) = &wf.outputs.email {
+        if e.to.is_empty() || e.to.len() > 10 {
+            return Err("outputs.email.to lists 1 to 10 addresses".into());
+        }
+        if let Some(a) = e.to.iter().find(|a| !address_ok(a)) {
+            return Err(format!("outputs.email.to: {a:?} is not a plain email address"));
+        }
+        if !matches!(e.when.as_deref(), None | Some("always") | Some("problems")) {
+            return Err("outputs.email.when is always or problems".into());
+        }
+        if e.attach && wf.outputs.folder.is_none() {
+            return Err("outputs.email.attach sends the files the run exports: give outputs.folder too".into());
+        }
+    }
     if let Some(f) = &wf.outputs.folder {
         if !connection_id_ok(&f.export) {
             return Err(format!("{:?} is not an export folder id", f.export));
@@ -788,6 +839,22 @@ pub fn describe(wf: &Workflow) -> Vec<String> {
             f.format.as_deref().unwrap_or("gpkg")
         )),
         None => out.push("Exports nothing; results stay in the run's report and workspace.".into()),
+    }
+    if let Some(e) = &wf.outputs.email {
+        out.push(format!(
+            "Emails the run's report to {}{}{}, through your organization's mail server.",
+            e.to.join(", "),
+            if e.when.as_deref() == Some("problems") {
+                " when a run doesn't simply succeed"
+            } else {
+                " after every run"
+            },
+            if e.attach {
+                ", with the files it exported attached (if your organization allows attachments)"
+            } else {
+                ""
+            }
+        ));
     }
     out.push(format!(
         "Stops after {} minutes; never waits for a person: a step that needs an approval stops the run with \"needs you\".",
@@ -1320,6 +1387,32 @@ mod tests {
     use super::*;
 
     const WF: &str = "id: morning-check\nname: Morning check\npurpose: Count the tracts every weekday.\nschedule: { days: weekdays, at: \"06:00\" }\nscope: { connections: [tiger], run_minutes: 10 }\nsteps:\n  - id: tracts\n    tool: query_features\n    args: { connection: tiger, dataset: tracts }\n  - id: check\n    tool: verify\n    args: { layer: \"${tracts}\" }\noutputs:\n  folder: { export: outbox, steps: [tracts] }\n";
+
+    #[test]
+    fn email_outputs_are_plain_addresses_and_say_so() {
+        let with = |e: &str| WF.replace("outputs:\n", &format!("outputs:\n  email: {e}\n"));
+        let w = check(&with("{ to: [ana@agency.gov], when: problems }")).unwrap();
+        let plain = describe(&w).join(" ");
+        assert!(plain.contains("ana@agency.gov") && plain.contains("doesn't simply succeed"), "{plain}");
+        assert!(check(&with("{ to: [\"ana@agency.gov\\r\\nBcc: x@evil.example\"] }")).is_err());
+        assert!(check(&with("{ to: [\"Ana <ana@agency.gov>\"] }")).is_err());
+        assert!(check(&with("{ to: [] }")).is_err());
+        assert!(check(&with("{ to: [ana@agency.gov], when: sometimes }")).is_err());
+        assert!(address_ok("first.last+gis@sub.agency.gov"));
+        assert!(!address_ok("ana@localhost"));
+        let p = crate::policy::EmailPolicy {
+            smtp_host: "mail.agency.gov".into(),
+            smtp_port: 587,
+            security: "starttls".into(),
+            from: "columbus@agency.gov".into(),
+            username: None,
+            allowed_domains: vec!["agency.gov".into()],
+            attachments: false,
+            max_attachment_mb: 10,
+        };
+        assert!(p.allows("Ana@AGENCY.gov"));
+        assert!(!p.allows("ana@sub.agency.gov") && !p.allows("ana@agency.gov.evil.example"));
+    }
 
     #[test]
     fn a_workflow_reads_and_says_what_it_does() {

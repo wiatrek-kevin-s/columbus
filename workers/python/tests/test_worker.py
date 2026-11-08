@@ -269,3 +269,45 @@ class PostgresTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SendEmailTest(unittest.TestCase):
+    """A workflow's report goes only over TLS, with one-line headers."""
+
+    def test_never_in_the_clear_and_one_line_headers(self):
+        import socket
+        import threading
+        import columbus_worker as wk
+
+        srv = socket.socket()
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(1)
+        port = srv.getsockname()[1]
+
+        def serve():
+            c, _ = srv.accept()
+            f = c.makefile("rwb")
+            f.write(b"220 plain ESMTP\r\n"); f.flush()
+            while True:
+                line = f.readline()
+                if not line:
+                    break
+                if line.upper().startswith(b"EHLO"):
+                    f.write(b"250-plain\r\n250 SIZE 1000\r\n")
+                elif line.upper().startswith(b"QUIT"):
+                    f.write(b"221 bye\r\n"); f.flush(); break
+                else:
+                    f.write(b"502 no\r\n")
+                f.flush()
+            c.close()
+
+        threading.Thread(target=serve, daemon=True).start()
+        base = {"host": "127.0.0.1", "port": port, "security": "starttls", "from": "c@agency.gov",
+                "to": ["a@agency.gov"], "subject": "Run", "body": "report"}
+        with self.assertRaises(wk.WorkerError) as e:
+            wk._send_email(base)
+        self.assertIn("STARTTLS", str(e.exception))
+        for k, v in [("subject", "Run\r\nBcc: x@evil.example"), ("to", ["a@agency.gov\nBcc: x"]), ("security", "none")]:
+            with self.assertRaises(wk.WorkerError):
+                wk._send_email({**base, k: v})
+        srv.close()

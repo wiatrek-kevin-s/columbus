@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-email-settings"
+description = "Enables the email_settings command without any pre-configured scope."
+commands.allow = ["email_settings"]
+
+[[permission]]
+identifier = "deny-email-settings"
+description = "Denies the email_settings command without any pre-configured scope."
+commands.deny = ["email_settings"]

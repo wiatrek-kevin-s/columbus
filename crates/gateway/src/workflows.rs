@@ -266,7 +266,139 @@ pub(crate) fn workflow_problems(
             ));
         }
     }
+    if let Some(e) = &w.outputs.email {
+        match &policy.email {
+            None => problems.push("outputs.email: the organization hasn't set up email for workflows (policy email), so a workflow can't send one".into()),
+            Some(p) => {
+                for a in e.to.iter().filter(|a| !p.allows(a)) {
+                    problems.push(format!(
+                        "outputs.email: {a} is not in a domain the organization allows ({})",
+                        p.allowed_domains.join(", ")
+                    ));
+                }
+            }
+        }
+    }
     problems
+}
+
+/// Secret id of the mail server's password in the credential store.
+pub const EMAIL_SECRET: &str = "email-smtp";
+
+/// Email the run's report, as the workflow says and the policy in force now
+/// allows: to addresses in allowed domains only, the report as text, and
+/// the files the run exported only if the organization allows attachments
+/// (within its size cap). What happened, for the run's record.
+async fn email_report(state: &State, workflow: &Workflow, record: &Value) -> Option<Value> {
+    let e = workflow.outputs.email.as_ref()?;
+    let status = record["status"].as_str().unwrap_or("");
+    if e.when.as_deref() == Some("problems") && status == "succeeded" {
+        return None;
+    }
+    let policy = state.policy().clone();
+    let audit = |decision: &str, reason: String| {
+        let _ = state.audit.append(&columbus_shared::audit::AuditRecord {
+            user: state.user.clone(),
+            client: RUNNER.into(),
+            session: Some(state.session.clone()),
+            tool: "email_report".into(),
+            decision: decision.into(),
+            reason: Some(reason),
+            ..Default::default()
+        });
+    };
+    let Some(p) = policy.email.as_ref() else {
+        let why = "the organization no longer sets up email for workflows (policy email)".to_string();
+        audit("denied", why.clone());
+        return Some(json!({"status": "failed", "error": why}));
+    };
+    let to: Vec<String> = e.to.iter().filter(|a| p.allows(a) && wf::address_ok(a)).cloned().collect();
+    let refused: Vec<&String> = e.to.iter().filter(|a| !to.contains(a)).collect();
+    if to.is_empty() {
+        let why = "none of its addresses is in a domain the organization allows now".to_string();
+        audit("denied", why.clone());
+        return Some(json!({"status": "failed", "error": why}));
+    }
+    let mut attachments = Vec::new();
+    let mut left_out = Vec::new();
+    if e.attach {
+        let cap = u64::from(p.max_attachment_mb) * 1024 * 1024;
+        let mut total = 0u64;
+        let files: Vec<String> = record["deliveries"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|d| d["status"] == "done")
+            .flat_map(|d| d["result"]["files"].as_array().cloned().unwrap_or_default())
+            .filter_map(|f| f["path"].as_str().map(String::from))
+            .collect();
+        for f in files {
+            let size = std::fs::symlink_metadata(&f).ok().filter(|m| m.is_file()).map(|m| m.len());
+            match size {
+                Some(n) if p.attachments && total + n <= cap => {
+                    total += n;
+                    attachments.push(f);
+                }
+                _ => left_out.push(Path::new(&f).file_name().and_then(|n| n.to_str()).unwrap_or("").to_string()),
+            }
+        }
+    }
+    let password = match &p.username {
+        Some(_) => match state.secrets.get(EMAIL_SECRET) {
+            Ok(Some(pw)) => Some(pw),
+            Ok(None) => {
+                let why = "the mail server's password isn't saved (Workflows, Email, in the Columbus app)".to_string();
+                audit("denied", why.clone());
+                return Some(json!({"status": "failed", "error": why}));
+            }
+            Err(err) => {
+                let why = format!("the mail server's password could not be read: {err}");
+                audit("denied", why.clone());
+                return Some(json!({"status": "failed", "error": why}));
+            }
+        },
+        None => None,
+    };
+    let mut body = report(record, Some(workflow));
+    if !left_out.is_empty() {
+        body.push_str(&format!(
+            "\n\nNot attached ({}): {}.\n",
+            if p.attachments { "over the size your organization allows" } else { "your organization doesn't allow attachments" },
+            left_out.join(", ")
+        ));
+    }
+    let subject = format!("Columbus: {} ({})", workflow.name, status_words(status));
+    let sent = state
+        .worker
+        .core(
+            "send_email",
+            json!({"host": p.smtp_host, "port": p.smtp_port, "security": p.security, "from": p.from,
+                "to": to, "subject": subject, "body": body, "username": p.username, "password": password,
+                "attachments": attachments}),
+            Duration::from_secs(90),
+        )
+        .await;
+    match sent {
+        Ok(_) => {
+            audit(
+                "allowed",
+                format!(
+                    "emailed the report of {} run {} to {} ({} attachment(s)){}",
+                    workflow.id,
+                    record["run"].as_str().unwrap_or(""),
+                    to.join(", "),
+                    attachments.len(),
+                    if refused.is_empty() { String::new() } else { format!("; not to {} (domain not allowed)", refused.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")) }
+                ),
+            );
+            Some(json!({"status": "sent", "to": to, "attachments": attachments.len(), "not_sent_to": refused, "not_attached": left_out}))
+        }
+        Err(err) => {
+            let why = err.to_string();
+            audit("error", format!("emailing the report of {} failed: {why}", workflow.id));
+            Some(json!({"status": "failed", "error": why}))
+        }
+    }
 }
 
 /// The runner's client: itself, in process.
@@ -490,6 +622,11 @@ pub async fn run_cli_with(id: &str, scheduled: bool, python: Option<&str>) -> an
     let _ = client.cancel().await;
     server.abort();
     let code = finish(&mut record, &status, None);
+    // Emailed once the run's ending is known; how that went is in the
+    // record, and never changes how the run ended.
+    if let Some(sent) = email_report(&state, &workflow, &record).await {
+        record["email"] = sent;
+    }
     {
         // Held while the record is written, so the time-limit watch either
         // writes first or not at all.
@@ -1293,6 +1430,23 @@ pub(crate) fn report(record: &Value, workflow: Option<&Workflow>) -> String {
             }
         }
         out.push('\n');
+    }
+    match record["email"]["status"].as_str() {
+        Some("sent") => out.push_str(&format!(
+            "Emailed to {}.\n\n",
+            record["email"]["to"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|v| v.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+        Some(_) => out.push_str(&format!(
+            "Not emailed: {}\n\n",
+            one_para(&s(&record["email"]["error"]))
+        )),
+        None => {}
     }
     let provs: Vec<String> = record["steps"]
         .as_array()

@@ -1783,6 +1783,72 @@ def read_rows(params: dict[str, Any]) -> dict[str, Any]:
         raise _refused(e) from None
 
 
+def _send_email(params: dict[str, Any]) -> dict[str, Any]:
+    """Send one email (a workflow's report) through the organization's mail
+    server, over TLS (STARTTLS, or TLS from the start): never in the clear.
+    Every header value is one line; attachments are files the run exported."""
+    import mimetypes
+    import smtplib
+    import ssl
+    from email.message import EmailMessage
+
+    def line(v: Any, what: str, max_len: int = 300) -> str:
+        if not isinstance(v, str) or not v or len(v) > max_len or any(c in v for c in "\r\n\x00"):
+            raise WorkerError(INVALID_PARAMS, f"{what} must be one line of text")
+        return v
+
+    host = line(params.get("host"), "host", 255)
+    try:
+        port = int(params.get("port") or 587)
+    except (TypeError, ValueError):
+        raise WorkerError(INVALID_PARAMS, "port must be a number") from None
+    security = params.get("security") or "starttls"
+    if security not in ("starttls", "tls"):
+        raise WorkerError(INVALID_PARAMS, "security is starttls or tls")
+    sender = line(params.get("from"), "from", 254)
+    to = params.get("to")
+    if not isinstance(to, list) or not to or len(to) > 10:
+        raise WorkerError(INVALID_PARAMS, "to lists 1 to 10 addresses")
+    to = [line(a, "an address", 254) for a in to]
+    msg = EmailMessage()
+    msg["From"] = sender
+    msg["To"] = ", ".join(to)
+    msg["Subject"] = line(params.get("subject"), "subject", 300)
+    body = params.get("body")
+    if not isinstance(body, str) or len(body) > 2_000_000:
+        raise WorkerError(INVALID_PARAMS, "body must be text")
+    msg.set_content(body)
+    for path in params.get("attachments") or []:
+        if not isinstance(path, str) or not os.path.isfile(path) or os.path.islink(path):
+            raise WorkerError(INVALID_PARAMS, "an attachment is not a file")
+        kind, _ = mimetypes.guess_type(path)
+        main, sub = (kind or "application/octet-stream").split("/", 1)
+        with open(path, "rb") as f:
+            msg.add_attachment(f.read(), maintype=main, subtype=sub, filename=os.path.basename(path))
+    ctx = ssl.create_default_context()
+    try:
+        if security == "tls":
+            server = smtplib.SMTP_SSL(host, port, timeout=60, context=ctx)
+        else:
+            server = smtplib.SMTP(host, port, timeout=60)
+            server.ehlo()
+            if not server.has_extn("starttls"):
+                server.quit()
+                raise WorkerError(ENGINE_ERROR, f"{host} doesn't offer STARTTLS, so nothing was sent (Columbus never sends mail in the clear)")
+            server.starttls(context=ctx)
+            server.ehlo()
+        with server:
+            user, password = params.get("username"), params.get("password")
+            if user:
+                server.login(line(user, "username", 254), password or "")
+            refused = server.send_message(msg, from_addr=sender, to_addrs=to)
+    except WorkerError:
+        raise
+    except (smtplib.SMTPException, OSError, ssl.SSLError) as e:
+        raise WorkerError(ENGINE_ERROR, f"the mail server refused or couldn't be reached: {type(e).__name__}: {str(e)[:300]}") from None
+    return {"sent": [a for a in to if a not in (refused or {})], "refused": sorted((refused or {}).keys())}
+
+
 def map_snapshot(params: dict[str, Any]) -> dict[str, Any]:
     g = _gis()
     paths, out = params.get("paths"), params.get("out_path")
@@ -2018,6 +2084,7 @@ for _name, _fn in (
     ("verify_layer", verify_layer),
     ("read_rows", read_rows),
     ("map_snapshot", map_snapshot),
+    ("send_email", lambda p: _send_email(p)),
     ("display_geojson", display_geojson),
     ("export_layer", export_layer),
     ("geojson_layer", geojson_layer),

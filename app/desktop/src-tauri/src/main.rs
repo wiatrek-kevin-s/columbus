@@ -494,6 +494,8 @@ fn main() {
             doc_import::doc_import,
             share::share_open,
             share::share_import,
+            settings::email_settings,
+            settings::email_password_set,
             share::share_my_key,
             share::share_trust,
             share::share_untrust,

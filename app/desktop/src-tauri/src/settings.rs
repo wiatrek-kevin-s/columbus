@@ -131,6 +131,40 @@ fn trimmed(v: &Option<String>) -> Option<String> {
         .map(String::from)
 }
 
+/// Workflows' email as the organization set it up (no secret), and
+/// whether the mail server's password is saved.
+#[tauri::command]
+pub fn email_settings() -> Value {
+    let policy = OrgPolicy::load(&paths::policy_file()).unwrap_or_default();
+    match policy.email {
+        None => json!({"on": false}),
+        Some(e) => json!({
+            "on": true, "host": e.smtp_host, "port": e.smtp_port, "security": e.security,
+            "from": e.from, "username": e.username, "allowed_domains": e.allowed_domains,
+            "attachments": e.attachments, "max_attachment_mb": e.max_attachment_mb,
+        }),
+    }
+}
+
+/// Save (or, empty, forget) the mail server's password, for workflows'
+/// emails, in the credential store Columbus's server reads.
+#[tauri::command]
+pub async fn email_password_set(password: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let e = secret_entry("email-smtp")?;
+        if password.is_empty() {
+            match e.delete_credential() {
+                Ok(()) | Err(keyring_core::Error::NoEntry) => Ok(()),
+                Err(err) => Err(err.to_string()),
+            }
+        } else {
+            e.set_password(&password).map_err(|e| e.to_string())
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 fn secret_entry(id: &str) -> Result<keyring_core::Entry, String> {
     crate::chat::ensure_store()?;
     keyring_core::Entry::new(SECRET_SERVICE, id).map_err(|e| e.to_string())
