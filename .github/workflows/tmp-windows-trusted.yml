@@ -23,11 +23,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo build -p columbus-mcp --tests --locked
       - name: trusted run test
-        timeout-minutes: 8
+        timeout-minutes: 12
         run: cargo test -p columbus-mcp --test environments_trusted --locked -- --nocapture --test-threads=1 trusted_runs
         continue-on-error: true
       - name: arcpy probe test
-        timeout-minutes: 8
+        timeout-minutes: 12
         run: cargo test -p columbus-mcp --test environments_trusted --locked -- --nocapture --test-threads=1 arcpy_licence
         continue-on-error: true
       - name: processes left

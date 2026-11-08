@@ -237,6 +237,15 @@ fn cli(env: &Env, args: &[&str], extra: &[(&str, &str)]) -> std::process::Output
         .env("COLUMBUS_WORKSPACES", env.root.join("workspaces"))
         .env("COLUMBUS_AUDIT_DIR", env.root.join("audit"))
         .stdin(std::process::Stdio::null());
+    // Nobody is at the keyboard. The id is read from the terminal itself,
+    // not stdin: on Unix a test has no terminal, so the prompt fails at
+    // once; on Windows the test's console would wait for typing forever,
+    // so the command gets no console (DETACHED_PROCESS).
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0000_0008);
+    }
     for (k, v) in extra {
         cmd.env(k, v);
     }
