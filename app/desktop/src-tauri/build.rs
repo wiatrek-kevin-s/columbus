@@ -25,6 +25,8 @@ fn main() {
             "datagroup_remove",
             "registry_query",
             "share_export",
+            "doc_preview",
+            "doc_import",
             "share_open",
             "share_import",
             "project_dbs",

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-doc-import"
+description = "Enables the doc_import command without any pre-configured scope."
+commands.allow = ["doc_import"]
+
+[[permission]]
+identifier = "deny-doc-import"
+description = "Denies the doc_import command without any pre-configured scope."
+commands.deny = ["doc_import"]

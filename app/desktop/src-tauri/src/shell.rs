@@ -869,8 +869,18 @@ pub async fn notes_list() -> Result<Value, String> {
     tauri::async_runtime::spawn_blocking(|| {
         let p = places();
         let root = PathBuf::from(&p.notes);
+        // Not the originals kept beside imported documents (as the server
+        // reads the folder: sources/ holds no entries).
         let notes: Vec<Value> = walk(&root, 6, &|p| p.extension().is_some_and(|e| e == "md"))
             .into_iter()
+            .filter(|(rel, _)| {
+                !Path::new(rel).components().any(|c| {
+                    matches!(
+                        c.as_os_str().to_str(),
+                        Some("sources" | "scripts" | "checks")
+                    )
+                })
+            })
             .map(|(rel, m)| {
                 let fm = read_head(&root.join(&rel))
                     .map(|t| front_matter(&t))

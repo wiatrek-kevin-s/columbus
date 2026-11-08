@@ -2031,8 +2031,15 @@ for _name, _fn in (
     ("project_db_query", _projectdb("query")),
     ("project_db_describe", _projectdb("describe")),
     ("lint_tool", lambda p: _toollint().lint_tool(p.get("code"))),
+    ("convert_document", lambda p: _docs().convert_document(p)),
 ):
     plugin.tool(_name)(lambda ctx, fn=_fn: fn(ctx.params))
+
+
+def _docs():
+    import columbus_docs
+
+    return columbus_docs
 
 
 def _toollint():

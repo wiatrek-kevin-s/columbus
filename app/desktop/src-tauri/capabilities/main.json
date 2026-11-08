@@ -28,6 +28,8 @@
     "allow-datagroup-remove",
     "allow-registry-query",
     "allow-share-export",
+    "allow-doc-preview",
+    "allow-doc-import",
     "allow-share-open",
     "allow-share-import",
     "allow-project-dbs",

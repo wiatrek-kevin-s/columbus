@@ -63,7 +63,7 @@ pub(crate) fn notes_dir(paths: &crate::config::Paths) -> PathBuf {
 }
 
 /// A slug for ids and file names: lower-case letters, digits and `-`.
-fn slug(s: &str) -> String {
+pub(crate) fn slug(s: &str) -> String {
     let mut out = String::new();
     for c in s.chars() {
         if c.is_ascii_alphanumeric() {
@@ -159,7 +159,13 @@ fn plain_place(root: &Path, rel: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn write_note(root: &Path, rel: &Path, text: &str) -> Result<(), String> {
+pub(crate) fn write_note(root: &Path, rel: &Path, text: &str) -> Result<(), String> {
+    write_bytes(root, rel, text.as_bytes())
+}
+
+/// A file in the notes folder, written whole and renamed into place, through
+/// plain folders only (never a link).
+pub(crate) fn write_bytes(root: &Path, rel: &Path, text: &[u8]) -> Result<(), String> {
     let path = root.join(rel);
     let mut at = root.to_path_buf();
     for c in rel.parent().into_iter().flat_map(|p| p.components()) {
@@ -184,7 +190,7 @@ fn write_note(root: &Path, rel: &Path, text: &str) -> Result<(), String> {
 }
 
 /// The notes folder is the person's, never inside the organization's pack.
-fn notes_root(paths: &crate::config::Paths) -> Result<PathBuf, String> {
+pub(crate) fn notes_root(paths: &crate::config::Paths) -> Result<PathBuf, String> {
     let root = notes_dir(paths);
     let canon = |p: &Path| {
         let c = p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
@@ -204,7 +210,7 @@ fn notes_root(paths: &crate::config::Paths) -> Result<PathBuf, String> {
     Ok(root)
 }
 
-fn ensure_pack(root: &Path) -> Result<(), String> {
+pub(crate) fn ensure_pack(root: &Path) -> Result<(), String> {
     std::fs::create_dir_all(root).map_err(|e| format!("{}: {e}", root.display()))?;
     if std::fs::symlink_metadata(root.join("pack.yaml")).is_err() {
         write_note(

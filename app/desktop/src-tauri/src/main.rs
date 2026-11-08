@@ -44,6 +44,7 @@ use serde::Serialize;
 
 mod chat;
 mod datagroups;
+mod doc_import;
 mod projects;
 mod registry;
 mod settings;
@@ -486,6 +487,8 @@ fn main() {
             datagroups::datagroup_remove,
             registry::registry_query,
             share::share_export,
+            doc_import::doc_preview,
+            doc_import::doc_import,
             share::share_open,
             share::share_import,
             projects::project_dbs,

@@ -19,11 +19,7 @@ export async function render(main, rest) {
       ["Today, your assistant's note changes are approvals, decided in your AI app or on the browser page (or answered in this app's own chat)."], "Coming in stage 2"));
     return;
   }
-  if (tab === "import") {
-    body.append(coming("documents", "Import",
-      "Word, PDF, Excel, CSV and Markdown become draft entries in your documents, keeping the original beside them; the sop-conversion and writing-clearly-and-concisely skills help.", [], "Coming in stage 2"));
-    return;
-  }
+  if (tab === "import") return importView(body);
   return notes(body);
 }
 
@@ -143,4 +139,77 @@ async function pack(body) {
   }
   left.append(h("div", { class: "bd flush" }, r.entries.length ? ul : h("p", { class: "pad muted" }, "The pack has no entries.")));
   if (r.pack) left.append(h("details", { class: "bd" }, h("summary", { class: "small" }, "pack.yaml"), el("pre", "box", r.pack)));
+}
+
+// ---- Import: a document becomes a draft note ---------------------------
+// Previewed first (nothing written), then added to your notes as a draft,
+// with the original kept beside it. Only its text comes in: nothing in the
+// document is run or followed.
+function importView(body) {
+  const err = h("p", { id: "imp-error", class: "error-text", role: "alert", hidden: true });
+  const out = h("div", { id: "imp-preview", class: "stack" });
+  const choose = button("Choose a document…", "primary", pick, { id: "imp-choose" });
+  body.append(h("section", { class: "card" }, h("div", { class: "bd stack" },
+    h("p", {}, "Bring a procedure, a data dictionary or any reference into your notes, for your assistant to read: Word (.docx), Excel (.xlsx), PDF, CSV, Markdown or text."),
+    h("p", { class: "small muted" }, "You see what it becomes before anything is added. It comes in as a draft with the original kept beside it; check it, then mark it reviewed under My notes. Only its text comes in: headings, lists and tables. Scanned PDFs (pictures of pages) have no text to bring yet."),
+    h("div", { class: "row" }, choose), err)), out);
+
+  async function pick() {
+    showError(err, null);
+    choose.disabled = true;
+    choose.textContent = "Reading…";
+    let p;
+    try {
+      p = await invoke("doc_preview");
+    } catch (e) {
+      showError(err, e);
+    } finally {
+      choose.disabled = false;
+      choose.textContent = "Choose a document…";
+    }
+    if (p) draw(p);
+  }
+
+  function draw(p) {
+    const firstLine = (p.markdown || "").split("\n").map((l) => l.replace(/^[#>\-*\d.\s|]+/, "").trim()).find((l) => l.length > 20) || "";
+    const title = h("input", { id: "imp-title", type: "text", maxlength: "120", class: "grow", value: p.title || "" });
+    const kind = h("select", { id: "imp-kind", "aria-label": "What it is" },
+      h("option", { value: "sop" }, "A procedure (SOP): steps to follow"),
+      h("option", { value: "note" }, "A reference: what something is or means"),
+      h("option", { value: "glossary" }, "A glossary: terms and what they mean"));
+    if (/procedure|sop|steps|checklist/i.test(`${p.title} ${p.file}`)) kind.value = "sop"; else kind.value = "note";
+    const summary = h("textarea", { id: "imp-summary", rows: "2", maxlength: "400", placeholder: "One or two sentences: what it is about" });
+    summary.value = firstLine.slice(0, 300).replace(/([.!?]).*$/, "$1");
+    const whenUse = h("input", { id: "imp-when", type: "text", maxlength: "300", class: "grow", placeholder: "When to use it, e.g. the first week of each month" });
+    const whenRow = h("label", { class: "field", for: "imp-when" }, "When to use it", whenUse);
+    const showWhen = () => { whenRow.hidden = kind.value !== "sop"; };
+    kind.addEventListener("change", showWhen);
+    showWhen();
+    const problem = h("p", { class: "error-text", role: "alert", hidden: true });
+    const add = button("Add to my notes as a draft", "primary", async () => {
+      showError(problem, null);
+      add.disabled = true;
+      try {
+        const r = await invoke("doc_import", { form: { path: p.path, sha256: p.sha256, kind: kind.value, title: title.value, summary: summary.value, when_to_use: whenUse.value } });
+        toast(`Added ${title.value} to your notes as a draft. Check it against the original, then mark it reviewed.`);
+        out.replaceChildren(h("section", { class: "card" }, h("div", { class: "bd stack" },
+          h("p", {}, `Added as ${r.path}, with the original at ${r.source}.`),
+          h("div", { class: "row" }, h("a", { class: "btn", href: "#/documents/notes", id: "imp-done" }, "Go to My notes")))));
+      } catch (e) {
+        showError(problem, e);
+        add.disabled = false;
+      }
+    }, { id: "imp-add" });
+    const warnings = (p.warnings || []).length ? h("ul", { class: "small notice warn", id: "imp-warnings" }, ...p.warnings.map((x) => el("li", null, x))) : null;
+    out.replaceChildren(h("section", { class: "card" },
+      h("div", { class: "hd" }, h("h2", {}, p.file), h("span", { class: "badge mute more" }, p.format)),
+      h("div", { class: "bd stack" }, warnings,
+        h("label", { class: "field", for: "imp-kind" }, "What it is", kind),
+        h("label", { class: "field", for: "imp-title" }, "Title", title),
+        h("label", { class: "field", for: "imp-summary" }, "Summary", summary), whenRow,
+        h("h3", {}, "What will come in"),
+        h("pre", { class: "box", id: "imp-text" }, p.markdown || "(no text found)"),
+        h("div", { class: "row wrap" }, add, button("Cancel", "", () => out.replaceChildren())), problem)));
+    title.focus();
+  }
 }

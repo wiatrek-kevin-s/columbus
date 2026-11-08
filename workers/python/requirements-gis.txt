@@ -12,3 +12,6 @@ rasterio>=1.4,<2
 # Streams shapefile and file geodatabase reads (columbus_esri); without it
 # they're read a page at a time, more slowly.
 pyarrow>=15
+# Reads the text of PDFs imported into the person's notes (Documents >
+# Import, columbus_docs); without it PDF import says so. Pure Python.
+pypdf>=4,<7
