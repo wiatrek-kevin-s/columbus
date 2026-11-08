@@ -955,7 +955,94 @@ EXPORT_FORMATS = {
     "fgb": ("FlatGeobuf", ".fgb"), "flatgeobuf": ("FlatGeobuf", ".fgb"),
     "shp": ("ESRI Shapefile", ".shp"), "shapefile": ("ESRI Shapefile", ".shp"),
     "csv": ("CSV", ".csv"),
+    # R-8: one new file geodatabase with one feature class (OpenFileGDB).
+    "gdb": ("OpenFileGDB", ".gdb"), "filegdb": ("OpenFileGDB", ".gdb"), "fgdb": ("OpenFileGDB", ".gdb"),
+    "file geodatabase": ("OpenFileGDB", ".gdb"),
+    # R-9: raster results only, as the workspace's Cloud-Optimized GeoTIFF.
+    "tif": ("COG", ".tif"), "tiff": ("COG", ".tif"), "geotiff": ("COG", ".tif"), "cog": ("COG", ".tif"),
 }
+
+# A file geodatabase feature class name: a letter, then letters, digits and
+# underscores (OpenFileGDB would otherwise change it, and R-8 names the
+# layer after the export).
+FGDB_LAYER_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,159}")
+FGDB_MAX_FIELD = 64
+INT32_MIN, INT32_MAX = -(2**31), 2**31 - 1
+
+
+def _gdb_int_columns(df, gname: str | None) -> tuple[Any, list[str]]:
+    """Integer columns for a file geodatabase. Without
+    TARGET_ARCGIS_VERSION=ARCGIS_PRO_3_2_OR_LATER, OpenFileGDB writes every
+    64-bit integer field as a double, so columns whose values all fit in 32
+    bits are written as 32-bit integers (readable by every ArcGIS), and the
+    names of those that do not are returned: they need the Pro 3.2 option to
+    stay exact."""
+    big: list[str] = []
+    out = df
+    for c in df.columns:
+        if c == gname or not pd.api.types.is_integer_dtype(df[c]) or pd.api.types.is_bool_dtype(df[c]):
+            continue
+        vals = df[c].dropna()
+        if len(vals) and (int(vals.min()) < INT32_MIN or int(vals.max()) > INT32_MAX):
+            big.append(str(c))
+            continue
+        if out is df:
+            out = df.copy()
+        nullable = isinstance(df[c].dtype, pd.api.extensions.ExtensionDtype)
+        out[c] = df[c].astype("Int32" if nullable else "int32")
+    return out, big
+
+
+def _write_gdb(df, out: str, layer: str, gname: str, checks: list[dict]) -> None:
+    if not FGDB_LAYER_NAME.fullmatch(layer):
+        raise GISError("export.format",
+                       f"A file geodatabase export names its feature class after the export, and {layer!r} is not a valid "
+                       "feature class name (a letter, then letters, digits and _, at most 160 characters)",
+                       fix="Choose a name like crash_hotspots")
+    long = [str(c) for c in df.columns if c != gname and len(str(c)) > FGDB_MAX_FIELD]
+    if long:
+        raise GISError("export.format",
+                       f"File geodatabase field names are at most {FGDB_MAX_FIELD} characters; these are longer: {', '.join(long)}",
+                       fix="Rename them in the delivery spec, or deliver GeoPackage")
+    if os.path.lexists(out):
+        # Never written into: OpenFileGDB would add a layer to it.
+        raise GISError("export.exists", f"{os.path.basename(out)} already exists; an existing file geodatabase is never changed",
+                       fix="Choose another name")
+    df, big = _gdb_int_columns(df, gname)
+    options: dict[str, str] = {}
+    if big:
+        options["TARGET_ARCGIS_VERSION"] = "ARCGIS_PRO_3_2_OR_LATER"
+        checks.append(check("export.needs_pro_3_2", "info",
+                            f"{', '.join(big)} hold(s) whole numbers beyond the 32-bit range, kept exact as 64-bit integers; "
+                            "ArcGIS Pro 3.2 or later is needed to open this file geodatabase",
+                            detail={"fields": big},
+                            fix="If the recipient has older ArcGIS, deliver GeoPackage, or store these values as text"))
+    import warnings  # noqa: PLC0415
+
+    try:
+        # GDAL's notes on renamed fields become the check below.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            df.to_file(out, layer=layer, driver="OpenFileGDB", engine="pyogrio", layer_options=options or None)
+    except Exception as e:  # noqa: BLE001 - GDAL's own message says why
+        raise GISError("export.format", f"could not write the file geodatabase ({e})") from None
+    info = pyogrio.read_info(out, layer=layer)
+    if pyogrio.list_layers(out)[:, 0].tolist() != [layer] or int(info["features"]) != len(df):
+        raise GISError("export.format", "the file geodatabase did not come out as one feature class with every row")
+    wrote = [str(f) for f in info["fields"]]
+    wanted = [str(c) for c in df.columns if c != gname]
+    types = dict(zip(wrote, info["ogr_types"]))
+    if any(types.get(dict(zip(wanted, wrote)).get(c, c)) != "OFTInteger64" for c in big):
+        # An older GDAL (before 3.9) ignores the option and writes doubles.
+        raise GISError("export.format",
+                       f"this GDAL ({pyogrio.__gdal_version_string__}) cannot keep 64-bit integers exact in a file geodatabase "
+                       f"({', '.join(big)})", fix="Update the engine's pyogrio, or deliver GeoPackage")
+    if wrote != wanted:
+        changed = [f"{a} to {b}" for a, b in zip(wanted, wrote) if a != b]
+        checks.append(check("export.field_names", "warn",
+                            "The file geodatabase changed field names it does not allow: " + ", ".join(changed),
+                            detail={"fields": dict(zip(wanted, wrote))},
+                            fix="Rename the fields in the delivery spec (letters, digits and _) if the recipient expects the original names"))
 
 
 def export_layer(path: str, out_stem: str, fmt: str, crs: str | None = None,
@@ -966,6 +1053,17 @@ def export_layer(path: str, out_stem: str, fmt: str, crs: str | None = None,
     if key not in EXPORT_FORMATS:
         raise GISError("params", f"format must be one of {', '.join(sorted(set(EXPORT_FORMATS)))}")
     driver, ext = EXPORT_FORMATS[key]
+    raster = isinstance(path, str) and path.lower().endswith((".tif", ".tiff"))
+    if driver == "COG":
+        if not raster:
+            raise GISError("export.format", f"{fmt} is for raster results; this is a vector layer or table",
+                           fix="Export it as gpkg, gdb, geojson, fgb, shp or csv")
+        import columbus_raster  # noqa: PLC0415 - it imports this module
+
+        return columbus_raster.export_tif(path, out_stem, crs, rename)
+    if raster:
+        raise GISError("export.format", f"a raster result exports as tif only, not {fmt}",
+                       fix="Export it with format tif")
     df = read_layer(path)
     checks: list[dict] = []
     geo = isinstance(df, gpd.GeoDataFrame)
@@ -1023,6 +1121,10 @@ def export_layer(path: str, out_stem: str, fmt: str, crs: str | None = None,
             # Full precision: shapely's default rounds to 6 decimals.
             frame["wkt"] = df.geometry.to_wkt(rounding_precision=-1)
         frame.to_csv(out, index=False)
+    elif driver == "OpenFileGDB":
+        if not geo:
+            raise GISError("export.format", f"{fmt} needs geometry; this layer has none (deliver it as csv)")
+        _write_gdb(df, out, os.path.basename(out_stem), gname, checks)
     else:
         if not geo:
             raise GISError("export.format", f"{fmt} needs geometry; this layer has none (deliver it as csv)")

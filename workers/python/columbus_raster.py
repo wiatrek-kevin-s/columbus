@@ -206,6 +206,60 @@ def describe_raster(path: str) -> dict[str, Any]:
         return out
 
 
+def _same_nodata(a, b) -> bool:
+    if a is None or b is None:
+        return a is b
+    return (math.isnan(a) and math.isnan(b)) or a == b
+
+
+def export_tif(path: str, out_stem: str, crs: str | None = None,
+               rename: dict[str, str] | None = None) -> dict[str, Any]:
+    """R-9: deliver a raster result as a Cloud-Optimized GeoTIFF. The
+    workspace's COG is copied byte for byte (a raster that is not yet one is
+    rewritten as one). A delivery CRS must already match: rasters are never
+    reprojected here, because that needs a resampling choice."""
+    checks: list[dict] = []
+    os.makedirs(os.path.dirname(out_stem) or ".", exist_ok=True)
+    out = out_stem + ".tif"
+    if os.path.lexists(out):
+        raise GISError("export.exists", f"{os.path.basename(out)} already exists")
+    with open_raster(path) as ds:
+        src = _crs(ds)
+        if crs:
+            if not isinstance(crs, str) or not g.EPSG_CODE.fullmatch(crs.strip()):
+                raise GISError("params", "crs must be an EPSG code such as \"EPSG:3081\"")
+            target = CRS.from_user_input(crs.strip().upper())
+            if src is None:
+                raise GISError("crs.present", f"the raster has no coordinate reference system, so it cannot be delivered in {g._label(target)}")
+            if not src.equals(target, ignore_axis_order=True):
+                raise GISError("export.crs",
+                               f"the delivery spec wants {g._label(target)} and this raster is in {g._label(src)}: "
+                               "reproject first (raster_op reproject)",
+                               fix=f"raster_op reproject to {crs.strip().upper()} with an explicit resampling, then export that result")
+        if rename:
+            checks.append(check("export.rename_missing", "warn",
+                                f"The delivery spec renames {', '.join(rename)}; a raster has no fields, so nothing was renamed"))
+        nodata = list(ds.nodatavals)
+        summary = raster_summary(ds)
+        if ds.tags(ns="IMAGE_STRUCTURE").get("LAYOUT") == "COG":
+            with open(path, "rb") as f, open(out, "xb") as o:
+                while chunk := f.read(1 << 20):
+                    o.write(chunk)
+        else:
+            rio_copy(ds, out, driver="COG", COMPRESS="DEFLATE", PREDICTOR="YES", BLOCKSIZE=512,
+                     OVERVIEW_RESAMPLING=_overview_method(ds.dtypes[0]), BIGTIFF="IF_SAFER")
+            checks.append(check("export.cog", "info", "The raster was rewritten as a Cloud-Optimized GeoTIFF for delivery"))
+    with open_raster(out) as d:
+        dcrs = _crs(d)
+        if (d.tags(ns="IMAGE_STRUCTURE").get("LAYOUT") != "COG"
+                or (src is None) != (dcrs is None) or (src is not None and not src.equals(dcrs))
+                or len(d.nodatavals) != len(nodata)
+                or not all(_same_nodata(a, b) for a, b in zip(d.nodatavals, nodata))):
+            raise GISError("export.format", "the exported GeoTIFF did not keep the raster's layout, CRS or nodata")
+        checks.extend(raster_checks(d, "The delivered raster"))
+    return {"files": [out], "summary": summary, "checks": checks}
+
+
 # ---------------------------------------------------------------------------
 # Writing
 # ---------------------------------------------------------------------------

@@ -261,8 +261,9 @@ for large rasters (`raster.stats_sampled` says so). It writes nothing.
 
 Every raster output is checked for CRS (`crs.present`, `crs.area_of_use`) and nodata. Pass
 handles on to further `raster_op` calls; `read_output` and `vector_op` read the zonal-statistics
-layer. `export_output` exports vector layers only for now: say so, and give the person the
-handle and workspace path of a raster result (`list_outputs`). Columbus does not mosaic tiles
+layer. `export_output` with `format: "tif"` delivers a raster result as its Cloud-Optimized
+GeoTIFF, with the same CRS and nodata. It never reprojects: if the delivery spec wants another
+CRS, `raster_op reproject` first (with an explicit resampling) and export that result. Columbus does not mosaic tiles
 yet; write the `gdalbuildvrt` steps (section 7) for the person to run.
 
 Sources for elevation data are in the geospatial registry:
