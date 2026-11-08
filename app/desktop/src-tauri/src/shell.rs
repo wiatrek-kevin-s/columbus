@@ -1077,6 +1077,9 @@ pub async fn note_confirm(path: String, sha256: String) -> Result<(), String> {
             return Err(changed());
         }
         let before = String::from_utf8(bytes).map_err(|_| "not a text file".to_string())?;
+        if front_matter(&before).get("status").and_then(|v| v.as_str()) == Some("draft") {
+            return Err("a draft is reviewed in Notes (Mark reviewed), not confirmed here".into());
+        }
         let today: String = columbus_shared::tools::now().chars().take(10).collect();
         let after = confirmed_on(&before, &today).ok_or("this note has no last_confirmed date to update")?;
         if !same_but_confirmed(&before, &after, &today) {

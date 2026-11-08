@@ -43,6 +43,9 @@ const KINDS: &[&str] = &["sop", "note", "glossary"];
 const EXTS: &[&str] = &["docx", "xlsx", "pdf", "csv", "md", "markdown", "txt"];
 /// Most memory reading one document may use, in MiB, when read confined.
 const MEMORY_MB: u64 = 1536;
+/// Most Markdown kept from a document (the engine cuts at 400,000
+/// characters; this is the gateway's own limit).
+const MAX_MARKDOWN: usize = 500_000;
 /// Longest reading one document may take.
 const SECONDS: u64 = 120;
 
@@ -338,7 +341,7 @@ fn tidy(v: &Value) -> Value {
         .filter(|f| ["word", "excel", "pdf", "csv", "markdown", "text"].contains(f))
         .unwrap_or("text");
     json!({
-        "markdown": v["markdown"].as_str().unwrap_or(""),
+        "markdown": v["markdown"].as_str().unwrap_or("").chars().take(MAX_MARKDOWN).collect::<String>(),
         "title": text(&v["title"]).chars().take(200).collect::<String>(),
         "warnings": warnings,
         "format": format,

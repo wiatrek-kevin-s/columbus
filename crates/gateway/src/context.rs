@@ -109,7 +109,8 @@ impl Entry {
     pub(crate) fn stale(&self, interval_months: u32, today: NaiveDate) -> Option<bool> {
         let d = self.str_field("last_confirmed")?;
         let d = NaiveDate::parse_from_str(&d, "%Y-%m-%d").ok()?;
-        let months = (today.signed_duration_since(d).num_days() / 30) as u32;
+        // A date ahead of today (a typo, say) is not stale.
+        let months = (today.signed_duration_since(d).num_days().max(0) / 30) as u32;
         Some(months >= interval_months)
     }
 }

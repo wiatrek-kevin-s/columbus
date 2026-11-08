@@ -63,6 +63,40 @@ fn matching<'a>(want: &str, names: &[&'a str]) -> Option<&'a str> {
     }
 }
 
+/// Each field the note names, paired with the field the database lists now:
+/// the same name first, then, among the names left on both sides, the one
+/// name differing only in case, when exactly one on each side does.
+fn pair_up<'a, 'b>(was: &[&'a str], now: &[&'b str]) -> BTreeMap<&'a str, &'b str> {
+    let mut pairs = BTreeMap::new();
+    for w in was {
+        if let Some(n) = now.iter().find(|n| **n == *w) {
+            pairs.insert(*w, *n);
+        }
+    }
+    let used: BTreeSet<&str> = pairs.values().copied().collect();
+    let left_was: Vec<&str> = was
+        .iter()
+        .copied()
+        .filter(|w| !pairs.contains_key(w))
+        .collect();
+    let left_now: Vec<&str> = now.iter().copied().filter(|n| !used.contains(n)).collect();
+    for w in &left_was {
+        let mut c = left_now.iter().filter(|n| n.eq_ignore_ascii_case(w));
+        let (Some(n), None) = (c.next(), c.next()) else {
+            continue;
+        };
+        if left_was
+            .iter()
+            .filter(|x| x.eq_ignore_ascii_case(n))
+            .count()
+            == 1
+        {
+            pairs.insert(*w, *n);
+        }
+    }
+    pairs
+}
+
 fn months_between(a: NaiveDate, b: NaiveDate) -> i64 {
     use chrono::Datelike;
     (b.year() as i64 - a.year() as i64) * 12 + (b.month() as i64 - a.month() as i64)
@@ -226,25 +260,26 @@ async fn run(request: &str) -> Result<Value, String> {
         }
         let was_names: Vec<&str> = n.fields.keys().map(String::as_str).collect();
         let now_names: Vec<&str> = now.keys().map(String::as_str).collect();
-        let mut seen_now = BTreeSet::new();
-        let mut removed: Vec<&str> = Vec::new();
-        let mut retyped: Vec<Value> = Vec::new();
-        for (name, t) in &n.fields {
-            let Some(m) = matching(name, &now_names) else {
-                removed.push(name);
-                continue;
-            };
-            seen_now.insert(m);
-            if let (Some(a), Some(Some(b))) = (t, now.get(m)) {
-                if !a.eq_ignore_ascii_case(b) {
-                    retyped.push(json!({"field": name, "was": a, "now": b}));
-                }
-            }
-        }
+        let pairs = pair_up(&was_names, &now_names);
+        let removed: Vec<&str> = was_names
+            .iter()
+            .copied()
+            .filter(|w| !pairs.contains_key(w))
+            .collect();
+        let paired: BTreeSet<&str> = pairs.values().copied().collect();
         let added: Vec<&str> = now_names
             .iter()
             .copied()
-            .filter(|k| !seen_now.contains(k) && matching(k, &was_names).is_none())
+            .filter(|k| !paired.contains(k))
+            .collect();
+        let retyped: Vec<Value> = pairs
+            .iter()
+            .filter_map(|(name, m)| match (n.fields.get(*name), now.get(*m)) {
+                (Some(Some(a)), Some(Some(b))) if !a.eq_ignore_ascii_case(b) => {
+                    Some(json!({"field": name, "was": a, "now": b}))
+                }
+                _ => None,
+            })
             .collect();
         if added.is_empty() && removed.is_empty() && retyped.is_empty() {
             continue;
@@ -259,4 +294,22 @@ async fn run(request: &str) -> Result<Value, String> {
         json!({"ok": true, "changed": changed, "due": due, "problems": problems,
         "notes": pack.entries.len(), "interval_months": interval}),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pair_up;
+
+    #[test]
+    fn fields_pair_by_name_then_by_case() {
+        let p = pair_up(&["id"], &["ID", "id"]);
+        assert_eq!(p.len(), 1);
+        assert_eq!(p["id"], "id"); // "ID" is new
+        let p = pair_up(&["ID", "id"], &["id"]);
+        assert_eq!(p.len(), 1); // "ID" is gone
+        let p = pair_up(&["Id"], &["ID", "id"]);
+        assert!(p.is_empty()); // ambiguous: "Id" gone, both new
+        let p = pair_up(&["Speed"], &["SPEED"]);
+        assert_eq!(p["Speed"], "SPEED"); // only the case changed
+    }
 }

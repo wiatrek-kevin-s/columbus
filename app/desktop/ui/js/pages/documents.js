@@ -227,7 +227,8 @@ const HIDDEN = /[\u0000-\u001f\u007f-\u009f\u00ad\u034f\u061c\u115f\u1160\u17b4\
 function shown(s, max) {
   // Tag characters (U+E0000–E0FFF) are the surrogate pairs \udb40–\udb43.
   const t = String(s ?? "").replace(/[\udb40-\udb43][\udc00-\udfff]/g, "").replace(HIDDEN, "");
-  return t.length > max ? `${t.slice(0, max)}…` : t;
+  const chars = Array.from(t); // whole characters, never half a pair
+  return chars.length > max ? `${chars.slice(0, max).join("")}…` : t;
 }
 
 function proposals(body) {
@@ -339,7 +340,12 @@ function proposals(body) {
                 run();
               } catch (e) { showError(err2, e); yes.disabled = false; }
             }, { title: "Its last-confirmed date becomes today; nothing else in it changes" });
-            shownText.replaceChildren(h("pre", { class: "box" }, read.text), h("div", { class: "row" }, yes));
+            // Tabs and line breaks are fine; anything else shown() drops isn't.
+            const plain = read.text.replace(/[\t\n\r]/g, " ");
+            const unseen = shown(plain, Infinity) !== plain;
+            shownText.replaceChildren(
+              ...(unseen ? [h("p", { class: "notice warn small" }, "This note has characters you can't see (control, zero-width or hidden characters). Open it in Notes or an editor and check it before you confirm it.")] : []),
+              h("pre", { class: "box" }, read.text), h("div", { class: "row" }, yes));
             shownText.hidden = false;
           }, { title: "Read the note; if it's still right, confirm it as of today" });
         }

@@ -186,6 +186,16 @@ def _events(z: zipfile.ZipFile, name: str, limit: int | None = None):
         raise _err(f"{name} in the file is not well-formed XML ({e})") from None
 
 
+def _drop(parent: ET.Element | None, el: ET.Element) -> None:
+    """Take an element read out of its parent, at no cost: when it is the
+    parent's last child (as a finished row or string is), else just empty it
+    (removing from the middle would search the parent each time)."""
+    if parent is not None and len(parent) and parent[-1] is el:
+        del parent[-1]
+    else:
+        el.clear()
+
+
 def _zip(path: str) -> zipfile.ZipFile:
     try:
         return zipfile.ZipFile(path)
@@ -383,16 +393,14 @@ def _sheet_rows(z: zipfile.ZipFile, part: str, shared: list[str]) -> tuple[list[
                 else:
                     val = vt[: MAX_CELL * 2]
                 cur[i] = val
-            if parent is not None:
-                parent.remove(el)
+            _drop(parent, el)
         elif tag == f"{S}row":
             if cur and any(v.strip() for v in cur.values()):
                 if len(rows) >= MAX_ROWS:
                     return rows, True
                 rows.append([cur.get(i, "") for i in range(max(cur) + 1)])
             cur = None
-            if parent is not None:
-                parent.remove(el)
+            _drop(parent, el)
     return rows, False
 
 
@@ -408,8 +416,7 @@ def _excel(path: str, warnings: list[str]) -> tuple[str, str | None]:
                 parts = [t.text or "" for t in el.findall(f"{S}t")]
                 parts += [t.text or "" for r in el.findall(f"{S}r") for t in r.findall(f"{S}t")]
                 shared.append("".join(parts)[: MAX_CELL * 2])
-                if parent is not None:
-                    parent.remove(el)
+                _drop(parent, el)
         wb = _xml(z, "xl/workbook.xml")
         rels = _xml(z, "xl/_rels/workbook.xml.rels")
         if wb is None:
