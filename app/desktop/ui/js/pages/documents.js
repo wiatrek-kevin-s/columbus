@@ -192,7 +192,7 @@ function importView(body) {
       showError(problem, null);
       add.disabled = true;
       try {
-        const r = await invoke("doc_import", { form: { path: p.path, sha256: p.sha256, kind: kind.value, title: title.value, summary: summary.value, when_to_use: whenUse.value } });
+        const r = await invoke("doc_import", { form: { sha256: p.sha256, kind: kind.value, title: title.value, summary: summary.value, when_to_use: whenUse.value } });
         toast(`Added ${title.value} to your notes as a draft. Check it against the original, then mark it reviewed.`);
         out.replaceChildren(h("section", { class: "card" }, h("div", { class: "bd stack" },
           h("p", {}, `Added as ${r.path}, with the original at ${r.source}.`),

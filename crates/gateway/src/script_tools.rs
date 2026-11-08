@@ -100,7 +100,7 @@ fn safe_ext(p: &Path) -> String {
 }
 
 /// What a stream said, kept up to [`STREAM_CAP`].
-struct Captured {
+pub(crate) struct Captured {
     kept: Vec<u8>,
     total: u64,
 }
@@ -109,7 +109,7 @@ impl Captured {
     fn truncated(&self) -> bool {
         self.total > self.kept.len() as u64
     }
-    fn text(&self) -> String {
+    pub(crate) fn text(&self) -> String {
         let mut s = String::from_utf8_lossy(&self.kept).into_owned();
         if self.truncated() {
             s.push_str(&format!(
@@ -165,18 +165,18 @@ impl Drop for GroupGuard {
     }
 }
 
-struct Ran {
+pub(crate) struct Ran {
     /// None when it was ended by a signal or the time limit.
-    exit_code: Option<i32>,
-    timed_out: bool,
-    stdout: Captured,
-    stderr: Captured,
-    seconds: f64,
+    pub(crate) exit_code: Option<i32>,
+    pub(crate) timed_out: bool,
+    pub(crate) stdout: Captured,
+    pub(crate) stderr: Captured,
+    pub(crate) seconds: f64,
 }
 
 /// The environment a script gets: nothing of the gateway's but what a
 /// program needs to start.
-fn script_env(run: &Path) -> Vec<(String, OsString)> {
+pub(crate) fn script_env(run: &Path) -> Vec<(String, OsString)> {
     let mut env: Vec<(String, OsString)> = Vec::new();
     if let Some(p) = std::env::var_os("PATH") {
         env.push(("PATH".into(), p));
@@ -443,68 +443,91 @@ impl Gateway {
             .iter()
             .map(|s| s.to_string())
             .collect();
-        let mut cmd = tokio::process::Command::new(launcher);
-        cmd.args(spec.launcher_args(&python, &args))
-            .current_dir(run)
-            .env_clear()
-            .envs(script_env(run))
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-        #[cfg(unix)]
-        cmd.process_group(0);
-        let started = Instant::now();
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| format!("could not start the confined script: {e}"))?;
-        let mut group = GroupGuard(child.id());
-        let out = tokio::spawn(capture(child.stdout.take().expect("piped stdout")));
-        let err = tokio::spawn(capture(child.stderr.take().expect("piped stderr")));
-        let (status, timed_out) = match tokio::time::timeout(timeout, child.wait()).await {
-            Ok(Ok(s)) => (Some(s), false),
-            Ok(Err(e)) => {
-                group.kill();
-                let _ = child.start_kill();
-                return Err(format!("lost track of the script: {e}"));
-            }
-            Err(_) => {
-                // The whole tree: the group on Linux, the job (closed with
-                // the launcher) on Windows.
-                group.kill();
-                let _ = child.start_kill();
-                (child.wait().await.ok(), true)
-            }
-        };
-        // Anything it left running in its group goes too.
-        group.kill();
-        group.0 = None;
-        let seconds = started.elapsed().as_secs_f64();
-        let grace = Duration::from_secs(5);
-        let empty = || Captured {
-            kept: Vec::new(),
-            total: 0,
-        };
-        let stdout = match tokio::time::timeout(grace, out).await {
-            Ok(Ok(c)) => c,
-            _ => empty(),
-        };
-        let stderr = match tokio::time::timeout(grace, err).await {
-            Ok(Ok(c)) => c,
-            _ => empty(),
-        };
-        Ok(Ran {
-            exit_code: if timed_out {
-                None
-            } else {
-                status.and_then(|s| s.code())
-            },
-            timed_out,
-            stdout,
-            stderr,
-            seconds,
-        })
+        run_under(
+            launcher,
+            spec,
+            run,
+            &python,
+            &args,
+            script_env(run),
+            timeout,
+        )
+        .await
     }
+}
+
+/// Run `program args` under the confinement launcher, in `cwd` with only
+/// `env`; wait for it within `timeout`, and end everything it started.
+pub(crate) async fn run_under(
+    launcher: &Path,
+    spec: &columbus_confine::Spec,
+    cwd: &Path,
+    program: &str,
+    args: &[String],
+    env: Vec<(String, OsString)>,
+    timeout: Duration,
+) -> Result<Ran, String> {
+    let mut cmd = tokio::process::Command::new(launcher);
+    cmd.args(spec.launcher_args(program, args))
+        .current_dir(cwd)
+        .env_clear()
+        .envs(env)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    #[cfg(unix)]
+    cmd.process_group(0);
+    let started = Instant::now();
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("could not start the confined script: {e}"))?;
+    let mut group = GroupGuard(child.id());
+    let out = tokio::spawn(capture(child.stdout.take().expect("piped stdout")));
+    let err = tokio::spawn(capture(child.stderr.take().expect("piped stderr")));
+    let (status, timed_out) = match tokio::time::timeout(timeout, child.wait()).await {
+        Ok(Ok(s)) => (Some(s), false),
+        Ok(Err(e)) => {
+            group.kill();
+            let _ = child.start_kill();
+            return Err(format!("lost track of the script: {e}"));
+        }
+        Err(_) => {
+            // The whole tree: the group on Linux, the job (closed with
+            // the launcher) on Windows.
+            group.kill();
+            let _ = child.start_kill();
+            (child.wait().await.ok(), true)
+        }
+    };
+    // Anything it left running in its group goes too.
+    group.kill();
+    group.0 = None;
+    let seconds = started.elapsed().as_secs_f64();
+    let grace = Duration::from_secs(5);
+    let empty = || Captured {
+        kept: Vec::new(),
+        total: 0,
+    };
+    let stdout = match tokio::time::timeout(grace, out).await {
+        Ok(Ok(c)) => c,
+        _ => empty(),
+    };
+    let stderr = match tokio::time::timeout(grace, err).await {
+        Ok(Ok(c)) => c,
+        _ => empty(),
+    };
+    Ok(Ran {
+        exit_code: if timed_out {
+            None
+        } else {
+            status.and_then(|s| s.code())
+        },
+        timed_out,
+        stdout,
+        stderr,
+        seconds,
+    })
 }
 
 #[tool_router(router = script_router, vis = "pub(crate)")]

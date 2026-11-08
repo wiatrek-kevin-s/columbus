@@ -4,13 +4,24 @@ CSV, Markdown and plain text, turned into Markdown text.
 Only text comes out: headings, paragraphs, lists and tables. Nothing in a
 document is run or followed: no macros, links, embedded objects, images or
 external references. Word and Excel files are ZIP archives of XML, read with
-the standard library; their XML must not declare entities (a document never
-needs one), and every part read is capped, so a crafted file can't make the
-worker read or build without limit. PDFs need the ``pypdf`` package (in the
-engine's requirements); without it PDF import says so.
+the standard library; their XML must be UTF-8 (or ASCII) and must not
+declare a document type or entities (a document never needs one), and every
+part read is capped, so a crafted file can't make the worker read or build
+without limit. Work stops once the text reaches its cap. PDFs need the
+``pypdf`` package (in the engine's requirements); without it PDF import
+says so.
 
-``convert_document({"path": ...})`` returns ``{"markdown", "title",
-"warnings", "format", "sha256", "bytes"}``.
+Invisible characters (controls, zero-width and direction marks, Unicode
+"tag" characters, variation selectors, fillers) are removed from all text:
+what the person previews is all there is.
+
+``convert_document({"path": ..., "name": ...})`` returns ``{"markdown",
+"title", "warnings", "format", "sha256", "bytes"}``; ``name`` is the
+original file's name, for a title when the document has none.
+
+Run as ``python -I columbus_docs.py <worker folder> <in> <out.json> <name>``
+it converts one file and writes ``{"ok": true, "result": ...}`` or ``{"ok":
+false, "error": ...}`` to ``out.json``: how the gateway runs it confined.
 """
 
 from __future__ import annotations
@@ -20,16 +31,21 @@ import hashlib
 import io
 import os
 import re
+import sys
 import zipfile
+import zlib
 from typing import Any
 from xml.etree import ElementTree as ET
 
-import columbus_worker as w
+if __name__ == "__main__":  # run confined: the worker's folder comes first
+    sys.path.insert(0, sys.argv[1])
+
+import columbus_worker as w  # noqa: E402
 
 # Largest document read, in bytes.
 MAX_FILE = 50 * 1024 * 1024
 # Largest XML part of a Word or Excel file, once unpacked.
-MAX_PART = 40 * 1024 * 1024
+MAX_PART = 25 * 1024 * 1024
 # Most Markdown text produced (characters).
 MAX_TEXT = 400_000
 # Most rows and columns of one table kept.
@@ -37,6 +53,8 @@ MAX_ROWS = 500
 MAX_COLS = 40
 MAX_SHEETS = 20
 MAX_PAGES = 300
+# Longest text kept from one cell or shared string.
+MAX_CELL = 500
 
 FORMATS = {".docx": "word", ".xlsx": "excel", ".pdf": "pdf", ".csv": "csv", ".md": "markdown", ".markdown": "markdown", ".txt": "text"}
 
@@ -44,39 +62,45 @@ W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 S = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
 R = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
 
+# The same characters the gateway treats as hidden (canon::hidden_char),
+# less tab and line feed.
+HIDDEN = re.compile(
+    "[\x00-\x08\x0b-\x1f\x7f-\x9f\xad͏؜ᅟᅠ឴឵᠋-᠏"
+    "​-‏ -‮⁠-⁯ㅤ︀-️﻿ﾠ￹-￻"
+    "\U000e0000-\U000e0fff]"
+)
+
+# Failures of a damaged or unusual ZIP member.
+ZIP_ERRORS = (zipfile.BadZipFile, zipfile.LargeZipFile, RuntimeError, NotImplementedError, zlib.error, EOFError, OSError, ValueError)
+
 
 def _err(msg: str):
     return w.WorkerError(w.INVALID_PARAMS, msg)
 
 
+# How many invisible characters this conversion removed.
+_removed = [0]
+
+
 def _clean(s: str) -> str:
     """Text without control or invisible formatting characters (tabs and
     line breaks kept)."""
-    out = []
-    for ch in s:
-        o = ord(ch)
-        if ch in "\t\n":
-            out.append(ch)
-        elif o < 32 or o == 127 or 0x80 <= o < 0xA0:
-            continue
-        elif 0x200B <= o <= 0x200F or 0x202A <= o <= 0x202E or 0x2066 <= o <= 0x2069 or o in (0xFEFF, 0x061C):
-            continue
-        else:
-            out.append(ch)
-    return "".join(out)
+    out, n = HIDDEN.subn("", s)
+    _removed[0] += n
+    return out
 
 
 def _cell(s: Any) -> str:
-    t = _clean("" if s is None else str(s)).replace("\n", " ").replace("|", "\\|").strip()
-    return t[:500]
+    t = _clean(("" if s is None else str(s))[: MAX_CELL * 2]).replace("\n", " ").replace("|", "\\|").strip()
+    return t[:MAX_CELL]
 
 
-def _table(rows: list[list[Any]], warnings: list[str], what: str) -> str:
+def _table(rows: list[list[Any]], warnings: list[str], what: str, more: bool = False) -> str:
     rows = [r for r in rows if any(str(c).strip() for c in r if c is not None)]
     if not rows:
         return ""
-    if len(rows) > MAX_ROWS:
-        warnings.append(f"{what}: only the first {MAX_ROWS} of {len(rows)} rows were kept")
+    if more or len(rows) > MAX_ROWS:
+        warnings.append(f"{what}: only the first {MAX_ROWS} rows were kept")
         rows = rows[:MAX_ROWS]
     width = min(max(len(r) for r in rows), MAX_COLS)
     if any(len(r) > MAX_COLS for r in rows):
@@ -88,22 +112,62 @@ def _table(rows: list[list[Any]], warnings: list[str], what: str) -> str:
     return "\n".join(lines)
 
 
-def _xml(z: zipfile.ZipFile, name: str) -> ET.Element | None:
+_DECL = re.compile(rb"^\s*<\?xml[^>]*?encoding\s*=\s*[\"']([^\"']*)[\"']", re.I)
+
+
+def _part(z: zipfile.ZipFile, name: str) -> bytes | None:
+    """One XML part's bytes, checked: within the size cap, UTF-8 or ASCII,
+    and declaring no document type or entities."""
     try:
         info = z.getinfo(name)
     except KeyError:
         return None
     if info.file_size > MAX_PART:
         raise _err(f"{name} in the file is larger than Columbus reads ({MAX_PART // 1024 // 1024} MB)")
-    with z.open(info) as f:
-        data = f.read(MAX_PART + 1)
+    try:
+        with z.open(info) as f:
+            data = f.read(MAX_PART + 1)
+    except ZIP_ERRORS as e:
+        raise _err(f"{name} in the file could not be unpacked ({_why(e)}); save it again from Word or Excel") from None
     if len(data) > MAX_PART:
         raise _err(f"{name} in the file unpacks larger than it says")
-    head = data[:4096].upper()
-    if b"<!DOCTYPE" in head or b"<!ENTITY" in data.upper():
-        raise _err("the file's XML declares entities, which a document never needs; it was not read")
+    # Office writes UTF-8. Any other encoding (UTF-16 above all, where the
+    # markup's bytes differ) is refused, so the check below sees the markup.
+    if data.startswith(b"\xef\xbb\xbf"):
+        data = data[3:]
+    m = _DECL.match(data[:512])
+    if b"\x00" in data or data.startswith((b"\xff\xfe", b"\xfe\xff")) or (m and m.group(1).lower() not in (b"utf-8", b"utf8", b"us-ascii", b"ascii")):
+        raise _err(f"{name} in the file is not in the UTF-8 that Word and Excel write; it was not read")
+    up = data.upper()
+    if b"<!DOCTYPE" in up or b"<!ENTITY" in up:
+        raise _err("the file's XML declares a document type or entities, which a document never needs; it was not read")
+    return data
+
+
+def _why(e: Exception) -> str:
+    if isinstance(e, RuntimeError) and "encrypted" in str(e).lower():
+        return "it is protected with a password"
+    return type(e).__name__
+
+
+def _xml(z: zipfile.ZipFile, name: str) -> ET.Element | None:
+    data = _part(z, name)
+    if data is None:
+        return None
     try:
         return ET.fromstring(data)
+    except ET.ParseError as e:
+        raise _err(f"{name} in the file is not well-formed XML ({e})") from None
+
+
+def _events(z: zipfile.ZipFile, name: str):
+    """A part's start and end events, streamed (elements can be cleared as
+    they are read)."""
+    data = _part(z, name)
+    if data is None:
+        return
+    try:
+        yield from ET.iterparse(io.BytesIO(data), events=("start", "end"))
     except ET.ParseError as e:
         raise _err(f"{name} in the file is not well-formed XML ({e})") from None
 
@@ -111,8 +175,77 @@ def _xml(z: zipfile.ZipFile, name: str) -> ET.Element | None:
 def _zip(path: str) -> zipfile.ZipFile:
     try:
         return zipfile.ZipFile(path)
-    except zipfile.BadZipFile:
+    except ZIP_ERRORS:
         raise _err("this is not a Word or Excel file (it isn't the ZIP they are made of); save it again from Word or Excel") from None
+
+
+def _children(el: ET.Element, tags: set[str]):
+    """Elements of these tags under `el`, in order, looking through content
+    controls and custom XML wrappers (but not into the elements found)."""
+    through = {f"{W}sdt", f"{W}sdtContent", f"{W}customXml", f"{W}smartTag"}
+    stack = [iter(list(el))]
+    while stack:
+        e = next(stack[-1], None)
+        if e is None:
+            stack.pop()
+        elif e.tag in tags:
+            yield e
+        elif e.tag in through:
+            stack.append(iter(list(e)))
+
+
+def _vanished(run: ET.Element) -> bool:
+    rpr = run.find(f"{W}rPr")
+    v = rpr.find(f"{W}vanish") if rpr is not None else None
+    return v is not None and (v.get(f"{W}val") or "true").lower() not in ("0", "false", "off")
+
+
+def _text_of(el: ET.Element, seen: dict[str, bool]) -> str:
+    """All the visible text under `el`, each element visited once; paragraphs
+    nested in it (text boxes, a cell's paragraphs) are separated by spaces."""
+    parts: list[str] = []
+    n = 0
+    stack = [el]
+    while stack and n <= MAX_TEXT:
+        e = stack.pop()
+        tag = e.tag
+        if tag == f"{W}r" and _vanished(e):
+            seen["hidden"] = True
+            continue
+        if tag == f"{W}t":
+            parts.append(e.text or "")
+            n += len(e.text or "")
+        elif tag == f"{W}tab":
+            parts.append("\t")
+        elif tag in (f"{W}br", f"{W}cr"):
+            parts.append("\n")
+        elif tag == f"{W}p" and e is not el and parts:
+            parts.append(" ")
+        stack.extend(reversed(list(e)))
+    return _clean("".join(parts)).strip()
+
+
+def _numbering(z: zipfile.ZipFile) -> dict[str, dict[int, str]]:
+    """numId -> {level: number format} from word/numbering.xml."""
+    root = _xml(z, "word/numbering.xml")
+    if root is None:
+        return {}
+    abstract: dict[str, dict[int, str]] = {}
+    for a in root.findall(f"{W}abstractNum"):
+        levels = {}
+        for lvl in a.findall(f"{W}lvl"):
+            fmt = lvl.find(f"{W}numFmt")
+            try:
+                levels[int(lvl.get(f"{W}ilvl") or "0")] = (fmt.get(f"{W}val") if fmt is not None else "") or "bullet"
+            except ValueError:
+                continue
+        abstract[a.get(f"{W}abstractNumId") or ""] = levels
+    out = {}
+    for num in root.findall(f"{W}num"):
+        a = num.find(f"{W}abstractNumId")
+        if a is not None:
+            out[num.get(f"{W}numId") or ""] = abstract.get(a.get(f"{W}val") or "", {})
+    return out
 
 
 def _word(path: str, warnings: list[str]) -> tuple[str, str | None]:
@@ -122,67 +255,129 @@ def _word(path: str, warnings: list[str]) -> tuple[str, str | None]:
             raise _err("this is not a Word document (no word/document.xml)")
         if any(n.lower().startswith("word/vbaproject") for n in z.namelist()):
             warnings.append("it holds macros; they were not read or run")
+        numbering = _numbering(z)
         title = None
         core = _xml(z, "docProps/core.xml")
         if core is not None:
             t = core.find("{http://purl.org/dc/elements/1.1/}title")
             if t is not None and (t.text or "").strip():
-                title = _clean(t.text.strip())[:200]
+                title = _clean(t.text.strip()[:400])[:200]
     body = doc.find(f"{W}body")
     out: list[str] = []
     if body is None:
         return "", title
+    seen: dict[str, bool] = {}
+    counters: dict[str, list[int]] = {}
+    total = 0
 
-    def text_of(p: ET.Element) -> str:
-        parts = []
-        for el in p.iter():
-            if el.tag == f"{W}t":
-                parts.append(el.text or "")
-            elif el.tag == f"{W}tab":
-                parts.append("\t")
-            elif el.tag in (f"{W}br", f"{W}cr"):
-                parts.append("\n")
-        return _clean("".join(parts)).strip()
-
-    for el in body:
+    for el in _children(body, {f"{W}p", f"{W}tbl"}):
+        if total > MAX_TEXT:
+            break
         if el.tag == f"{W}p":
-            t = text_of(el)
+            t = _text_of(el, seen)
             if not t:
                 continue
             ppr = el.find(f"{W}pPr")
             style = ""
-            listed = False
+            num_id, level = None, 0
             if ppr is not None:
                 ps = ppr.find(f"{W}pStyle")
                 if ps is not None:
                     style = (ps.get(f"{W}val") or "").lower()
-                listed = ppr.find(f"{W}numPr") is not None
+                np_ = ppr.find(f"{W}numPr")
+                if np_ is not None:
+                    i = np_.find(f"{W}numId")
+                    lv = np_.find(f"{W}ilvl")
+                    num_id = (i.get(f"{W}val") if i is not None else None) or ""
+                    try:
+                        level = min(max(int(lv.get(f"{W}val") or "0") if lv is not None else 0, 0), 8)
+                    except ValueError:
+                        level = 0
             m = re.match(r"heading\s*([1-6])$", style)
             if style == "title":
-                out.append(f"# {t}")
+                line = f"# {t}"
                 title = title or t[:200]
             elif m:
-                out.append("#" * (int(m.group(1)) + 1) + " " + t)
-            elif listed or style.startswith("list"):
-                out.append(f"- {t}")
+                line = "#" * (int(m.group(1)) + 1) + " " + t
+            elif (num_id is not None and num_id != "0") or style.startswith("list"):
+                fmt = numbering.get(num_id or "", {}).get(level, "bullet") if num_id else ("decimal" if style.startswith("listnumber") else "bullet")
+                key = num_id or f"style:{style}"
+                if fmt in ("bullet", "none", ""):
+                    line = "   " * level + f"- {t}"
+                else:
+                    c = counters.setdefault(key, [0] * 9)
+                    c[level] += 1
+                    for j in range(level + 1, 9):
+                        c[j] = 0
+                    line = "   " * level + f"{c[level]}. {t}"
             else:
-                out.append(t)
-        elif el.tag == f"{W}tbl":
+                line = t
+        else:
             rows = []
-            for tr in el.iter(f"{W}tr"):
-                rows.append([" ".join(text_of(p) for p in tc.iter(f"{W}p")).strip() for tc in tr.findall(f"{W}tc")])
-            t = _table(rows, warnings, "a table")
-            if t:
-                out.append(t)
+            for tr in _children(el, {f"{W}tr"}):
+                if len(rows) > MAX_ROWS:
+                    break
+                rows.append([_text_of(tc, seen)[: MAX_CELL * 2] for tc in _children(tr, {f"{W}tc"})][: MAX_COLS + 1])
+            line = _table(rows, warnings, "a table")
+            if not line:
+                continue
+        out.append(line)
+        total += len(line) + 2
+    if seen.get("hidden"):
+        warnings.append("text formatted as hidden in Word was left out")
     return "\n\n".join(out), title
 
 
 def _col_index(ref: str) -> int:
     letters = re.match(r"([A-Z]+)", ref or "")
     n = 0
-    for ch in letters.group(1) if letters else "":
+    for ch in (letters.group(1) if letters else "")[:4]:
         n = n * 26 + (ord(ch) - 64)
     return max(n - 1, 0)
+
+
+def _sheet_rows(z: zipfile.ZipFile, part: str, shared: list[str]) -> tuple[list[list[str]], bool]:
+    """A sheet's rows (at most MAX_ROWS kept, MAX_COLS + 1 columns), streamed;
+    and whether there were more."""
+    rows: list[list[str]] = []
+    cur: dict[int, str] | None = None
+    nxt = 0
+    for ev, el in _events(z, part):
+        tag = el.tag
+        if ev == "start":
+            if tag == f"{S}row":
+                cur, nxt = {}, 0
+            continue
+        if tag == f"{S}c" and cur is not None:
+            ref = el.get("r")
+            i = _col_index(ref) if ref else nxt
+            nxt = i + 1
+            if i <= MAX_COLS and i not in cur:
+                t = el.get("t")
+                v = el.find(f"{S}v")
+                vt = (v.text or "") if v is not None else ""
+                if t == "s":
+                    try:
+                        k = int(vt)
+                        val = shared[k] if 0 <= k < len(shared) else ""
+                    except ValueError:
+                        val = ""
+                elif t == "inlineStr":
+                    val = "".join(x.text or "" for x in el.iter(f"{S}t"))[: MAX_CELL * 2]
+                elif t == "b":
+                    val = "TRUE" if vt == "1" else "FALSE"
+                else:
+                    val = vt[: MAX_CELL * 2]
+                cur[i] = val
+            el.clear()
+        elif tag == f"{S}row":
+            if cur and any(v.strip() for v in cur.values()):
+                if len(rows) >= MAX_ROWS:
+                    return rows, True
+                rows.append([cur.get(i, "") for i in range(max(cur) + 1)])
+            cur = None
+            el.clear()
+    return rows, False
 
 
 def _excel(path: str, warnings: list[str]) -> tuple[str, str | None]:
@@ -190,10 +385,14 @@ def _excel(path: str, warnings: list[str]) -> tuple[str, str | None]:
         if any(n.lower().startswith("xl/vbaproject") for n in z.namelist()):
             warnings.append("it holds macros; they were not read or run")
         shared: list[str] = []
-        ss = _xml(z, "xl/sharedStrings.xml")
-        if ss is not None:
-            for si in ss.findall(f"{S}si"):
-                shared.append("".join(t.text or "" for t in si.iter(f"{S}t")))
+        for ev, el in _events(z, "xl/sharedStrings.xml"):
+            if ev == "end" and el.tag == f"{S}si":
+                # The string's own text: direct and rich-text runs, not
+                # phonetic guides.
+                parts = [t.text or "" for t in el.findall(f"{S}t")]
+                parts += [t.text or "" for r in el.findall(f"{S}r") for t in r.findall(f"{S}t")]
+                shared.append("".join(parts)[: MAX_CELL * 2])
+                el.clear()
         wb = _xml(z, "xl/workbook.xml")
         rels = _xml(z, "xl/_rels/workbook.xml.rels")
         if wb is None:
@@ -204,46 +403,28 @@ def _excel(path: str, warnings: list[str]) -> tuple[str, str | None]:
                 targets[r.get("Id")] = r.get("Target") or ""
         sheets = wb.find(f"{S}sheets")
         out = []
+        total = 0
         listed = list(sheets) if sheets is not None else []
-        if len(listed) > MAX_SHEETS:
-            warnings.append(f"only the first {MAX_SHEETS} of {len(listed)} sheets were kept")
-        for sh in listed[:MAX_SHEETS]:
-            name = _clean(sh.get("name") or "Sheet")
+        hidden = [sh for sh in listed if (sh.get("state") or "visible") != "visible"]
+        for sh in hidden:
+            warnings.append(f"the hidden sheet {_cell(sh.get('name') or 'Sheet')} was left out")
+        visible = [sh for sh in listed if sh not in hidden]
+        if len(visible) > MAX_SHEETS:
+            warnings.append(f"only the first {MAX_SHEETS} of {len(visible)} sheets were kept")
+        for sh in visible[:MAX_SHEETS]:
+            if total > MAX_TEXT:
+                break
+            name = _cell(sh.get("name") or "Sheet")
             target = targets.get(sh.get(f"{R}id"), "")
             # Only parts inside the workbook's own folder.
             part = os.path.normpath("xl/" + target.lstrip("/").removeprefix("xl/")).replace("\\", "/")
             if not part.startswith("xl/worksheets/"):
                 continue
-            ws = _xml(z, part)
-            if ws is None:
-                continue
-            rows = []
-            for row in ws.iter(f"{S}row"):
-                if len(rows) > MAX_ROWS:
-                    break
-                cells: list[str] = []
-                for c in row.findall(f"{S}c"):
-                    i = _col_index(c.get("r") or "")
-                    if i >= MAX_COLS * 2:
-                        continue
-                    while len(cells) < i:
-                        cells.append("")
-                    t = c.get("t")
-                    v = c.find(f"{S}v")
-                    if t == "s" and v is not None:
-                        try:
-                            val = shared[int(v.text or "0")]
-                        except (ValueError, IndexError):
-                            val = ""
-                    elif t == "inlineStr":
-                        val = "".join(x.text or "" for x in c.iter(f"{S}t"))
-                    else:
-                        val = v.text if v is not None else ""
-                    cells.append(val or "")
-                rows.append(cells)
-            t = _table(rows, warnings, f"sheet {name}")
+            rows, more = _sheet_rows(z, part, shared)
+            t = _table(rows, warnings, f"sheet {name}", more)
             if t:
                 out.append(f"## {name}\n\n{t}")
+                total += len(t)
     return "\n\n".join(out), None
 
 
@@ -261,16 +442,18 @@ def _pdf(path: str, warnings: list[str]) -> tuple[str, str | None]:
         if n > MAX_PAGES:
             warnings.append(f"only the first {MAX_PAGES} of {n} pages were read")
         out = []
+        total = 0
         for i, page in enumerate(pages):
-            if i >= MAX_PAGES:
+            if i >= MAX_PAGES or total > MAX_TEXT:
                 break
             t = _clean(page.extract_text() or "").strip()
             if t:
                 out.append(t)
+                total += len(t)
         title = None
         meta = reader.metadata
         if meta and meta.title:
-            title = _clean(str(meta.title)).strip()[:200] or None
+            title = _clean(str(meta.title)[:400]).strip()[:200] or None
     except w.WorkerError:
         raise
     except Exception as e:  # noqa: BLE001 - a broken PDF
@@ -281,14 +464,23 @@ def _pdf(path: str, warnings: list[str]) -> tuple[str, str | None]:
 
 
 def _text(path: str) -> str:
+    """A text file's text, at most a little over MAX_TEXT characters."""
     with open(path, "rb") as f:
         data = f.read(MAX_FILE + 1)
-    for enc in ("utf-8-sig", "cp1252", "latin-1"):
+    if data.startswith((b"\xff\xfe", b"\xfe\xff")):
+        encs = ("utf-16",)
+    else:
+        encs = ("utf-8-sig", "cp1252", "latin-1")
+    for enc in encs:
         try:
-            return data.decode(enc)
+            text = data.decode(enc)
+            break
         except UnicodeDecodeError:
             continue
-    return data.decode("utf-8", "replace")
+    else:
+        text = data.decode("utf-8", "replace")
+    # Cut before cleaning: the end is cut anyway.
+    return text[: MAX_TEXT + 10_000]
 
 
 def _csv(path: str, warnings: list[str]) -> tuple[str, str | None]:
@@ -298,12 +490,17 @@ def _csv(path: str, warnings: list[str]) -> tuple[str, str | None]:
     except csv.Error:
         dialect = csv.excel
     rows = []
-    for i, r in enumerate(csv.reader(io.StringIO(text), dialect)):
-        if i > MAX_ROWS:
-            warnings.append(f"only the first {MAX_ROWS} rows were kept")
-            break
-        rows.append(r)
-    return _table(rows, warnings, "the table"), None
+    more = False
+    csv.field_size_limit(MAX_TEXT + 10_000)
+    try:
+        for r in csv.reader(io.StringIO(text), dialect):
+            if len(rows) >= MAX_ROWS:
+                more = True
+                break
+            rows.append(r[: MAX_COLS + 1])
+    except csv.Error as e:
+        raise _err(f"this CSV could not be read ({e})") from None
+    return _table(rows, warnings, "the table", more), None
 
 
 def convert_document(params: dict[str, Any]) -> dict[str, Any]:
@@ -325,6 +522,7 @@ def convert_document(params: dict[str, Any]) -> dict[str, Any]:
             h.update(chunk)
     warnings: list[str] = []
     title = None
+    _removed[0] = 0
     if fmt == "word":
         md, title = _word(path, warnings)
     elif fmt == "excel":
@@ -334,13 +532,38 @@ def convert_document(params: dict[str, Any]) -> dict[str, Any]:
     elif fmt == "csv":
         md, title = _csv(path, warnings)
     else:
-        md = _clean(_text(path).replace("\r\n", "\n"))
+        md = _clean(_text(path).replace("\r\n", "\n").replace("\r", "\n"))
     md = md.strip()
     if len(md) > MAX_TEXT:
         warnings.append(f"the text was cut to its first {MAX_TEXT:,} characters")
         md = md[:MAX_TEXT].rstrip() + "\n\n…"
+    if _removed[0]:
+        n = _removed[0]
+        warnings.append(f"{n} invisible character{'' if n == 1 else 's'} (control, zero-width or hidden-tag characters) {'was' if n == 1 else 'were'} removed")
     if not title:
-        m = re.search(r"^#{1,3}\s+(.+)$", md, re.M)
-        title = m.group(1).strip()[:200] if m else os.path.splitext(os.path.basename(path))[0][:200]
+        m = re.search(r"^#{1,3}\s+(.+)$", md[:20_000], re.M)
+        name = params.get("name") if isinstance(params.get("name"), str) else ""
+        title = m.group(1).strip()[:200] if m else os.path.splitext(os.path.basename(name or path))[0][:200]
     return {"markdown": md, "title": _clean(title).strip(), "warnings": warnings, "format": fmt,
             "sha256": h.hexdigest(), "bytes": size}
+
+
+def _main(argv: list[str]) -> int:
+    import json
+
+    _, _, src, out, name = argv[:5]
+    try:
+        r = {"ok": True, "result": convert_document({"path": src, "name": name})}
+    except w.WorkerError as e:
+        r = {"ok": False, "error": str(e.args[0]) if e.args else "the document could not be read"}
+    except MemoryError:
+        r = {"ok": False, "error": "the document needed more memory than Columbus allows for reading one"}
+    except RecursionError:
+        r = {"ok": False, "error": "the document is nested too deeply to read"}
+    with open(out, "w", encoding="utf-8") as f:
+        json.dump(r, f)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(_main(sys.argv))

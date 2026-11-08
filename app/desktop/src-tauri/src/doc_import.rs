@@ -11,6 +11,10 @@ use tauri::AppHandle;
 
 const KINDS: &[&str] = &["docx", "xlsx", "pdf", "csv", "md", "markdown", "txt"];
 
+/// The document last chosen in the file dialog and previewed: the only one
+/// that can be added (the page never names a file itself).
+static PICKED: std::sync::Mutex<Option<(std::path::PathBuf, String)>> = std::sync::Mutex::new(None);
+
 fn ask(app: &AppHandle, req: Value) -> Result<Value, String> {
     let (server, engine) = crate::registry::program(app)?;
     let text = crate::registry::run(
@@ -45,8 +49,10 @@ pub async fn doc_preview(app: AppHandle) -> Result<Option<Value>, String> {
         return Ok(None);
     };
     tauri::async_runtime::spawn_blocking(move || {
-        let mut v = ask(&app, json!({"file": path, "preview": true}))?;
-        v["path"] = json!(path.display().to_string());
+        let v = ask(&app, json!({"file": path, "preview": true}))?;
+        if let (Ok(mut p), Some(sha)) = (PICKED.lock(), v["sha256"].as_str()) {
+            *p = Some((path.clone(), sha.to_string()));
+        }
         Ok(Some(v))
     })
     .await
@@ -55,7 +61,6 @@ pub async fn doc_preview(app: AppHandle) -> Result<Option<Value>, String> {
 
 #[derive(Deserialize)]
 pub struct ImportForm {
-    path: String,
     sha256: String,
     kind: String,
     title: String,
@@ -66,12 +71,20 @@ pub struct ImportForm {
 /// Add the previewed document as a draft note.
 #[tauri::command]
 pub async fn doc_import(app: AppHandle, form: ImportForm) -> Result<Value, String> {
+    let picked = PICKED.lock().ok().and_then(|p| p.clone());
+    let Some((path, sha)) = picked.filter(|(_, sha)| *sha == form.sha256) else {
+        return Err("choose and preview the document again".into());
+    };
     tauri::async_runtime::spawn_blocking(move || {
-        ask(
+        let v = ask(
             &app,
-            json!({"file": form.path, "sha256": form.sha256, "kind": form.kind, "title": form.title,
+            json!({"file": path, "sha256": sha, "kind": form.kind, "title": form.title,
                 "summary": form.summary, "when_to_use": form.when_to_use.filter(|w| !w.trim().is_empty())}),
-        )
+        )?;
+        if let Ok(mut p) = PICKED.lock() {
+            *p = None;
+        }
+        Ok(v)
     })
     .await
     .map_err(|e| e.to_string())?

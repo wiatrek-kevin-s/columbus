@@ -13,11 +13,18 @@
 //!   is run or followed), headed by a line saying where it came from;
 //! - `sources/imported/<id>/<name>`: a copy of the original, beside it.
 //!
+//! The document is read where it can do no harm: confined when this computer
+//! can (no network, writing only its own folder, a memory cap), as the
+//! person's scripts are, and within a time limit. Characters a person can't
+//! see are removed, so the preview shows all there is.
+//!
 //! The entry is the person's own, served to assistants as information, never
-//! instruction, like every note; no assistant can change it (`update_notes`
-//! changes only notes about a connection). The entry is read back as the
-//! context tools read it, and removed if it doesn't read as it should. Each
-//! import is audited as `import_document`. Organization policy can deny it.
+//! instruction, like every note, and marked as text from outside Columbus
+//! (`context.imported`); no assistant can change it (`update_notes` changes
+//! only notes about a connection). The entry is read back as the context
+//! tools read it, and removed if it doesn't read as it should. Every preview,
+//! import and refusal is audited as `import_document`. Organization policy
+//! can deny it.
 //!
 //! Prints `{"ok": true, ...}` or `{"ok": false, "error": "..."}`.
 
@@ -33,6 +40,11 @@ use crate::server::State;
 pub const CLIENT: &str = "columbus-app-documents";
 pub const TOOL: &str = "import_document";
 const KINDS: &[&str] = &["sop", "note", "glossary"];
+const EXTS: &[&str] = &["docx", "xlsx", "pdf", "csv", "md", "markdown", "txt"];
+/// Most memory reading one document may use, in MiB, when read confined.
+const MEMORY_MB: u64 = 1536;
+/// Longest reading one document may take.
+const SECONDS: u64 = 120;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -123,15 +135,44 @@ async fn run(state: &State, request: &str) -> Result<Value, String> {
         record(state, "denied", e.clone(), None);
         return Err(e);
     }
-    let path = PathBuf::from(&req.file);
-    let meta = std::fs::metadata(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-    if !meta.is_file() {
-        return Err(format!("{} is not a file", path.display()));
+    let shown = clean_name(
+        Path::new(&req.file)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("document"),
+    );
+    // Every outcome from here on is audited: previews, imports, refusals.
+    let (sha, out) = attempt(state, &req).await;
+    match &out {
+        Ok(_) if req.preview => record(
+            state,
+            "allowed",
+            format!("previewed {shown} (nothing written)"),
+            sha,
+        ),
+        Ok(v) => record(
+            state,
+            "allowed",
+            format!(
+                "imported {shown} as the draft note {}",
+                v["id"].as_str().unwrap_or("")
+            ),
+            sha,
+        ),
+        Err(e) => record(state, "denied", format!("{shown}: {e}"), sha),
     }
-    // Converted from a copy taken now: what is converted, kept and hashed
-    // is one and the same.
-    let bytes = read_capped(&path)?;
-    let sha = columbus_shared::canon::sha256_hex(&bytes);
+    out
+}
+
+async fn attempt(state: &State, req: &Request) -> (Option<String>, Result<Value, String>) {
+    let path = PathBuf::from(&req.file);
+    let meta = match std::fs::metadata(&path) {
+        Ok(m) => m,
+        Err(e) => return (None, Err(format!("{}: {e}", path.display()))),
+    };
+    if !meta.is_file() {
+        return (None, Err(format!("{} is not a file", path.display())));
+    }
     let name = path
         .file_name()
         .and_then(|n| n.to_str())
@@ -142,45 +183,225 @@ async fn run(state: &State, request: &str) -> Result<Value, String> {
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
-    let copy = state.sandbox.root().join(format!("import.{ext}"));
-    std::fs::write(&copy, &bytes).map_err(|e| format!("{}: {e}", copy.display()))?;
-    let converted = state
+    if !EXTS.contains(&ext.as_str()) {
+        return (
+            None,
+            Err(
+                "Columbus imports Word (.docx), Excel (.xlsx), PDF, CSV, Markdown and text files"
+                    .into(),
+            ),
+        );
+    }
+    // Converted from a copy taken now: what is converted, kept and hashed
+    // is one and the same.
+    let bytes = match read_capped(&path) {
+        Ok(b) => b,
+        Err(e) => return (None, Err(e)),
+    };
+    let sha = columbus_shared::canon::sha256_hex(&bytes);
+    let some = Some(sha.clone());
+    if !req.preview {
+        // Only the document the person previewed is added.
+        match req.sha256.as_deref() {
+            None | Some("") => {
+                return (some, Err("preview the document before adding it".into()));
+            }
+            Some(s) if s != sha => {
+                return (
+                    some,
+                    Err("the document changed after you previewed it; preview it again".into()),
+                );
+            }
+            _ => {}
+        }
+    }
+    let doc = match convert(state, &bytes, &ext, &clean_name(&name)).await {
+        Ok(d) => d,
+        Err(e) => return (some, Err(e)),
+    };
+    // What the person previews is all there is: nothing invisible is kept
+    // for an assistant to read that they could not see.
+    let (markdown, hidden) = visible(doc["markdown"].as_str().unwrap_or(""));
+    let (found_title, _) = visible(doc["title"].as_str().unwrap_or(""));
+    let mut warnings: Vec<Value> = doc["warnings"].as_array().cloned().unwrap_or_default();
+    if hidden > 0 {
+        warnings.push(json!(format!(
+            "{hidden} invisible character{} (control, zero-width or hidden-tag characters) {} removed",
+            if hidden == 1 { "" } else { "s" },
+            if hidden == 1 { "was" } else { "were" }
+        )));
+    }
+    if req.preview {
+        return (
+            some,
+            Ok(json!({
+                "ok": true,
+                "file": clean_name(&name),
+                "sha256": sha,
+                "format": doc["format"],
+                "title": found_title,
+                "markdown": markdown,
+                "warnings": warnings,
+            })),
+        );
+    }
+    let out = add(state, req, &name, &ext, &bytes, &sha, &markdown).await;
+    (some, out)
+}
+
+/// Text without characters a person can't see (tabs and line breaks kept),
+/// and how many were removed.
+fn visible(s: &str) -> (String, usize) {
+    let mut n = 0;
+    let out = s
+        .chars()
+        .filter(|&c| {
+            let hide = c != '\n' && c != '\t' && columbus_shared::canon::hidden_char(c);
+            n += usize::from(hide);
+            !hide
+        })
+        .collect();
+    (out, n)
+}
+
+/// The document as Markdown. Read confined when this computer can (no
+/// network, writing only its own folder, at most [`MEMORY_MB`] of memory),
+/// as the person's own scripts are; otherwise in Columbus's engine. Either
+/// way within [`SECONDS`].
+async fn convert(state: &State, bytes: &[u8], ext: &str, name: &str) -> Result<Value, String> {
+    let dir = state.sandbox.root().join("import");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("tmp")).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let input = dir.join(format!("in.{ext}"));
+    let out = match std::fs::write(&input, bytes) {
+        Err(e) => Err(format!("{}: {e}", input.display())),
+        Ok(()) => match columbus_confine::ready(columbus_confine::Level::A) {
+            Ok(launcher) => match confined(state, &launcher, &dir, &input, name).await {
+                Err(Unconfined) => core(state, &input, name).await,
+                Ok(r) => r,
+            },
+            Err(_) => core(state, &input, name).await,
+        },
+    };
+    let _ = std::fs::remove_dir_all(&dir);
+    out
+}
+
+async fn core(state: &State, input: &Path, name: &str) -> Result<Value, String> {
+    state
         .worker
         .core(
             "convert_document",
-            json!({"path": copy}),
-            std::time::Duration::from_secs(120),
+            json!({"path": input, "name": name}),
+            std::time::Duration::from_secs(SECONDS),
         )
-        .await;
-    let _ = std::fs::remove_file(&copy);
-    let doc = converted.map_err(|e| e.to_string())?;
-    let markdown = doc["markdown"].as_str().unwrap_or("").to_string();
-    let found_title = doc["title"].as_str().unwrap_or("").to_string();
-    if req.preview {
-        return Ok(json!({
-            "ok": true,
-            "file": name,
-            "sha256": sha,
-            "format": doc["format"],
-            "title": found_title,
-            "markdown": markdown,
-            "warnings": doc["warnings"],
-        }));
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// The launcher could not confine it (nothing of the document was read).
+struct Unconfined;
+
+async fn confined(
+    state: &State,
+    launcher: &Path,
+    dir: &Path,
+    input: &Path,
+    name: &str,
+) -> Result<Result<Value, String>, Unconfined> {
+    let Some(workers) = state.paths.worker_script.parent().map(Path::to_path_buf) else {
+        return Err(Unconfined);
+    };
+    let script = workers.join("columbus_docs.py");
+    if !script.is_file() {
+        return Err(Unconfined);
     }
-    let out = add(state, &req, &name, &ext, &bytes, &sha, &markdown).await;
-    match &out {
-        Ok(v) => record(
-            state,
-            "allowed",
-            format!(
-                "imported {name} as the draft note {}",
-                v["id"].as_str().unwrap_or("")
-            ),
-            Some(sha.clone()),
-        ),
-        Err(e) => record(state, "denied", format!("{name}: {e}"), Some(sha.clone())),
+    let out = dir.join("out.json");
+    let mut read_only = crate::plugins::python_dirs(&state.paths.python);
+    read_only.push(workers.clone());
+    let spec = columbus_confine::Spec {
+        level: columbus_confine::Level::A,
+        name: "document-import".into(),
+        read_write: vec![dir.to_path_buf()],
+        read_only,
+        memory_mb: Some(MEMORY_MB),
+        processes: Some(4),
+    };
+    let args: Vec<String> = vec![
+        "-I".into(),
+        "-B".into(),
+        "-X".into(),
+        "utf8".into(),
+        script.display().to_string(),
+        workers.display().to_string(),
+        input.display().to_string(),
+        out.display().to_string(),
+        name.to_string(),
+    ];
+    let python = state.paths.python.to_string_lossy().into_owned();
+    let ran = match crate::script_tools::run_under(
+        launcher,
+        &spec,
+        dir,
+        &python,
+        &args,
+        crate::script_tools::script_env(dir),
+        std::time::Duration::from_secs(SECONDS),
+    )
+    .await
+    {
+        Ok(r) => r,
+        Err(_) => return Err(Unconfined),
+    };
+    let stderr = ran.stderr.text();
+    if ran.exit_code == Some(columbus_confine::EXIT_CONFINE_FAILED)
+        && stderr.starts_with("columbus-confine:")
+    {
+        return Err(Unconfined);
     }
-    out
+    if ran.timed_out {
+        return Ok(Err(format!(
+            "it took longer than {SECONDS} seconds to read, so it was stopped; save a shorter or simpler copy to import"
+        )));
+    }
+    if ran.exit_code != Some(0) {
+        if stderr.contains("columbus-confine: stopped the program: it used more than") {
+            return Ok(Err(format!(
+                "reading it needed more than the {MEMORY_MB} MB of memory Columbus allows, so it was stopped; save a shorter or simpler copy to import"
+            )));
+        }
+        let last = stderr
+            .lines()
+            .rev()
+            .find(|l| !l.trim().is_empty())
+            .unwrap_or("");
+        let (last, _) = visible(last);
+        return Ok(Err(format!(
+            "it could not be read ({})",
+            last.chars().take(200).collect::<String>()
+        )));
+    }
+    let answer = std::fs::File::open(&out).and_then(|f| {
+        use std::io::Read;
+        let mut b = Vec::new();
+        f.take(16 * 1024 * 1024).read_to_end(&mut b)?;
+        Ok(b)
+    });
+    let v: Value = match answer
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+    {
+        Some(v) => v,
+        None => return Ok(Err("it could not be read (no answer came back)".into())),
+    };
+    Ok(if v["ok"] == true {
+        Ok(v["result"].clone())
+    } else {
+        Err(v["error"]
+            .as_str()
+            .unwrap_or("it could not be read")
+            .to_string())
+    })
 }
 
 fn read_capped(path: &Path) -> Result<Vec<u8>, String> {
@@ -206,7 +427,7 @@ async fn add(
     sha: &str,
     markdown: &str,
 ) -> Result<Value, String> {
-    if req.sha256.as_deref().is_some_and(|s| s != sha) {
+    if req.sha256.as_deref() != Some(sha) {
         return Err("the document changed after you previewed it; preview it again".into());
     }
     let kind = req.kind.as_deref().unwrap_or("note");
@@ -304,6 +525,7 @@ async fn add(
     crate::notes::write_bytes(&root, Path::new(&source_rel), bytes)?;
     if let Err(e) = crate::notes::write_note(&root, &note_rel, &text) {
         let _ = std::fs::remove_file(root.join(&source_rel));
+        let _ = std::fs::remove_dir(root.join("sources/imported").join(&id));
         return Err(e);
     }
     // Read back as the context tools read it: exactly this entry, with no
