@@ -15,6 +15,9 @@ jobs:
     name: Rust (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
+    env:
+      # Tests that need PyPI (creating an environment) fail here instead of skipping.
+      COLUMBUS_TEST_REQUIRE_NETWORK: "1"
     strategy:
       fail-fast: false
       matrix:
@@ -30,6 +33,8 @@ jobs:
           components: rustfmt, clippy
       - run: python -m pip install -r workers/python/requirements-gis.txt
       - run: python -m pip install --require-hashes --no-deps --only-binary ":all:" -r workers/python/requirements-projectdb.txt
+      # Columbus's own uv, which creates the environments the person approves.
+      - run: python -m pip install --require-hashes --no-deps --only-binary ":all:" -r workers/python/requirements-uv.txt
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings

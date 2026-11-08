@@ -6,6 +6,7 @@ pub mod approvals;
 pub mod audit;
 pub mod canon;
 pub mod datagroups;
+pub mod env_create;
 pub mod environments;
 pub mod error;
 pub mod paths;

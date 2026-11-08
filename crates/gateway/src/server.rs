@@ -1394,6 +1394,7 @@ impl Gateway {
                 + Self::notes_router()
                 + Self::tools_router()
                 + Self::workflow_router()
+                + Self::env_router()
                 + Self::snapshot_router()
                 + Self::project_db_router(),
         }
@@ -1482,6 +1483,7 @@ impl Gateway {
                 Some(e) => json!({
                     "id": v.id,
                     "trust": e.trust.as_str(),
+                    "created_by": e.created_by.as_str(),
                     "status": v.status.as_str(),
                     "python_version": e.probe.python_version,
                     "arcpy": e.arcpy_line(),

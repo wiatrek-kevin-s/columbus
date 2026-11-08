@@ -27,8 +27,11 @@ pip = "*"
 # Project databases: DuckDB and its spatial extension are not taken from
 # PyPI by pixi (it cannot pin wheel hashes here); after `pixi install`, run
 # `pixi run project-db`, which installs them hash-checked from
-# workers/python/requirements-projectdb.txt.
+# workers/python/requirements-projectdb.txt. Then `pixi run columbus-uv`, which
+# installs Columbus's own uv the same way from requirements-uv.txt (used
+# only to create environments the person approves).
 [tasks]
 # Works from the repository (packaging/engine) and from a release
 # (engine/ beside workers/).
 project-db = '''python -c "import os, subprocess, sys; r = next((p for p in ('../workers/python/requirements-projectdb.txt', '../../workers/python/requirements-projectdb.txt') if os.path.isfile(p)), None); r or sys.exit('requirements-projectdb.txt not found'); sys.exit(subprocess.call([sys.executable, '-m', 'pip', 'install', '--require-hashes', '--no-deps', '--only-binary', ':all:', '-r', r]))"'''
+columbus-uv = '''python -c "import os, subprocess, sys; r = next((p for p in ('../workers/python/requirements-uv.txt', '../../workers/python/requirements-uv.txt') if os.path.isfile(p)), None); r or sys.exit('requirements-uv.txt not found'); sys.exit(subprocess.call([sys.executable, '-m', 'pip', 'install', '--require-hashes', '--no-deps', '--only-binary', ':all:', '-r', r]))"'''

@@ -11,7 +11,8 @@
 # install is needed. Needs Python 3.12 (the python.org installer, or
 # `winget install Python.Python.3.12`) and access to PyPI, or a wheelhouse
 # folder given with -Wheels for offline installs (it must also hold the exact
-# DuckDB wheels requirements-projectdb.txt pins by hash).
+# DuckDB wheels requirements-projectdb.txt pins by hash, and the uv wheel
+# requirements-uv.txt pins).
 param(
     [string]$Python = "",
     [string]$Wheels = ""
@@ -24,6 +25,8 @@ $req = Join-Path $root "workers\python\requirements-gis.txt"
 $db = Join-Path $root "workers\python\requirements-db.txt"
 # Hash-pinned, installed on their own (see the file).
 $pdb = Join-Path $root "workers\python\requirements-projectdb.txt"
+# Columbus's own uv, for environments the person approves (hash-pinned).
+$uvreq = Join-Path $root "workers\python\requirements-uv.txt"
 
 if (-not $Python) {
     $py = Get-Command py -ErrorAction SilentlyContinue
@@ -45,11 +48,15 @@ if ($Wheels) {
     if ($LASTEXITCODE -ne 0) { throw "setup stopped: pip install failed (exit $LASTEXITCODE)" }
     & $vpy -m pip install --no-index --find-links $Wheels --require-hashes --no-deps --only-binary :all: -r $pdb
     if ($LASTEXITCODE -ne 0) { throw "setup stopped: the hash-checked DuckDB install (requirements-projectdb.txt) failed (exit $LASTEXITCODE)" }
+    & $vpy -m pip install --no-index --find-links $Wheels --require-hashes --no-deps --only-binary :all: -r $uvreq
+    if ($LASTEXITCODE -ne 0) { throw "setup stopped: the hash-checked uv install (requirements-uv.txt) failed (exit $LASTEXITCODE)" }
 } else {
     & $vpy -m pip install -r $req -r $db
     if ($LASTEXITCODE -ne 0) { throw "setup stopped: pip install failed (exit $LASTEXITCODE)" }
     & $vpy -m pip install --require-hashes --no-deps --only-binary :all: -r $pdb
     if ($LASTEXITCODE -ne 0) { throw "setup stopped: the hash-checked DuckDB install (requirements-projectdb.txt) failed (exit $LASTEXITCODE)" }
+    & $vpy -m pip install --require-hashes --no-deps --only-binary :all: -r $uvreq
+    if ($LASTEXITCODE -ne 0) { throw "setup stopped: the hash-checked uv install (requirements-uv.txt) failed (exit $LASTEXITCODE)" }
 }
 & $vpy -c "import geopandas, pyogrio, shapely, pyproj, rasterio; print('engine ready: GDAL', pyogrio.__gdal_version_string__)"
 if ($LASTEXITCODE -ne 0) { throw "setup stopped: the check failed (exit $LASTEXITCODE)" }

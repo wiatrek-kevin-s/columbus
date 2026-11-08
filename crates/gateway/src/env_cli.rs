@@ -232,3 +232,92 @@ pub fn remove(id: &str) -> Result<()> {
     );
     Ok(())
 }
+
+/// `env proposals`: environments the assistant asked for, waiting.
+pub fn proposals() -> Result<()> {
+    let paths = Paths::from_env();
+    let waiting = columbus_shared::env_create::list_proposals(&paths.environments);
+    if waiting.is_empty() {
+        println!("No environments are waiting.");
+    }
+    for (p, _) in waiting {
+        println!(
+            "{:<20} Python {:<6} {}  ({})",
+            p.id,
+            p.python_version.as_deref().unwrap_or("engine"),
+            p.packages.join(" "),
+            p.reason.lines().next().unwrap_or("")
+        );
+    }
+    Ok(())
+}
+
+/// `env approve <id>`: create a proposed environment with Columbus's own
+/// uv and register it governed, after the person typed its id on the
+/// terminal itself (not stdin).
+pub fn approve(id: &str) -> Result<()> {
+    use columbus_shared::env_create as create;
+    let paths = Paths::from_env();
+    let (policy, _) = config::load_policy(&paths)?;
+    let p = &policy.environments;
+    if !p.allow {
+        bail!("organization policy does not allow environments (environments.allow is off), so none can be created");
+    }
+    let (prop, fingerprint) =
+        create::read_proposal(&paths.environments, id).map_err(|e| anyhow!(e))?;
+    create::check_proposal(&prop, p).map_err(|e| anyhow!(e))?;
+    println!(
+        "Your assistant ({}) asks for environment {id}:",
+        if prop.client.is_empty() {
+            "unknown client"
+        } else {
+            &prop.client
+        }
+    );
+    println!("  Why: {}", prop.reason);
+    println!(
+        "  Python: {}",
+        prop.python_version
+            .as_deref()
+            .unwrap_or("the engine's own version")
+    );
+    for pkg in &prop.packages {
+        println!("  {pkg}");
+    }
+    println!(
+        "Columbus will create it in {} with its own uv, from {} only, wheels only (no source builds), with a Python already on this computer, and register it governed (scripts in it run confined, no network, extracts only).",
+        paths.envs.join(id).display(),
+        p.index_hosts.join(", ")
+    );
+    let typed = crate::review_cli::confirm_typed(&format!(
+        "\nCreate {id}? Type the environment id to confirm: "
+    ))?;
+    if typed.trim() != id {
+        bail!("not confirmed; nothing changed");
+    }
+    println!("Creating {id} (this downloads the packages; it can take a few minutes)...");
+    let env = create::approve(
+        &paths.environments,
+        &paths.envs,
+        p,
+        &paths.python,
+        id,
+        &fingerprint,
+        &typed,
+        &now(),
+    )
+    .map_err(|e| anyhow!(e))?;
+    println!(
+        "Created and registered {} (Python {}, governed).",
+        env.id, env.probe.python_version
+    );
+    Ok(())
+}
+
+/// `env decline <id>`: delete a waiting proposal.
+pub fn decline(id: &str) -> Result<()> {
+    let paths = Paths::from_env();
+    columbus_shared::env_create::decline(&paths.environments, id).map_err(|e| anyhow!(e))?;
+    println!("Declined {id}.");
+    Ok(())
+}

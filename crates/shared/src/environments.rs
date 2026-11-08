@@ -251,7 +251,7 @@ pub struct View {
     pub status: Status,
 }
 
-fn file_for(dir: &Path, id: &str) -> PathBuf {
+pub(crate) fn file_for(dir: &Path, id: &str) -> PathBuf {
     dir.join(format!("{id}.yaml"))
 }
 
@@ -581,7 +581,7 @@ pub fn probe(python: &Path, limit: Duration) -> Result<Found, String> {
     })
 }
 
-enum Ran {
+pub(crate) enum Ran {
     Done {
         stdout: String,
         stderr: String,
@@ -593,7 +593,7 @@ enum Ran {
 
 /// Run a command to its end or `limit`, ending it and what it started on
 /// time-out (its process group on Unix, its process tree on Windows).
-fn run_limited(mut cmd: std::process::Command, limit: Duration) -> Ran {
+pub(crate) fn run_limited(mut cmd: std::process::Command, limit: Duration) -> Ran {
     use std::io::Read;
     #[cfg(unix)]
     {
@@ -772,7 +772,7 @@ fn check_rules(
 
 /// `<envs>/<id>`, really there (not a link) and really under `<envs>`,
 /// when `python` really lies inside it.
-fn columbus_folder(envs: &Path, id: &str, python: &Path) -> Option<PathBuf> {
+pub(crate) fn columbus_folder(envs: &Path, id: &str, python: &Path) -> Option<PathBuf> {
     let folder = envs.join(id);
     let md = std::fs::symlink_metadata(&folder).ok()?;
     if !md.file_type().is_dir() {
