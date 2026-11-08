@@ -151,7 +151,7 @@ pub fn email_settings() -> Value {
 #[tauri::command]
 pub async fn email_password_set(password: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let e = secret_entry("email-smtp")?;
+        let e = secret_entry("columbus.email-smtp")?;
         if password.is_empty() {
             match e.delete_credential() {
                 Ok(()) | Err(keyring_core::Error::NoEntry) => Ok(()),

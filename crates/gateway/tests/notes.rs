@@ -994,6 +994,17 @@ async fn suggestions_wait_for_the_person_to_accept_or_dismiss() {
         notes_cli(&root, &py, &["notes", "suggestions", "{}"])["suggestions"],
         json!([])
     );
+    // Put back after it was accepted, it can't be accepted again.
+    std::fs::write(&file, &kept).unwrap();
+    let back = notes_cli(&root, &py, &["notes", "suggestions", "{}"]);
+    assert!(
+        back["suggestions"][0]["problem"]
+            .as_str()
+            .unwrap_or("")
+            .contains("already"),
+        "{back}"
+    );
+    std::fs::remove_file(&file).unwrap();
     let again = notes_cli(
         &root,
         &py,

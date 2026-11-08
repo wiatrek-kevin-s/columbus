@@ -217,7 +217,7 @@ pub fn normalize_identifier(name: &str) -> String {
 
 /// How workflows may email their reports: the organization's mail server
 /// and who may be sent to. The password, if the server needs one, is kept
-/// in the credential store under `email-smtp` (the app's Workflows page).
+/// in the credential store under `columbus.email-smtp` (the app's Workflows page).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct EmailPolicy {

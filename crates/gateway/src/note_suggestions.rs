@@ -126,46 +126,88 @@ fn plain(t: &str, max: usize) -> String {
         .collect()
 }
 
-/// The audit record that kept this suggestion: what accepting trusts,
-/// rather than the file (which anything able to write the notes folder
-/// could change): the hash of what it says, and the data (labels) the
-/// suggesting session had read. Searched from the month it was made.
-fn sealed(state: &State, s: &Suggestion) -> Option<(String, Vec<String>)> {
-    let needle = format!("suggestion {} sha256 ", s.id);
-    let from = chrono::DateTime::parse_from_rfc3339(&s.created).ok()?;
+/// What the audit log holds about suggestions, read in one pass: for each
+/// suggestion made, the hash of what it says and the data (labels) the
+/// suggesting session had read; and the suggestions already accepted or
+/// dismissed. Accepting trusts this, not the files in `proposals/` (which
+/// anything able to write the notes folder could change or put back).
+#[derive(Default)]
+struct Seals {
+    made: std::collections::HashMap<String, (String, Vec<String>)>,
+    closed: BTreeSet<String>,
+}
+
+fn seals(state: &State, since: &str) -> Seals {
+    use std::io::BufRead;
+    let mut out = Seals::default();
+    let Ok(from) = chrono::DateTime::parse_from_rfc3339(since) else {
+        return out;
+    };
     let mut month = from.with_timezone(&chrono::Utc).format("%Y-%m").to_string();
     let now = chrono::Utc::now().format("%Y-%m").to_string();
     for _ in 0..24 {
         let f = state.audit.dir().join(format!("{month}.jsonl"));
-        if let Ok(text) = std::fs::read_to_string(&f) {
-            for line in text.lines().filter(|l| l.contains(&needle)) {
-                let Ok(r) = serde_json::from_str::<Value>(line) else {
+        if let Ok(file) = std::fs::File::open(&f) {
+            for line in std::io::BufReader::new(file).lines().map_while(Result::ok) {
+                if !line.contains("suggestion ") {
+                    continue;
+                }
+                let Ok(r) = serde_json::from_str::<Value>(&line) else {
                     continue;
                 };
-                if r["tool"] != "suggest_note_changes" || r["decision"] != "allowed" {
+                if r["decision"] != "allowed" {
                     continue;
                 }
                 let reason = r["reason"].as_str().unwrap_or("");
-                let Some(rest) = reason.strip_prefix(&needle) else {
-                    continue;
+                let word = |prefix: &str| {
+                    reason
+                        .strip_prefix(prefix)
+                        .and_then(|rest| rest.split([' ', ':']).next())
+                        .map(String::from)
                 };
-                let hash: String = rest.chars().take(64).collect();
-                let labels = r["labels"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|l| l.as_str().map(String::from))
-                    .collect();
-                return Some((hash, labels));
+                match r["tool"].as_str() {
+                    Some("suggest_note_changes") => {
+                        let Some(rest) = reason.strip_prefix("suggestion ") else {
+                            continue;
+                        };
+                        let mut parts = rest.splitn(3, ' ');
+                        let (Some(id), Some("sha256"), Some(tail)) =
+                            (parts.next(), parts.next(), parts.next())
+                        else {
+                            continue;
+                        };
+                        let hash: String = tail.chars().take(64).collect();
+                        let labels = r["labels"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|l| l.as_str().map(String::from))
+                            .collect();
+                        out.made.insert(id.to_string(), (hash, labels));
+                    }
+                    Some("accept_note_suggestion") => {
+                        if let Some(id) = word("accepted suggestion ") {
+                            out.closed.insert(id);
+                        }
+                    }
+                    Some("dismiss_note_suggestion") => {
+                        if let Some(id) = word("dismissed suggestion ") {
+                            out.closed.insert(id);
+                        }
+                    }
+                    _ => {}
+                }
             }
         }
         if month >= now {
             break;
         }
-        let d = chrono::NaiveDate::parse_from_str(&format!("{month}-01"), "%Y-%m-%d").ok()?;
+        let Ok(d) = chrono::NaiveDate::parse_from_str(&format!("{month}-01"), "%Y-%m-%d") else {
+            break;
+        };
         month = (d + chrono::Months::new(1)).format("%Y-%m").to_string();
     }
-    None
+    out
 }
 
 /// What accepting would write now: each note's change planned against the
@@ -177,6 +219,7 @@ fn plan_now(
     state: &State,
     root: &Path,
     s: &Suggestion,
+    seals: &Seals,
 ) -> Result<(Vec<Planned>, BTreeSet<usize>), String> {
     let mut ids = BTreeSet::new();
     if s.changes.is_empty() || s.changes.iter().any(|c| !ids.insert(c.id.clone())) {
@@ -184,7 +227,10 @@ fn plan_now(
             "this suggestion is not as Columbus kept it (a note appears twice or none does)".into(),
         );
     }
-    let (hash, labels) = sealed(state, s).ok_or(
+    if seals.closed.contains(&s.id) {
+        return Err("this suggestion was accepted or dismissed already; dismiss this copy".into());
+    }
+    let (hash, labels) = seals.made.get(&s.id).cloned().ok_or(
         "Columbus has no record of making this suggestion, so it can't be accepted; dismiss it",
     )?;
     if hash != content_hash(s) {
@@ -362,13 +408,18 @@ async fn run(state: std::sync::Arc<State>, request: &str) -> Result<Value, Strin
         };
     }
     // The list: each suggestion as accepting it would write it now.
-    let list: Vec<Value> = waiting(&root)
+    let all = waiting(&root);
+    let known = seals(
+        &state,
+        &all.first().map(|s| s.created.clone()).unwrap_or_default(),
+    );
+    let list: Vec<Value> = all
         .into_iter()
         .map(|s| {
             let head = json!({"id": s.id, "created": plain(&s.created, 40), "client": plain(&s.client, 80),
                 "why": plain(&s.why.replace('\n', " "), MAX_WHY)});
             let mut v = head;
-            match plan_now(&gw, &state, &root, &s) {
+            match plan_now(&gw, &state, &root, &s, &known) {
                 Ok((planned, asks)) => {
                     let pack = gw.notes_pack();
                     v["shown"] = json!(shown_hash(&s.id, &planned));
@@ -423,7 +474,8 @@ fn accept(
         .into_iter()
         .find(|s| s.id == id)
         .ok_or("no such suggestion (it may have been accepted or dismissed already)")?;
-    let (planned, asks) = plan_now(gw, state, root, &s)?;
+    let known = seals(state, &s.created);
+    let (planned, asks) = plan_now(gw, state, root, &s, &known)?;
     let hash = shown_hash(id, &planned);
     if !columbus_shared::proof::same(&hash, shown) {
         return Err(

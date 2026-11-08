@@ -850,7 +850,7 @@ pub fn describe(wf: &Workflow) -> Vec<String> {
     }
     if let Some(e) = &wf.outputs.email {
         out.push(format!(
-            "Emails the run's report to {}{}{}, through your organization's mail server.",
+            "Emails the run's report to {}{}{}, through your organization's mail server. The report holds what the run found (counts, checks, and the AI review's notes, which can quote rows).",
             e.to.join(", "),
             if e.when.as_deref() == Some("problems") {
                 " when a run doesn't simply succeed"

@@ -270,11 +270,27 @@ pub(crate) fn workflow_problems(
         match &policy.email {
             None => problems.push("outputs.email: the organization hasn't set up email for workflows (policy email), so a workflow can't send one".into()),
             Some(p) => {
+                if let Err(why) = email_policy_ok(p) {
+                    problems.push(format!("outputs.email: {why}"));
+                }
                 for a in e.to.iter().filter(|a| !p.allows(a)) {
                     problems.push(format!(
                         "outputs.email: {a} is not in a domain the organization allows ({})",
                         p.allowed_domains.join(", ")
                     ));
+                }
+                // The data it reads, going to each domain: as the
+                // organization's flow rules decide (a run can't ask).
+                let labels: std::collections::BTreeSet<String> = w
+                    .scope
+                    .connections
+                    .iter()
+                    .map(|c| columbus_flow::connection_label(c))
+                    .collect();
+                for d in email_domains(&e.to) {
+                    if let Err(why) = email_flow(&policy.flows, &labels, &d) {
+                        problems.push(format!("outputs.email: {why}"));
+                    }
                 }
             }
         }
@@ -282,8 +298,62 @@ pub(crate) fn workflow_problems(
     problems
 }
 
-/// Secret id of the mail server's password in the credential store.
-pub const EMAIL_SECRET: &str = "email-smtp";
+/// Secret id of the mail server's password in the credential store (a dot
+/// no connection id has, so no connection's password can be this one).
+pub const EMAIL_SECRET: &str = "columbus.email-smtp";
+
+/// What the policy's email section must be for anything to be sent.
+fn email_policy_ok(p: &columbus_shared::policy::EmailPolicy) -> Result<(), String> {
+    if !matches!(p.security.as_str(), "starttls" | "tls") {
+        return Err(format!(
+            "the policy's email security is {:?}; it must be starttls or tls",
+            p.security
+        ));
+    }
+    if !wf::address_ok(&p.from) {
+        return Err("the policy's email from is not a plain address".into());
+    }
+    if p.smtp_host.is_empty()
+        || p.smtp_host
+            .contains(|c: char| c.is_whitespace() || c.is_control())
+    {
+        return Err("the policy's email smtp_host is not a host name".into());
+    }
+    Ok(())
+}
+
+fn email_domains(to: &[String]) -> std::collections::BTreeSet<String> {
+    to.iter()
+        .filter_map(|a| a.rsplit_once('@').map(|(_, d)| d.to_ascii_lowercase()))
+        .collect()
+}
+
+/// Labelled data emailed to a domain (`email:<domain>`), under the flow
+/// rules: a rule that denies it, or asks for approval each time (which a
+/// run can't wait for), stops it. Approving the workflow, which names the
+/// addresses, is the person's approval otherwise.
+fn email_flow(
+    rules: &[columbus_shared::policy::FlowRule],
+    labels: &std::collections::BTreeSet<String>,
+    domain: &str,
+) -> Result<String, String> {
+    match columbus_flow::evaluate_to(rules, labels, &format!("email:{domain}")) {
+        columbus_flow::FlowDecision::Deny { labels, rule } => Err(format!(
+            "organization flow rule {} forbids emailing data from {} to {domain}",
+            rule + 1,
+            labels.join(", ")
+        )),
+        columbus_flow::FlowDecision::Approve { rule: Some(r), labels } => Err(format!(
+            "organization flow rule {} asks for approval each time data from {} is emailed to {domain}, which a workflow run can't wait for",
+            r + 1,
+            labels.join(", ")
+        )),
+        columbus_flow::FlowDecision::Approve { rule: None, .. } => {
+            Ok("approved with the workflow".into())
+        }
+        columbus_flow::FlowDecision::Allow => Ok("allow".into()),
+    }
+}
 
 /// Email the run's report, as the workflow says and the policy in force now
 /// allows: to addresses in allowed domains only, the report as text, and
@@ -313,6 +383,10 @@ async fn email_report(state: &State, workflow: &Workflow, record: &Value) -> Opt
         audit("denied", why.clone());
         return Some(json!({"status": "failed", "error": why}));
     };
+    if let Err(why) = email_policy_ok(p) {
+        audit("denied", why.clone());
+        return Some(json!({"status": "failed", "error": why}));
+    }
     let to: Vec<String> =
         e.to.iter()
             .filter(|a| p.allows(a) && wf::address_ok(a))
@@ -373,6 +447,29 @@ async fn email_report(state: &State, workflow: &Workflow, record: &Value) -> Opt
         },
         None => None,
     };
+    // What the run read goes with its report: every domain must be one the
+    // flow rules let that data go to.
+    let labels = state.flow.session_labels();
+    let mut decisions = Vec::new();
+    for d in email_domains(&to) {
+        match email_flow(&policy.flows, &labels, &d) {
+            Ok(how) => decisions.push(format!("email:{d} {how}")),
+            Err(why) => {
+                let _ = state.audit.append(&columbus_shared::audit::AuditRecord {
+                    user: state.user.clone(),
+                    client: RUNNER.into(),
+                    session: Some(state.session.clone()),
+                    tool: "email_report".into(),
+                    decision: "denied".into(),
+                    reason: Some(why.clone()),
+                    labels: labels.iter().cloned().collect(),
+                    flow_decision: Some("deny".into()),
+                    ..Default::default()
+                });
+                return Some(json!({"status": "failed", "error": why}));
+            }
+        }
+    }
     let mut body = report(record, Some(workflow));
     if !left_out.is_empty() {
         body.push_str(&format!(
@@ -386,6 +483,44 @@ async fn email_report(state: &State, workflow: &Workflow, record: &Value) -> Opt
         ));
     }
     let subject = format!("Columbus: {} ({})", workflow.name, status_words(status));
+    let names: Vec<String> = attachments
+        .iter()
+        .map(|f: &String| {
+            Path::new(f)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_string()
+        })
+        .collect();
+    // Recorded before it is sent: no email without its line.
+    if let Err(err) = state.audit.append(&columbus_shared::audit::AuditRecord {
+        user: state.user.clone(),
+        client: RUNNER.into(),
+        session: Some(state.session.clone()),
+        tool: "email_report".into(),
+        decision: "allowed".into(),
+        reason: Some(format!(
+            "sending the report of {} run {} to {}; attachments: {}; {}",
+            workflow.id,
+            record["run"].as_str().unwrap_or(""),
+            to.join(", "),
+            if names.is_empty() {
+                "none".to_string()
+            } else {
+                names.join(", ")
+            },
+            decisions.join("; ")
+        )),
+        request: Some(columbus_shared::canon::sha256_hex(body.as_bytes())),
+        labels: labels.iter().cloned().collect(),
+        flow_decision: Some("allow".into()),
+        ..Default::default()
+    }) {
+        return Some(
+            json!({"status": "failed", "error": format!("not sent: the audit log could not be written ({err})")}),
+        );
+    }
     let sent = state
         .worker
         .core(
@@ -397,31 +532,49 @@ async fn email_report(state: &State, workflow: &Workflow, record: &Value) -> Opt
         )
         .await;
     match sent {
-        Ok(_) => {
+        Ok(r) => {
+            // Only those the mail server took.
+            let took: Vec<String> = r["sent"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|a| a.as_str().map(String::from))
+                .filter(|a| to.contains(a))
+                .collect();
+            let server_refused: Vec<String> =
+                to.iter().filter(|a| !took.contains(a)).cloned().collect();
+            let mut not_sent: Vec<String> = refused.iter().map(|s| s.to_string()).collect();
             audit(
-                "allowed",
+                if took.is_empty() { "error" } else { "allowed" },
                 format!(
-                    "emailed the report of {} run {} to {} ({} attachment(s)){}",
+                    "emailed the report of {} run {} to {} ({} attachment(s)); not to: {}",
                     workflow.id,
                     record["run"].as_str().unwrap_or(""),
-                    to.join(", "),
+                    if took.is_empty() {
+                        "no one".to_string()
+                    } else {
+                        took.join(", ")
+                    },
                     attachments.len(),
-                    if refused.is_empty() {
-                        String::new()
+                    if not_sent.is_empty() && server_refused.is_empty() {
+                        "none".to_string()
                     } else {
                         format!(
-                            "; not to {} (domain not allowed)",
-                            refused
-                                .iter()
-                                .map(|s| s.as_str())
-                                .collect::<Vec<_>>()
-                                .join(", ")
+                            "{} (domain not allowed) {} (refused by the mail server)",
+                            not_sent.join(", "),
+                            server_refused.join(", ")
                         )
                     }
                 ),
             );
+            if took.is_empty() {
+                return Some(
+                    json!({"status": "failed", "error": format!("the mail server refused every address ({})", to.join(", "))}),
+                );
+            }
+            not_sent.extend(server_refused);
             Some(
-                json!({"status": "sent", "to": to, "attachments": attachments.len(), "not_sent_to": refused, "not_attached": left_out}),
+                json!({"status": "sent", "to": took, "attachments": attachments.len(), "not_sent_to": not_sent, "not_attached": left_out}),
             )
         }
         Err(err) => {
@@ -1533,5 +1686,30 @@ pub fn list_cli() {
     }
     for v in wf::list_proposals(&root, &tools) {
         println!("{}  {}  [waiting for you to approve]", v.id, v.name);
+    }
+}
+
+#[cfg(test)]
+mod email_tests {
+    use super::*;
+
+    #[test]
+    fn email_follows_the_flow_rules() {
+        let rules: Vec<columbus_shared::policy::FlowRule> = serde_yaml::from_str(
+            "- {from: [\"connection:crashes\"], to: [\"*\"], action: deny}\n- {from: [\"connection:roads\"], to: [\"email:*\"], action: approve}\n",
+        )
+        .unwrap();
+        let l = |c: &str| std::collections::BTreeSet::from([format!("connection:{c}")]);
+        assert!(email_flow(&rules, &l("crashes"), "agency.gov").is_err());
+        assert!(
+            email_flow(&rules, &l("roads"), "agency.gov").is_err(),
+            "asks each time"
+        );
+        assert!(email_flow(&rules, &l("parcels"), "agency.gov").is_ok());
+        assert!(email_flow(&rules, &Default::default(), "agency.gov").is_ok());
+        assert_eq!(
+            email_domains(&["a@Agency.gov".into(), "b@agency.gov".into()]).len(),
+            1
+        );
     }
 }
