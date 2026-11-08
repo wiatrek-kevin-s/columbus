@@ -4,8 +4,8 @@ Kit version 1.1 · as of 2026-11-08, session S1 not started
 
 ## Where things stand
 
-- **Session:** S1 in progress · **Task:** T-2
-- **Next step:** T-2, the thin `files` connection (CSV)
+- **Session:** S3 finishing (PR open) · **Task:** T-8 next
+- **Next step:** merge the S3 PR when CI is green, then S4 (T-8, T-9) on `rework/s4-trusted`
 - **Waiting on the owner:** nothing
 - **Homework received:** setup round answered ("skip" on Dependabot alerts); H-1 and H-2 are optional, after release
 
@@ -58,6 +58,14 @@ Status: raised, approved, declined, or Sent to Blueprint (touches a one-way door
 ## Handoff notes
 
 Newest first, written as you go. Mark each claim verified (checked this session) or unverified.
+
+### Session S3 → S4 (2026-11-08)
+
+- **Done:** S1 merged (PR #1, 80559e2), S2 merged (PR #2, 4148908); S3 (T-6, T-7) on `rework/s3-environments`, PR #3. All verified in CI except S3's own PR run.
+- **Decisions and deviations:** see Decisions; none touch a one-way door. A-1 and A-5 confirmed.
+- **Loose ends:** app approve button for environment proposals → T-12; third-party notices file (uv) → T-16; T-10 must ask ArcGIS for `f=json` so M survives (the T-5 pager supports it). T-8 replaces the trusted-refusal branch in `script_environment()` (script_tools.rs); whoami cards are built in `Gateway::environment_cards()`. T-9 wires `scripts.session_approval` (parsed, no effect yet) and calls `script_environment` + `check_environment` for tools and steps.
+- **How we work:** the lead keeps the log and task list; each task goes to a fresh helper with `/home/claude/briefs/common.md` (session-local). PRs via REST (`gh pr create` needs GraphQL, which is blocked here). CI runs on pull requests; dispatch CI for early checks on a branch.
+- **Next:** S4.
 
 ### Task log
 
