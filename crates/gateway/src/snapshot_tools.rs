@@ -2,10 +2,13 @@
 //! look at, drawn on this computer from the layers alone.
 //!
 //! What reaches the AI is the same data it could already read, as a
-//! picture: geometry only. No attribute value, label or field name is
-//! drawn, no basemap or other tile is fetched (nothing leaves the computer
-//! to make it), and only layers Columbus wrote in this session are drawn.
-//! An organization can turn it off with `deny_tools: [map_snapshot]`.
+//! picture: geometry, and, when asked, one field's values as labels on a
+//! layer's features (values the assistant can already read from that
+//! layer; plain text, cut short, at most 400). No basemap or other tile is
+//! fetched (nothing leaves the computer to make it), and only layers
+//! Columbus wrote in this session are drawn. An organization can turn
+//! labels off with `snapshot_labels: false`, and the tool off with
+//! `deny_tools: [map_snapshot]`.
 
 use std::time::Duration;
 
@@ -46,12 +49,16 @@ pub struct SnapshotArgs {
     /// bands are drawn in colour, one band in grey.
     #[serde(default)]
     pub imagery: Option<String>,
+    /// Label a layer's features with one of its fields: {"ws://…": "FIELD"}
+    /// (layers among `layers`). Leave out for geometry only.
+    #[serde(default)]
+    pub labels: Option<std::collections::BTreeMap<String, String>>,
 }
 
 #[tool_router(router = snapshot_router, vis = "pub(crate)")]
 impl Gateway {
     #[tool(
-        description = "Look at layers on a map: draws 1 to 8 of this session's workspace layers (ws:// handles) as a PNG picture you can see, each layer its own colour (polygons lightly filled with an outline, lines and points solid), on a plain background, or over a raster of this session's (imagery: aerial imagery, a hillshade or a DEM, e.g. clipped with raster_op). Nothing is downloaded: no web basemap. Use it to check what numbers cannot show: slivers, gaps and overlaps, features in the wrong place (a CRS mix-up), a layer that does not line up with another, the shape of a selection. Geometry only: no attribute values or labels are drawn. The answer lists each layer's colour and feature count, the CRS and extent drawn. The picture is saved in the workspace (handle).",
+        description = "Look at layers on a map: draws 1 to 8 of this session's workspace layers (ws:// handles) as a PNG picture you can see, each layer its own colour (polygons lightly filled with an outline, lines and points solid), on a plain background, or over a raster of this session's (imagery: aerial imagery, a hillshade or a DEM, e.g. clipped with raster_op). Nothing is downloaded: no web basemap. Use it to check what numbers cannot show: slivers, gaps and overlaps, features in the wrong place (a CRS mix-up), a layer that does not line up with another, the shape of a selection. Geometry only, unless you give `labels` ({\"ws://…\": \"FIELD\"}) to label a layer's features with one of its fields (at most 400 labels, none overlapping). The answer lists each layer's colour and feature count, the CRS and extent drawn. The picture is saved in the workspace (handle).",
         annotations(read_only_hint = true, open_world_hint = false),
         output_schema = rmcp::handler::server::common::schema_for_output::<crate::server::Output<Value>>()
     )]
@@ -60,11 +67,33 @@ impl Gateway {
         Parameters(args): Parameters<SnapshotArgs>,
         ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, String> {
-        let request = json!({"layers": args.layers, "bbox": args.bbox, "width": args.width, "height": args.height, "imagery": args.imagery});
+        let request = json!({"layers": args.layers, "bbox": args.bbox, "width": args.width, "height": args.height, "imagery": args.imagery, "labels": args.labels});
         let mut rec = self.gate(&ctx, "map_snapshot", &request)?;
         if args.layers.is_empty() || args.layers.len() > 8 {
             return Err(self.deny(&ctx, rec, "give 1 to 8 layers (ws:// handles)"));
         }
+        let label_map = args.labels.clone().unwrap_or_default();
+        if !label_map.is_empty() {
+            if !self.state.policy().snapshot_labels {
+                return Err(self.deny(
+                    &ctx,
+                    rec,
+                    "organization policy keeps map snapshots to geometry only (snapshot_labels: false); leave out labels",
+                ));
+            }
+            if let Some(h) = label_map.keys().find(|h| !args.layers.contains(h)) {
+                return Err(self.deny(&ctx, rec, format!("labels: {h} is not one of the layers")));
+            }
+            if let Some(f) = label_map.values().find(|f| {
+                f.is_empty()
+                    || f.chars().count() > 128
+                    || columbus_shared::tools::plain_chars(f).is_err()
+            }) {
+                return Err(self.deny(&ctx, rec, format!("labels: {f:?} is not a field name")));
+            }
+        }
+        let label_fields: Vec<Option<String>> =
+            args.layers.iter().map(|h| label_map.get(h).cloned()).collect();
         let mut paths = Vec::new();
         for h in &args.layers {
             match self.own_output(h) {
@@ -119,7 +148,8 @@ impl Gateway {
             .core(
                 "map_snapshot",
                 json!({"paths": paths, "out_path": out, "bbox": args.bbox, "imagery": imagery,
-                    "width": args.width.unwrap_or(1000), "height": args.height.unwrap_or(700)}),
+                    "width": args.width.unwrap_or(1000), "height": args.height.unwrap_or(700),
+                    "labels": label_fields}),
                 Duration::from_secs(120),
             )
             .await;
@@ -165,7 +195,14 @@ impl Gateway {
             .layers
             .iter()
             .zip(reply["layers"].as_array().cloned().unwrap_or_default())
-            .map(|(h, l)| json!({"handle": h, "color": l["color"], "features": l["features"], "geometry_types": l["geometry_types"]}))
+            .map(|(h, l)| {
+                let mut v = json!({"handle": h, "color": l["color"], "features": l["features"], "geometry_types": l["geometry_types"]});
+                if let Some(f) = label_map.get(h) {
+                    v["label_field"] = json!(f);
+                    v["labels_drawn"] = l["labels"].clone();
+                }
+                v
+            })
             .collect();
         let handle =
             crate::providers::handle_for(&self.state.session, self.state.sandbox.root(), &out);
@@ -178,7 +215,7 @@ impl Gateway {
             "wrapped_antimeridian": reply["wrapped_antimeridian"],
             "layers": layers,
             "imagery": reply["imagery"],
-            "note": "Geometry only, no web basemap (imagery only if you gave a raster of this session's): colours are per layer, as listed. A geographic CRS is drawn with longitude scaled for latitude; across the 180th meridian it is drawn in one piece (longitudes past 180).",
+            "note": "No web basemap (imagery only if you gave a raster of this session's); labels only where you asked for them (at most 400, none overlapping, so some features may have none): colours are per layer, as listed. A geographic CRS is drawn with longitude scaled for latitude; across the 180th meridian it is drawn in one piece (longitudes past 180).",
         });
         let structured = json!({"result": result, "checks": [], "provenance": Value::Null});
         let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);

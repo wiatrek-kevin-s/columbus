@@ -170,6 +170,45 @@ gpd.GeoDataFrame({"NAME": ["West", "East", "Main"], "SECRET": ["a", "b", "c"]},
     let r = call(&c, "map_snapshot", json!({"layers": [handle]})).await;
     assert_eq!(r.is_error, Some(true), "a picture is not a layer to draw");
 
+    // Labels by a field of the layer's, when asked: a different picture,
+    // with the count drawn; a field the layer hasn't, or a layer not drawn,
+    // is refused.
+    let r = call(
+        &c,
+        "map_snapshot",
+        json!({"layers": [h], "width": 800, "height": 600, "labels": {h.clone(): "NAME"}}),
+    )
+    .await;
+    assert_ne!(r.is_error, Some(true), "{:?}", r.content);
+    let labelled = r
+        .content
+        .iter()
+        .find_map(|c| c.as_image())
+        .unwrap()
+        .data
+        .clone();
+    assert_ne!(labelled, img.data, "the labels are drawn");
+    let out = r.structured_content.unwrap();
+    assert_eq!(out["result"]["layers"][0]["label_field"], "NAME", "{out}");
+    assert!(
+        out["result"]["layers"][0]["labels_drawn"].as_u64().unwrap() >= 1,
+        "{out}"
+    );
+    let r = call(
+        &c,
+        "map_snapshot",
+        json!({"layers": [h], "labels": {h.clone(): "NOPE"}}),
+    )
+    .await;
+    assert_eq!(r.is_error, Some(true));
+    let r = call(
+        &c,
+        "map_snapshot",
+        json!({"layers": [h], "labels": {"ws://x/y.gpkg": "NAME"}}),
+    )
+    .await;
+    assert_eq!(r.is_error, Some(true));
+
     // Audited with the rows drawn.
     let audit: String = std::fs::read_dir(root.join("audit"))
         .unwrap()
@@ -188,6 +227,33 @@ gpd.GeoDataFrame({"NAME": ["West", "East", "Main"], "SECRET": ["a", "b", "c"]},
     let c = start(root, &py).await;
     let r = call(&c, "map_snapshot", json!({"layers": ["ws://x/y.gpkg"]})).await;
     assert_eq!(r.is_error, Some(true));
+    c.cancel().await.unwrap();
+
+    // Or keep it to geometry only.
+    std::fs::write(
+        root.join("policy.yaml"),
+        "connection_types: [gpkg]\nsnapshot_labels: false\n",
+    )
+    .unwrap();
+    let c = start(root, &py).await;
+    let q = call(
+        &c,
+        "query_features",
+        json!({"connection": "ak", "dataset": "regions"}),
+    )
+    .await;
+    let h = q.structured_content.unwrap()["result"]["layer"]["handle"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let r = call(
+        &c,
+        "map_snapshot",
+        json!({"layers": [h], "labels": {h.clone(): "NAME"}}),
+    )
+    .await;
+    assert_eq!(r.is_error, Some(true));
+    assert!(format!("{:?}", r.content).contains("snapshot_labels"));
     c.cancel().await.unwrap();
 }
 

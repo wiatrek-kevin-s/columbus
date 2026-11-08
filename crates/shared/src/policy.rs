@@ -250,6 +250,11 @@ pub struct OrgPolicy {
     /// their own assistant's. Off by default.
     #[serde(default)]
     pub allow_shared_tools: bool,
+    /// Whether `map_snapshot` may label features with a field's values
+    /// (values the assistant can already read from the layer). On by
+    /// default; `false` keeps snapshots to geometry only.
+    #[serde(default = "yes")]
+    pub snapshot_labels: bool,
     /// Rows read and seconds per call; see [`OrgLimits`]. Use
     /// [`OrgPolicy::read_limits`] for the values in force.
     #[serde(default)]
@@ -528,6 +533,7 @@ impl Default for OrgPolicy {
             allow_edits: false,
             allow_personal_tools: false,
             allow_shared_tools: false,
+            snapshot_labels: true,
             allow_workflows: false,
             limits: OrgLimits::DEFAULT,
             project_db: ProjectDbPolicy::default(),

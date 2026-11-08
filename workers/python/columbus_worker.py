@@ -1799,8 +1799,12 @@ def map_snapshot(params: dict[str, Any]) -> dict[str, Any]:
     imagery = params.get("imagery")
     if imagery is not None and not isinstance(imagery, str):
         raise WorkerError(INVALID_PARAMS, "imagery is one raster path")
+    labels = params.get("labels")
+    if labels is not None and (not isinstance(labels, list) or len(labels) != len(paths)
+                               or not all(x is None or isinstance(x, str) for x in labels)):
+        raise WorkerError(INVALID_PARAMS, "labels is one field name (or null) per layer")
     try:
-        return g.map_snapshot(paths, out, w, h, bbox, imagery)
+        return g.map_snapshot(paths, out, w, h, bbox, imagery, labels)
     except g.GISError as e:
         raise _refused(e) from None
 

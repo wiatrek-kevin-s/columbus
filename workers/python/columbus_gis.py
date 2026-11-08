@@ -1552,14 +1552,101 @@ def _snapshot_imagery(path: str, crs, transform, shape) -> tuple[Any, Any, dict[
     return img.astype(np.float32), have, info
 
 
+# Most labels drawn in one snapshot, and longest label text.
+SNAPSHOT_MAX_LABELS = 400
+SNAPSHOT_LABEL_CHARS = 40
+_LABEL_HIDDEN = re.compile(
+    "[\x00-\x1f\x7f-\x9f\xad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180b-\u180f"
+    "\u200b-\u200f\u2028-\u202e\u2060-\u206f\u3164\ufe00-\ufe0f\ufeff\uffa0\ufff9-\ufffb"
+    "\U000e0000-\U000e0fff]"
+)
+
+
+def _label_text(v: Any) -> str | None:
+    """A value as a short label: plain characters only; None when empty."""
+    if v is None or (isinstance(v, float) and math.isnan(v)):
+        return None
+    try:
+        if pd.isna(v):
+            return None
+    except (TypeError, ValueError):
+        pass
+    t = _LABEL_HIDDEN.sub("", str(v)[: SNAPSHOT_LABEL_CHARS * 4]).strip()
+    if not t:
+        return None
+    return t if len(t) <= SNAPSHOT_LABEL_CHARS else t[: SNAPSHOT_LABEL_CHARS - 1] + "…"
+
+
+def _label_points(geoms):
+    """Where each feature's label goes: inside a polygon, halfway along a
+    line, on a point."""
+    out = []
+    for g in geoms:
+        if g is None or g.is_empty:
+            out.append(None)
+            continue
+        kind = g.geom_type
+        try:
+            if "Polygon" in kind:
+                p = g.representative_point()
+            elif "Line" in kind:
+                p = g.interpolate(0.5, normalized=True) if kind != "MultiLineString" else max(g.geoms, key=lambda x: x.length).interpolate(0.5, normalized=True)
+            elif kind == "Point":
+                p = g
+            else:
+                p = g.representative_point()
+        except Exception:  # noqa: BLE001 - an invalid geometry gets no label
+            p = None
+        out.append(p)
+    return out
+
+
+def _draw_labels(data, placed: list[tuple[float, float, str, int]], frame_color) -> tuple[Any, dict[int, int]]:
+    """Draw labels (pixel x, y, text, layer) on an RGB array: dark text with
+    a pale halo, each left out where it would overlap one already drawn or
+    leave the picture. The new array and how many each layer got."""
+    from PIL import Image, ImageDraw, ImageFont
+
+    img = Image.fromarray(data, "RGB")
+    draw = ImageDraw.Draw(img)
+    try:
+        font = ImageFont.load_default(size=13)
+    except TypeError:  # Pillow before 10.1
+        font = ImageFont.load_default()
+    h, w = data.shape[0], data.shape[1]
+    taken = []
+    drawn: dict[int, int] = {}
+    for x, y, text, layer in placed:
+        if sum(drawn.values()) >= SNAPSHOT_MAX_LABELS:
+            break
+        l, t, r, b = draw.textbbox((0, 0), text, font=font, stroke_width=2)
+        bw, bh = r - l, b - t
+        x0 = int(round(x - bw / 2))
+        y0 = int(round(y - bh / 2)) - 8  # above a point's dot
+        box = (x0, y0, x0 + bw, y0 + bh)
+        if box[0] < 1 or box[1] < 1 or box[2] > w - 2 or box[3] > h - 2:
+            continue
+        if any(not (box[2] < o[0] or box[0] > o[2] or box[3] < o[1] or box[1] > o[3]) for o in taken):
+            continue
+        taken.append(box)
+        draw.text((x0 - l, y0 - t), text, font=font, fill=tuple(int(c) for c in frame_color),
+                  stroke_width=2, stroke_fill=(255, 255, 255))
+        drawn[layer] = drawn.get(layer, 0) + 1
+    import numpy as np
+    return np.asarray(img), drawn
+
+
 def map_snapshot(paths: list[str], out_path: str, width: int = 1000, height: int = 700,
-                 bbox: list[float] | None = None, imagery: str | None = None) -> dict[str, Any]:
-    """Draw layers as a PNG: geometry only (no attribute, label or name is
-    drawn), each layer its own colour, polygons filled lightly with an
-    outline, lines and points solid, on a plain background with no basemap.
-    Layers are drawn in the first layer's CRS; a geographic one is drawn
-    with its longitude scaled for its latitude, in one piece across the
-    180th meridian."""
+                 bbox: list[float] | None = None, imagery: str | None = None,
+                 labels: list[str | None] | None = None) -> dict[str, Any]:
+    """Draw layers as a PNG, each layer its own colour, polygons filled
+    lightly with an outline, lines and points solid, on a plain background
+    with no basemap. Geometry only, unless `labels` names a field for a
+    layer (one per path, or None): then features are labelled with that
+    field's values (plain text, cut to 40 characters, at most 400 in all,
+    none overlapping). Layers are drawn in the first layer's CRS; a
+    geographic one is drawn with its longitude scaled for its latitude, in
+    one piece across the 180th meridian."""
     import numpy as np
     import rasterio
     from rasterio.features import rasterize
@@ -1569,8 +1656,11 @@ def map_snapshot(paths: list[str], out_path: str, width: int = 1000, height: int
         raise GISError("params", "give 1 to 8 layers")
     width = max(200, min(1600, int(width)))
     height = max(150, min(1200, int(height)))
+    labels = list(labels or [None] * len(paths))
+    if len(labels) != len(paths):
+        raise GISError("params", "labels: one field (or none) per layer")
     frames, total = [], 0
-    for p in paths:
+    for p, field in zip(paths, labels):
         df = read_layer(p)
         if not isinstance(df, gpd.GeoDataFrame):
             raise GISError("params", f"{os.path.basename(p)} has no geometry to draw")
@@ -1578,6 +1668,10 @@ def map_snapshot(paths: list[str], out_path: str, width: int = 1000, height: int
         if total > SNAPSHOT_MAX_FEATURES:
             raise GISError("params", f"more than {SNAPSHOT_MAX_FEATURES:,} features in all; draw fewer or smaller layers")
         g = gpd.GeoDataFrame(geometry=df.geometry, crs=df.crs)
+        if field is not None:
+            if field not in df.columns or field == df.geometry.name:
+                raise GISError("params", f"{os.path.basename(p)} has no field {field!r} to label with")
+            g["__label"] = df[field].map(_label_text)
         g = g[g.geometry.notna() & ~g.geometry.is_empty]
         frames.append(g)
     if not frames:
@@ -1693,6 +1787,26 @@ def map_snapshot(paths: list[str], out_path: str, width: int = 1000, height: int
     img[0, :] = img[-1, :] = SNAPSHOT_FRAME
     img[:, 0] = img[:, -1] = SNAPSHOT_FRAME
     data = np.clip(img, 0, 255).astype(np.uint8)
+    # Labels last, over everything, in layer order, up to the cap.
+    placed = []
+    for i, f in enumerate(frames):
+        layers[i]["labels"] = 0
+        if "__label" not in f.columns:
+            continue
+        for pt, text in zip(_label_points(f.geometry.values), f["__label"].values):
+            if pt is None or text is None or len(placed) >= SNAPSHOT_MAX_LABELS * 4:
+                continue
+            x, y = (pt.x - minx) / px, (maxy - pt.y) / py
+            if 0 <= x < width and 0 <= y < height:
+                placed.append((x, y, text, i))
+    if placed:
+        try:
+            import PIL  # noqa: F401
+        except ImportError:
+            raise GISError("unsupported", "labels need the Pillow package in Columbus's engine; run the engine setup again to add it") from None
+        data, counts = _draw_labels(data, placed, SNAPSHOT_FRAME)
+        for i, n in counts.items():
+            layers[i]["labels"] = n
     import warnings
     with warnings.catch_warnings(), rasterio.Env(GDAL_PAM_ENABLED="NO"):
         warnings.simplefilter("ignore", rasterio.errors.NotGeoreferencedWarning)

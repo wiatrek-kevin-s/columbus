@@ -148,7 +148,7 @@ A person can send a coworker one of their installed tools, or an approved workfl
 
 ### Map snapshots
 
-`map_snapshot` draws up to 8 of the session's own layers as a PNG that the assistant sees (and the app's chat shows the person): geometry only, each layer its own colour, no attribute values, labels or web basemap, and nothing is downloaded to make it. It can draw one of the session's own rasters underneath (`imagery`: aerial imagery, a DEM or a hillshade from a rasters connection), warped to the layers' CRS. It shows the assistant the shape of every feature in those layers, which the per-call row limit does not cap; an organization that treats geometry as sensitive can turn it off with `deny_tools: [map_snapshot]`.
+`map_snapshot` draws up to 8 of the session's own layers as a PNG that the assistant sees (and the app's chat shows the person): each layer its own colour, no web basemap, and nothing is downloaded to make it. Geometry only, unless the assistant asks for `labels` (`{"ws://…": "FIELD"}`): then that layer's features are labelled with that field's values, which the assistant can already read from the layer (plain text, cut to 40 characters, at most 400 labels, none overlapping; labels need Pillow in the engine). `snapshot_labels: false` in the policy keeps snapshots to geometry only. It can draw one of the session's own rasters underneath (`imagery`: aerial imagery, a DEM or a hillshade from a rasters connection), warped to the layers' CRS. It shows the assistant the shape of every feature in those layers, which the per-call row limit does not cap; an organization that treats geometry as sensitive can turn it off with `deny_tools: [map_snapshot]`.
 
 ### Projects and data groups
 
