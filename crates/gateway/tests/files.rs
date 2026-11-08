@@ -1,0 +1,433 @@
+//! `files` connections (build brief Part 1, T-2): a folder of CSVs is
+//! listed, described, queried under the row filter and hidden fields,
+//! buffered and exported, all through the cache GeoPackage; files it can't
+//! offer (lock files, `.xls`, links out of the folder) are listed under
+//! `skipped` with the reason.
+//!
+//! Needs Python with geopandas, pyogrio, shapely and pyproj; skipped
+//! otherwise.
+
+use std::path::{Path, PathBuf};
+use std::process::Command as StdCommand;
+
+use rmcp::model::{CallToolRequestParams, CallToolResult};
+use rmcp::service::RunningService;
+use rmcp::transport::{ConfigureCommandExt, TokioChildProcess};
+use rmcp::{RoleClient, ServiceExt};
+use serde_json::{json, Value};
+
+fn python() -> Option<String> {
+    let mut candidates: Vec<String> = std::env::var("COLUMBUS_PYTHON").into_iter().collect();
+    candidates.extend(["python3".to_string(), "python".to_string()]);
+    candidates.into_iter().find(|p| {
+        StdCommand::new(p)
+            .args(["-c", "import geopandas, pyogrio, shapely, pyproj"])
+            .output()
+            .is_ok_and(|o| o.status.success())
+    })
+}
+
+struct Env {
+    _dir: tempfile::TempDir,
+    _outside: tempfile::TempDir,
+    root: PathBuf,
+    /// Whether the link to a file outside the folder could be made (Windows
+    /// may need a privilege for symbolic links).
+    linked: bool,
+}
+
+fn q(p: &Path) -> String {
+    serde_json::to_string(&p.display().to_string()).unwrap()
+}
+
+#[cfg(unix)]
+fn symlink(target: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(target, link)
+}
+
+#[cfg(windows)]
+fn symlink(target: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::windows::fs::symlink_file(target, link)
+}
+
+fn setup() -> Env {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_path_buf();
+    for d in ["connections", "csvs", "drops", "share"] {
+        std::fs::create_dir_all(root.join(d)).unwrap();
+    }
+    // Crashes as lon/lat points; CSJ codes keep their zeros, mileposts are
+    // numbers.
+    std::fs::write(
+        root.join("csvs/crashes.csv"),
+        "CRASH_ID,STATUS,OWNER,lon,lat,CSJ,MILEPOST\n\
+         1,A,Ann,-97.7431,30.2672,000123456,12.500\n\
+         2,R,Bo,-97.7500,30.2800,000123457,1.50\n\
+         3,A,Cy,-97.7600,30.2900,000123458,3\n\
+         4,R,Di,-97.7700,30.3000,000123459,40\n",
+    )
+    .unwrap();
+    // Roads as WKT lines in Texas Central State Plane feet.
+    std::fs::write(
+        root.join("csvs/roads.csv"),
+        "ROAD,STATUS,OWNER,geometry\n\
+         R1,A,Ann,\"LINESTRING (3110000 10070000, 3111000 10071000)\"\n\
+         R2,R,Bo,\"LINESTRING (3112000 10072000, 3113000 10073000)\"\n",
+    )
+    .unwrap();
+    // The folder with things a files connection doesn't offer.
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(outside.path().join("secret.csv"), "SECRET\nhush\n").unwrap();
+    std::fs::write(
+        root.join("drops/roads.v2.csv"),
+        "ROAD,STATUS,lon,lat\nR9,A,-97.7,30.2\n",
+    )
+    .unwrap();
+    std::fs::write(root.join("drops/~$book.xlsx"), b"lock").unwrap();
+    std::fs::write(root.join("drops/book.xls"), b"\xd0\xcf\x11\xe0old excel").unwrap();
+    let linked = match symlink(
+        &outside.path().join("secret.csv"),
+        &root.join("drops/elsewhere.csv"),
+    ) {
+        Ok(()) => true,
+        Err(e) if cfg!(windows) => {
+            eprintln!("link sub-case skipped: could not make a symbolic link ({e})");
+            false
+        }
+        Err(e) => panic!("symlink: {e}"),
+    };
+    std::fs::write(
+        root.join("connections/crash-csvs.yaml"),
+        format!(
+            "id: crash-csvs\ntype: files\npath: {}\ndatasets:\n  allow: [\"*\"]\nrow_filter: \"STATUS <> 'R'\"\n\
+             description: Crash and road CSVs\n",
+            q(&root.join("csvs"))
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("connections/drops.yaml"),
+        format!(
+            "id: drops\ntype: files\npath: {}\ndatasets:\n  allow: [\"*\"]\n",
+            q(&root.join("drops"))
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("policy.yaml"),
+        format!(
+            "connection_types: [files]\nhide_fields: [OWNER]\nallow_edits: true\napprovals: {{ page: false }}\n\
+             exports:\n  - {{ id: share, path: {}, granted: true }}\n",
+            q(&root.join("share"))
+        ),
+    )
+    .unwrap();
+    Env {
+        _dir: dir,
+        _outside: outside,
+        root,
+        linked,
+    }
+}
+
+async fn start(root: &Path, py: &str) -> RunningService<RoleClient, ()> {
+    let worker = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../workers/python/columbus_worker.py")
+        .canonicalize()
+        .unwrap();
+    let root = root.to_path_buf();
+    let py = py.to_string();
+    let transport = TokioChildProcess::new(
+        tokio::process::Command::new(env!("CARGO_BIN_EXE_columbus-mcp")).configure(move |cmd| {
+            cmd.env("COLUMBUS_POLICY", root.join("policy.yaml"))
+                .env("COLUMBUS_CONNECTIONS", root.join("connections"))
+                .env("COLUMBUS_WORKSPACES", root.join("workspaces"))
+                .env("COLUMBUS_AUDIT_DIR", root.join("audit"))
+                .env("COLUMBUS_LIVE_DIR", root.join("live"))
+                .env("COLUMBUS_WORKER", &worker)
+                .env("COLUMBUS_PYTHON", &py)
+                .env("COLUMBUS_LOG", "warn")
+                .env("COLUMBUS_COMPANION", "off")
+                .env("COLUMBUS_APPROVALS_BROWSER", "none");
+        }),
+    )
+    .unwrap();
+    ().serve(transport).await.unwrap()
+}
+
+async fn call(
+    c: &RunningService<RoleClient, ()>,
+    tool: &'static str,
+    args: Value,
+) -> CallToolResult {
+    let mut p = CallToolRequestParams::new(tool);
+    if let Value::Object(m) = args {
+        p = p.with_arguments(m);
+    }
+    c.call_tool(p).await.unwrap()
+}
+
+fn ok(r: &CallToolResult) -> Value {
+    assert_ne!(r.is_error, Some(true), "unexpected error: {:?}", r.content);
+    r.structured_content.clone().expect("structured output")
+}
+
+fn err(r: &CallToolResult) -> String {
+    assert_eq!(
+        r.is_error,
+        Some(true),
+        "expected an error, got {:?}",
+        r.structured_content
+    );
+    serde_json::to_string(&r.content).unwrap()
+}
+
+fn names(v: &Value) -> Vec<String> {
+    let mut n: Vec<String> = v["result"]["datasets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["name"].as_str().unwrap().to_string())
+        .collect();
+    n.sort();
+    n
+}
+
+#[tokio::test]
+async fn csv_folder_is_read_buffered_and_exported_under_the_rules() {
+    let Some(py) = python() else {
+        eprintln!("skipping: the GIS engine is not installed");
+        return;
+    };
+    let env = setup();
+    let c = start(&env.root, &py).await;
+
+    // Two datasets; the hidden field is not listed.
+    let l = ok(&call(&c, "list_datasets", json!({"connection": "crash-csvs"})).await);
+    assert_eq!(names(&l), ["crashes", "roads"], "{l}");
+    assert!(!l.to_string().contains("OWNER"), "{l}");
+    // The cache GeoPackage was made where the brief says.
+    let cache = env.root.join("workspaces/cache/files/crash-csvs.gpkg");
+    assert!(cache.is_file(), "no cache at {}", cache.display());
+
+    // lon/lat points are in EPSG:4326; typing keeps CSJ text and mileposts
+    // numbers (R-2, R-4).
+    let d = ok(&call(
+        &c,
+        "describe_dataset",
+        json!({"connection": "crash-csvs", "dataset": "crashes"}),
+    )
+    .await);
+    assert_eq!(d["result"]["crs"]["code"], "EPSG:4326", "{d}");
+    assert_eq!(d["result"]["geometry_type"], "POINT", "{d}");
+    assert_eq!(d["result"]["rows"], 2, "counted under the row filter: {d}");
+    let ty = |f: &str| {
+        d["result"]["fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|x| x["name"] == f)
+            .unwrap_or_else(|| panic!("no field {f}: {d}"))["type"]
+            .clone()
+    };
+    assert_eq!(ty("CSJ"), "TEXT");
+    assert_eq!(ty("MILEPOST"), "REAL");
+    assert_eq!(ty("CRASH_ID"), "INTEGER");
+    // WKT lines (R-1), no CRS on the connection: none.
+    let d = ok(&call(
+        &c,
+        "describe_dataset",
+        json!({"connection": "crash-csvs", "dataset": "roads"}),
+    )
+    .await);
+    assert_eq!(d["result"]["geometry_type"], "LINESTRING", "{d}");
+    assert!(d["result"]["crs"].is_null(), "{d}");
+
+    // The row filter keeps R rows out; mileposts compare as numbers.
+    let r = ok(&call(
+        &c,
+        "query_features",
+        json!({"connection": "crash-csvs", "dataset": "crashes", "where": "MILEPOST > 2"}),
+    )
+    .await);
+    let text = r.to_string();
+    assert_eq!(r["result"]["layer"]["summary"]["rows"], 2, "{r}");
+    assert!(!text.contains("\"Bo\"") && !text.contains("\"Di\""), "{r}");
+    assert!(!text.contains("\"OWNER\""), "hidden field returned: {r}");
+    let s = ok(&call(
+        &c,
+        "sql_select",
+        json!({"connection": "crash-csvs", "sql": "SELECT CRASH_ID, STATUS FROM crashes ORDER BY CRASH_ID"}),
+    )
+    .await);
+    let rows = s["result"]["rows"].as_array().unwrap();
+    assert_eq!(rows.len(), 2, "{s}");
+    assert!(rows.iter().all(|r| r[1] == "A"), "{s}");
+
+    // The hidden field is refused wherever it is named.
+    let e = err(&call(
+        &c,
+        "query_features",
+        json!({"connection": "crash-csvs", "dataset": "crashes", "fields": ["OWNER"]}),
+    )
+    .await);
+    assert!(e.contains("OWNER"), "{e}");
+    err(&call(
+        &c,
+        "sql_select",
+        json!({"connection": "crash-csvs", "sql": "SELECT OWNER FROM crashes"}),
+    )
+    .await);
+    // The cache's own tables aren't datasets.
+    for sql in [
+        "SELECT * FROM columbus_sources",
+        "SELECT * FROM gpkg_contents",
+    ] {
+        err(&call(
+            &c,
+            "sql_select",
+            json!({"connection": "crash-csvs", "sql": sql}),
+        )
+        .await);
+    }
+    // Files connections are read only.
+    let e = err(&call(
+        &c,
+        "propose_edits",
+        json!({"connection": "crash-csvs", "dataset": "crashes",
+               "changes": [{"op": "delete", "key": 1}]}),
+    )
+    .await);
+    assert!(e.contains("not supported on files"), "{e}");
+
+    // Buffer (after a reproject out of degrees) and export as gpkg.
+    let pts = r["result"]["layer"]["handle"].as_str().unwrap().to_string();
+    let p = ok(&call(
+        &c,
+        "vector_op",
+        json!({"op": "reproject", "inputs": {"layer": pts}, "params": {"crs": "EPSG:2277"}}),
+    )
+    .await);
+    let b = ok(&call(
+        &c,
+        "vector_op",
+        json!({"op": "buffer", "inputs": {"layer": p["result"]["layer"]["handle"]},
+               "params": {"distance": 100, "unit": "ft"}}),
+    )
+    .await);
+    assert_eq!(b["result"]["layer"]["summary"]["rows"], 2, "{b}");
+    let x = ok(&call(
+        &c,
+        "export_output",
+        json!({"handle": b["result"]["layer"]["handle"], "folder": "share", "name": "crash buffers", "format": "gpkg"}),
+    )
+    .await);
+    assert_eq!(x["result"]["status"], "exported", "{x}");
+    let exported: Vec<PathBuf> = std::fs::read_dir(env.root.join("share"))
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .collect();
+    assert!(
+        exported
+            .iter()
+            .any(|p| p.extension().is_some_and(|e| e == "gpkg")),
+        "{exported:?}"
+    );
+    c.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn files_it_cannot_offer_are_skipped_with_the_reason() {
+    let Some(py) = python() else {
+        eprintln!("skipping: the GIS engine is not installed");
+        return;
+    };
+    let env = setup();
+    let c = start(&env.root, &py).await;
+
+    // F-1: dots become underscores; only the CSV is a dataset.
+    let l = ok(&call(&c, "list_datasets", json!({"connection": "drops"})).await);
+    assert_eq!(names(&l), ["roads_v2"], "{l}");
+    let skipped = l["result"]["skipped"].as_array().unwrap().clone();
+    let reason = |file: &str| -> String {
+        skipped
+            .iter()
+            .find(|s| s["file"] == file)
+            .unwrap_or_else(|| panic!("{file} not under skipped: {l}"))["reason"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    assert!(reason("~$book.xlsx").contains("lock file"), "{l}");
+    assert!(reason("book.xls").contains("save as .xlsx"), "{l}");
+    if env.linked {
+        assert_eq!(
+            reason("elsewhere.csv"),
+            "link leads outside the connection folder",
+            "{l}"
+        );
+        assert!(!l.to_string().contains("SECRET"), "{l}");
+    }
+
+    // roads_v2 reads; points in EPSG:4326.
+    let d = ok(&call(
+        &c,
+        "describe_dataset",
+        json!({"connection": "drops", "dataset": "roads_v2"}),
+    )
+    .await);
+    assert_eq!(d["result"]["crs"]["code"], "EPSG:4326", "{d}");
+    ok(&call(
+        &c,
+        "query_features",
+        json!({"connection": "drops", "dataset": "roads_v2"}),
+    )
+    .await);
+
+    // The .xls named directly is refused with the fix.
+    for (tool, args) in [
+        (
+            "describe_dataset",
+            json!({"connection": "drops", "dataset": "book"}),
+        ),
+        (
+            "query_features",
+            json!({"connection": "drops", "dataset": "book"}),
+        ),
+        (
+            "sql_select",
+            json!({"connection": "drops", "sql": "SELECT * FROM book"}),
+        ),
+    ] {
+        let e = err(&call(&c, tool, args).await);
+        assert!(e.contains("save as .xlsx"), "{tool}: {e}");
+    }
+    // The link's would-be dataset is refused too, and nothing of it is read.
+    if env.linked {
+        let e = err(&call(
+            &c,
+            "sql_select",
+            json!({"connection": "drops", "sql": "SELECT * FROM elsewhere"}),
+        )
+        .await);
+        assert!(e.contains("outside the connection folder"), "{e}");
+        assert!(!e.contains("hush"), "{e}");
+    }
+
+    // Removing the connection deletes its cache, as for workspace files.
+    let cache = env.root.join("workspaces/cache/files/drops.gpkg");
+    assert!(cache.is_file());
+    std::fs::remove_file(env.root.join("connections/drops.yaml")).unwrap();
+    let mut gone = false;
+    for _ in 0..40 {
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        let _ = call(&c, "list_connections", json!({})).await;
+        if !cache.exists() {
+            gone = true;
+            break;
+        }
+    }
+    assert!(gone, "cache still at {}", cache.display());
+    c.cancel().await.unwrap();
+}

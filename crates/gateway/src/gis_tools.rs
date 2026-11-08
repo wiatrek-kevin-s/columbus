@@ -158,7 +158,7 @@ fn ident_ok(s: &str) -> bool {
 }
 
 /// A name that is not a plain identifier but is safe to quote: letters
-/// (any script), digits, spaces and `_ $ # -`, as GeoPackage and file
+/// (any script), digits, spaces and `_ $ # - /`, as GeoPackage and file
 /// geodatabase layer names often are (`Tribal Census Tract`). No quotes,
 /// brackets, dots, control or invisible characters; no space at either end.
 fn quotable(s: &str) -> bool {
@@ -167,7 +167,8 @@ fn quotable(s: &str) -> bool {
         && s.trim() == s
         && s.chars().all(|c| {
             (c.is_alphanumeric() && !looks_blank_or_combining(c))
-                || matches!(c, ' ' | '_' | '$' | '#' | '-')
+                // `/` for files datasets in subfolders (F-1: `2026/crashes`).
+                || matches!(c, ' ' | '_' | '$' | '#' | '-' | '/')
         })
 }
 

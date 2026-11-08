@@ -590,6 +590,7 @@ impl Default for OrgPolicy {
                 "file".into(),
                 "shapefile".into(),
                 "filegdb".into(),
+                "files".into(),
             ],
             hosts: vec![],
             tools: vec![],
@@ -700,6 +701,23 @@ pub struct Connection {
     pub expires: Option<NaiveDate>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// `files` connections (F-2): read the folder's subfolders too.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recursive: Option<bool>,
+    /// `files` connections (F-2): `EPSG:<code>` for CSV/XLSX geometry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crs: Option<String>,
+    /// `files` connections (F-2): coordinate pair column names (both or
+    /// neither).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub x: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub y: Option<String>,
+}
+
+/// Connection types read through the files cache (Part 1 of the brief).
+pub fn is_files(kind: &str) -> bool {
+    kind.eq_ignore_ascii_case("files")
 }
 
 fn default_mode() -> Mode {
@@ -732,6 +750,33 @@ impl Connection {
         }
         // Fail early on bad patterns rather than at query time.
         c.datasets.permits("")?;
+        let at = path.display();
+        if is_files(&c.kind) {
+            if c.path.as_deref().is_none_or(|p| p.trim().is_empty()) {
+                return Err(LoadError::Invalid(format!(
+                    "{at}: a files connection needs a path (a folder or one file)"
+                )));
+            }
+            if c.x.is_some() != c.y.is_some() {
+                return Err(LoadError::Invalid(format!(
+                    "{at}: x and y name the coordinate columns together; give both or neither"
+                )));
+            }
+            if let Some(crs) = &c.crs {
+                let ok = crs.strip_prefix("EPSG:").is_some_and(|n| {
+                    !n.is_empty() && n.len() <= 9 && n.bytes().all(|b| b.is_ascii_digit())
+                });
+                if !ok {
+                    return Err(LoadError::Invalid(format!(
+                        "{at}: crs must be an EPSG code such as EPSG:4326, not {crs:?}"
+                    )));
+                }
+            }
+        } else if c.recursive.is_some() || c.crs.is_some() || c.x.is_some() || c.y.is_some() {
+            return Err(LoadError::Invalid(format!(
+                "{at}: recursive, crs, x and y are settings of files connections only"
+            )));
+        }
         Ok(())
     }
 
@@ -1043,6 +1088,14 @@ pub fn is_system_catalog(name: &str, kind: &str) -> bool {
         }
         // A file geodatabase's own tables (GDB_Items and the like).
         "filegdb" => last.starts_with("SQLITE_") || last.starts_with("GDB_"),
+        // A files connection's cache GeoPackage: its own tables.
+        "files" => {
+            parts.len() > 1
+                || ["SQLITE_", "GPKG_", "RTREE_"]
+                    .iter()
+                    .any(|p| last.starts_with(p))
+                || last == "COLUMBUS_SOURCES"
+        }
         _ => false,
     }
 }
@@ -1069,6 +1122,32 @@ expires: 2027-06-30
 "#,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn files_connection_settings_are_checked() {
+        let at = Path::new("c.yaml");
+        let base =
+            "id: crash-csvs\ntype: files\npath: /data/crashes\ndatasets: { allow: [\"*\"] }\n";
+        let ok = Connection::parse(
+            &format!("{base}recursive: true\ncrs: EPSG:2277\nx: EASTING\ny: NORTHING\n"),
+            at,
+        )
+        .unwrap();
+        assert_eq!(ok.recursive, Some(true));
+        assert_eq!(ok.crs.as_deref(), Some("EPSG:2277"));
+        for bad in [
+            format!("{base}x: EASTING\n"),
+            format!("{base}crs: \"+proj=longlat\"\n"),
+            "id: c\ntype: files\ndatasets: { allow: [\"*\"] }\n".to_string(),
+            "id: c\ntype: gpkg\npath: /a.gpkg\ncrs: EPSG:4326\ndatasets: { allow: [\"*\"] }\n"
+                .to_string(),
+        ] {
+            assert!(Connection::parse(&bad, at).is_err(), "{bad}");
+        }
+        assert!(OrgPolicy::default()
+            .connection_types
+            .contains(&"files".to_string()));
     }
 
     fn org() -> OrgPolicy {

@@ -99,6 +99,9 @@ def ping(_params: dict[str, Any]) -> dict[str, Any]:
 SQLITE_KINDS = {"gpkg", "geopackage", "sqlite", "spatialite"}
 # Shapefiles and file geodatabases, through GDAL (columbus_esri).
 ESRI_KINDS = {"shapefile", "filegdb"}
+# Folders of CSV and other files, read through a cache GeoPackage
+# (columbus_files).
+FILES_KINDS = {"files"}
 
 
 def _connection(params: dict[str, Any]) -> dict[str, Any]:
@@ -1221,6 +1224,8 @@ def list_datasets(params: dict[str, Any]) -> dict[str, Any]:
         return {"datasets": _ms_list(conn, timeout_s, params.get("schemas"), only)}
     if kind in ESRI_KINDS:
         return {"datasets": _esri().esri_list(conn, timeout_s, only)}
+    if kind in FILES_KINDS:
+        return _files().files_list(conn, timeout_s, only, with_checks=bool(params.get("with_checks")))
     raise WorkerError(UNSUPPORTED, f"list_datasets does not support {conn['kind']!r} yet")
 
 
@@ -1266,6 +1271,8 @@ def _fetch(conn: dict[str, Any], sql: str, max_rows: int, timeout_s: float, keep
         return _ms_fetch(conn, sql, max_rows, timeout_s, keep_factory, sink)
     if kind in ESRI_KINDS:
         return _esri().esri_fetch(conn, sql, max_rows, timeout_s, keep_factory, sink)
+    if kind in FILES_KINDS:
+        return _files().files_fetch(conn, sql, max_rows, timeout_s, keep_factory, sink)
     raise WorkerError(UNSUPPORTED, f"reading {conn['kind']!r} connections is not supported yet")
 
 
@@ -1533,10 +1540,13 @@ def describe_dataset(params: dict[str, Any]) -> dict[str, Any]:
     timeout_s = float(params.get("timeout_s", 60))
     # The one dataset only, where the engine can list it alone (Oracle and
     # SQL Server catalogs can be very large).
-    entries = list_datasets({"connection": conn, "timeout_s": timeout_s, "only": str(params.get("dataset") or "")})["datasets"]
+    files = conn["kind"].lower() in FILES_KINDS
+    entries = list_datasets({"connection": conn, "timeout_s": timeout_s, "only": str(params.get("dataset") or ""),
+                             "with_checks": files})["datasets"]
     entry = _find(entries, str(params.get("dataset") or ""))
     if entry is None:
-        raise WorkerError(INVALID_PARAMS, f"no dataset {params.get('dataset')!r} on this connection")
+        why = _files().skipped_reason(conn, str(params.get("dataset") or "")) if files else None
+        raise WorkerError(INVALID_PARAMS, why or f"no dataset {params.get('dataset')!r} on this connection")
     keep = _hidden_mask([f["name"] for f in entry.get("fields", [])], params.get("hide_fields"))
     entry["fields"] = [f for f, k in zip(entry.get("fields", []), keep) if k]
     rows = None
@@ -1561,6 +1571,12 @@ def describe_dataset(params: dict[str, Any]) -> dict[str, Any]:
             f"In this shapefile, {', '.join(dates)} {'is a date' if len(dates) == 1 else 'are dates'} that SQL reads as text YYYY/MM/DD, so comparing with '2024-03-01' or using date functions gives wrong answers",
             detail={"fields": dates},
             fix="Compare with the same form ('2024/03/01'), or read the rows with query_features and filter them in vector_op; a row filter on these fields is refused"))
+    # What converting a file found (R-3, R-5, R-6c): a check that names a
+    # hidden column is left out, so its name doesn't leave the engine.
+    for c in entry.pop("file_checks", None) or []:
+        named = [str(n) for n in ((c.get("detail") or {}).get("columns") or [])]
+        if all(_hidden_mask(named, params.get("hide_fields"))):
+            checks.append(c)
     entry.update({"rows": rows, "crs": g.crs_facts(crs), "checks": checks})
     return entry
 
@@ -2135,6 +2151,12 @@ def _esri():
     import columbus_esri
 
     return columbus_esri
+
+
+def _files():
+    import columbus_files
+
+    return columbus_files
 
 
 def _preload_gis() -> None:
