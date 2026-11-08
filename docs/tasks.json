@@ -84,8 +84,8 @@
           "expected": "the tif opens in rasterio with tags(ns='IMAGE_STRUCTURE')['LAYOUT'] == 'COG', the same CRS and nodata; a delivery spec with another CRS fails with 'reproject first'; a vector layer is refused"
         }
       ],
-      "status": "todo",
-      "evidence": ""
+      "status": "done",
+      "evidence": "Commit 435ebdc. crates/gateway/tests/export_formats.rs gdb_export (1 layer, same 5 rows and EPSG:3081; Int64 3,000,000,000,123 exact with export.needs_pro_3_2; existing .gdb refused 4 ways, folder hashes unchanged) and tif_export (COG layout, same CRS and nodata; other-CRS spec fails 'reproject first (raster_op reproject)'; vector as tif refused); test_export.py 12 passed. Workspace 297 passed; pytest 183 passed 35 skipped."
     },
     {
       "id": "T-5",

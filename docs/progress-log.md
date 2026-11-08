@@ -31,6 +31,10 @@ Kit version 1.1 · as of 2026-11-08, session S1 not started
 | 2026-11-08 | XLSX is read by a small standard-library reader, not GDAL | GDAL treated a header-only sheet's header as data and lost date-time detail, breaking R-6 and R-6b | Decided |
 | 2026-11-08 | Unreadable files are listed under `skipped` with the cause; naming one gives a plain error naming the file | REQ-4's failure case without one bad file breaking the whole folder | Decided |
 | 2026-11-08 | `crs.present` is a warn for `files` datasets in describe and query; `export_output` still fails a layer with no CRS unless overridden | R-1 and R-2 ask for a warn. Exports check the layer, not its source, and other types stay unchanged (no rule loosens) | Decided |
+| 2026-11-08 | An existing `<name>.gdb` blocks every export of that name, in any format, even with overwrite | R-8 says it is never replaced or changed; a non-gdb export of the same name would replace its `.prov.json` | Decided |
+| 2026-11-08 | gdb exports use `TARGET_ARCGIS_VERSION=ARCGIS_PRO_3_2_OR_LATER` only when a value is outside 32 bits; otherwise 32-bit integers | Keeps exports readable by every ArcGIS when nothing needs Pro 3.2 | Decided |
+| 2026-11-08 | gdb export names must be a letter then letters, digits and `_`; refused otherwise | GDAL would rename silently, and R-8 says the layer name is the export name | Decided |
+| 2026-11-08 | `.xlsx` workbooks are closed after every read (fix found by Windows CI on PR #1) | An open workbook locks the analyst's file in Excel | Decided |
 | 2026-11-08 | Python baseline is 149 passed, not the audit's 115 | `main` moved past the audit commit 8b6bf173 before the kit upload; more tests and no failures, so no action | Decided |
 
 ## Change requests
@@ -49,6 +53,8 @@ Newest first, written as you go. Mark each claim verified (checked this session)
 - 2026-11-08 T-1 done: access checked (verified); baseline at 9749c8f: 287 Rust and 149 Python passed, 0 failures, only database skips (verified); CI run https://github.com/wiatrek-kevin-s/columbus/actions/runs/42514607603 green on 13 jobs (verified).
 - 2026-11-08 T-2 done: commit b12ef7d; files.rs 2/2 pass (verified); workspace 292 passed, pytest 159 passed. Left for T-3: R-7 SHA compare, other formats, `file` alias, `crs.present` as warn (today it is a fail).
 - 2026-11-08 T-3 done: commit 4bfc56c; files.rs 4/4, test_files.py 22/22 (verified); workspace 295, pytest 171. A-5 confirmed: read_parquet keeps CRS from `geo` metadata.
+- 2026-11-08 PR #1 CI run 42520073092: 12/13 jobs passed; Python worker on Windows failed (xlsx file left open). Fixed in 3ef74e8.
+- 2026-11-08 T-4 done: commit 435ebdc; export_formats.rs 2/2 (verified), test_export.py 12/12; workspace 297, pytest 183.
 
 ### Kit → Session S1 (2026-11-08)
 
