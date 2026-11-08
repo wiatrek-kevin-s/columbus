@@ -21,6 +21,8 @@ req="$root/workers/python/requirements-gis.txt"
 db="$root/workers/python/requirements-db.txt"
 # Hash-pinned, installed on their own (see the file).
 pdb="$root/workers/python/requirements-projectdb.txt"
+# Columbus's own uv, for environments the person approves (hash-pinned).
+uvreq="$root/workers/python/requirements-uv.txt"
 python=""
 wheels=""
 
@@ -53,9 +55,11 @@ vpy="$venv/bin/python3"
 if [ -n "$wheels" ]; then
     "$vpy" -m pip install --no-index --find-links "$wheels" -r "$req" -r "$db"
     "$vpy" -m pip install --no-index --find-links "$wheels" --require-hashes --no-deps --only-binary :all: -r "$pdb"
+    "$vpy" -m pip install --no-index --find-links "$wheels" --require-hashes --no-deps --only-binary :all: -r "$uvreq"
 else
     "$vpy" -m pip install -r "$req" -r "$db"
     "$vpy" -m pip install --require-hashes --no-deps --only-binary :all: -r "$pdb"
+    "$vpy" -m pip install --require-hashes --no-deps --only-binary :all: -r "$uvreq"
 fi
 
 "$vpy" -c "import geopandas, pyogrio, shapely, pyproj, rasterio; print('engine ready: GDAL', pyogrio.__gdal_version_string__)"

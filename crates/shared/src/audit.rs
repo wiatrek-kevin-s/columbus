@@ -58,6 +58,10 @@ pub struct AuditRecord {
     /// `allow`, `approve` or `deny`, from the flow rules.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub flow_decision: Option<String>,
+    /// For script and tool calls (F-8): the environment's id, or null for
+    /// the engine's Python. Absent on other calls.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub environment: Option<Option<String>>,
 }
 
 pub struct AuditLog {

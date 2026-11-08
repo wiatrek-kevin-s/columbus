@@ -138,8 +138,8 @@
           "expected": "the person's interpreter folder still exists; the created one's folder is deleted only after the test confirmation"
         }
       ],
-      "status": "todo",
-      "evidence": ""
+      "status": "done",
+      "evidence": "Commit 3accf6e. crates/gateway/tests/environments.rs, 7 tests (governed run confined with extracts only, socket refused, whoami lists it; package change -> changed and 'confirm it again in Settings'; no MCP tool registers/changes; environments.allow false refuses env add and the argument; YAML trust/python edits -> changed; remove keeps the person's folder, deletes the Columbus one only after confirmation; level B needs allow_network) pass on Linux, macOS and Windows: CI run https://github.com/wiatrek-kevin-s/columbus/actions/runs/42528260440, no A-1 fallback. Workspace 314 passed."
     },
     {
       "id": "T-7",
@@ -159,8 +159,8 @@
           "expected": "unpinned refused at proposal; creation fails naming the host; the no-wheel package is refused and nothing is built from source"
         }
       ],
-      "status": "todo",
-      "evidence": ""
+      "status": "done",
+      "evidence": "Commit 40e90d2. crates/gateway/tests/environment_create.rs: an_approved_proposal_creates_a_governed_environment (six==1.17.0 from PyPI with COLUMBUS_TEST_REQUIRE_NETWORK=1; created under envs/, registered governed, whoami lists it) and creation_reaches_only_the_index_hosts_and_never_builds (unpinned refused at proposal; creation fails naming localhost:<port>; sdist-only nowheel==1.0 refused, setup.py never runs). Re-run here: 3/3 pass. Workspace 321 passed; pytest 207 passed 36 skipped."
     },
     {
       "id": "T-8",
@@ -362,8 +362,8 @@
           "expected": "output without M and a geometry.m_dropped info check"
         }
       ],
-      "status": "todo",
-      "evidence": ""
+      "status": "done",
+      "evidence": "Commits 9492dcf, b3ec68e. test_measures.py (query_layer in-memory and streamed on gpkg/files/shp/filegdb; reproject incl. ZM, clip, join, spatial_join, dissolve; plugin extract; personal tool; exports gpkg/gdb/shp) and crates/gateway/tests/measures.rs: first vertex keeps the source M. Oracle ROADS.ROUTES (gtype 3302): test_lrs_routes_keep_their_measures_end_to_end and oracle_lrs_measures_survive pass in the CI Oracle job. buffer/simplify drop M with geometry.m_dropped info. PR #2 CI https://github.com/wiatrek-kevin-s/columbus/actions/runs/42529178838 green on 13 jobs."
     },
     {
       "id": "T-20",

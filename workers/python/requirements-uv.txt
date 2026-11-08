@@ -1,0 +1,21 @@
+# uv, the installer Columbus runs to create the environments the person
+# approves (propose_environment, build brief Part 5). Pinned by version and
+# by the SHA-256 of each wheel. Install it into the engine on its own, so
+# every wheel is checked and nothing else is pulled in:
+#
+#   python -m pip install --require-hashes --no-deps --only-binary :all: -r workers/python/requirements-uv.txt
+#
+# Columbus finds it inside the engine (uv.find_uv_bin()), never on PATH.
+# uv is MIT OR Apache-2.0 (Astral); its licence files are in the wheel.
+# Wheels: Windows x64 and arm64, macOS arm64 and x64, Linux x64 and arm64
+# (glibc and musl). To move to a new uv version, change the version and
+# every hash (from https://pypi.org/project/uv/#files).
+uv==0.13.7 \
+    --hash=sha256:2835e2ab397d0db86323b9975dce75ecd76aa9cfa0d6a2aea84734aae7f8c9b3 \
+    --hash=sha256:55e741a380a98008fc4985cf069855f36bc50242ef438e21a466786f5bc84da8 \
+    --hash=sha256:f91a229093163eefca89ea1b220a221d64c3beade05d03519a6584d1797a5a5f \
+    --hash=sha256:fd04bf01ba5f2829f4f94ca8f0c24a743f21e73d75045613ed6fc2fd66fc7bda \
+    --hash=sha256:2c9bdc4a872b60a93c5f26c0791089ea11585a4f9d3b3c017d78eb8487505e25 \
+    --hash=sha256:a90f5d95716ab83091f0f73a8e7ec64e557abf2a28537fcd719b2ac88e6f725a \
+    --hash=sha256:08f16fd463926786b702b497473511deae4b3e17a2fa6d22180950d6059a120d \
+    --hash=sha256:8b8ac028ae4ebb2a3f9d04907c61794f2cf8d7a7002bfbb4019a3dee28351fb2

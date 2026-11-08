@@ -31,6 +31,11 @@ pub struct Paths {
     /// The person's own tools (`tools/` beside the workspaces, or
     /// `COLUMBUS_TOOLS`): installed ones and proposals waiting for them.
     pub tools: PathBuf,
+    /// The person's registered Python environments (F-4): `environments/`
+    /// beside the connections folder, or `COLUMBUS_ENVIRONMENTS`.
+    pub environments: PathBuf,
+    /// Where Columbus creates environments (`<Columbus data>/envs`).
+    pub envs: PathBuf,
 }
 
 #[cfg(test)]
@@ -56,6 +61,8 @@ impl Paths {
                 .unwrap_or_else(|| program_data.join("registry")),
             context: env_path("COLUMBUS_CONTEXT").unwrap_or_else(|| program_data.join("context")),
             tools: columbus_shared::tools::tools_dir(),
+            environments: columbus_shared::environments::environments_dir(),
+            envs: columbus_shared::environments::envs_dir(),
             python: env_path("COLUMBUS_PYTHON")
                 .or_else(bundled_engine)
                 .unwrap_or_else(|| {

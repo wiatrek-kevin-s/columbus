@@ -128,6 +128,13 @@ pub async fn review(id: &str) -> Result<bool> {
     Ok(flagged)
 }
 
+/// Ask on the terminal itself (not stdin, so an agent that can run
+/// commands cannot answer) and return what the person typed. The caller
+/// compares it with the id it asked for.
+pub(crate) fn confirm_typed(prompt: &str) -> Result<String> {
+    rpassword::prompt_password(prompt).context("confirming needs an interactive terminal")
+}
+
 pub async fn approve(id: &str, accept_flags: bool) -> Result<()> {
     let flagged = review(id).await?;
     if flagged && !accept_flags {
@@ -142,11 +149,10 @@ pub async fn approve(id: &str, accept_flags: bool) -> Result<()> {
         Ok(c) => c,
         Err(s @ Status::Blocked { .. }) | Err(s) => bail!(describe_status(id, &s)),
     };
-    let confirm = rpassword::prompt_password(format!(
+    let confirm = confirm_typed(&format!(
         "\nApprove these {} tool definitions for {id}? Type the server id to confirm: ",
         c.review.tools.len()
-    ))
-    .context("approval needs an interactive terminal")?;
+    ))?;
     if confirm.trim() != id {
         bail!("not confirmed; nothing changed");
     }

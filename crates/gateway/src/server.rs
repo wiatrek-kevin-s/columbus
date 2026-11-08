@@ -327,6 +327,10 @@ pub struct WhoAmI {
     pub engines: Value,
     /// Connected servers and their state.
     pub providers: Vec<ProviderCard>,
+    /// Python environments the person registered, for run_python's
+    /// `environment`: {id, trust, status, python_version, arcpy, reason}.
+    /// Only `ready` ones run. Empty while policy turns environments off.
+    pub environments: Vec<Value>,
     pub labels: Vec<String>,
     pub notes: Vec<String>,
 }
@@ -352,6 +356,12 @@ pub struct PolicySummary {
     pub limits_ceiling: Value,
     /// Whether `project_db` (local project databases) is available.
     pub project_db: bool,
+    /// Registered Python environments may be used (environments.allow).
+    pub environments_allowed: bool,
+    /// Trusted (unconfined) environments are allowed.
+    pub trusted_environments_allowed: bool,
+    /// Governed environments may have network access (level B).
+    pub environment_network_allowed: bool,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -1384,6 +1394,7 @@ impl Gateway {
                 + Self::notes_router()
                 + Self::tools_router()
                 + Self::workflow_router()
+                + Self::env_router()
                 + Self::snapshot_router()
                 + Self::project_db_router(),
         }
@@ -1462,6 +1473,29 @@ impl Gateway {
             return Err(denied.to_string());
         }
         Ok(rec)
+    }
+
+    /// The registered environments as whoami lists them.
+    pub(crate) fn environment_cards(&self) -> Vec<Value> {
+        columbus_shared::environments::list(&self.state.paths.environments)
+            .into_iter()
+            .map(|v| match &v.env {
+                Some(e) => json!({
+                    "id": v.id,
+                    "trust": e.trust.as_str(),
+                    "created_by": e.created_by.as_str(),
+                    "status": v.status.as_str(),
+                    "python_version": e.probe.python_version,
+                    "arcpy": e.arcpy_line(),
+                    "confinement": e.confinement.as_str(),
+                    "description": e.description,
+                    "reason": v.status.reason().map(|r| if matches!(v.status, columbus_shared::environments::Status::Changed(_)) {
+                        format!("{r}; the person must {}", columbus_shared::environments::CONFIRM_AGAIN)
+                    } else { r.to_string() }),
+                }),
+                None => json!({"id": v.id, "status": v.status.as_str(), "reason": v.status.reason()}),
+            })
+            .collect()
     }
 
     pub(crate) fn deny(
@@ -1968,6 +2002,9 @@ impl Gateway {
                     "seconds": columbus_shared::policy::MAX_LIMITS.max_seconds(),
                 }),
                 project_db: p.project_db.enabled,
+                environments_allowed: p.environments.allow,
+                trusted_environments_allowed: p.environments.allow_trusted,
+                environment_network_allowed: p.environments.allow_network,
             },
             connections: self.connection_cards(),
             connections_folder: self.state.paths.connections.display().to_string(),
@@ -2004,6 +2041,11 @@ impl Gateway {
                 vec![]
             } else {
                 self.provider_cards().await
+            },
+            environments: if p.environments.allow {
+                self.environment_cards()
+            } else {
+                vec![]
             },
             labels: self.labels(),
             notes: {
