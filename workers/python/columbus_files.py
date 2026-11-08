@@ -240,7 +240,8 @@ def _layers(path: str, ext: str) -> list[tuple[str, bool]]:
         return _LAYERS[key]
     _sniff(path, ext)
     if ext == ".xlsx":
-        out = [(name, has) for name, _part, has in _Workbook(path).sheets(check_data=True)]
+        with _Workbook(path) as book:
+            out = [(name, has) for name, _part, has in book.sheets(check_data=True)]
     else:
         out = [(str(name), True) for name, _type in _ogr_layers(path, ext)]
     if len(_LAYERS) > 256:
@@ -660,6 +661,24 @@ class _Workbook:
             self.zip = zipfile.ZipFile(path)
         except (zipfile.BadZipFile, OSError) as e:
             raise Unreadable(f"it is not a readable .xlsx workbook ({_cause(e)})") from None
+        try:
+            self._open()
+        except BaseException:
+            # Windows locks an open file: never leave the person's workbook
+            # held open, or they can't save it in Excel.
+            self.zip.close()
+            raise
+
+    def __enter__(self) -> "_Workbook":
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        self.close()
+
+    def close(self) -> None:
+        self.zip.close()
+
+    def _open(self) -> None:
         self.names = set(self.zip.namelist())
         root_rels = self._rels("_rels/.rels", "")
         self.book = next((t for typ, t in root_rels if typ.endswith("/officeDocument")), "xl/workbook.xml")
@@ -795,7 +814,11 @@ def read_xlsx(path: str, conn: dict[str, Any], layer: str | None) -> Table:
     give their saved values; R-6b: date-formatted cells become ISO dates and
     General serial numbers stay numbers; then as CSV (R-1 to R-4, R-6c)."""
     _sniff(path, ".xlsx")
-    book = _Workbook(path)
+    with _Workbook(path) as book:
+        return _read_sheet(book, path, conn, layer)
+
+
+def _read_sheet(book: "_Workbook", path: str, conn: dict[str, Any], layer: str | None) -> Table:
     part = next((p for n, p, _ in book.sheets() if n == layer), None)
     if part is None:
         raise Unreadable(f"it has no sheet {layer!r}")
