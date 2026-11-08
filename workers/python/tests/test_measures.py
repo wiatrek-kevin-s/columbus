@@ -290,6 +290,36 @@ class MeasuresTests(unittest.TestCase):
             # read_layer (every vector tool's input) keeps M too.
             self.assert_first_m(g.read_layer(r["output_path"]))
 
+    def test_m_header_check_uses_the_uri_helper_for_every_path_form(self):
+        """On Windows the gateway passes canonical, verbatim paths
+        (\\\\?\\C:\\...); a URI built by pathlib from those was refused by
+        SQLite, the check said "no M", and the plain read dropped M from
+        every vector tool's input. The check now builds its URI with
+        readonly_uri, which strips the verbatim prefix."""
+        from unittest import mock
+
+        path = self.mem["output_path"]
+        seen = []
+        real = g.readonly_uri
+
+        def spy(p, *a, **kw):
+            seen.append(p)
+            return real(p, *a, **kw)
+
+        with mock.patch.object(g, "readonly_uri", spy):
+            self.assertTrue(g._gpkg_has_m(path))
+        self.assertEqual(seen, [os.path.abspath(path)])
+
+    def test_m_is_kept_when_the_header_cannot_be_read(self):
+        """No answer from the header check reads through Arrow too, so M
+        never depends on how a system's paths turn into SQLite URIs."""
+        from unittest import mock
+
+        path = self.mem["output_path"]
+        with mock.patch.object(g, "readonly_uri", lambda p: "file://%3F/C%3A/nowhere.gpkg?mode=ro"):
+            self.assertIsNone(g._gpkg_has_m(path))
+            self.assert_first_m(g.read_layer(path))
+
     def test_files_engine_keeps_m(self):
         """A files connection's FlatGeobuf, through its GeoPackage cache."""
         folder = os.path.join(self.tmp.name, "files")
@@ -524,6 +554,203 @@ class OracleMeasureHelperTests(unittest.TestCase):
         geom = decode_geometry(out)
         self.assertEqual((geom.type, geom.has_z, geom.has_m), ("MultiLineString", False, True))
         self.assertEqual(geom.measures(), [10, 11, 10, 11])
+
+
+# The fixture's route i (crates/gateway/tests/fixtures/oracle.sql, ROADS.ROUTES).
+def _fixture_route(i):
+    return (3302, [1, 2, 1],
+            [-97.8, 30.2 + i * 0.0001, 1000 + 10 * i, -97.7999, 30.2001 + i * 0.0001, 1005 + 10 * i])
+
+
+class _VArray:
+    """What python-oracledb fetches for a VARRAY column: read with aslist."""
+
+    def __init__(self, items):
+        self._items = list(items)
+
+    def aslist(self):
+        return list(self._items)
+
+
+@unittest.skipUnless(HAVE_GIS, "GIS engine (with shapely 2.1+) not installed")
+class OracleSdoBuildTests(unittest.TestCase):
+    """LRS SDO_GEOMETRY built from (SDO_GTYPE, SDO_ELEM_INFO, SDO_ORDINATES)
+    in the worker: SDO_UTIL.TO_WKBGEOMETRY writes 3302 as 2D, reading
+    x, y, m as x, y pairs (CI: "LINESTRING (-97.8 30.2, 1000 -97.7999...)")."""
+
+    def wkt(self, raw):
+        return shapely.from_wkb(raw).wkt
+
+    def test_the_fixture_route_keeps_its_measures(self):
+        for i in (0, 7, 399):
+            raw = w._sdo_to_wkb(*_fixture_route(i))
+            geom = shapely.from_wkb(raw)
+            self.assertTrue(shapely.has_m(geom))
+            self.assertFalse(shapely.has_z(geom))
+            c = shapely.get_coordinates(geom, include_m=True)
+            self.assertEqual(c.shape, (2, 3))
+            self.assertAlmostEqual(c[0][0], -97.8)
+            self.assertAlmostEqual(c[0][1], 30.2 + i * 0.0001)
+            self.assertEqual(c[0][2], 1000 + 10 * i)
+            self.assertEqual(c[1][2], 1005 + 10 * i)
+
+    def test_the_cell_is_ewkb_with_srid_and_m(self):
+        gt, el, ords = _fixture_route(3)
+        garbled = shapely.to_wkb(shapely.from_wkt("LINESTRING (-97.8 30.2003, 1030 -97.7999)"))
+        out = w._ora_geometry(garbled, 4326, gt, _VArray(el), _VArray(ords), "GEOM")
+        self.assertEqual(struct.unpack_from("<I", out, 1)[0], 2 | 0x40000000 | 0x20000000)
+        self.assertEqual(struct.unpack_from("<I", out, 5)[0], 4326)
+        geom = g.decode(out, "ewkb")
+        self.assertEqual(shapely.get_coordinates(geom, include_m=True)[0][2], 1030)
+        # NULL geometry stays NULL.
+        self.assertIsNone(w._ora_geometry(None, None, None, None, None))
+
+    def test_non_lrs_geometries_keep_the_database_wkb(self):
+        wkb = shapely.to_wkb(shapely.from_wkt("LINESTRING (0 0, 1 1)"))
+        self.assertEqual(w._ora_geometry(wkb, 4326, 2002, None, None), w._ewkb(wkb, 4326))
+        z = shapely.to_wkb(shapely.from_wkt("LINESTRING Z (0 0 1, 1 1 2)"), flavor="iso")
+        self.assertEqual(w._ora_geometry(z, 4326, 3002, None, None), w._ewkb(z, 4326))
+        self.assertFalse(w._sdo_lrs(2002) or w._sdo_lrs(3002) or w._sdo_lrs(None))
+        self.assertTrue(w._sdo_lrs(3302) and w._sdo_lrs(4402) and w._sdo_lrs(3306))
+
+    def test_multiline_and_z_with_m(self):
+        raw = w._sdo_to_wkb(3306, [1, 2, 1, 7, 2, 1], [0, 0, 10, 1, 1, 11, 5, 5, 20, 6, 6, 21, 7, 7, 22])
+        self.assertEqual(self.wkt(raw), "MULTILINESTRING M ((0 0 10, 1 1 11), (5 5 20, 6 6 21, 7 7 22))")
+        # 4402: x, y, z, m.
+        raw = w._sdo_to_wkb(4402, [1, 2, 1], [0, 0, 100, 10, 1, 1, 101, 11])
+        self.assertEqual(self.wkt(raw), "LINESTRING ZM (0 0 100 10, 1 1 101 11)")
+        # 4302: the measure third, Z fourth.
+        raw = w._sdo_to_wkb(4302, [1, 2, 1], [0, 0, 10, 100, 1, 1, 11, 101])
+        self.assertEqual(self.wkt(raw), "LINESTRING ZM (0 0 100 10, 1 1 101 11)")
+        raw = w._sdo_to_wkb(4406, [1, 2, 1, 9, 2, 1], [0, 0, 1, 10, 1, 1, 2, 11, 5, 5, 3, 20, 6, 6, 4, 21])
+        self.assertEqual(self.wkt(raw), "MULTILINESTRING ZM ((0 0 1 10, 1 1 2 11), (5 5 3 20, 6 6 4 21))")
+
+    def test_points(self):
+        self.assertEqual(self.wkt(w._sdo_to_wkb(3301, [1, 1, 1], [3, 4, 50])), "POINT M (3 4 50)")
+        self.assertEqual(self.wkt(w._sdo_to_wkb(3305, [1, 1, 2], [3, 4, 50, 5, 6, 60])),
+                         "MULTIPOINT M ((3 4 50), (5 6 60))")
+
+    def test_shapes_it_cannot_build_are_refused_plainly(self):
+        cases = [
+            (3302, [1, 2, 2], [0, 0, 1, 1, 1, 2, 2, 0, 3]),  # circular arcs
+            (3302, [1, 4, 2, 1, 2, 1, 4, 2, 2], [0, 0, 1, 1, 1, 2, 2, 0, 3]),  # compound
+            (3303, [1, 1003, 1], [0, 0, 1, 1, 0, 2, 1, 1, 3, 0, 0, 1]),  # polygon
+            (3302, None, None),  # SDO_POINT only
+            (3302, [1, 2, 1], [0, 0, 1, 1]),  # ordinates not a multiple of 3
+            (3302, [1, 2, 1], [0, 0, 1]),  # one vertex
+            (2302, [1, 2, 1], [0, 0, 1, 1]),  # L larger than D
+        ]
+        for gt, el, ords in cases:
+            with self.assertRaises(w.SdoUnsupported, msg=(gt, el)):
+                w._sdo_to_wkb(gt, el, ords)
+        with self.assertRaises(w.WorkerError) as cm:
+            w._ora_geometry(b"\x01\x02\x00\x00\x00", 4326, 3302, [1, 2, 2], [0, 0, 1, 1, 1, 2, 2, 0, 3], "GEOM")
+        self.assertIn("circular arcs", cm.exception.message)
+        self.assertIn("GEOM", cm.exception.message)
+
+
+class _FakeType:
+    def __init__(self, schema, name):
+        self.schema, self.name = schema, name
+
+
+class _Col:
+    def __init__(self, name, type_=None):
+        self.name, self.type = name, type_
+
+
+class _FakeOracle:
+    """Enough of python-oracledb for _ora_fetch: a ROUTES-like table whose
+    SDO_GEOMETRY the "database" writes as TO_WKBGEOMETRY does (2D)."""
+
+    DbObjectType = _FakeType
+
+    class Error(Exception):
+        pass
+
+    DatabaseError = Error
+
+
+class _FakeCursor:
+    def __init__(self, rows, ran):
+        self.rows, self.ran, self.description, self._out = rows, ran, None, []
+        self.arraysize = self.prefetchrows = 0
+
+    def parse(self, sql):
+        self.description = [_Col("ID"), _Col("ROUTE_ID"), _Col("GEOM", _FakeType("MDSYS", "SDO_GEOMETRY"))]
+
+    def execute(self, sql, **kw):
+        import re
+
+        self.ran.append(sql)
+        names = re.findall(r' AS "([^"]+)"', sql)
+        self.description = [_Col(n) for n in names]
+        out = []
+        for i, rid, (gt, el, ords) in self.rows:
+            garbled = shapely.to_wkb(shapely.linestrings([ords[k:k + 2] for k in range(0, 4, 2)]))
+            lrs = (gt // 100) % 10 > 0
+            out.append((i, rid, garbled, 4326, gt, _VArray(el) if lrs else None, _VArray(ords) if lrs else None))
+        self._out = out
+
+    def fetchmany(self, n):
+        chunk, self._out = self._out[:n], self._out[n:]
+        return chunk
+
+    def close(self):
+        pass
+
+
+class _FakeDb:
+    def __init__(self, rows, ran):
+        self.rows, self.ran = rows, ran
+
+    def cursor(self):
+        return _FakeCursor(self.rows, self.ran)
+
+    def rollback(self):
+        pass
+
+    def close(self):
+        pass
+
+
+@unittest.skipUnless(HAVE_GIS, "GIS engine (with shapely 2.1+) not installed")
+class OracleQueryLayerLrsTests(unittest.TestCase):
+    """query_layer on the Oracle engine with a stand-in driver: the
+    worker's outer SELECT asks for the LRS arrays, and both the in-memory
+    and the streamed paths build M from them."""
+
+    def run_query(self, n, stream_after, sql="SELECT id, route_id, geom FROM roads.routes WHERE district = 14"):
+        from unittest import mock
+
+        rows = [(i, f"R{i:04d}", _fixture_route(i)) for i in range(n)]
+        ran = []
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.object(w, "_ora", lambda: _FakeOracle), \
+                mock.patch.object(w, "_ora_connect", lambda conn, t: (_FakeDb(rows, ran), lambda s: s)):
+            r = w.query_layer({"connection": {"kind": "oracle"}, "sql": sql, "max_rows": 10_000,
+                               "geometry_column": "GEOM", "crs_spec": {"code": "EPSG:4326"}, "return_rows": 3,
+                               "stream_after": stream_after, "output_stem": os.path.join(d, "results", "r")})
+            out = read_m(r["output_path"])
+        return r, out, ran
+
+    def test_in_memory_and_streamed(self):
+        for stream_after, streamed in ((100_000, False), (5, True)):
+            r, out, ran = self.run_query(40, stream_after)
+            self.assertEqual(r["streamed"], streamed)
+            self.assertEqual(len(out), 40)
+            for rid, geom in zip(out["ROUTE_ID"], out.geometry):
+                i = int(rid[1:])
+                c = shapely.get_coordinates(geom, include_m=True)
+                self.assertEqual((c[0][2], c[1][2]), (1000 + 10 * i, 1005 + 10 * i), rid)
+                self.assertAlmostEqual(c[0][0], -97.8)
+            # The caller's query (row filter included) is kept whole inside
+            # the worker's own SELECT, which adds the arrays for LRS rows only.
+            sql = ran[0]
+            self.assertIn("FROM (SELECT id, route_id, geom FROM roads.routes WHERE district = 14) columbus_g", sql)
+            self.assertIn('CASE WHEN MOD(TRUNC(columbus_g."GEOM".SDO_GTYPE / 100), 10) > 0 '
+                          'THEN columbus_g."GEOM".SDO_ORDINATES END AS "COLUMBUS_ORD_2"', sql)
+            self.assertIn('THEN columbus_g."GEOM".SDO_ELEM_INFO END AS "COLUMBUS_ELEM_2"', sql)
 
 
 if __name__ == "__main__":

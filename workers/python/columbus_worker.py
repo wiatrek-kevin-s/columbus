@@ -628,6 +628,111 @@ def _ora_measured(ewkb: bytes | None, gtype) -> bytes | None:
     return ewkb
 
 
+class SdoUnsupported(ValueError):
+    """An LRS SDO_GEOMETRY the worker does not build itself (arcs,
+    compound or polygon elements, SDO_POINT); the reason is in the text."""
+
+
+def _sdo_lrs(gtype) -> bool:
+    """Whether an SDO_GTYPE (DLTT) has a measure: its L digit is set."""
+    return isinstance(gtype, (int, float)) and (int(gtype) // 100) % 10 > 0
+
+
+def _sdo_list(v) -> list | None:
+    """An SDO_ELEM_INFO_ARRAY / SDO_ORDINATE_ARRAY as python-oracledb
+    fetches it (a DbObject, read with aslist), or a plain sequence."""
+    if v is None:
+        return None
+    if hasattr(v, "aslist"):
+        return v.aslist()
+    return list(v)
+
+
+def _sdo_to_wkb(gtype, elem_info, ordinates) -> bytes:
+    """ISO WKB (little-endian) for an LRS SDO_GEOMETRY, built from its
+    SDO_GTYPE, SDO_ELEM_INFO and SDO_ORDINATES: Oracle's
+    SDO_UTIL.TO_WKBGEOMETRY writes LRS geometries as 2D and reads the
+    measure as the next vertex's x. Points, multipoints, lines and
+    multilines of straight segments are supported, with M (D = 3) or Z and
+    M (D = 4; the measure is at the L digit's position). Anything else
+    raises SdoUnsupported."""
+    g = int(gtype)
+    dims, lrs, tt = g // 1000, (g // 100) % 10, g % 100
+    if dims not in (3, 4) or lrs not in (3, 4) or lrs > dims:
+        raise SdoUnsupported(f"SDO_GTYPE {g} is not a measured geometry Columbus reads (3302, 3306, 4402, 4406 and the like)")
+    if tt not in (1, 2, 5, 6):
+        raise SdoUnsupported(f"SDO_GTYPE {g} is a measured {'polygon' if tt in (3, 7) else 'collection'}; Columbus reads measured points and lines only")
+    elems = [int(e) for e in (_sdo_list(elem_info) or [])]
+    ords = [float(o) for o in (_sdo_list(ordinates) or [])]
+    if not elems or len(elems) % 3 or not ords or len(ords) % dims:
+        raise SdoUnsupported(f"SDO_GTYPE {g} has no usable SDO_ELEM_INFO / SDO_ORDINATES (an SDO_POINT has no measure)")
+    m_at = lrs - 1
+    z_at = ({2, 3} - {m_at}).pop() if dims == 4 else None
+    triplets = [elems[i:i + 3] for i in range(0, len(elems), 3)]
+    parts = []  # (etype, interpretation, vertices)
+    for k, (offset, etype, interp) in enumerate(triplets):
+        end = triplets[k + 1][0] - 1 if k + 1 < len(triplets) else len(ords)
+        start = offset - 1
+        if start < 0 or end > len(ords) or start >= end or start % dims or (end - start) % dims:
+            raise SdoUnsupported(f"SDO_ELEM_INFO offset {offset} does not fit the {len(ords)} ordinates")
+        chunk = ords[start:end]
+        verts = []
+        for i in range(0, len(chunk), dims):
+            v = chunk[i:i + dims]
+            verts.append((v[0], v[1], v[z_at], v[m_at]) if z_at is not None else (v[0], v[1], v[m_at]))
+        parts.append((etype, interp, verts))
+    zm = z_at is not None
+    width = 4 if zm else 3
+    add = 3000 if zm else 2000
+
+    def head(code: int) -> bytes:
+        return struct.pack("<BI", 1, add + code)
+
+    def coords(vs) -> bytes:
+        return b"".join(struct.pack(f"<{width}d", *v) for v in vs)
+
+    if tt in (2, 6):
+        for etype, interp, verts in parts:
+            if etype != 2:
+                raise SdoUnsupported(f"element type {etype} (compound or other) in a measured line; Columbus reads straight-segment lines only")
+            if interp != 1:
+                raise SdoUnsupported("a measured line with circular arcs; Columbus reads straight-segment lines only")
+            if len(verts) < 2:
+                raise SdoUnsupported("a measured line element with fewer than two vertices")
+        lines = [head(2) + struct.pack("<I", len(v)) + coords(v) for _, _, v in parts]
+        if tt == 2:
+            if len(lines) != 1:
+                raise SdoUnsupported(f"SDO_GTYPE {g} (a line) with {len(lines)} elements")
+            return lines[0]
+        return head(5) + struct.pack("<I", len(lines)) + b"".join(lines)
+    points = []
+    for etype, interp, verts in parts:
+        if etype != 1 or interp < 1 or interp != len(verts):
+            raise SdoUnsupported(f"point element (type {etype}, interpretation {interp}) Columbus does not read with measures")
+        points.extend(verts)
+    if tt == 1:
+        if len(points) != 1:
+            raise SdoUnsupported(f"SDO_GTYPE {g} (a point) with {len(points)} points")
+        return head(1) + coords(points)
+    return head(4) + struct.pack("<I", len(points)) + b"".join(head(1) + coords([p]) for p in points)
+
+
+def _ora_geometry(wkb, srid, gtype, elem_info=None, ordinates=None, column: str = "geometry") -> bytes | None:
+    """One SDO_GEOMETRY cell as EWKB. A measured (LRS) geometry is built
+    from its own arrays, so its M values survive whatever the database's
+    WKB writer does with them; an LRS shape Columbus cannot build is
+    refused plainly rather than read with wrong coordinates. Every other
+    geometry keeps the database's WKB."""
+    if wkb is None and elem_info is None:
+        return None
+    if _sdo_lrs(gtype) and (elem_info is not None or ordinates is not None):
+        try:
+            return _ewkb(_sdo_to_wkb(gtype, elem_info, ordinates), srid)
+        except SdoUnsupported as e:
+            raise WorkerError(ENGINE_ERROR, f"{column}: a linear referencing (LRS) geometry Columbus cannot read: {e}") from None
+    return _ora_measured(_ewkb(wkb, srid), gtype)
+
+
 def _like_patterns(globs) -> list[str] | None:
     """Dataset allow patterns' schema parts (`ROADS`, `GIS_*`) as LIKE
     patterns, or None when one of them could match any schema."""
@@ -827,6 +932,13 @@ def _ora_fetch(conn: dict[str, Any], sql: str, max_rows: int, timeout_s: float, 
                         items.append(f"{col}.SDO_SRID AS \"COLUMBUS_SRID_{i}\"")
                         # The geometry's type: its L digit marks LRS measures.
                         items.append(f"{col}.SDO_GTYPE AS \"COLUMBUS_GTYPE_{i}\"")
+                        # For measured (LRS) geometries only, the element
+                        # info and ordinates (VARRAYs, fetched as objects):
+                        # TO_WKBGEOMETRY writes those as 2D, so the worker
+                        # builds them itself (_sdo_to_wkb).
+                        lrs = f"MOD(TRUNC({col}.SDO_GTYPE / 100), 10) > 0"
+                        items.append(f"CASE WHEN {lrs} THEN {col}.SDO_ELEM_INFO END AS \"COLUMBUS_ELEM_{i}\"")
+                        items.append(f"CASE WHEN {lrs} THEN {col}.SDO_ORDINATES END AS \"COLUMBUS_ORD_{i}\"")
                     elif p[0] == "object":
                         label = f"unsupported: {p[2]}".replace("'", "")
                         items.append(f"CASE WHEN {col} IS NULL THEN NULL ELSE '{label}' END AS {_quote_dq(p[1])}")
@@ -838,13 +950,13 @@ def _ora_fetch(conn: dict[str, Any], sql: str, max_rows: int, timeout_s: float, 
                 raise WorkerError(ENGINE_ERROR, "the statement returned no rows; only a SELECT can run")
             raw_cols = [d.name for d in cur.description]
             if any(p[0] == "sdo" for p in plan):
-                # Output column -> (WKB index, SRID index, GTYPE index)
+                # Output column -> (WKB, SRID, GTYPE, ELEM_INFO, ORDINATES indexes)
                 out_idx, geoms, j = [], {}, 0
                 for i, p in enumerate(plan):
                     if p[0] == "sdo":
-                        geoms[len(out_idx)] = (j, j + 1, j + 2)
+                        geoms[len(out_idx)] = (j, j + 1, j + 2, j + 3, j + 4)
                         out_idx.append(j)
-                        j += 3
+                        j += 5
                     else:
                         out_idx.append(j)
                         j += 1
@@ -854,8 +966,8 @@ def _ora_fetch(conn: dict[str, Any], sql: str, max_rows: int, timeout_s: float, 
                     out = []
                     for k, idx in enumerate(out_idx):
                         if k in geoms:
-                            w, s, t = geoms[k]
-                            out.append(_ora_measured(_ewkb(r[w], r[s]), r[t]))
+                            w, s, t, e, o = geoms[k]
+                            out.append(_ora_geometry(r[w], r[s], r[t], r[e], r[o], columns[k]))
                         else:
                             out.append(r[idx])
                     return out

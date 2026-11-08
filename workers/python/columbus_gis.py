@@ -44,6 +44,8 @@ import pyproj  # noqa: E402
 import shapely  # noqa: E402
 from pyproj import CRS, Transformer  # noqa: E402
 
+from columbus_plugin import readonly_uri  # noqa: E402
+
 __all__ = [
     "GISError",
     "versions",
@@ -400,20 +402,22 @@ def has_m(geoms) -> bool:
     return bool(_m_mask(arr).any())
 
 
-def _gpkg_has_m(path: str) -> bool:
-    """Whether a GeoPackage declares M on a geometry column (z/m 1 or 2).
-    Read with SQLite, read only, so the answer costs no GDAL open."""
+def _gpkg_has_m(path: str) -> bool | None:
+    """Whether a GeoPackage declares M on a geometry column (z/m 1 or 2),
+    or None when that cannot be told. Read with SQLite, read only, so the
+    answer costs no GDAL open. The URI is built by ``readonly_uri``, which
+    handles Windows drive letters, UNC shares and the verbatim
+    (``\\\\?\\``) paths the gateway's canonical workspace paths have there."""
     import sqlite3
-    from pathlib import Path
 
     try:
-        db = sqlite3.connect(Path(os.path.abspath(path)).as_uri() + "?mode=ro", uri=True)
-    except sqlite3.Error:
-        return False
+        db = sqlite3.connect(readonly_uri(os.path.abspath(path)), uri=True)
+    except (sqlite3.Error, ValueError):
+        return None
     try:
         return bool(db.execute("SELECT 1 FROM gpkg_geometry_columns WHERE m IN (1, 2) LIMIT 1").fetchone())
     except sqlite3.Error:
-        return False
+        return None
     finally:
         db.close()
 
@@ -421,8 +425,9 @@ def _gpkg_has_m(path: str) -> bool:
 def _read_gpkg(path: str, **kw):
     """A GeoPackage as a GeoDataFrame, keeping M where the file has it:
     pyogrio reads M through Arrow only (its plain read drops M with a
-    warning)."""
-    if _gpkg_has_m(path):
+    warning). When the header cannot be read, Arrow is used too, so M is
+    never dropped for want of an answer."""
+    if _gpkg_has_m(path) is not False:
         import warnings
 
         with warnings.catch_warnings():
