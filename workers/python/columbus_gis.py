@@ -44,6 +44,8 @@ import pyproj  # noqa: E402
 import shapely  # noqa: E402
 from pyproj import CRS, Transformer  # noqa: E402
 
+from columbus_plugin import readonly_uri  # noqa: E402
+
 __all__ = [
     "GISError",
     "versions",
@@ -297,6 +299,7 @@ class GeometryTally:
         self.reasons: list[str] = []
         self.types: set[str] = set()
         self.has_z = 0
+        self.has_m = 0
         self.extent: list[float] | None = None
 
     def add(self, arr) -> None:
@@ -325,6 +328,7 @@ class GeometryTally:
             for t in np.unique(kinds):
                 self.types.add(_TYPE_NAMES.get(int(t), "Geometry"))
             self.has_z += int(shapely.has_z(arr[solid]).sum())
+            self.has_m += int(shapely.has_m(arr[solid]).sum())
             b = shapely.bounds(arr[solid])
             box = [float(np.nanmin(b[:, 0])), float(np.nanmin(b[:, 1])), float(np.nanmax(b[:, 2])), float(np.nanmax(b[:, 3]))]
             if all(math.isfinite(v) for v in box):
@@ -362,6 +366,274 @@ class GeometryTally:
 
 _TYPE_NAMES = {0: "Point", 1: "LineString", 2: "LinearRing", 3: "Polygon", 4: "MultiPoint",
                5: "MultiLineString", 6: "MultiPolygon", 7: "GeometryCollection"}
+
+
+# ---------------------------------------------------------------------------
+# M (measure) and Z values
+#
+# Shapely 2.1+ keeps M through WKB and WKT, and GEOS keeps it through the
+# operations that keep vertices (clip, union, make_valid). Three places lose
+# it unless handled here: GeoPandas writes EWKB, whose M flag GDAL refuses
+# ("Could not create geometry ... for WKB type 1073741826"); pyogrio reads M
+# types as 2D unless it reads through Arrow; and shapely.transform (to_crs)
+# drops M and turns Z into NaN when M is there too.
+# ---------------------------------------------------------------------------
+
+
+def _m_mask(arr):
+    """Which of an object array of geometries carry M values."""
+    import numpy as np
+
+    arr = np.asarray(arr, dtype=object)
+    if not len(arr):
+        return np.zeros(0, dtype=bool)
+    present = ~shapely.is_missing(arr)
+    out = np.zeros(len(arr), dtype=bool)
+    if present.any():
+        out[present] = shapely.has_m(arr[present])
+    return out
+
+
+def has_m(geoms) -> bool:
+    """Whether any of the geometries (a GeoSeries, array or list) has M."""
+    import numpy as np
+
+    arr = geoms.to_numpy() if hasattr(geoms, "to_numpy") else np.asarray(geoms, dtype=object)
+    return bool(_m_mask(arr).any())
+
+
+def _gpkg_has_m(path: str) -> bool | None:
+    """Whether a GeoPackage declares M on a geometry column (z/m 1 or 2),
+    or None when that cannot be told. Read with SQLite, read only, so the
+    answer costs no GDAL open. The URI is built by ``readonly_uri``, which
+    handles Windows drive letters, UNC shares and the verbatim
+    (``\\\\?\\``) paths the gateway's canonical workspace paths have there."""
+    import sqlite3
+
+    try:
+        db = sqlite3.connect(readonly_uri(os.path.abspath(path)), uri=True)
+    except (sqlite3.Error, ValueError):
+        return None
+    try:
+        return bool(db.execute("SELECT 1 FROM gpkg_geometry_columns WHERE m IN (1, 2) LIMIT 1").fetchone())
+    except sqlite3.Error:
+        return None
+    finally:
+        db.close()
+
+
+def _read_gpkg(path: str, **kw):
+    """A GeoPackage as a GeoDataFrame, keeping M where the file has it:
+    pyogrio reads M through Arrow only (its plain read drops M with a
+    warning). When the header cannot be read, Arrow is used too, so M is
+    never dropped for want of an answer."""
+    if _gpkg_has_m(path) is not False:
+        import warnings
+
+        with warnings.catch_warnings():
+            # pyogrio warns about M types even when Arrow keeps them.
+            warnings.filterwarnings("ignore", r"Measured \(M\) geometry types are not supported", UserWarning)
+            return gpd.read_file(path, engine="pyogrio", use_arrow=True, **kw)
+    return gpd.read_file(path, engine="pyogrio", **kw)
+
+
+def _read_2d(path: str, **kw):
+    """A GeoPackage read for display or paging, where M is not needed: M
+    is left out without pyogrio's warning about it."""
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", r"Measured \(M\) geometry types are not supported", UserWarning)
+        return gpd.read_file(path, engine="pyogrio", **kw)
+
+
+def _info(path: str, **kw) -> dict:
+    """pyogrio.read_info without its warning about M types (the counts,
+    fields and bounds it gives do not depend on M)."""
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", r"Measured \(M\) geometry types are not supported", UserWarning)
+        return pyogrio.read_info(path, **kw)
+
+
+def _ogr_type(arr) -> tuple[str, bool]:
+    """(pyogrio geometry type name, promote to multi) for a layer of
+    geometries with M, as pyogrio itself would choose them without M."""
+    import numpy as np
+
+    arr = np.asarray(arr, dtype=object)
+    solid = arr[~shapely.is_missing(arr)]
+    solid = solid[~shapely.is_empty(solid)] if len(solid) else solid
+    z = bool(len(solid)) and bool(shapely.has_z(solid).any())
+    kinds = {int(k) for k in shapely.get_type_id(solid)} if len(solid) else set()
+    promote = False
+    if len(kinds) == 1:
+        base = kinds.pop()
+    elif len(kinds) == 2 and kinds in ({0, 4}, {1, 5}, {3, 6}):
+        base, promote = max(kinds), True
+    else:
+        return ("Unknown", False)
+    name = _TYPE_NAMES[base]
+    if base == 0 and not z:
+        return ("PointM", promote)
+    return (f"Measured {'3D ' if z else ''}{name}", promote)
+
+
+def _ogr_fields(df, gname: str) -> tuple[list[str], list, list, dict]:
+    """Field names, values, masks and time zone offsets for pyogrio's raw
+    writer, prepared as pyogrio.write_dataframe prepares them."""
+    import numpy as np
+
+    fields, data, masks, tz = [], [], [], {}
+    for name in df.columns:
+        if name == gname:
+            continue
+        col = df[name]
+        values = None
+        if isinstance(col.dtype, pd.DatetimeTZDtype):
+            naive = col.dt.tz_localize(None)
+            values = naive.values
+            offset = naive - col.dt.tz_convert("UTC").dt.tz_localize(None)
+            tz[name] = (offset // pd.Timedelta("15m") + 100).values
+        elif col.dtype == "object" and pd.api.types.infer_dtype(col) == "datetime":
+            values = col.astype(str).where(col.notna(), None).values
+        if values is None:
+            values = col.values
+        if isinstance(values, pd.api.extensions.ExtensionArray):
+            from pandas.arrays import BooleanArray, FloatingArray, IntegerArray
+
+            if isinstance(values, (IntegerArray, FloatingArray, BooleanArray)):
+                data.append(values._data)
+                masks.append(values._mask)
+            else:
+                data.append(np.asarray(values, dtype=object))
+                masks.append(np.asarray(values.isna()))
+        else:
+            data.append(values)
+            masks.append(None)
+        fields.append(str(name))
+    return fields, data, masks, tz
+
+
+def write_ogr(df, path: str, driver: str, layer: str | None = None, layer_options: dict | None = None) -> None:
+    """Write a GeoDataFrame with GDAL. A layer with M values is written as
+    ISO WKB with an explicit measured geometry type (GDAL refuses the EWKB
+    M flag GeoPandas writes); one without is written by GeoPandas as before."""
+    kw: dict[str, Any] = {"driver": driver, "engine": "pyogrio"}
+    if layer is not None:
+        kw["layer"] = layer
+    if layer_options:
+        kw["layer_options"] = layer_options
+    gname = df.geometry.name
+    arr = df.geometry.to_numpy()
+    if not _m_mask(arr).any():
+        df.to_file(path, **kw)
+        return
+    from pyogrio.raw import write as ogr_write
+
+    gtype, promote = _ogr_type(arr)
+    wkb = shapely.to_wkb(arr, flavor="iso", output_dimension=4)
+    fields, data, masks, tz = _ogr_fields(df, gname)
+    crs = None
+    if df.crs is not None:
+        epsg = df.crs.to_epsg()
+        crs = f"EPSG:{epsg}" if epsg else df.crs.to_wkt("WKT1_GDAL")
+    ogr_write(path, geometry=wkb, field_data=data, fields=fields, field_mask=masks, layer=layer, driver=driver,
+              geometry_type=gtype, crs=crs, promote_to_multi=promote or None,
+              layer_options=layer_options or None, gdal_tz_offsets=tz or None)
+
+
+def _rewrite_coords(wkb: bytes, coords, dims: int) -> bytes:
+    """Little-endian ISO WKB with its coordinates replaced, in order, by
+    the rows of ``coords`` (each ``dims`` wide). The structure (types,
+    counts) is copied as it is."""
+    import struct
+
+    out = bytearray(wkb)
+    flat = coords.astype("<f8").ravel().tobytes()
+    width = 8 * dims
+    pos = 0  # in flat
+
+    def geom(o: int) -> int:
+        nonlocal pos
+        code = struct.unpack_from("<I", wkb, o + 1)[0] % 1000
+        o += 5
+        if code == 1:
+            out[o:o + width] = flat[pos:pos + width]
+            pos += width
+            return o + width
+        if code == 2:
+            return line(o)
+        if code == 3:
+            (n,) = struct.unpack_from("<I", wkb, o)
+            o += 4
+            for _ in range(n):
+                o = line(o)
+            return o
+        (n,) = struct.unpack_from("<I", wkb, o)
+        o += 4
+        for _ in range(n):
+            o = geom(o)
+        return o
+
+    def line(o: int) -> int:
+        nonlocal pos
+        (n,) = struct.unpack_from("<I", wkb, o)
+        o += 4
+        size = n * width
+        out[o:o + size] = flat[pos:pos + size]
+        pos += size
+        return o + size
+
+    geom(0)
+    return bytes(out)
+
+
+def to_crs(df, target):
+    """``df.to_crs(target)``, keeping M values (and Z beside them), which
+    GeoPandas' reprojection drops. Only x and y (and z) are transformed."""
+    import numpy as np
+
+    out = df.to_crs(target)
+    arr = df.geometry.to_numpy()
+    measured = _m_mask(arr)
+    if not measured.any():
+        return out
+    tf = Transformer.from_crs(df.crs, out.crs, always_xy=True)
+    geoms = out.geometry.to_numpy().copy()
+    zs = np.zeros(len(arr), dtype=bool)
+    zs[measured] = shapely.has_z(arr[measured])
+    for with_z in (False, True):
+        pick = np.flatnonzero(measured & (zs == with_z))
+        if not len(pick):
+            continue
+        part = arr[pick]
+        coords = shapely.get_coordinates(part, include_z=with_z, include_m=True)
+        if with_z:
+            coords[:, 0], coords[:, 1], coords[:, 2] = tf.transform(coords[:, 0], coords[:, 1], coords[:, 2])
+        else:
+            coords[:, 0], coords[:, 1] = tf.transform(coords[:, 0], coords[:, 1])
+        counts = shapely.get_num_coordinates(part)
+        wkbs = shapely.to_wkb(part, flavor="iso", byte_order=1, output_dimension=4)
+        dims = 4 if with_z else 3
+        at = 0
+        for i, w, n in zip(pick, wkbs, counts):
+            geoms[i] = shapely.from_wkb(_rewrite_coords(w, coords[at:at + n], dims))
+            at += n
+    return out.set_geometry(gpd.GeoSeries(geoms, index=out.index, crs=out.crs))
+
+
+def m_dropped_check(inputs: list, out, what: str) -> dict | None:
+    """geometry.m_dropped (info) when an input had M values and the output
+    has none: the operation built new vertices."""
+    if not any(isinstance(d, gpd.GeoDataFrame) and has_m(d.geometry) for d in inputs):
+        return None
+    if isinstance(out, gpd.GeoDataFrame) and has_m(out.geometry):
+        return None
+    return check("geometry.m_dropped", "info",
+                 f"{what} builds new vertices, so the output has no M (measure) values; the input's measures were dropped",
+                 fix="Keep the measured layer for linear referencing; calibrate measures again on the new shapes if they need them")
 
 
 def bbox_filter(bbox: list[float] | None, bbox_crs: CRS | None, layer_crs: CRS | None):
@@ -423,7 +695,7 @@ def write_layer(df, stem: str, layer: str = "layer") -> str:
         path = stem + ".gpkg"
         if os.path.exists(path):
             os.remove(path)
-        _fid_safe(df).to_file(path, layer=layer, driver="GPKG", engine="pyogrio")
+        write_ogr(_fid_safe(df), path, "GPKG", layer=layer)
         return path
     path = stem + ".csv"
     pd.DataFrame(df).to_csv(path, index=False)
@@ -581,13 +853,14 @@ class LayerStream:
         self.db.execute(f"CREATE TABLE {_qi(name)} ({', '.join(cols)})")
 
     def _blobs(self, shapes) -> list:
-        """GeoPackage binary geometries: header, envelope, ISO WKB."""
+        """GeoPackage binary geometries: header, envelope, ISO WKB (with
+        Z and M where the geometry has them)."""
         import struct
 
         import numpy as np
 
         arr = np.asarray(shapes, dtype=object)
-        wkb = shapely.to_wkb(arr, flavor="iso")
+        wkb = shapely.to_wkb(arr, flavor="iso", byte_order=1, output_dimension=4)
         bounds = shapely.bounds(arr)
         empty = shapely.is_empty(arr)
         out = []
@@ -655,9 +928,11 @@ class LayerStream:
             "INSERT INTO gpkg_contents (table_name, data_type, identifier, min_x, min_y, max_x, max_y, srs_id) "
             "VALUES (?, 'features', ?, ?, ?, ?, ?, ?)",
             (self.layer, self.layer, *(e if e else (None, None, None, None)), self.srs_id))
-        z = 0 if not self.tally.has_z else (1 if self.tally.has_z == self.count - self.tally.null - self.tally.empty else 2)
-        db.execute("INSERT INTO gpkg_geometry_columns VALUES (?, ?, ?, ?, ?, 0)",
-                   (self.layer, self.geom_col, final_geom, self.srs_id, z))
+        solid = self.count - self.tally.null - self.tally.empty
+        z = 0 if not self.tally.has_z else (1 if self.tally.has_z == solid else 2)
+        m = 0 if not self.tally.has_m else (1 if self.tally.has_m == solid else 2)
+        db.execute("INSERT INTO gpkg_geometry_columns VALUES (?, ?, ?, ?, ?, ?)",
+                   (self.layer, self.geom_col, final_geom, self.srs_id, z, m))
         db.commit()
         db.close()
         self.db = None
@@ -715,7 +990,7 @@ def read_layer(path: str, check_only: bool = False):
             raise GISError("input.format", f"{os.path.basename(path)} is not a GeoPackage")
         if check_only:
             return None
-        return gpd.read_file(path, engine="pyogrio")
+        return _read_gpkg(path)
     if path.lower().endswith((".tif", ".tiff")):
         raise GISError("input.format", f"{os.path.basename(path)} is a raster; vector tools take GeoPackage or CSV layers (use raster_op for rasters)")
     if not path.lower().endswith(".csv"):
@@ -782,7 +1057,7 @@ def read_rows(path: str, offset: int = 0, limit: int = 50, fields: list[str] | N
     at a time, never whole."""
     if path.lower().endswith(".gpkg"):
         read_layer(path, check_only=True)
-        info = pyogrio.read_info(path, force_total_bounds=True)
+        info = _info(path, force_total_bounds=True)
         if int(info.get("features") or 0) > LARGE_LAYER:
             return _read_rows_paged(path, info, offset, limit, fields)
     df = read_layer(path)
@@ -820,7 +1095,7 @@ def _read_rows_paged(path: str, info: dict, offset: int, limit: int, fields: lis
     total = int(info.get("features") or 0)
     rows = []
     if offset < total:
-        page = gpd.read_file(path, engine="pyogrio", skip_features=offset, max_features=limit, columns=cols)
+        page = _read_2d(path, skip_features=offset, max_features=limit, columns=cols)
         for _, r in page.iterrows():
             row = [_row_value(r[c]) for c in cols]
             geom = r[page.geometry.name]
@@ -851,8 +1126,8 @@ def display_geojson(path: str, max_features: int = 20000, max_coordinates: int =
         import pyogrio
 
         read_layer(path, check_only=True)
-        total = int(pyogrio.read_info(path).get("features") or 0)
-        df = gpd.read_file(path, engine="pyogrio", max_features=max_features)
+        total = int(_info(path).get("features") or 0)
+        df = _read_2d(path, max_features=max_features)
     else:
         df = read_layer(path)
         total = int(len(df))
@@ -955,7 +1230,97 @@ EXPORT_FORMATS = {
     "fgb": ("FlatGeobuf", ".fgb"), "flatgeobuf": ("FlatGeobuf", ".fgb"),
     "shp": ("ESRI Shapefile", ".shp"), "shapefile": ("ESRI Shapefile", ".shp"),
     "csv": ("CSV", ".csv"),
+    # R-8: one new file geodatabase with one feature class (OpenFileGDB).
+    "gdb": ("OpenFileGDB", ".gdb"), "filegdb": ("OpenFileGDB", ".gdb"), "fgdb": ("OpenFileGDB", ".gdb"),
+    "file geodatabase": ("OpenFileGDB", ".gdb"),
+    # R-9: raster results only, as the workspace's Cloud-Optimized GeoTIFF.
+    "tif": ("COG", ".tif"), "tiff": ("COG", ".tif"), "geotiff": ("COG", ".tif"), "cog": ("COG", ".tif"),
 }
+
+# A file geodatabase feature class name: a letter, then letters, digits and
+# underscores (OpenFileGDB would otherwise change it, and R-8 names the
+# layer after the export).
+FGDB_LAYER_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,159}")
+FGDB_MAX_FIELD = 64
+INT32_MIN, INT32_MAX = -(2**31), 2**31 - 1
+
+
+def _gdb_int_columns(df, gname: str | None) -> tuple[Any, list[str]]:
+    """Integer columns for a file geodatabase. Without
+    TARGET_ARCGIS_VERSION=ARCGIS_PRO_3_2_OR_LATER, OpenFileGDB writes every
+    64-bit integer field as a double, so columns whose values all fit in 32
+    bits are written as 32-bit integers (readable by every ArcGIS), and the
+    names of those that do not are returned: they need the Pro 3.2 option to
+    stay exact."""
+    big: list[str] = []
+    out = df
+    for c in df.columns:
+        if c == gname or not pd.api.types.is_integer_dtype(df[c]) or pd.api.types.is_bool_dtype(df[c]):
+            continue
+        vals = df[c].dropna()
+        if len(vals) and (int(vals.min()) < INT32_MIN or int(vals.max()) > INT32_MAX):
+            big.append(str(c))
+            continue
+        if out is df:
+            out = df.copy()
+        nullable = isinstance(df[c].dtype, pd.api.extensions.ExtensionDtype)
+        out[c] = df[c].astype("Int32" if nullable else "int32")
+    return out, big
+
+
+def _write_gdb(df, out: str, layer: str, gname: str, checks: list[dict]) -> None:
+    if not FGDB_LAYER_NAME.fullmatch(layer):
+        raise GISError("export.format",
+                       f"A file geodatabase export names its feature class after the export, and {layer!r} is not a valid "
+                       "feature class name (a letter, then letters, digits and _, at most 160 characters)",
+                       fix="Choose a name like crash_hotspots")
+    long = [str(c) for c in df.columns if c != gname and len(str(c)) > FGDB_MAX_FIELD]
+    if long:
+        raise GISError("export.format",
+                       f"File geodatabase field names are at most {FGDB_MAX_FIELD} characters; these are longer: {', '.join(long)}",
+                       fix="Rename them in the delivery spec, or deliver GeoPackage")
+    if os.path.lexists(out):
+        # Never written into: OpenFileGDB would add a layer to it.
+        raise GISError("export.exists", f"{os.path.basename(out)} already exists; an existing file geodatabase is never changed",
+                       fix="Choose another name")
+    df, big = _gdb_int_columns(df, gname)
+    options: dict[str, str] = {}
+    if big:
+        options["TARGET_ARCGIS_VERSION"] = "ARCGIS_PRO_3_2_OR_LATER"
+        checks.append(check("export.needs_pro_3_2", "info",
+                            f"{', '.join(big)} hold(s) whole numbers beyond the 32-bit range, kept exact as 64-bit integers; "
+                            "ArcGIS Pro 3.2 or later is needed to open this file geodatabase",
+                            detail={"fields": big},
+                            fix="If the recipient has older ArcGIS, deliver GeoPackage, or store these values as text"))
+    import warnings  # noqa: PLC0415
+
+    try:
+        # GDAL's notes on renamed fields become the check below.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            write_ogr(df, out, "OpenFileGDB", layer=layer, layer_options=options or None)
+    except Exception as e:  # noqa: BLE001 - GDAL's own message says why
+        raise GISError("export.format", f"could not write the file geodatabase ({e})") from None
+    info = _info(out, layer=layer)
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", r"Measured \(M\) geometry types are not supported", UserWarning)
+        names = pyogrio.list_layers(out)[:, 0].tolist()
+    if names != [layer] or int(info["features"]) != len(df):
+        raise GISError("export.format", "the file geodatabase did not come out as one feature class with every row")
+    wrote = [str(f) for f in info["fields"]]
+    wanted = [str(c) for c in df.columns if c != gname]
+    types = dict(zip(wrote, info["ogr_types"]))
+    if any(types.get(dict(zip(wanted, wrote)).get(c, c)) != "OFTInteger64" for c in big):
+        # An older GDAL (before 3.9) ignores the option and writes doubles.
+        raise GISError("export.format",
+                       f"this GDAL ({pyogrio.__gdal_version_string__}) cannot keep 64-bit integers exact in a file geodatabase "
+                       f"({', '.join(big)})", fix="Update the engine's pyogrio, or deliver GeoPackage")
+    if wrote != wanted:
+        changed = [f"{a} to {b}" for a, b in zip(wanted, wrote) if a != b]
+        checks.append(check("export.field_names", "warn",
+                            "The file geodatabase changed field names it does not allow: " + ", ".join(changed),
+                            detail={"fields": dict(zip(wanted, wrote))},
+                            fix="Rename the fields in the delivery spec (letters, digits and _) if the recipient expects the original names"))
 
 
 def export_layer(path: str, out_stem: str, fmt: str, crs: str | None = None,
@@ -966,6 +1331,17 @@ def export_layer(path: str, out_stem: str, fmt: str, crs: str | None = None,
     if key not in EXPORT_FORMATS:
         raise GISError("params", f"format must be one of {', '.join(sorted(set(EXPORT_FORMATS)))}")
     driver, ext = EXPORT_FORMATS[key]
+    raster = isinstance(path, str) and path.lower().endswith((".tif", ".tiff"))
+    if driver == "COG":
+        if not raster:
+            raise GISError("export.format", f"{fmt} is for raster results; this is a vector layer or table",
+                           fix="Export it as gpkg, gdb, geojson, fgb, shp or csv")
+        import columbus_raster  # noqa: PLC0415 - it imports this module
+
+        return columbus_raster.export_tif(path, out_stem, crs, rename)
+    if raster:
+        raise GISError("export.format", f"a raster result exports as tif only, not {fmt}",
+                       fix="Export it with format tif")
     df = read_layer(path)
     checks: list[dict] = []
     geo = isinstance(df, gpd.GeoDataFrame)
@@ -979,7 +1355,7 @@ def export_layer(path: str, out_stem: str, fmt: str, crs: str | None = None,
         target = CRS.from_user_input(crs.strip().upper())
         if not df.crs.equals(target):
             checks.append(check("export.reprojected", "info", f"Reprojected from {_label(df.crs)} to {_label(target)} for delivery"))
-            df = df.to_crs(target)
+            df = to_crs(df, target)
     gname = df.geometry.name if geo else None
     if rename:
         missing = [k for k in rename if k not in df.columns]
@@ -1023,10 +1399,14 @@ def export_layer(path: str, out_stem: str, fmt: str, crs: str | None = None,
             # Full precision: shapely's default rounds to 6 decimals.
             frame["wkt"] = df.geometry.to_wkt(rounding_precision=-1)
         frame.to_csv(out, index=False)
+    elif driver == "OpenFileGDB":
+        if not geo:
+            raise GISError("export.format", f"{fmt} needs geometry; this layer has none (deliver it as csv)")
+        _write_gdb(df, out, os.path.basename(out_stem), gname, checks)
     else:
         if not geo:
             raise GISError("export.format", f"{fmt} needs geometry; this layer has none (deliver it as csv)")
-        _fid_safe(df).to_file(out, driver=driver, engine="pyogrio")
+        write_ogr(_fid_safe(df), out, driver)
     files = [out]
     if driver == "ESRI Shapefile":
         base = out_stem
@@ -1257,7 +1637,7 @@ def _op_reproject(inp, params, checks):
     target = params.get("crs")
     if not isinstance(target, str) or not EPSG_CODE.fullmatch(target.strip()):
         raise GISError("params", "crs must be an EPSG code such as \"EPSG:3081\"")
-    out = df.to_crs(target.strip().upper())
+    out = to_crs(df, target.strip().upper())
     checks.append(check("crs.reprojected", "info", f"Reprojected from {_label(df.crs)} to {_label(out.crs)}"))
     return out
 
@@ -1450,6 +1830,9 @@ def vector_op(op: str, inputs: dict[str, str], params: dict[str, Any], stem: str
         if isinstance(df, gpd.GeoDataFrame):
             checks.extend(c for c in geometry_checks(df.geometry, what=f"Input {n}") if c["id"] == "geometry.valid")
     out = fn(loaded, params or {}, checks)
+    dropped = m_dropped_check(list(loaded.values()), out, op)
+    if dropped:
+        checks.append(dropped)
     path = write_layer(out, stem, layer=op)
     checks.extend(_layer_checks(out, "The output"))
     in_extent = [layer_summary(d)["extent"] for d in loaded.values() if isinstance(d, gpd.GeoDataFrame)]

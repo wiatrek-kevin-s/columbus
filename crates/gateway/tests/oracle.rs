@@ -12,6 +12,8 @@
 //! to show that writes are still refused: by the server's checks first, and
 //! by the read-only session at the database underneath.
 
+mod measures_chain;
+
 use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
 
@@ -41,15 +43,24 @@ struct Env {
     root: PathBuf,
 }
 
-fn setup(host: &str, port: &str, service: &str) -> Env {
+/// With `exports`, a granted export folder `share` (and no approvals page).
+fn setup(host: &str, port: &str, service: &str, exports: bool) -> Env {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().to_path_buf();
     std::fs::create_dir_all(root.join("connections")).unwrap();
+    let mut extra = String::new();
+    if exports {
+        std::fs::create_dir_all(root.join("share")).unwrap();
+        let share = serde_json::to_string(&root.join("share").display().to_string()).unwrap();
+        extra = format!(
+            "approvals: {{ page: false }}\nexports:\n  - {{ id: share, path: {share}, granted: true }}\n"
+        );
+    }
     std::fs::write(
         root.join("policy.yaml"),
         format!(
             "connection_types: [oracle]\nhosts: [{host:?}]\nhide_fields: [\"owner_*\"]\n\
-             allow_edits: false\nlimits: {{ rows: 1000, seconds: 30 }}\n"
+             allow_edits: false\nlimits: {{ rows: 1000, seconds: 30 }}\n{extra}"
         ),
     )
     .unwrap();
@@ -133,7 +144,7 @@ async fn oracle_governed_session() {
     let py = python().expect(
         "python with oracledb and geopandas is required when COLUMBUS_TEST_ORA_HOST is set",
     );
-    let env = setup(&host, &port, &service);
+    let env = setup(&host, &port, &service, false);
     let client = start(&env, &py).await;
 
     let who = ok(&call(&client, "whoami", json!({})).await);
@@ -337,4 +348,44 @@ async fn oracle_governed_session() {
         !text.contains(PASSWORD),
         "the secret never reaches the audit log"
     );
+}
+
+/// LRS routes (SDO_GTYPE 3302, measures third) keep their M values through
+/// query_features, reproject, join, spatial_join, dissolve and exports to
+/// gpkg, gdb and shp; buffer drops M with geometry.m_dropped (T-19,
+/// REQ-24). The connection's row filter keeps district 14 (even ids).
+#[tokio::test]
+async fn oracle_lrs_measures_survive() {
+    let Ok(host) = std::env::var("COLUMBUS_TEST_ORA_HOST") else {
+        eprintln!("skipping: COLUMBUS_TEST_ORA_HOST not set");
+        return;
+    };
+    let port = std::env::var("COLUMBUS_TEST_ORA_PORT").unwrap_or_else(|_| "1521".into());
+    let service = std::env::var("COLUMBUS_TEST_ORA_SERVICE").unwrap_or_else(|_| "FREEPDB1".into());
+    let py = python().expect(
+        "python with oracledb and geopandas is required when COLUMBUS_TEST_ORA_HOST is set",
+    );
+    let env = setup(&host, &port, &service, true);
+    let client = start(&env, &py).await;
+    measures_chain::run(
+        &client,
+        &py,
+        &env.root.join("workspaces"),
+        &env.root.join("share"),
+        &measures_chain::Names {
+            conn: CONN,
+            routes: "ROADS.ROUTES",
+            route_id: "ROUTE_ID",
+            district: "DISTRICT",
+            // The connection's row filter (district = 14) applies to every
+            // dataset, so the join is to the routes' own ids.
+            join: "ROADS.ROUTES",
+            join_fields: Some(&["ROUTE_ID", "ID"]),
+            join_left: "ROUTE_ID",
+            join_right: "ROUTE_ID",
+            other: "ROADS.ROADS",
+        },
+    )
+    .await;
+    client.cancel().await.unwrap();
 }

@@ -47,6 +47,7 @@ Some ids also appear as **refusals**: the tool returns an error
 | `geometry.empty` | info | results, verify | Rows with null or empty geometry (`detail.null`, `detail.empty`) | Report; do not drop silently |
 | `geometry.mixed_types` | warn | results, verify | More than one geometry family | Split by type before exporting to single-type formats |
 | `geometry.duplicates` | warn | verify only | Exact duplicate geometries | Check for double loading before counting or summing |
+| `geometry.m_dropped` | info | vector_op (buffer, simplify, any op whose output lost M) | The input had M (measure) values; the operation built new vertices without them | Keep the measured layer for linear referencing; calibrate measures again on the new shapes if needed |
 | `geometry.repaired` | info or warn | make_valid | How many geometries were repaired | Re-verify; compare counts and areas |
 
 ## Operations and joins

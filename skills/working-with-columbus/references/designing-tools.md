@@ -57,6 +57,10 @@ def run(ctx):
 Columbus adds the lines that connect `run` to it; leave out `if __name__ == "__main__"`,
 `Plugin(...)` and `serve()`. Write every declared output, even an empty one.
 
+Routes with measures (M values): read and write with `engine="pyogrio", use_arrow=True`
+(`gpd.read_file(path, engine="pyogrio", use_arrow=True)`, and the same in `to_file`).
+pyogrio's plain read drops M, and GeoPandas' plain write fails on it.
+
 ## Rules Columbus enforces (refused if broken)
 
 - **No network**: no `socket`, `urllib`, `requests`, `http`, cloud SDKs, URLs or

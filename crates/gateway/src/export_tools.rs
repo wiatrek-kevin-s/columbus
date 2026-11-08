@@ -52,8 +52,8 @@ pub struct ExportArgs {
     /// File name without extension: letters, digits, space, `-`, `_` and
     /// `.`, at most 80 characters.
     pub name: String,
-    /// gpkg (default), geojson, fgb, shp or csv. With a delivery spec, one
-    /// of its formats.
+    /// gpkg (default), gdb (a new file geodatabase), geojson, fgb, shp or
+    /// csv; tif for raster results. With a delivery spec, one of its formats.
     #[serde(default)]
     pub format: Option<String>,
     /// A delivery entry's id from the context pack: its CRS, field renames,
@@ -64,7 +64,8 @@ pub struct ExportArgs {
     /// delivery spec may require some.
     #[serde(default)]
     pub metadata: Option<serde_json::Map<String, Value>>,
-    /// Replace files of the same name. Always needs approval.
+    /// Replace files of the same name. Always needs approval. An existing
+    /// `<name>.gdb` is never replaced.
     #[serde(default)]
     pub overwrite: bool,
     /// An approval the person granted for this export.
@@ -218,7 +219,7 @@ impl Gateway {
     }
 
     #[tool(
-        description = "Export a workspace layer to one of the organization's export folders (whoami lists them), as gpkg, geojson, fgb, shp or csv. With a delivery spec from the context pack (delivery: its id), its CRS, field renames, formats and required metadata are applied and checked. Runs the full checks first; any fail, anywhere in the layer's history, blocks the export unless the person approves an override. Needs approval unless the folder is granted. Writes <name>.prov.json beside the export.",
+        description = "Export a workspace layer to one of the organization's export folders (whoami lists them), as gpkg, gdb (a new file geodatabase, one feature class named after the export), geojson, fgb, shp or csv, or a raster result as tif (its Cloud-Optimized GeoTIFF; a delivery CRS must already match). With a delivery spec from the context pack (delivery: its id), its CRS, field renames, formats and required metadata are applied and checked. Runs the full checks first; any fail, anywhere in the layer's history, blocks the export unless the person approves an override. Needs approval unless the folder is granted. Writes <name>.prov.json beside the export.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -278,6 +279,13 @@ impl Gateway {
                 ))
             }
         };
+
+        // R-8: an existing file geodatabase of this name is never replaced
+        // or changed, whatever the format, overwrite or approval (its
+        // provenance file is its record too).
+        if let Some(g) = gdb_in_the_way(&dest_dir, &args.name) {
+            return Err(self.deny(&ctx, rec, gdb_refusal(&g, &folder.id)));
+        }
 
         // The delivery spec, if one was named.
         let mut checks: Vec<Check> = Vec::new();
@@ -445,6 +453,10 @@ impl Gateway {
         };
         checks.extend(checks_from(reply.get("checks")));
         let mut staged: Vec<(PathBuf, String)> = Vec::new();
+        // A file geodatabase is a folder of plain files: (staged folder, its
+        // files with their hashes).
+        let mut gdb: Option<(PathBuf, Vec<(PathBuf, String)>)> = None;
+        let gdb_name = format!("{}.gdb", args.name);
         for f in reply
             .get("files")
             .and_then(Value::as_array)
@@ -453,6 +465,24 @@ impl Gateway {
         {
             let p = PathBuf::from(f.as_str().unwrap_or_default());
             let direct = p.parent() == Some(out_dir.as_path());
+            if canon_format(&format) == Some("gdb")
+                && direct
+                && gdb.is_none()
+                && p.file_name().is_some_and(|n| n == gdb_name.as_str())
+                && std::fs::symlink_metadata(&p).is_ok_and(|m| m.file_type().is_dir())
+            {
+                match staged_folder(&p) {
+                    Some(parts) => gdb = Some((p, parts)),
+                    None => {
+                        return Err(self.deny(
+                            &ctx,
+                            rec,
+                            "the engine did not write the file geodatabase as expected",
+                        ))
+                    }
+                }
+                continue;
+            }
             let regular = std::fs::symlink_metadata(&p).is_ok_and(|m| m.file_type().is_file());
             match (direct && regular, columbus_shared::canon::sha256_file(&p)) {
                 (true, Ok((h, _))) => staged.push((p, h)),
@@ -465,7 +495,7 @@ impl Gateway {
                 }
             }
         }
-        if staged.is_empty() {
+        if staged.is_empty() && gdb.is_none() {
             return Err(self.deny(&ctx, rec, "the engine wrote no export"));
         }
         if canon_format(&format) == Some("geojson")
@@ -488,6 +518,13 @@ impl Gateway {
         let targets: Vec<PathBuf> = staged
             .iter()
             .map(|(p, _)| dest_dir.join(p.file_name().unwrap()))
+            .collect();
+        let gdb_target = gdb.as_ref().map(|_| dest_dir.join(&gdb_name));
+        // Everything the export puts in the folder, as the person sees it.
+        let shown: Vec<PathBuf> = gdb_target
+            .iter()
+            .cloned()
+            .chain(targets.iter().cloned())
             .collect();
         let sidecar = dest_dir.join(format!("{}.prov.json", args.name));
         let existing = same_name(&dest_dir, &args.name);
@@ -566,7 +603,7 @@ impl Gateway {
                 },
                 folder.id,
                 dest_dir.display(),
-                targets
+                shown
                     .iter()
                     .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
                     .collect::<Vec<_>>()
@@ -575,7 +612,7 @@ impl Gateway {
             );
             let detail = json!({
                 "destination": dest_dir,
-                "files": targets,
+                "files": shown,
                 "replaces": existing_names,
                 "failed_checks": fails.iter().map(|c| json!({"id": c.id, "message": c.message})).collect::<Vec<_>>(),
                 "delivery": args.delivery,
@@ -621,7 +658,11 @@ impl Gateway {
                 Err(e) => return Err(self.deny(&ctx, rec, e)),
             }
         }
-        // What will be replaced must still be exactly what was seen.
+        // What will be replaced must still be exactly what was seen, and no
+        // file geodatabase of this name may have appeared meanwhile.
+        if let Some(g) = gdb_in_the_way(&dest_dir, &args.name) {
+            return Err(self.deny(&ctx, rec, gdb_refusal(&g, &folder.id)));
+        }
         if same_name(&dest_dir, &args.name) != existing {
             return Err(self.deny(
                 &ctx,
@@ -640,7 +681,7 @@ impl Gateway {
             "created": started.to_rfc3339(),
             "user": self.state.user,
             "client": client_name(&ctx),
-            "export": {"folder": folder.id, "files": targets, "format": format, "delivery": args.delivery,
+            "export": {"folder": folder.id, "files": shown, "format": format, "delivery": args.delivery,
                        "crs": crs, "rename": rename, "approval": rec.approval, "replaces": existing_names},
             "metadata": args.metadata,
             "labels": labels,
@@ -668,7 +709,46 @@ impl Gateway {
         let mut temps: Vec<PathBuf> = Vec::new();
         let mut written = Vec::new();
         let mut failure: Option<String> = None;
-        for ((from, want), to) in staged.iter().zip(&targets) {
+        // The file geodatabase is copied into a hidden folder beside its
+        // target, made new (never one that is already there).
+        let gdb_tmp = gdb_target.as_ref().map(|t| tmp_for(t));
+        let cleanup_gdb_tmp = || {
+            if let Some(t) = &gdb_tmp {
+                let _ = std::fs::remove_dir_all(t);
+            }
+        };
+        if let (Some((_, parts)), Some(tmp), Some(target)) = (&gdb, &gdb_tmp, &gdb_target) {
+            match std::fs::create_dir(tmp) {
+                Ok(()) => {
+                    for (from, want) in parts {
+                        let n = from.file_name().unwrap();
+                        match copy_hashed(from, &tmp.join(n)) {
+                            Ok(h) if &h == want => {
+                                written.push(json!({"path": target.join(n), "sha256": h}))
+                            }
+                            Ok(_) => {
+                                failure = Some(format!(
+                                    "{} changed while it was being exported",
+                                    from.display()
+                                ));
+                                break;
+                            }
+                            Err(e) => {
+                                failure =
+                                    Some(format!("could not write {}: {e}", target.display()));
+                                break;
+                            }
+                        }
+                    }
+                }
+                Err(e) => failure = Some(format!("could not write {}: {e}", target.display())),
+            }
+        }
+        for ((from, want), to) in staged
+            .iter()
+            .zip(&targets)
+            .take_while(|_| failure.is_none())
+        {
             let tmp = tmp_for(to);
             match copy_hashed(from, &tmp) {
                 Ok(h) => {
@@ -706,7 +786,32 @@ impl Gateway {
             for t in &temps {
                 let _ = std::fs::remove_file(t);
             }
+            cleanup_gdb_tmp();
             return Err(self.deny(&ctx, rec, format!("{why}; nothing was exported")));
+        }
+        // The file geodatabase's folder is made new first, which claims the
+        // name: if anything of that name appeared, nothing changes.
+        let mut made_gdb: Option<PathBuf> = None;
+        if let Some(target) = &gdb_target {
+            if let Err(e) = std::fs::create_dir(target) {
+                for t in &temps {
+                    let _ = std::fs::remove_file(t);
+                }
+                cleanup_gdb_tmp();
+                return Err(self.deny(
+                    &ctx,
+                    rec,
+                    if e.kind() == std::io::ErrorKind::AlreadyExists {
+                        gdb_refusal(&gdb_name, &folder.id)
+                    } else {
+                        format!(
+                            "could not make {} ({e}); nothing was exported",
+                            target.display()
+                        )
+                    },
+                ));
+            }
+            made_gdb = Some(target.clone());
         }
         // Replacing: everything of this name moves aside first (so a file
         // another program holds open stops the export before anything
@@ -722,9 +827,14 @@ impl Gateway {
             for f in placed {
                 let _ = std::fs::remove_file(f);
             }
+            // Only the folder this export made itself.
+            if let Some(d) = &made_gdb {
+                let _ = std::fs::remove_dir_all(d);
+            }
             for (orig, bak) in aside {
                 let _ = std::fs::rename(bak, orig);
             }
+            cleanup_gdb_tmp();
         };
         for (i, (n, _)) in existing.iter().enumerate() {
             let orig = dest_dir.join(n);
@@ -743,6 +853,26 @@ impl Gateway {
             aside.push((orig, bak));
         }
         let mut placed: Vec<PathBuf> = Vec::new();
+        if let (Some((_, parts)), Some(tmp), Some(target)) = (&gdb, &gdb_tmp, &gdb_target) {
+            for (from, _) in parts {
+                let n = from.file_name().unwrap();
+                if let Err(e) = std::fs::rename(tmp.join(n), target.join(n)) {
+                    restore(&aside, &placed);
+                    for t in &temps {
+                        let _ = std::fs::remove_file(t);
+                    }
+                    return Err(self.deny(
+                        &ctx,
+                        rec,
+                        format!(
+                            "could not move {} into place ({e}); the folder is as it was",
+                            target.display()
+                        ),
+                    ));
+                }
+            }
+            let _ = std::fs::remove_dir(tmp);
+        }
         for (tmp, fin) in temps.iter().zip(&finals) {
             if let Err(e) = std::fs::rename(tmp, fin) {
                 restore(&aside, &placed);
@@ -797,6 +927,8 @@ fn canon_format(f: &str) -> Option<&'static str> {
         "fgb" | "flatgeobuf" => Some("fgb"),
         "shp" | "shapefile" => Some("shp"),
         "csv" => Some("csv"),
+        "gdb" | "filegdb" | "fgdb" | "file geodatabase" => Some("gdb"),
+        "tif" | "tiff" | "geotiff" | "cog" => Some("tif"),
         _ => None,
     }
 }
@@ -864,6 +996,40 @@ fn same_name(dir: &Path, name: &str) -> Vec<(String, Option<String>)> {
         .collect();
     out.sort();
     out
+}
+
+/// The entry in `dir` named `<name>.gdb` (any case, of any kind), if any.
+fn gdb_in_the_way(dir: &Path, name: &str) -> Option<String> {
+    let want = format!("{name}.gdb").to_ascii_lowercase();
+    std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .find(|n| n.to_ascii_lowercase() == want)
+}
+
+fn gdb_refusal(found: &str, folder: &str) -> String {
+    format!(
+        "{found} already exists in {folder}; an existing file geodatabase is never replaced or changed, \
+         even with overwrite or approval: choose another name"
+    )
+}
+
+/// The files of a folder the engine staged, each a plain file directly in
+/// it, with its hash; None if it holds anything else (a link, a folder).
+fn staged_folder(dir: &Path) -> Option<Vec<(PathBuf, String)>> {
+    let mut out = Vec::new();
+    for e in std::fs::read_dir(dir).ok()? {
+        let p = e.ok()?.path();
+        if !std::fs::symlink_metadata(&p).ok()?.file_type().is_file() {
+            return None;
+        }
+        let (h, _) = columbus_shared::canon::sha256_file(&p).ok()?;
+        out.push((p, h));
+    }
+    out.sort();
+    (!out.is_empty()).then_some(out)
 }
 
 pub(crate) fn write_new(to: &Path, bytes: &[u8]) -> std::io::Result<()> {

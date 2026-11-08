@@ -84,8 +84,8 @@
           "expected": "the tif opens in rasterio with tags(ns='IMAGE_STRUCTURE')['LAYOUT'] == 'COG', the same CRS and nodata; a delivery spec with another CRS fails with 'reproject first'; a vector layer is refused"
         }
       ],
-      "status": "todo",
-      "evidence": ""
+      "status": "done",
+      "evidence": "Commit 435ebdc. crates/gateway/tests/export_formats.rs gdb_export (1 layer, same 5 rows and EPSG:3081; Int64 3,000,000,000,123 exact with export.needs_pro_3_2; existing .gdb refused 4 ways, folder hashes unchanged) and tif_export (COG layout, same CRS and nodata; other-CRS spec fails 'reproject first (raster_op reproject)'; vector as tif refused); test_export.py 12 passed. Workspace 297 passed; pytest 183 passed 35 skipped."
     },
     {
       "id": "T-5",
@@ -101,8 +101,8 @@
           "expected": "row total equals the fake service's count; object-id batches used; capped result carries fetch.truncated"
         }
       ],
-      "status": "todo",
-      "evidence": ""
+      "status": "done",
+      "evidence": "Commit 8306ce2. crates/gateway/tests/fetch.rs arcgis_paging_loses_no_rows: (a) empty page with exceededTransferLimit mid-stream -> 7/7 rows, every request orderByFields=OBJECTID_1 ASC; (b) supportsPagination false -> returnIdsOnly then objectIds batches (server log), 5/5 rows; (c) more pages than the 500 cap -> 500 rows with fetch.truncated; also read limit cut and 429 Retry-After (3 retries then R-14). Workspace 300 passed; pytest 183 passed 35 skipped."
     },
     {
       "id": "T-6",
