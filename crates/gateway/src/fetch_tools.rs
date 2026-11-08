@@ -24,6 +24,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::approval_flow::{Ask, Sought};
+use crate::arcgis_pager::{self, Envelope, HttpReply, HttpRequest, LayerQuery, Transport};
 use crate::providers::{OutputMeta, OutputSource};
 use crate::server::{
     checks_from, client_name, new_prov_id, Check, Gateway, Output, Severity, SERVER_NAME,
@@ -130,8 +131,10 @@ async fn vet(url: &Url) -> Result<SocketAddr, String> {
     Ok(first)
 }
 
-/// One GET, pinned to the vetted address, no redirects, size-capped.
-async fn get(url: &Url, budget: &mut u64) -> Result<Vec<u8>, String> {
+/// One request, pinned to the vetted address, no redirects, size-capped.
+/// Every status but a redirect is passed back.
+async fn send(req: &HttpRequest, budget: &mut u64) -> Result<HttpReply, String> {
+    let url = &req.url;
     let addr = vet(url).await?;
     let host = url.host_str().unwrap_or_default().to_string();
     let client = reqwest::Client::builder()
@@ -141,20 +144,36 @@ async fn get(url: &Url, budget: &mut u64) -> Result<Vec<u8>, String> {
         .user_agent(concat!("columbus-mcp/", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(|e| e.to_string())?;
-    let mut resp = client
-        .get(url.clone())
+    let builder = match &req.form {
+        Some(form) => client
+            .post(url.clone())
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .body(form.clone()),
+        None => client.get(url.clone()),
+    };
+    let mut resp = builder
         .header("Accept", "application/geo+json, application/json")
         .send()
         .await
-        .map_err(|e| format!("downloading from {host}: {e}"))?;
+        .map_err(|e| {
+            if e.is_timeout() {
+                format!("{host} did not answer in 90 s. Check the address or your network, then try again.")
+            } else {
+                format!("downloading from {host}: {e}")
+            }
+        })?;
     if resp.status().is_redirection() {
         return Err(format!(
             "{host} answered with a redirect, which registry_fetch does not follow"
         ));
     }
-    if !resp.status().is_success() {
-        return Err(format!("{host} answered HTTP {}", resp.status()));
-    }
+    let status = resp.status().as_u16();
+    let retry_after = resp
+        .headers()
+        .get("Retry-After")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .map(Duration::from_secs);
     let mut body = Vec::new();
     while let Some(chunk) = resp.chunk().await.map_err(|e| e.to_string())? {
         if body.len() as u64 + chunk.len() as u64 > *budget {
@@ -166,7 +185,44 @@ async fn get(url: &Url, budget: &mut u64) -> Result<Vec<u8>, String> {
         body.extend_from_slice(&chunk);
     }
     *budget -= body.len() as u64;
-    Ok(body)
+    Ok(HttpReply {
+        status,
+        retry_after,
+        body,
+    })
+}
+
+/// One GET that must succeed.
+async fn get(url: &Url, budget: &mut u64) -> Result<Vec<u8>, String> {
+    let req = HttpRequest {
+        url: url.clone(),
+        form: None,
+        bearer: None,
+    };
+    let reply = send(&req, budget).await?;
+    if !(200..300).contains(&reply.status) {
+        return Err(format!(
+            "{} answered HTTP {}",
+            url.host_str().unwrap_or_default(),
+            reply.status
+        ));
+    }
+    Ok(reply.body)
+}
+
+/// registry_fetch's transport for the shared pager: vetted, pinned, no
+/// redirects, one byte budget across pages, never a token.
+struct Vetted {
+    budget: u64,
+}
+
+impl Transport for Vetted {
+    async fn send(&mut self, req: &HttpRequest) -> Result<HttpReply, String> {
+        if req.bearer.is_some() {
+            return Err("registry_fetch is for open data and never sends a token".into());
+        }
+        send(req, &mut self.budget).await
+    }
 }
 
 /// The first request for an access method.
@@ -253,16 +309,9 @@ fn first_url(
     Ok(u)
 }
 
-/// The next page's URL, if any: OGC `next` links on the same host, ArcGIS
-/// by offset while the server says there is more.
-fn next_url(
-    kind: &str,
-    current: &Url,
-    body: &Value,
-    got: u64,
-    offset: u64,
-    page: u64,
-) -> Option<Url> {
+/// The next page's URL, if any: OGC `next` links on the same host. ArcGIS
+/// REST layers page through the shared pager instead.
+fn next_url(kind: &str, current: &Url, body: &Value) -> Option<Url> {
     match kind {
         "ogc-api-features" => {
             let href = body
@@ -277,34 +326,6 @@ fn next_url(
                 && next.scheme() == current.scheme()
                 && next.port() == current.port())
             .then_some(next)
-        }
-        "arcgis-rest" => {
-            let more = body
-                .pointer("/properties/exceededTransferLimit")
-                .and_then(Value::as_bool)
-                .unwrap_or(false)
-                || body
-                    .get("exceededTransferLimit")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false);
-            if !more || got == 0 {
-                return None;
-            }
-            let mut next = current.clone();
-            let pairs: Vec<(String, String)> = current
-                .query_pairs()
-                .map(|(k, v)| {
-                    if k == "resultOffset" {
-                        (k.into_owned(), (offset + got).to_string())
-                    } else if k == "resultRecordCount" {
-                        (k.into_owned(), page.to_string())
-                    } else {
-                        (k.into_owned(), v.into_owned())
-                    }
-                })
-                .collect();
-            next.query_pairs_mut().clear().extend_pairs(pairs);
-            Some(next)
         }
         _ => None,
     }
@@ -508,37 +529,94 @@ impl Gateway {
                 return Err(self.deny(&ctx, rec, format!("could not make a download folder: {e}")))
             }
         };
-        let mut budget = MAX_BYTES;
         let mut pages: Vec<PathBuf> = Vec::new();
         let mut fetched: Vec<Value> = Vec::new();
-        let mut next = Some(url.clone());
         let mut count: u64 = 0;
-        while let Some(u) = next.take() {
-            let body = match get(&u, &mut budget).await {
-                Ok(b) => b,
-                Err(e) => return Err(self.deny(&ctx, rec, e)),
+        let more_left;
+        let mut paging = Value::Null;
+        if kind == "arcgis-rest" {
+            // The shared pager (Part 3): object-id order, past empty pages
+            // while the server says more, object-id batches where the layer
+            // cannot page, and the cap marked.
+            let mut layer = url.clone();
+            layer.set_query(None);
+            let lp = layer.path().trim_end_matches("/query").to_string();
+            layer.set_path(&lp);
+            let q = LayerQuery {
+                layer,
+                where_clause: "1=1".into(),
+                out_fields: "*".into(),
+                envelope: args.bbox.as_ref().map(|b| Envelope {
+                    xmin: b[0],
+                    ymin: b[1],
+                    xmax: b[2],
+                    ymax: b[3],
+                    in_sr: "4326".into(),
+                }),
+                order_by: None,
+                format: "geojson".into(),
+                out_sr: Some("4326".into()),
+                read_limit: cap,
+                page_size: page,
+                max_pages: MAX_PAGES,
+                bearer: None,
             };
-            let parsed: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
-            let got = parsed
-                .get("features")
-                .and_then(Value::as_array)
-                .map(|a| a.len() as u64)
-                .unwrap_or(0);
-            let p = stage.path().join(format!("page-{}.json", pages.len()));
-            if let Err(e) = std::fs::write(&p, &body) {
-                return Err(self.deny(&ctx, rec, format!("could not save the download: {e}")));
+            let mut transport = Vetted { budget: MAX_BYTES };
+            let dir = stage.path().to_path_buf();
+            let outcome = arcgis_pager::fetch_layer(&mut transport, &q, |pg| {
+                let p = dir.join(format!("page-{}.json", pages.len()));
+                std::fs::write(&p, &pg.body)
+                    .map_err(|e| format!("could not save the download: {e}"))?;
+                fetched.push(
+                    json!({"url": pg.request, "bytes": pg.raw_bytes, "sha256": pg.raw_sha256,
+                                    "features": pg.features, "cut": pg.cut}),
+                );
+                pages.push(p);
+                Ok(())
+            })
+            .await;
+            match outcome {
+                Ok(o) => {
+                    count = o.rows;
+                    more_left = o.stop.truncated();
+                    paging = json!({
+                        "mode": match o.mode { arcgis_pager::Mode::Offset => "offset", arcgis_pager::Mode::ObjectIds => "object_ids" },
+                        "order": o.oid_field.as_ref().map(|f| format!("{f} ASC")),
+                        "pages": o.pages,
+                        "stop": match o.stop { arcgis_pager::Stop::Complete => "complete", arcgis_pager::Stop::ReadLimit => "read_limit", arcgis_pager::Stop::PageCap => "page_cap" },
+                    });
+                }
+                Err(e) => return Err(self.deny(&ctx, rec, e)),
             }
-            fetched.push(json!({"url": u.as_str(), "bytes": body.len(), "sha256": columbus_shared::canon::sha256_hex(&body), "features": got}));
-            pages.push(p);
-            let offset = count;
-            count += got;
-            next = next_url(&kind, &u, &parsed, got, offset, page);
-            if pages.len() >= MAX_PAGES || count >= cap {
-                break;
+        } else {
+            let mut budget = MAX_BYTES;
+            let mut next = Some(url.clone());
+            while let Some(u) = next.take() {
+                let body = match get(&u, &mut budget).await {
+                    Ok(b) => b,
+                    Err(e) => return Err(self.deny(&ctx, rec, e)),
+                };
+                let parsed: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+                let got = parsed
+                    .get("features")
+                    .and_then(Value::as_array)
+                    .map(|a| a.len() as u64)
+                    .unwrap_or(0);
+                let p = stage.path().join(format!("page-{}.json", pages.len()));
+                if let Err(e) = std::fs::write(&p, &body) {
+                    return Err(self.deny(&ctx, rec, format!("could not save the download: {e}")));
+                }
+                fetched.push(json!({"url": u.as_str(), "bytes": body.len(), "sha256": columbus_shared::canon::sha256_hex(&body), "features": got}));
+                pages.push(p);
+                count += got;
+                next = next_url(&kind, &u, &parsed);
+                if pages.len() >= MAX_PAGES || count >= cap {
+                    break;
+                }
             }
+            // Stopped with pages left: the layer is not the whole source.
+            more_left = next.is_some();
         }
-        // Stopped with pages left: the layer is not the whole source.
-        let more_left = next.is_some();
         let stem = match self
             .state
             .sandbox
@@ -606,7 +684,7 @@ impl Gateway {
             "client": client_name(&ctx),
             "inputs": [{"registry_entry": args.id, "access": index, "type": kind, "license": license,
                         "publisher": entry.get("publisher"), "review": review, "downloads": fetched}],
-            "steps": [{"tool": "registry_fetch", "bbox": args.bbox, "limit": cap}],
+            "steps": [{"tool": "registry_fetch", "bbox": args.bbox, "limit": cap, "paging": paging}],
             "checks": checks,
             "outputs": [path],
             "server": format!("{SERVER_NAME} {}", env!("CARGO_PKG_VERSION")),

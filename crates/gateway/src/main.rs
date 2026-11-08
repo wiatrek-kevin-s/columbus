@@ -30,6 +30,7 @@
 
 mod approval_flow;
 mod approvals_page;
+mod arcgis_pager;
 mod companion;
 mod config;
 mod context;
