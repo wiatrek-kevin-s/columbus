@@ -1,0 +1,589 @@
+{
+  "project": "Columbus 0.14.0: data-reach rework (kit 1.1)",
+  "tasks": [
+    {
+      "id": "T-1",
+      "title": "Setup round, then baseline: check every access the build needs and ask the owner once, in one message, for anything missing (D-9); then branch from main, build and run every test with the GIS engine installed, recording counts",
+      "session": "S1",
+      "depends_on": [],
+      "done_by": "both",
+      "acceptance": [
+        {
+          "how": "Claude checks with git and gh: push to a new branch, read Actions runs, dispatch a workflow (a dry check: list workflows and permissions), merge a pull request (branch protection or rulesets on main; if a required review blocks self-merge, the message asks the owner to allow a bypass or drop the rule for this build), and whether Dependabot alerts are on",
+          "expected": "each item recorded in the progress log as ok, or listed in one message to the owner with click-by-click steps; after the owner's single reply, every item is ok"
+        },
+        {
+          "how": "Claude runs `cargo test --workspace -- --nocapture` with the engine installed (COLUMBUS_PYTHON set), then `pytest workers/python/tests`",
+          "expected": "0 failures and 0 'skipping: the GIS engine' lines; database tests may skip locally (CI runs them) and are listed; counts recorded (audit, with the engine: columbus-mcp 136 passed, Python 115 passed)"
+        }
+      ],
+      "status": "todo",
+      "evidence": ""
+    },
+    {
+      "id": "T-2",
+      "title": "Thin version (REQ-1 to REQ-3 for CSV only): a `files` connection to a folder of CSVs is listed, described, queried with row filter and hidden fields, buffered with vector_op and exported as gpkg",
+      "session": "S1",
+      "depends_on": [
+        "T-1"
+      ],
+      "done_by": "claude",
+      "acceptance": [
+        {
+          "how": "Claude runs a new gateway test `files.rs` (needs the GIS engine) that adds a files connection with lon/lat and WKT CSVs, a row filter and a hidden field",
+          "expected": "test passes: 2 datasets listed; points in EPSG:4326; filtered rows absent; hidden field refused; buffer and gpkg export succeed"
+        },
+        {
+          "how": "Claude runs the test case with `roads.v2.csv`, `~$book.xlsx`, a link to a file outside the folder, and a `.xls` file in the folder",
+          "expected": "`roads_v2` is listed; the lock file and the outside link are listed under skipped with reasons; the .xls is refused with 'save as .xlsx'"
+        }
+      ],
+      "status": "todo",
+      "evidence": ""
+    },
+    {
+      "id": "T-3",
+      "title": "All `files` formats (XLSX sheets, GeoJSON, GeoParquet, KML, FlatGeobuf), dataset naming F-1, typing and encoding R-1 to R-6, cache freshness R-7 to R-7c, `file` alias D-10",
+      "session": "S1",
+      "depends_on": [
+        "T-2"
+      ],
+      "done_by": "claude",
+      "acceptance": [
+        {
+          "how": "Claude runs Python tests `test_files.py` and gateway `files.rs` with one fixture per format",
+          "expected": "each format lists, describes and queries; `000123456` stays text and `12.500` is real; cp1252 file reads with a file.encoding warn; duplicate headers become Name_2; a header-only CSV gives 0 rows"
+        },
+        {
+          "how": "Claude runs the cache tests: append a row; touch without change; delete the file; two concurrent queries on a stale dataset",
+          "expected": "new row seen; no rebuild on touch; dataset gone after delete; exactly one rebuild for two queries"
+        },
+        {
+          "how": "Claude runs a policy test with `connection_types: [file]`",
+          "expected": "a files connection is allowed"
+        }
+      ],
+      "status": "todo",
+      "evidence": ""
+    },
+    {
+      "id": "T-4",
+      "title": "Exports: `gdb` (R-8) and raster `tif` (R-9) through export_output, with checks, delivery specs, approvals and provenance unchanged",
+      "session": "S2",
+      "depends_on": [
+        "T-1"
+      ],
+      "done_by": "claude",
+      "acceptance": [
+        {
+          "how": "Claude runs export tests (needs the GIS engine): a points layer to gdb; an Int64 value over 2,147,483,647; an existing .gdb",
+          "expected": "pyogrio.read_info shows 1 layer, same rows and CRS; an Int64 value over 2,147,483,647 reads back exact with an export.needs_pro_3_2 info check; an existing .gdb is refused and left byte-for-byte unchanged"
+        },
+        {
+          "how": "Claude runs raster export tests: slope result to tif; delivery spec with another CRS; vector layer as tif",
+          "expected": "the tif opens in rasterio with tags(ns='IMAGE_STRUCTURE')['LAYOUT'] == 'COG', the same CRS and nodata; a delivery spec with another CRS fails with 'reproject first'; a vector layer is refused"
+        }
+      ],
+      "status": "todo",
+      "evidence": ""
+    },
+    {
+      "id": "T-5",
+      "title": "Shared ArcGIS REST pager (Part 3): continue past empty pages while exceededTransferLimit, order by object id, objectIds fallback, truncation marked; registry_fetch uses it (AF-4)",
+      "session": "S2",
+      "depends_on": [
+        "T-1"
+      ],
+      "done_by": "claude",
+      "acceptance": [
+        {
+          "how": "Claude runs fetch tests against a fake ArcGIS server that returns an empty page with exceededTransferLimit true, a layer without pagination, and more pages than the cap",
+          "expected": "row total equals the fake service's count; object-id batches used; capped result carries fetch.truncated"
+        }
+      ],
+      "status": "todo",
+      "evidence": ""
+    },
+    {
+      "id": "T-6",
+      "title": "Environments registry behind policy environments.allow (F-4, F-7, R-13 to R-13c) and governed runs: `columbus-mcp env add`, probe, `changed` status, `environment` argument on run_python, confined level A with extracts only (REQ-12, REQ-13)",
+      "session": "S3",
+      "depends_on": [
+        "T-1"
+      ],
+      "done_by": "claude",
+      "acceptance": [
+        {
+          "how": "Claude runs new tests `environments.rs` on CI Linux, macOS and Windows with a plain venv created by the test",
+          "expected": "env add records version and packages hash; a script in that env reads its input and returns out/x.gpkg as a checked layer; a socket call fails; whoami lists the environment"
+        },
+        {
+          "how": "Claude runs the test that installs a package into the venv after registration",
+          "expected": "status changed; run refused with 'confirm it again in Settings'"
+        },
+        {
+          "how": "Claude runs the test that tries to register or change an environment through any MCP tool",
+          "expected": "no tool exists that does it; attempts are refused"
+        },
+        {
+          "how": "Claude runs the test with environments.allow false",
+          "expected": "env add and the environment argument are refused; scripts still run in the engine's Python"
+        },
+        {
+          "how": "Claude edits a registered environment's YAML to change trust to trusted, then python to another interpreter",
+          "expected": "each edit marks the environment changed and runs are refused until confirmed again"
+        },
+        {
+          "how": "Claude removes a person-registered environment and a Columbus-created one",
+          "expected": "the person's interpreter folder still exists; the created one's folder is deleted only after the test confirmation"
+        }
+      ],
+      "status": "todo",
+      "evidence": ""
+    },
+    {
+      "id": "T-7",
+      "title": "`propose_environment` and environment creation with pinned, hash-installed uv (REQ-14)",
+      "session": "S3",
+      "depends_on": [
+        "T-6"
+      ],
+      "done_by": "claude",
+      "acceptance": [
+        {
+          "how": "Claude runs a test that proposes an environment with one exact-pinned small wheel-only package and approves it through the test approval path (needs network to PyPI; CI sets COLUMBUS_TEST_REQUIRE_NETWORK=1 so it fails rather than skips there)",
+          "expected": "environment created under the environments folder and registered governed; whoami lists it"
+        },
+        {
+          "how": "Claude runs proposals with an unpinned package, a host outside environments.index_hosts, and a package with no wheel for this system",
+          "expected": "unpinned refused at proposal; creation fails naming the host; the no-wheel package is refused and nothing is built from source"
+        }
+      ],
+      "status": "todo",
+      "evidence": ""
+    },
+    {
+      "id": "T-8",
+      "title": "Trusted environments (D-3, REQ-15) and arcpy detection and licence reporting (REQ-16) with a stub arcpy package for tests",
+      "session": "S4",
+      "depends_on": [
+        "T-6"
+      ],
+      "done_by": "claude",
+      "acceptance": [
+        {
+          "how": "Claude runs tests with and without environments.allow_trusted",
+          "expected": "refused without; with it, the approval card contains 'Columbus cannot enforce your connection rules for this run: the script can read, write and send data anywhere you can.' and offers no session allow; outputs returned through Columbus carry the label environment:pro"
+        },
+        {
+          "how": "Claude runs registration with a stub arcpy whose ProductInfo returns NotInitialized, then ArcInfo, then a probe that sleeps 200 s",
+          "expected": "whoami shows the 'not initialized: open ArcGIS Pro and sign in' sentence; then 'Advanced'; the hung probe is stopped at 120 s and reported; whoami marks arcpy and trusted environments experimental (D-13); A-6 recorded in the progress log"
+        }
+      ],
+      "status": "todo",
+      "evidence": ""
+    },
+    {
+      "id": "T-9",
+      "title": "Personal tools and workflow steps carry `environment` (F-5, F-6, REQ-18); session approval for scripts under policy (REQ-17)",
+      "session": "S4",
+      "depends_on": [
+        "T-6"
+      ],
+      "done_by": "claude",
+      "acceptance": [
+        {
+          "how": "Claude runs tool and workflow tests: a tool in a governed env; a workflow step whose env was removed; a shared .columbus file of a tool with an env; a tool and a workflow step that name a trusted environment",
+          "expected": "tool runs; step stops with 'needs you'; the shared file contains no interpreter path; both trusted cases are refused"
+        },
+        {
+          "how": "Claude runs session-approval tests with scripts.session_approval true: same code twice with new inputs; one changed character; a trusted env",
+          "expected": "one approval for the first pair; asks again on change; trusted never offers it"
+        }
+      ],
+      "status": "todo",
+      "evidence": ""
+    },
+    {
+      "id": "T-10",
+      "title": "`arcgis` connections, public services: list, describe (fields, domains, wkid, count), sample, query_features with row filter, hidden fields, bbox, order and read limit; Z/M kept; sql_select refused (REQ-8, REQ-9, R-10 to R-12, R-14)",
+      "session": "S5",
+      "depends_on": [
+        "T-5"
+      ],
+      "done_by": "claude",
+      "acceptance": [
+        {
+          "how": "Claude runs gateway tests `arcgis.rs` against a fake FeatureServer (two layers with a duplicate name, one table, polylines with M)",
+          "expected": "3 datasets with F-1b names; request where is '(DISTRICT = 14) AND (LANES > 2)'; M values present in the workspace layer; sql_select returns query.unsupported"
+        },
+        {
+          "how": "Claude runs the tests for a host not on policy hosts, a where outside the parser subset, a hidden field in where, the input `1=1) OR (1=1`, a 429 response, and a 250,000-row layer with a 200,000 limit",
+          "expected": "the first four are refused with no request sent (checked on the fake server's request log); the 429 is retried at most 3 times then gives the R-14 message; the large layer returns 200,000 rows with query.read_limit"
+        }
+      ],
+      "status": "todo",
+      "evidence": ""
+    },
+    {
+      "id": "T-11",
+      "title": "ArcGIS sign-in with PKCE (D-4, REQ-10): `columbus-mcp arcgis signin`, credential store entry F-3b, refresh, plain re-sign-in message; settle A-2",
+      "session": "S5",
+      "depends_on": [
+        "T-10"
+      ],
+      "done_by": "claude",
+      "acceptance": [
+        {
+          "how": "Claude runs tests against a fake ArcGIS OAuth server (extending crates/gateway/examples/fake_oauth_server.rs where it fits)",
+          "expected": "sign-in stores the entry; queries carry a bearer token; an expired access token refreshes once; an expired refresh token gives 'Sign in again: columbus-mcp arcgis signin svc'"
+        },
+        {
+          "how": "Claude greps the audit log, provenance and tool results produced by the tests for the fake token value",
+          "expected": "0 matches"
+        },
+        {
+          "how": "Claude checks developers.arcgis.com for loopback redirect rules and records the A-2 result in the progress log",
+          "expected": "A-2 marked confirmed or the oob fallback implemented"
+        },
+        {
+          "how": "Claude runs a signed-in test whose service host the fake portal does not list as federated",
+          "expected": "the query is refused with 'the portal does not vouch for' the host; the fake server's log shows no token"
+        }
+      ],
+      "status": "todo",
+      "evidence": ""
+    },
+    {
+      "id": "T-12",
+      "title": "App Connections page: add, test and sign in to files and arcgis connections; Settings lists environments with status and a confirm action at the keyboard; existing components only (REQ-11)",
+      "session": "S5",
+      "depends_on": [
+        "T-3",
+        "T-11",
+        "T-6"
+      ],
+      "done_by": "claude",
+      "acceptance": [
+        {
+          "how": "Claude extends the app e2e scripts (app/desktop/e2e/settings.py pattern, using the confirmation test path that script already uses) and runs them in CI",
+          "expected": "a files and an arcgis connection are added and tested; pressing Sign in requests the fake OAuth server's authorize URL (captured by the e2e harness); an environment shows its status and arcpy line"
+        },
+        {
+          "how": "Claude runs `cargo build` for app/desktop/src-tauri",
+          "expected": "builds with 0 errors"
+        }
+      ],
+      "status": "todo",
+      "evidence": ""
+    },
+    {
+      "id": "T-13",
+      "title": "Bbox pushdown inside the filtered derived table for PostGIS, GeoPackage, Oracle and SQL Server (REQ-19, AF-9)",
+      "session": "S6",
+      "depends_on": [
+        "T-1"
+      ],
+      "done_by": "claude",
+      "acceptance": [
+        {
+          "how": "Claude runs the PostGIS CI job with a new test that sets enable_seqscan = off for its session and EXPLAINs a row-filtered bbox query",
+          "expected": "plan names the spatial index; results equal the unpushed query's"
+        },
+        {
+          "how": "Claude runs bbox tests on GeoPackage, Oracle and SQL Server fixtures, including a bbox in another CRS",
+          "expected": "same rows as before the change; all CI database jobs pass"
+        }
+      ],
+      "status": "todo",
+      "evidence": ""
+    },
+    {
+      "id": "T-14",
+      "title": "Benchmark test (REQ-20, AF-15)",
+      "session": "S6",
+      "depends_on": [
+        "T-1"
+      ],
+      "done_by": "claude",
+      "acceptance": [
+        {
+          "how": "Claude runs the benchmark test in the CI Linux job",
+          "expected": "engine start under 20 s and warm query_features on 100,000 rows under 4 s; measured values printed and recorded in the progress log"
+        }
+      ],
+      "status": "todo",
+      "evidence": ""
+    },
+    {
+      "id": "T-15",
+      "title": "Hash-pinned engine requirements and uv (REQ-21, AF-11), COLUMBUS_TEST_REQUIRE_ENGINE in CI (REQ-22, AF-12), Dependabot config; settle A-4",
+      "session": "S6",
+      "depends_on": [
+        "T-7"
+      ],
+      "done_by": "claude",
+      "acceptance": [
+        {
+          "how": "Claude runs CI on all three systems after the change",
+          "expected": "the gis, db and projectdb requirement files install with --require-hashes; the CI extras are exact-pinned; all jobs pass"
+        },
+        {
+          "how": "Claude runs gis.rs with COLUMBUS_TEST_REQUIRE_ENGINE=1 and no engine",
+          "expected": "the test fails with a message naming the variable"
+        },
+        {
+          "how": "Claude checks Dependabot's support for hash-pinned pip files and records A-4 in the progress log",
+          "expected": ".github/dependabot.yml present; A-4 confirmed or the fallback chosen and logged"
+        },
+        {
+          "how": "Claude changes one hash in a scratch copy of requirements-gis.txt and installs it",
+          "expected": "pip refuses with a hash mismatch"
+        }
+      ],
+      "status": "todo",
+      "evidence": ""
+    },
+    {
+      "id": "T-19",
+      "title": "M and Z values survive end to end (AF-17, REQ-24)",
+      "session": "S2",
+      "depends_on": [
+        "T-1"
+      ],
+      "done_by": "claude",
+      "acceptance": [
+        {
+          "how": "Claude runs new tests on a GeoPackage fixture and the Oracle CI fixture with LINESTRING M routes: query_features (in-memory and streamed), reproject, join, spatial_join, dissolve, a personal-tool extract, and exports to gpkg, gdb and shp",
+          "expected": "every output's first vertex carries the source M value; no step errors"
+        },
+        {
+          "how": "Claude runs buffer on an M layer",
+          "expected": "output without M and a geometry.m_dropped info check"
+        }
+      ],
+      "status": "todo",
+      "evidence": ""
+    },
+    {
+      "id": "T-20",
+      "title": "Workflows read files and arcgis datasets, deliver gdb and tif, and keep ArcGIS sign-in alive (AF-18, REQ-25, REQ-26, R-19)",
+      "session": "S5",
+      "depends_on": [
+        "T-4",
+        "T-11"
+      ],
+      "done_by": "claude",
+      "acceptance": [
+        {
+          "how": "Claude runs a workflow test with a step on a fake arcgis layer, a step on a files dataset, and outputs.folder format gdb",
+          "expected": "run succeeds; the .gdb is in the export folder; a step on a connection outside scope is refused"
+        },
+        {
+          "how": "Claude runs the token tests with fake refresh tokens at 6 days, 8 days and expired",
+          "expected": "exchanged; not exchanged; step stops with 'needs you: sign in again (columbus-mcp arcgis signin svc)' and the run report shows it"
+        }
+      ],
+      "status": "todo",
+      "evidence": ""
+    },
+    {
+      "id": "T-21",
+      "title": "Open a workflow run's outputs in a chat (AF-19, REQ-27, R-20) and vector_op filter (AF-21, REQ-29, F-12)",
+      "session": "S6",
+      "depends_on": [
+        "T-20"
+      ],
+      "done_by": "claude",
+      "acceptance": [
+        {
+          "how": "Claude runs tests: open a finished run with two layers; open a run whose output file was changed on disk; filter the opened layer",
+          "expected": "both layers listed with the run's labels and provenance; the changed run refused naming the file; filter makes a new layer and the run folder is byte-for-byte unchanged"
+        },
+        {
+          "how": "Claude runs vector_op filter with ROUTE_NAME <> 'B' on a 3-route layer, then with a hidden field",
+          "expected": "new layer of 2 rows, original still 3; the hidden-field where is refused"
+        }
+      ],
+      "status": "todo",
+      "evidence": ""
+    },
+    {
+      "id": "T-22",
+      "title": "Map: zoom to the selected row and a measure tool (AF-20, REQ-28)",
+      "session": "S6",
+      "depends_on": [
+        "T-1"
+      ],
+      "done_by": "claude",
+      "acceptance": [
+        {
+          "how": "Claude runs app/ui tests (and the app e2e in CI): click row 2 of a 3-route layer; toggle zoom off and click row 3; measure a 100 m line",
+          "expected": "map fits route 2; view unchanged with the toggle off; measure shows 328 ft (within 1%)"
+        }
+      ],
+      "status": "todo",
+      "evidence": ""
+    },
+    {
+      "id": "T-24",
+      "title": "Web map layers, server side: F-13/F-14 formats, the gateway proxy with host policy, token injection from arcgis connections, tile cache, no agent access (AF-22, REQ-31, REQ-32, REQ-34, D-14)",
+      "session": "S6",
+      "depends_on": [
+        "T-11"
+      ],
+      "done_by": "claude",
+      "acceptance": [
+        {
+          "how": "Claude runs gateway tests against fake XYZ, WMTS, WMS, ArcGIS MapServer, ImageServer and FeatureServer servers: a source on an allowed host, one on a disallowed host, a WMTS whose capabilities name a tile host not allowed, a redirecting server, a request without the page token, a page request naming a raw URL, and a secured MapServer tied to a signed-in fake arcgis connection plus one whose host that portal doesn't vouch for",
+          "expected": "allowed sources served through the proxy; disallowed host, unlisted tile host, redirect, tokenless request and raw URL each refused; secured tiles load with the token seen only by the vouched host; the unvouched host gets no token; the proxy's responses to the page contain no token"
+        },
+        {
+          "how": "Claude lists every MCP tool and runs list_outputs, map_snapshot and whoami with a web layer on",
+          "expected": "no tool adds, changes or enables web layers; only whoami mentions the layer, by name"
+        },
+        {
+          "how": "Claude runs the cache tests: remove a source; sign out the arcgis connection behind a secured source",
+          "expected": "that source's cache folder is gone in each case"
+        }
+      ],
+      "status": "todo",
+      "evidence": ""
+    },
+    {
+      "id": "T-25",
+      "title": "Web map layers in the app: Add web layer from a URL on the map or on a Connections › Map layers tab (saved sources listed there with Test, Edit and Remove, and offered in every chat) (capabilities read), layer list with on/off, opacity, order, zoom to extent, choose as basemap, privacy notice, ArcGIS feature layers drawn as vectors (REQ-33, R-21)",
+      "session": "S6",
+      "depends_on": [
+        "T-24",
+        "T-22"
+      ],
+      "done_by": "claude",
+      "acceptance": [
+        {
+          "how": "Claude extends the app and map e2e tests: add one fake service of each kind by pasting its URL (capabilities read and layers offered; with map.hosts empty the save asks the test confirmation path), turn each on, turn each on, change opacity and order, pick one as basemap, reload the chat",
+          "expected": "each draws; the privacy notice shows once per chat; settings are kept after reload"
+        },
+        {
+          "how": "Claude runs the feature-layer test with 12,000 features in view and an unreachable service",
+          "expected": "5,000 drawn with 'Zoom in to see all'; the unreachable one shows the R-14 message and the map keeps working"
+        },
+        {
+          "how": "Claude checks the map page's content policy in the e2e run",
+          "expected": "the page reaches only the gateway's origin for web layers, plus the existing street basemap host; a direct request to a service host is blocked"
+        },
+        {
+          "how": "Claude runs the app e2e: save a web layer, restart the app, open two different chats, then edit and remove the layer on the Map layers tab",
+          "expected": "the layer is listed after restart and offered in both chats; Test reports it reachable; edit and remove take effect in both chats"
+        }
+      ],
+      "status": "todo",
+      "evidence": ""
+    },
+    {
+      "id": "T-23",
+      "title": "The owner's ROW job end to end on fixtures (REQ-30, success measure 7)",
+      "session": "S7",
+      "depends_on": [
+        "T-19",
+        "T-20",
+        "T-21",
+        "T-22",
+        "T-25"
+      ],
+      "done_by": "claude",
+      "acceptance": [
+        {
+          "how": "Claude runs the end-to-end test in the Oracle CI job: an M-aware route table and an event table with two gaps, a fake ArcGIS ROW polygon service, two stand-in personal tools, a weekly workflow started with `columbus-mcp workflow run row-weekly --scheduled`, open in a chat, filter one route out, export to gdb; plus a fake imagery WMTS added as a web layer and turned on in the opened chat",
+          "expected": "2 gaps found; fixed-width segments produced; dissolved layer present; checks pass; the opened chat filters and exports a .gdb with the expected rows"
+        }
+      ],
+      "status": "todo",
+      "evidence": ""
+    },
+    {
+      "id": "T-16",
+      "title": "Docs and skills for 0.14.0 (REQ-23, AF-10): README, docs/reference.md (parts 1 and 2 of the brief), install guides, examples (files, arcgis, environments, policy), working-with-columbus skill, docs/manual-checks.md for H-1 (with the ArcGIS admin steps and the redirect URL settled in T-11) and H-2, release notes; version 0.14.0 (D-11) (tasks blocked as Sent to Blueprint count as finished for this dependency)",
+      "session": "S7",
+      "depends_on": [
+        "T-2",
+        "T-3",
+        "T-4",
+        "T-5",
+        "T-6",
+        "T-7",
+        "T-8",
+        "T-9",
+        "T-10",
+        "T-11",
+        "T-12",
+        "T-13",
+        "T-14",
+        "T-15",
+        "T-19",
+        "T-20",
+        "T-21",
+        "T-22",
+        "T-23",
+        "T-24",
+        "T-25"
+      ],
+      "done_by": "claude",
+      "acceptance": [
+        {
+          "how": "Claude runs `python skills/check_skills.py` and `columbus-mcp pack lint examples/context/contoso-county`",
+          "expected": "both pass with 0 errors"
+        },
+        {
+          "how": "Claude greps README.md for 'Coming' beside Projects and Data groups, and greps docs/reference.md for each new name: connection types files and arcgis with every F-2 and F-3 field, the F-4 environment fields, every F-7 policy key, export formats gdb and tif, the tool propose_environment, the commands `columbus-mcp env add` and `columbus-mcp arcgis signin`, the vector_op filter op, web map layers (F-13, F-14 and Add web layer), `columbus-mcp workflow open`, and the checks file.encoding, export.needs_pro_3_2, geometry.m_dropped and query.unsupported",
+          "expected": "no stale 'Coming'; every listed name found"
+        },
+        {
+          "how": "Claude checks Cargo.toml, the app's tauri.conf.json and release notes",
+          "expected": "all say 0.14.0"
+        },
+        {
+          "how": "Claude reads the release notes and runs whoami against a test environment with a stub arcpy",
+          "expected": "both mark arcpy and trusted environments experimental (D-13)"
+        }
+      ],
+      "status": "todo",
+      "evidence": ""
+    },
+    {
+      "id": "T-17",
+      "title": "Publish 0.14.0 as a test release: dispatch the Release workflow on `main` with tag v0.14.0, after every rework pull request is merged, main's CI is green and the final review's Fix-now findings are closed (D-7); tasks blocked as Sent to Blueprint are listed in the release notes as not in this release",
+      "session": "S8",
+      "depends_on": [
+        "T-16",
+        "T-23"
+      ],
+      "done_by": "claude",
+      "acceptance": [
+        {
+          "how": "Claude dispatches the Release workflow with tag v0.14.0 and reads the release page",
+          "expected": "release v0.14.0 marked pre-release lists the Mac and Windows .mcpb, app installers and server zips; the progress log records the link"
+        }
+      ],
+      "status": "todo",
+      "evidence": ""
+    },
+    {
+      "id": "T-18",
+      "title": "Optional, after release: the owner runs docs/manual-checks.md on a Windows PC with ArcGIS Pro (H-2) and, if wanted, a signed-in ArcGIS layer (H-1)",
+      "session": "S8",
+      "depends_on": [
+        "T-17"
+      ],
+      "done_by": "person",
+      "acceptance": [
+        {
+          "how": "The owner follows docs/manual-checks.md (needs Windows with ArcGIS Pro signed in)",
+          "expected": "the owner pastes back the whoami line for the Pro environment, such as 'ArcGIS Pro licence: Advanced'"
+        }
+      ],
+      "status": "todo",
+      "evidence": ""
+    }
+  ]
+}
