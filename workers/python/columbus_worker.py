@@ -1541,12 +1541,16 @@ def describe_dataset(params: dict[str, Any]) -> dict[str, Any]:
     # The one dataset only, where the engine can list it alone (Oracle and
     # SQL Server catalogs can be very large).
     files = conn["kind"].lower() in FILES_KINDS
-    entries = list_datasets({"connection": conn, "timeout_s": timeout_s, "only": str(params.get("dataset") or ""),
-                             "with_checks": files})["datasets"]
+    listing = list_datasets({"connection": conn, "timeout_s": timeout_s, "only": str(params.get("dataset") or ""),
+                             "with_checks": files})
+    entries = listing["datasets"]
     entry = _find(entries, str(params.get("dataset") or ""))
     if entry is None:
-        why = _files().skipped_reason(conn, str(params.get("dataset") or "")) if files else None
-        raise WorkerError(INVALID_PARAMS, why or f"no dataset {params.get('dataset')!r} on this connection")
+        if files:
+            name = str(params.get("dataset") or "")
+            why = _files().skipped_reason(listing.get("skipped") or [], name)
+            raise WorkerError(INVALID_PARAMS, why or f"no dataset {name} on this connection")
+        raise WorkerError(INVALID_PARAMS, f"no dataset {params.get('dataset')!r} on this connection")
     keep = _hidden_mask([f["name"] for f in entry.get("fields", [])], params.get("hide_fields"))
     entry["fields"] = [f for f, k in zip(entry.get("fields", []), keep) if k]
     rows = None
@@ -1555,6 +1559,9 @@ def describe_dataset(params: dict[str, Any]) -> dict[str, Any]:
         rows = int(r[0][0]) if r else 0
     crs = g.crs_from_spec(entry.get("crs_spec")) if entry.get("geometry_column") else None
     checks = g.crs_checks(crs, entry.get("extent"), has_geometry=bool(entry.get("geometry_column")), what="The dataset")
+    if files:
+        # The reader's own crs.present warning says it for a file (R-1, R-2).
+        checks = [c for c in checks if c.get("id") != "crs.present"]
     visible = {f["name"] for f in entry["fields"]}
     for u in entry.pop("unsupported_geometry", None) or []:
         if u["column"] not in visible:
@@ -1719,6 +1726,8 @@ def query_layer(params: dict[str, Any]) -> dict[str, Any]:
     except BaseException:
         sink.abort()
         raise
+    if conn["kind"].lower() in FILES_KINDS:
+        checks = _files().no_crs_is_a_warning(checks)
     out_cols = sink.attr_cols + ([geom_col] if sink.gi is not None else [])
     return {
         "columns": out_cols,

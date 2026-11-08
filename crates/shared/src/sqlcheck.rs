@@ -975,6 +975,14 @@ fn check_tables_and_functions(
                         problem = Some(Denied::Query(why.clone()));
                         return ControlFlow::Break(());
                     }
+                    // A files dataset whose file has gone (R-7c), or that
+                    // never existed, under a name the allow list permits.
+                    if crate::policy::is_files(&access.kind) && access.dataset_allowed(&written) {
+                        problem = Some(Denied::Query(format!(
+                            "no dataset {written} on this connection"
+                        )));
+                        return ControlFlow::Break(());
+                    }
                     problem = Some(Denied::Dataset(written));
                     return ControlFlow::Break(());
                 }

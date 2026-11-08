@@ -26,7 +26,8 @@ Some ids also appear as **refusals**: the tool returns an error
 
 | id | Severity | Emitted by | Means | Do |
 | --- | --- | --- | --- | --- |
-| `crs.present` | fail (or refusal) | describe_dataset, verify, vector_op | No CRS recorded | Find the source CRS from metadata or the owner; Columbus cannot assign one |
+| `crs.present` | fail (or refusal); warn on a `files` dataset | describe_dataset, verify, vector_op | No CRS recorded | Find the source CRS from metadata or the owner; Columbus cannot assign one (for a `files` connection the owner can set `crs` on the connection) |
+| `file.encoding` | warn | describe_dataset | A `files` CSV that isn't UTF-8, read as Windows-1252 | If letters look wrong, ask for the file saved as CSV UTF-8 |
 | `crs.info` | info | describe_dataset, verify, results | The CRS and its units | Note it |
 | `crs.area_of_use` | fail | same | Labelled geographic, but coordinates cannot be lon/lat | Fix says "swap X and Y" or "probably a projected CRS; assign the right one (do not reproject)" |
 | `crs.area_of_use` | warn | same | Coordinates fall outside the CRS's area of use | Wrong CRS label, swapped axes, or wrong units |

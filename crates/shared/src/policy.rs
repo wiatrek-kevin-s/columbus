@@ -587,7 +587,6 @@ impl Default for OrgPolicy {
             connection_types: vec![
                 "gpkg".into(),
                 "sqlite".into(),
-                "file".into(),
                 "shapefile".into(),
                 "filegdb".into(),
                 "files".into(),
@@ -718,6 +717,15 @@ pub struct Connection {
 /// Connection types read through the files cache (Part 1 of the brief).
 pub fn is_files(kind: &str) -> bool {
     kind.eq_ignore_ascii_case("files")
+}
+
+/// Whether a policy's `connection_types` allows connections of `kind`.
+/// The old type `file`, which no engine served, is read as `files` (D-10);
+/// the policy file itself is never rewritten.
+pub fn type_allowed(types: &[String], kind: &str) -> bool {
+    types
+        .iter()
+        .any(|t| t.eq_ignore_ascii_case(kind) || (t.eq_ignore_ascii_case("file") && is_files(kind)))
 }
 
 fn default_mode() -> Mode {
@@ -890,11 +898,7 @@ impl EffectiveAccess {
         scope: &ProjectScope,
         now: DateTime<Utc>,
     ) -> Result<Self, Denied> {
-        if !org
-            .connection_types
-            .iter()
-            .any(|t| t.eq_ignore_ascii_case(&conn.kind))
-        {
+        if !type_allowed(&org.connection_types, &conn.kind) {
             return Err(Denied::ConnectionType(conn.kind.clone()));
         }
         if let Some(host) = &conn.host {
@@ -1171,6 +1175,31 @@ expires: 2027-06-30
         assert!(a.dataset_allowed("\"ROADS\".\"CONTROL_SECTION\""));
         assert!(!a.dataset_allowed("ROADS.ROADWAY_AUDIT"));
         assert!(!a.dataset_allowed("HR.EMPLOYEES"));
+    }
+
+    #[test]
+    fn the_old_file_type_allows_files_connections() {
+        // D-10: `file` in connection_types is read as `files`.
+        let policy: OrgPolicy = serde_yaml::from_str("connection_types: [file]\n").unwrap();
+        let conn = Connection::parse(
+            "id: csvs\ntype: files\npath: /data/csvs\ndatasets: { allow: [\"*\"] }\n",
+            Path::new("c.yaml"),
+        )
+        .unwrap();
+        let a = EffectiveAccess::resolve(&policy, &conn, &ProjectScope::default(), now()).unwrap();
+        assert_eq!(a.kind, "files");
+        // Only files: `file` doesn't stand for any other type.
+        let gpkg = Connection::parse(
+            "id: g\ntype: gpkg\npath: /data/a.gpkg\ndatasets: { allow: [\"*\"] }\n",
+            Path::new("g.yaml"),
+        )
+        .unwrap();
+        assert!(EffectiveAccess::resolve(&policy, &gpkg, &ProjectScope::default(), now()).is_err());
+        assert!(type_allowed(&["FILE".into()], "files"));
+        assert!(!type_allowed(&["files".into()], "file"));
+        assert!(OrgPolicy::default()
+            .connection_types
+            .contains(&"files".to_string()));
     }
 
     #[test]

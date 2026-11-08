@@ -835,11 +835,7 @@ fn tightened(
     let mut out = std::collections::BTreeSet::new();
     for c in &old.connections {
         let still = new.connections.iter().find(|n| n.id == c.id);
-        let type_ok = new
-            .policy
-            .connection_types
-            .iter()
-            .any(|t| t.eq_ignore_ascii_case(&c.kind));
+        let type_ok = columbus_shared::policy::type_allowed(&new.policy.connection_types, &c.kind);
         match still {
             Some(n) if type_ok && reach(n) == reach(c) => {}
             _ => {

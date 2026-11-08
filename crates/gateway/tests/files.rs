@@ -4,6 +4,10 @@
 //! offer (lock files, `.xls`, links out of the folder) are listed under
 //! `skipped` with the reason.
 //!
+//! T-3: one fixture per format (CSV, XLSX sheets, GeoJSON, GeoParquet, KML
+//! layers, FlatGeobuf) lists, describes and queries; a deleted file's dataset
+//! is gone; a policy listing the old type `file` allows files connections.
+//!
 //! Needs Python with geopandas, pyogrio, shapely and pyproj; skipped
 //! otherwise.
 
@@ -430,4 +434,226 @@ async fn files_it_cannot_offer_are_skipped_with_the_reason() {
     }
     assert!(gone, "cache still at {}", cache.display());
     c.cancel().await.unwrap();
+}
+
+/// One fixture per format, written by the engine's own fixture script
+/// (`workers/python/tests/files_fixtures.py`), under a policy listing the
+/// old type `file` (D-10).
+fn formats_setup(py: &str, policy_type: &str) -> (tempfile::TempDir, PathBuf) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_path_buf();
+    std::fs::create_dir_all(root.join("connections")).unwrap();
+    let script = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../workers/python/tests/files_fixtures.py")
+        .canonicalize()
+        .unwrap();
+    let made = StdCommand::new(py)
+        .arg(&script)
+        .arg(root.join("formats"))
+        .output()
+        .unwrap();
+    assert!(
+        made.status.success(),
+        "fixtures: {}",
+        String::from_utf8_lossy(&made.stderr)
+    );
+    std::fs::write(
+        root.join("connections/formats.yaml"),
+        format!(
+            "id: formats\ntype: files\npath: {}\ndatasets:\n  allow: [\"*\"]\n",
+            q(&root.join("formats"))
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("policy.yaml"),
+        format!("connection_types: [{policy_type}]\napprovals: {{ page: false }}\n"),
+    )
+    .unwrap();
+    (dir, root)
+}
+
+fn field_type(d: &Value, f: &str) -> String {
+    d["result"]["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|x| x["name"] == f)
+        .unwrap_or_else(|| panic!("no field {f}: {d}"))["type"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+fn check_ids(d: &Value) -> Vec<String> {
+    d["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["id"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[tokio::test]
+async fn every_format_lists_describes_and_queries() {
+    let Some(py) = python() else {
+        eprintln!("skipping: the GIS engine is not installed");
+        return;
+    };
+    let (_dir, root) = formats_setup(&py, "files");
+    let c = start(&root, &py).await;
+
+    let l = ok(&call(&c, "list_datasets", json!({"connection": "formats"})).await);
+    assert_eq!(
+        names(&l),
+        [
+            "crashes",
+            "dupes",
+            "empty",
+            "inventory/2025",
+            "inventory/2026",
+            "legacy",
+            "parcels",
+            "places/Parks",
+            "places/Schools",
+            "roads"
+        ],
+        "{l}"
+    );
+    let skipped = l["result"]["skipped"].as_array().unwrap();
+    let reason = |file: &str| {
+        skipped
+            .iter()
+            .find(|s| s["file"] == file)
+            .unwrap_or_else(|| panic!("{file} not skipped: {l}"))["reason"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    assert!(reason("settings.json").contains("isn't GeoJSON"), "{l}");
+    assert!(reason("inventory.xlsx").contains("empty sheet"), "{l}");
+
+    // Each format describes (geometry and CRS) and queries.
+    for (name, gtype, code, rows) in [
+        ("inventory/2025", Some("POINT"), Some("EPSG:4326"), 2),
+        ("roads", Some("LINESTRING"), Some("EPSG:4326"), 2),
+        ("crashes", Some("POINT"), Some("EPSG:4326"), 3),
+        ("parcels", Some("POLYGON"), Some("EPSG:2277"), 1),
+        ("places/Parks", Some("POINT"), Some("EPSG:4326"), 2),
+        ("places/Schools", Some("POINT"), Some("EPSG:4326"), 1),
+        ("legacy", None, None, 1),
+        ("dupes", None, None, 1),
+        ("empty", None, None, 0),
+        ("inventory/2026", None, None, 0),
+    ] {
+        let d = ok(&call(
+            &c,
+            "describe_dataset",
+            json!({"connection": "formats", "dataset": name}),
+        )
+        .await);
+        assert_eq!(d["result"]["geometry_type"].as_str(), gtype, "{name}: {d}");
+        assert_eq!(d["result"]["crs"]["code"].as_str(), code, "{name}: {d}");
+        assert_eq!(d["result"]["rows"], rows, "{name}: {d}");
+        let r = ok(&call(
+            &c,
+            "query_features",
+            json!({"connection": "formats", "dataset": name}),
+        )
+        .await);
+        assert_eq!(r["result"]["layer"]["summary"]["rows"], rows, "{name}: {r}");
+    }
+
+    // Typing (R-4, R-6, R-6b), encoding (R-5) and headers (R-6c).
+    let d = ok(&call(
+        &c,
+        "describe_dataset",
+        json!({"connection": "formats", "dataset": "inventory/2025"}),
+    )
+    .await);
+    assert_eq!(field_type(&d, "CSJ"), "TEXT");
+    assert_eq!(field_type(&d, "Milepost"), "REAL");
+    assert_eq!(field_type(&d, "Date"), "DATE");
+    assert_eq!(field_type(&d, "Serial"), "INTEGER");
+    assert_eq!(field_type(&d, "Name_2"), "TEXT");
+    let s = ok(&call(
+        &c,
+        "sql_select",
+        json!({"connection": "formats",
+               "sql": "SELECT CSJ, \"Date\", Total FROM \"inventory/2025\" WHERE Milepost > 2"}),
+    )
+    .await);
+    assert_eq!(
+        s["result"]["rows"],
+        json!([["000123456", "2026-11-08", 12.5]]),
+        "{s}"
+    );
+    let d = ok(&call(
+        &c,
+        "describe_dataset",
+        json!({"connection": "formats", "dataset": "legacy"}),
+    )
+    .await);
+    assert!(check_ids(&d).contains(&"file.encoding".to_string()), "{d}");
+    let s = ok(&call(
+        &c,
+        "sql_select",
+        json!({"connection": "formats", "sql": "SELECT Name FROM legacy"}),
+    )
+    .await);
+    assert_eq!(s["result"]["rows"], json!([["Café"]]), "{s}");
+    let d = ok(&call(
+        &c,
+        "describe_dataset",
+        json!({"connection": "formats", "dataset": "dupes"}),
+    )
+    .await);
+    assert_eq!(field_type(&d, "Name_2"), "TEXT");
+    assert_eq!(field_type(&d, "field_4"), "TEXT");
+
+    // R-7c: a deleted file's dataset is gone; queries say there is none.
+    std::fs::remove_file(root.join("formats/roads.geojson")).unwrap();
+    let l = ok(&call(&c, "list_datasets", json!({"connection": "formats"})).await);
+    assert!(!names(&l).contains(&"roads".to_string()), "{l}");
+    for (tool, args) in [
+        (
+            "query_features",
+            json!({"connection": "formats", "dataset": "roads"}),
+        ),
+        (
+            "sql_select",
+            json!({"connection": "formats", "sql": "SELECT * FROM roads"}),
+        ),
+        (
+            "describe_dataset",
+            json!({"connection": "formats", "dataset": "roads"}),
+        ),
+    ] {
+        let e = err(&call(&c, tool, args).await);
+        assert!(e.contains("no dataset roads"), "{tool}: {e}");
+    }
+    c.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn the_old_file_type_in_policy_allows_files_connections() {
+    let Some(py) = python() else {
+        eprintln!("skipping: the GIS engine is not installed");
+        return;
+    };
+    // D-10: `connection_types: [file]` allows a files connection; the
+    // policy file is read as written, never rewritten.
+    let (_dir, root) = formats_setup(&py, "file");
+    let before = std::fs::read(root.join("policy.yaml")).unwrap();
+    let c = start(&root, &py).await;
+    let l = ok(&call(&c, "list_datasets", json!({"connection": "formats"})).await);
+    assert!(names(&l).contains(&"crashes".to_string()), "{l}");
+    ok(&call(
+        &c,
+        "query_features",
+        json!({"connection": "formats", "dataset": "crashes"}),
+    )
+    .await);
+    c.cancel().await.unwrap();
+    assert_eq!(std::fs::read(root.join("policy.yaml")).unwrap(), before);
 }

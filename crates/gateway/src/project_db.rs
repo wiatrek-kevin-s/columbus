@@ -197,12 +197,7 @@ pub(crate) fn connection_fingerprint(
 ) -> Option<String> {
     let id = label.strip_prefix("connection:")?;
     let c = settings.connections.iter().find(|c| c.id == id)?;
-    if !settings
-        .policy
-        .connection_types
-        .iter()
-        .any(|t| t.eq_ignore_ascii_case(&c.kind))
-    {
+    if !columbus_shared::policy::type_allowed(&settings.policy.connection_types, &c.kind) {
         return None;
     }
     let mut v = serde_json::to_value(c).ok()?;
