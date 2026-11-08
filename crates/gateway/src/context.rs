@@ -106,7 +106,7 @@ impl Entry {
         v
     }
     /// Some(true) when last confirmed longer ago than the interval.
-    fn stale(&self, interval_months: u32, today: NaiveDate) -> Option<bool> {
+    pub(crate) fn stale(&self, interval_months: u32, today: NaiveDate) -> Option<bool> {
         let d = self.str_field("last_confirmed")?;
         let d = NaiveDate::parse_from_str(&d, "%Y-%m-%d").ok()?;
         let months = (today.signed_duration_since(d).num_days() / 30) as u32;
@@ -154,20 +154,25 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(rd) = std::fs::read_dir(dir) else {
         return;
     };
-    let mut items: Vec<PathBuf> = rd.flatten().map(|e| e.path()).collect();
+    // A linked folder is not followed: it could lead out of the pack, or
+    // back into it without end.
+    let mut items: Vec<(PathBuf, bool)> = rd
+        .flatten()
+        .map(|e| (e.path(), e.file_type().is_ok_and(|t| t.is_dir())))
+        .collect();
     items.sort();
-    for p in items {
+    for (p, is_dir) in items {
         let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
         if name.starts_with('.') {
             continue;
         }
-        if p.is_dir() {
+        if is_dir {
             // Originals and scripts are not entries.
             if matches!(name, "sources" | "scripts" | "checks") {
                 continue;
             }
             walk(&p, out);
-        } else {
+        } else if !p.is_dir() {
             out.push(p);
         }
     }

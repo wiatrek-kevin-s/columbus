@@ -55,6 +55,8 @@ MAX_SHEETS = 20
 MAX_PAGES = 300
 # Longest text kept from one cell or shared string.
 MAX_CELL = 500
+# Most elements in a part read whole (Word's document, Excel's workbook).
+MAX_ELEMENTS = 1_000_000
 
 FORMATS = {".docx": "word", ".xlsx": "excel", ".pdf": "pdf", ".csv": "csv", ".md": "markdown", ".markdown": "markdown", ".txt": "text"}
 
@@ -65,8 +67,8 @@ R = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
 # The same characters the gateway treats as hidden (canon::hidden_char),
 # less tab and line feed.
 HIDDEN = re.compile(
-    "[\x00-\x08\x0b-\x1f\x7f-\x9f\xad͏؜ᅟᅠ឴឵᠋-᠏"
-    "​-‏ -‮⁠-⁯ㅤ︀-️﻿ﾠ￹-￻"
+    "[\x00-\x08\x0b-\x1f\x7f-\x9f\xad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180b-\u180f"
+    "\u200b-\u200f\u2028-\u202e\u2060-\u206f\u3164\ufe00-\ufe0f\ufeff\uffa0\ufff9-\ufffb"
     "\U000e0000-\U000e0fff]"
 )
 
@@ -151,23 +153,35 @@ def _why(e: Exception) -> str:
 
 
 def _xml(z: zipfile.ZipFile, name: str) -> ET.Element | None:
-    data = _part(z, name)
-    if data is None:
-        return None
-    try:
-        return ET.fromstring(data)
-    except ET.ParseError as e:
-        raise _err(f"{name} in the file is not well-formed XML ({e})") from None
+    """A part as a tree, of at most MAX_ELEMENTS elements."""
+    root = None
+    for ev, el, _ in _events(z, name, MAX_ELEMENTS):
+        if root is None:
+            root = el
+    return root
 
 
-def _events(z: zipfile.ZipFile, name: str):
-    """A part's start and end events, streamed (elements can be cleared as
-    they are read)."""
+def _events(z: zipfile.ZipFile, name: str, limit: int | None = None):
+    """A part's start and end events, streamed, each with the element's
+    parent: an element read can be taken out of its parent, so a large part
+    is never all in memory. With `limit`, a part of more elements than that
+    is refused."""
     data = _part(z, name)
     if data is None:
         return
+    stack: list[ET.Element] = []
+    n = 0
     try:
-        yield from ET.iterparse(io.BytesIO(data), events=("start", "end"))
+        for ev, el in ET.iterparse(io.BytesIO(data), events=("start", "end")):
+            if ev == "start":
+                n += 1
+                if limit is not None and n > limit:
+                    raise _err(f"{name} in the file has more parts than Columbus reads ({limit:,})")
+                stack.append(el)
+                yield ev, el, stack[-2] if len(stack) > 1 else None
+            else:
+                stack.pop()
+                yield ev, el, stack[-1] if stack else None
     except ET.ParseError as e:
         raise _err(f"{name} in the file is not well-formed XML ({e})") from None
 
@@ -342,7 +356,7 @@ def _sheet_rows(z: zipfile.ZipFile, part: str, shared: list[str]) -> tuple[list[
     rows: list[list[str]] = []
     cur: dict[int, str] | None = None
     nxt = 0
-    for ev, el in _events(z, part):
+    for ev, el, parent in _events(z, part, MAX_ELEMENTS * 4):
         tag = el.tag
         if ev == "start":
             if tag == f"{S}row":
@@ -369,14 +383,16 @@ def _sheet_rows(z: zipfile.ZipFile, part: str, shared: list[str]) -> tuple[list[
                 else:
                     val = vt[: MAX_CELL * 2]
                 cur[i] = val
-            el.clear()
+            if parent is not None:
+                parent.remove(el)
         elif tag == f"{S}row":
             if cur and any(v.strip() for v in cur.values()):
                 if len(rows) >= MAX_ROWS:
                     return rows, True
                 rows.append([cur.get(i, "") for i in range(max(cur) + 1)])
             cur = None
-            el.clear()
+            if parent is not None:
+                parent.remove(el)
     return rows, False
 
 
@@ -385,14 +401,15 @@ def _excel(path: str, warnings: list[str]) -> tuple[str, str | None]:
         if any(n.lower().startswith("xl/vbaproject") for n in z.namelist()):
             warnings.append("it holds macros; they were not read or run")
         shared: list[str] = []
-        for ev, el in _events(z, "xl/sharedStrings.xml"):
+        for ev, el, parent in _events(z, "xl/sharedStrings.xml", MAX_ELEMENTS * 4):
             if ev == "end" and el.tag == f"{S}si":
                 # The string's own text: direct and rich-text runs, not
                 # phonetic guides.
                 parts = [t.text or "" for t in el.findall(f"{S}t")]
                 parts += [t.text or "" for r in el.findall(f"{S}r") for t in r.findall(f"{S}t")]
                 shared.append("".join(parts)[: MAX_CELL * 2])
-                el.clear()
+                if parent is not None:
+                    parent.remove(el)
         wb = _xml(z, "xl/workbook.xml")
         rels = _xml(z, "xl/_rels/workbook.xml.rels")
         if wb is None:

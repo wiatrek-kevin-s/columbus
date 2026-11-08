@@ -220,6 +220,16 @@ function importView(body) {
 // Notes whose database changed since they were drafted (checked through
 // Columbus, under the rules in force), and notes due for review. Nothing
 // here changes your notes or your data until you choose an action.
+// Text as the person sees it: no invisible characters (controls, zero-width
+// and direction marks, Unicode tag characters, variation selectors), at
+// most `max` characters.
+const HIDDEN = /[\u0000-\u001f\u007f-\u009f\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180b-\u180f\u200b-\u200f\u2028-\u202e\u2060-\u206f\u3164\ufe00-\ufe0f\ufeff\uffa0\ufff9-\ufffb]/g;
+function shown(s, max) {
+  // Tag characters (U+E0000–E0FFF) are the surrogate pairs \udb40–\udb43.
+  const t = String(s ?? "").replace(/[\udb40-\udb43][\udc00-\udfff]/g, "").replace(HIDDEN, "");
+  return t.length > max ? `${t.slice(0, max)}…` : t;
+}
+
 function proposals(body) {
   const err = h("p", { id: "pr-error", class: "error-text", role: "alert", hidden: true });
   const out = h("div", { id: "pr-results", class: "stack" });
@@ -282,7 +292,11 @@ function proposals(body) {
           }, { title: "No one has edited this draft, so Columbus can simply draft it again from the database" });
         } else {
           act = button("Ask my assistant", "sm", () => {
-            try { sessionStorage.setItem("columbus.prefill", JSON.stringify({ text: `My note ${n.id} about ${n.connection}'s ${n.dataset} no longer matches the database (${what.join("; ")}). Look at the dataset and tell me what to change in the note.`, at: Date.now() })); } catch { /* none */ }
+            // Only what the person can see, and short enough to read before
+            // sending: names come from the database and the note.
+            const said = shown(what.join("; "), 1500);
+            const text = `My note ${shown(n.id, 120)} about ${shown(n.connection, 120)}'s ${shown(n.dataset, 200)} no longer matches the database (${said}). Look at the dataset and tell me what to change in the note.`;
+            try { sessionStorage.setItem("columbus.prefill", JSON.stringify({ text, at: Date.now() })); } catch { /* none */ }
             go("#/chats/fresh");
           }, { title: n.status === "reviewed" ? "It's reviewed (or edited), so it's yours to update: your assistant can look and tell you what to change" : "It's been edited, so drafting again would leave it alone" });
         }
@@ -305,19 +319,34 @@ function proposals(body) {
       const ul = h("ul", { class: "list" });
       for (const n of due) {
         const err2 = h("p", { class: "error-text small", role: "alert", hidden: true });
-        const ok = button("Still right", "sm", async () => {
-          ok.disabled = true;
-          try {
-            const read = await invoke("note_read", { path: n.path });
-            await invoke("note_confirm", { path: n.path, sha256: read.sha256 });
-            toast(`Confirmed ${n.title} as of today.`);
-            run();
-          } catch (e) { showError(err2, e); ok.disabled = false; }
-        }, { title: "You've checked it and it's still right: its last-confirmed date becomes today" });
+        const shownText = h("div", { class: "stack", hidden: true });
+        let act;
+        if (n.status === "draft" || !String(n.path).endsWith(".md")) {
+          // A draft is reviewed in Notes (Mark reviewed), not confirmed here;
+          // nor is an entry that isn't a Markdown note.
+          act = h("a", { class: "btn sm", href: "#/documents/notes", onclick: () => { try { sessionStorage.setItem("columbus.note", n.path); } catch { /* none */ } } }, "Review it");
+        } else {
+          // Confirmed only after reading it here: exactly the text shown.
+          act = button("Read and confirm", "sm", async () => {
+            act.disabled = true;
+            let read;
+            try { read = await invoke("note_read", { path: n.path }); } catch (e) { showError(err2, e); act.disabled = false; return; }
+            const yes = button("Yes, it's still right", "primary sm", async () => {
+              yes.disabled = true;
+              try {
+                await invoke("note_confirm", { path: n.path, sha256: read.sha256 });
+                toast(`Confirmed ${n.title} as of today.`);
+                run();
+              } catch (e) { showError(err2, e); yes.disabled = false; }
+            }, { title: "Its last-confirmed date becomes today; nothing else in it changes" });
+            shownText.replaceChildren(h("pre", { class: "box" }, read.text), h("div", { class: "row" }, yes));
+            shownText.hidden = false;
+          }, { title: "Read the note; if it's still right, confirm it as of today" });
+        }
         ul.append(h("li", { class: "tool" }, h("div", { class: "text" },
           h("b", {}, noteLink(n)),
-          h("span", { class: "where" }, `last confirmed ${n.last_confirmed}, ${plural(n.months, "month")} ago · ${n.status}`), err2),
-          h("div", { class: "acts" }, ok)));
+          h("span", { class: "where" }, `last confirmed ${n.last_confirmed}, ${plural(n.months, "month")} ago · ${n.status}`), err2, shownText),
+          h("div", { class: "acts" }, act)));
       }
       bd2.append(ul);
     }

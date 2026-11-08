@@ -144,24 +144,34 @@ async fn run(state: &State, request: &str) -> Result<Value, String> {
     // Every outcome from here on is audited: previews, imports, refusals.
     let (sha, out) = attempt(state, &req).await;
     match &out {
-        Ok(_) if req.preview => record(
+        Ok(v) if req.preview => record(
             state,
             "allowed",
-            format!("previewed {shown} (nothing written)"),
+            format!("previewed {shown} (nothing written){}", how(v)),
             sha,
         ),
         Ok(v) => record(
             state,
             "allowed",
             format!(
-                "imported {shown} as the draft note {}",
-                v["id"].as_str().unwrap_or("")
+                "imported {shown} as the draft note {}{}",
+                v["id"].as_str().unwrap_or(""),
+                how(v)
             ),
             sha,
         ),
         Err(e) => record(state, "denied", format!("{shown}: {e}"), sha),
     }
     out
+}
+
+/// How the document was read, for the audit.
+fn how(v: &Value) -> &'static str {
+    if v["confined"] == true {
+        "; read confined"
+    } else {
+        "; read unconfined, in the engine"
+    }
 }
 
 async fn attempt(state: &State, req: &Request) -> (Option<String>, Result<Value, String>) {
@@ -215,7 +225,7 @@ async fn attempt(state: &State, req: &Request) -> (Option<String>, Result<Value,
             _ => {}
         }
     }
-    let doc = match convert(state, &bytes, &ext, &clean_name(&name)).await {
+    let (doc, was_confined) = match convert(state, &bytes, &ext, &clean_name(&name)).await {
         Ok(d) => d,
         Err(e) => return (some, Err(e)),
     };
@@ -224,6 +234,11 @@ async fn attempt(state: &State, req: &Request) -> (Option<String>, Result<Value,
     let (markdown, hidden) = visible(doc["markdown"].as_str().unwrap_or(""));
     let (found_title, _) = visible(doc["title"].as_str().unwrap_or(""));
     let mut warnings: Vec<Value> = doc["warnings"].as_array().cloned().unwrap_or_default();
+    if !was_confined {
+        warnings.push(json!(
+            "this computer can't read documents confined, so Columbus's engine read it"
+        ));
+    }
     if hidden > 0 {
         warnings.push(json!(format!(
             "{hidden} invisible character{} (control, zero-width or hidden-tag characters) {} removed",
@@ -242,10 +257,16 @@ async fn attempt(state: &State, req: &Request) -> (Option<String>, Result<Value,
                 "title": found_title,
                 "markdown": markdown,
                 "warnings": warnings,
+                "confined": was_confined,
             })),
         );
     }
-    let out = add(state, req, &name, &ext, &bytes, &sha, &markdown).await;
+    let out = add(state, req, &name, &ext, &bytes, &sha, &markdown)
+        .await
+        .map(|mut v| {
+            v["confined"] = json!(was_confined);
+            v
+        });
     (some, out)
 }
 
@@ -264,27 +285,75 @@ fn visible(s: &str) -> (String, usize) {
     (out, n)
 }
 
-/// The document as Markdown. Read confined when this computer can (no
-/// network, writing only its own folder, at most [`MEMORY_MB`] of memory),
-/// as the person's own scripts are; otherwise in Columbus's engine. Either
-/// way within [`SECONDS`].
-async fn convert(state: &State, bytes: &[u8], ext: &str, name: &str) -> Result<Value, String> {
+/// The document as Markdown, and whether it was read confined. Read
+/// confined when this computer can (no network, writing only its own
+/// folder, at most [`MEMORY_MB`] of memory), as the person's own scripts
+/// are; otherwise in Columbus's engine. Which one is decided before anything
+/// reads the document, never from how a confined read ended, so a document
+/// can't send itself to the engine. Either way within [`SECONDS`].
+async fn convert(
+    state: &State,
+    bytes: &[u8],
+    ext: &str,
+    name: &str,
+) -> Result<(Value, bool), String> {
     let dir = state.sandbox.root().join("import");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("tmp")).map_err(|e| format!("{}: {e}", dir.display()))?;
     let input = dir.join(format!("in.{ext}"));
+    let script = state
+        .paths
+        .worker_script
+        .parent()
+        .map(|w| (w.to_path_buf(), w.join("columbus_docs.py")))
+        .filter(|(_, s)| s.is_file());
     let out = match std::fs::write(&input, bytes) {
         Err(e) => Err(format!("{}: {e}", input.display())),
-        Ok(()) => match columbus_confine::ready(columbus_confine::Level::A) {
-            Ok(launcher) => match confined(state, &launcher, &dir, &input, name).await {
-                Err(Unconfined) => core(state, &input, name).await,
-                Ok(r) => r,
-            },
-            Err(_) => core(state, &input, name).await,
+        Ok(()) => match (columbus_confine::ready(columbus_confine::Level::A), script) {
+            (Ok(launcher), Some((workers, script))) => {
+                confined(state, &launcher, &workers, &script, &dir, &input, name)
+                    .await
+                    .map(|v| (v, true))
+            }
+            _ => core(state, &input, name).await.map(|v| (v, false)),
         },
     };
     let _ = std::fs::remove_dir_all(&dir);
-    out
+    out.map(|(v, c)| (tidy(&v), c))
+}
+
+/// The converter's answer as plain values: strings without hidden
+/// characters, warnings few and short, a format Columbus knows.
+fn tidy(v: &Value) -> Value {
+    let text = |v: &Value| visible(v.as_str().unwrap_or("")).0;
+    let warnings: Vec<Value> = v["warnings"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .take(30)
+        .map(|w| json!(text(w).chars().take(300).collect::<String>()))
+        .collect();
+    let format = v["format"]
+        .as_str()
+        .filter(|f| ["word", "excel", "pdf", "csv", "markdown", "text"].contains(f))
+        .unwrap_or("text");
+    json!({
+        "markdown": v["markdown"].as_str().unwrap_or(""),
+        "title": text(&v["title"]).chars().take(200).collect::<String>(),
+        "warnings": warnings,
+        "format": format,
+    })
+}
+
+/// An error from the converter, as the person and the audit see it.
+fn said(e: &str) -> String {
+    let (e, _) = visible(e);
+    let e: String = e.replace('\n', " ").chars().take(300).collect();
+    if e.trim().is_empty() {
+        "it could not be read".into()
+    } else {
+        e
+    }
 }
 
 async fn core(state: &State, input: &Path, name: &str) -> Result<Value, String> {
@@ -296,29 +365,21 @@ async fn core(state: &State, input: &Path, name: &str) -> Result<Value, String> 
             std::time::Duration::from_secs(SECONDS),
         )
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| said(&e.to_string()))
 }
-
-/// The launcher could not confine it (nothing of the document was read).
-struct Unconfined;
 
 async fn confined(
     state: &State,
     launcher: &Path,
+    workers: &Path,
+    script: &Path,
     dir: &Path,
     input: &Path,
     name: &str,
-) -> Result<Result<Value, String>, Unconfined> {
-    let Some(workers) = state.paths.worker_script.parent().map(Path::to_path_buf) else {
-        return Err(Unconfined);
-    };
-    let script = workers.join("columbus_docs.py");
-    if !script.is_file() {
-        return Err(Unconfined);
-    }
+) -> Result<Value, String> {
     let out = dir.join("out.json");
     let mut read_only = crate::plugins::python_dirs(&state.paths.python);
-    read_only.push(workers.clone());
+    read_only.push(workers.to_path_buf());
     let spec = columbus_confine::Spec {
         level: columbus_confine::Level::A,
         name: "document-import".into(),
@@ -339,7 +400,7 @@ async fn confined(
         name.to_string(),
     ];
     let python = state.paths.python.to_string_lossy().into_owned();
-    let ran = match crate::script_tools::run_under(
+    let ran = crate::script_tools::run_under(
         launcher,
         &spec,
         dir,
@@ -349,73 +410,93 @@ async fn confined(
         std::time::Duration::from_secs(SECONDS),
     )
     .await
-    {
-        Ok(r) => r,
-        Err(_) => return Err(Unconfined),
-    };
-    let stderr = ran.stderr.text();
-    if ran.exit_code == Some(columbus_confine::EXIT_CONFINE_FAILED)
-        && stderr.starts_with("columbus-confine:")
-    {
-        return Err(Unconfined);
-    }
+    .map_err(|e| format!("Columbus could not start reading it confined: {}", said(&e)))?;
     if ran.timed_out {
-        return Ok(Err(format!(
+        return Err(format!(
             "it took longer than {SECONDS} seconds to read, so it was stopped; save a shorter or simpler copy to import"
-        )));
+        ));
     }
+    // Whatever the run says about itself is only the reason shown: a failed
+    // read is never tried again another way.
+    let stderr = ran.stderr.text();
     if ran.exit_code != Some(0) {
         if stderr.contains("columbus-confine: stopped the program: it used more than") {
-            return Ok(Err(format!(
+            return Err(format!(
                 "reading it needed more than the {MEMORY_MB} MB of memory Columbus allows, so it was stopped; save a shorter or simpler copy to import"
-            )));
+            ));
         }
         let last = stderr
             .lines()
             .rev()
             .find(|l| !l.trim().is_empty())
             .unwrap_or("");
-        let (last, _) = visible(last);
-        return Ok(Err(format!(
-            "it could not be read ({})",
-            last.chars().take(200).collect::<String>()
-        )));
+        return Err(format!("it could not be read ({})", said(last)));
     }
-    let answer = std::fs::File::open(&out).and_then(|f| {
-        use std::io::Read;
-        let mut b = Vec::new();
-        f.take(16 * 1024 * 1024).read_to_end(&mut b)?;
-        Ok(b)
-    });
-    let v: Value = match answer
+    // The answer is a plain file in the reader's folder, not a link or a
+    // pipe it left there.
+    let v: Value = match read_regular(&out, 16 * 1024 * 1024, false)
         .ok()
         .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
     {
         Some(v) => v,
-        None => return Ok(Err("it could not be read (no answer came back)".into())),
+        None => return Err("it could not be read (no answer came back)".into()),
     };
-    Ok(if v["ok"] == true {
+    if v["ok"] == true && v["result"].is_object() {
         Ok(v["result"].clone())
     } else {
-        Err(v["error"]
-            .as_str()
-            .unwrap_or("it could not be read")
-            .to_string())
-    })
+        Err(said(v["error"].as_str().unwrap_or("")))
+    }
+}
+
+/// A regular file's bytes, at most `max`: never a pipe or device (opened
+/// without waiting, then checked), and, unless `follow`, never through a
+/// link.
+fn read_regular(path: &Path, max: u64, follow: bool) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let first = if follow {
+        std::fs::metadata(path)
+    } else {
+        std::fs::symlink_metadata(path)
+    }
+    .map_err(|e| format!("{}: {e}", path.display()))?;
+    if !first.is_file() {
+        return Err(format!("{} is not a file", path.display()));
+    }
+    let mut opts = std::fs::OpenOptions::new();
+    opts.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.custom_flags(libc::O_NONBLOCK | if follow { 0 } else { libc::O_NOFOLLOW });
+    }
+    let f = opts
+        .open(path)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    let meta = f
+        .metadata()
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    if !meta.is_file() {
+        return Err(format!("{} is not a file", path.display()));
+    }
+    let mut b = Vec::new();
+    f.take(max + 1)
+        .read_to_end(&mut b)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    if b.len() as u64 > max {
+        return Err(format!("{} is too large", path.display()));
+    }
+    Ok(b)
 }
 
 fn read_capped(path: &Path) -> Result<Vec<u8>, String> {
-    use std::io::Read;
     const MAX: u64 = 50 * 1024 * 1024;
-    let f = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let mut b = Vec::new();
-    f.take(MAX + 1)
-        .read_to_end(&mut b)
-        .map_err(|e| format!("{}: {e}", path.display()))?;
-    if b.len() as u64 > MAX {
-        return Err("the document is larger than Columbus imports (50 MB)".into());
-    }
-    Ok(b)
+    read_regular(path, MAX, true).map_err(|e| {
+        if e.ends_with("is too large") {
+            "the document is larger than Columbus imports (50 MB)".into()
+        } else {
+            e
+        }
+    })
 }
 
 async fn add(

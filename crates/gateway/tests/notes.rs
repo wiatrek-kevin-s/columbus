@@ -781,7 +781,7 @@ async fn the_inbox_finds_notes_whose_database_changed_and_notes_due() {
 
     // The database changes: a field added, one dropped, a table refused.
     let script = format!(
-        "import sqlite3; db = sqlite3.connect({:?}); db.execute('ALTER TABLE roadway ADD COLUMN SPEED INTEGER'); db.execute('ALTER TABLE segments DROP COLUMN kind'); db.commit()",
+        "import sqlite3; db = sqlite3.connect({:?}); db.execute('ALTER TABLE roadway ADD COLUMN SPEED INTEGER'); db.execute('ALTER TABLE roadway ADD COLUMN \"seen\\U000E0041\\U000E006C\\U000E006C\" TEXT'); db.execute('ALTER TABLE segments DROP COLUMN kind'); db.commit()",
         file.display().to_string()
     );
     assert!(std::process::Command::new(&py)
@@ -795,6 +795,8 @@ async fn the_inbox_finds_notes_whose_database_changed_and_notes_due() {
         .iter()
         .find(|n| n["dataset"] == "roadway")
         .expect("roadway changed");
+    // A name carrying characters a person can't see is never offered (it
+    // would reach a chat through "Ask my assistant").
     assert_eq!(road["added"], json!(["SPEED"]), "{r}");
     assert_eq!(
         road["untouched"], true,
@@ -843,4 +845,20 @@ async fn the_inbox_finds_notes_whose_database_changed_and_notes_due() {
         due.iter().any(|n| n["last_confirmed"] == "2020-01-01"),
         "{r}"
     );
+    // A retired note is neither due nor changed.
+    let text = std::fs::read_to_string(&notes).unwrap();
+    std::fs::write(&notes, text.replace("status: draft", "status: retired")).unwrap();
+    let r = notes_check(&root, &py);
+    assert!(
+        !r["due"].to_string().contains("2020-01-01")
+            && !r["changed"].to_string().contains("roadway"),
+        "{r}"
+    );
+    // A folder linked into itself is not followed.
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(".", root.join("notes/loop")).unwrap();
+        std::os::unix::fs::symlink(".", root.join("notes/loop2")).unwrap();
+        assert_eq!(notes_check(&root, &py)["ok"], true);
+    }
 }

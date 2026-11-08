@@ -236,7 +236,7 @@ fn yaml_str(s: &str) -> String {
 
 /// A name from a database that can be written down as it is: no control or
 /// line-break characters, not empty, not absurdly long.
-fn name_ok(s: &str) -> bool {
+pub(crate) fn name_ok(s: &str) -> bool {
     !s.is_empty()
         && s.chars().count() <= 128
         && !s
