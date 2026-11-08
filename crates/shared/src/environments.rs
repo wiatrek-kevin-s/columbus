@@ -698,19 +698,21 @@ pub(crate) enum Ran {
 }
 
 /// Run a command to its end or `limit`, ending it and what it started on
-/// time-out (its process group on Unix, its process tree on Windows).
+/// time-out (its process group on Unix, its job object on Windows; see
+/// [`crate::proctree`]). Whatever it left running when it ended is ended
+/// too, and output is read on threads that are never waited on past a
+/// short grace once the tree is gone, so a left-behind process holding
+/// the pipes cannot make this wait.
 pub(crate) fn run_limited(mut cmd: std::process::Command, limit: Duration) -> Ran {
     use std::io::Read;
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        cmd.process_group(0);
-    }
+    crate::proctree::prepare(&mut cmd);
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => return Ran::Failed(e.to_string()),
     };
+    let mut tree = crate::proctree::Tree::of(&child);
     let read = |r: Option<Box<dyn Read + Send>>| {
+        let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let mut buf = Vec::new();
             if let Some(mut r) = r {
@@ -718,8 +720,9 @@ pub(crate) fn run_limited(mut cmd: std::process::Command, limit: Duration) -> Ra
                 // Read the rest so the program never blocks on a full pipe.
                 let _ = std::io::copy(&mut r, &mut std::io::sink());
             }
-            String::from_utf8_lossy(&buf).into_owned()
-        })
+            let _ = tx.send(String::from_utf8_lossy(&buf).into_owned());
+        });
+        rx
     };
     let out = read(
         child
@@ -739,41 +742,26 @@ pub(crate) fn run_limited(mut cmd: std::process::Command, limit: Duration) -> Ra
             Ok(Some(s)) => break Some(s),
             Ok(None) if started.elapsed() >= limit => break None,
             Ok(None) => std::thread::sleep(Duration::from_millis(50)),
-            Err(e) => return Ran::Failed(e.to_string()),
+            Err(e) => {
+                tree.kill();
+                let _ = child.kill();
+                return Ran::Failed(e.to_string());
+            }
         }
     };
+    // Its whole tree: on time-out, and what it left running when it ended.
+    tree.kill();
     let Some(status) = status else {
-        kill_tree(&mut child);
+        let _ = child.kill();
         let _ = child.wait();
         return Ran::TimedOut;
     };
-    #[cfg(unix)]
-    kill_tree(&mut child);
+    let grace = Duration::from_secs(5);
     Ran::Done {
-        stdout: out.join().unwrap_or_default(),
-        stderr: err.join().unwrap_or_default(),
+        stdout: out.recv_timeout(grace).unwrap_or_default(),
+        stderr: err.recv_timeout(grace).unwrap_or_default(),
         success: status.success(),
     }
-}
-
-fn kill_tree(child: &mut std::process::Child) {
-    #[cfg(unix)]
-    {
-        let pid = child.id() as i32;
-        if pid > 1 {
-            // It leads its own group.
-            unsafe { libc::kill(-pid, libc::SIGKILL) };
-        }
-    }
-    #[cfg(windows)]
-    {
-        let _ = std::process::Command::new("taskkill")
-            .args(["/T", "/F", "/PID", &child.id().to_string()])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
-    }
-    let _ = child.kill();
 }
 
 /// The cheap freshness signal: the interpreter file's size and time, and
