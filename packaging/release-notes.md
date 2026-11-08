@@ -1,13 +1,20 @@
 Columbus {{VERSION}}, a test release. Click a link to download that file.
 
 **New in this version:**
+- **Documents:**
+  - **Import** a Word, Excel, PDF, CSV, Markdown or text file as a draft note (an SOP, a reference note or a glossary). You preview exactly what your assistant will see first; the original is kept beside the note.
+  - **Proposals:** notes whose database changed since they were written, notes due for review, and changes your assistant **suggested** for you to **Accept** or **Dismiss** when you get to them (it can suggest changes to notes you've reviewed, which it can't change itself).
 - **Share tools and workflows with coworkers:**
-  - **Share…** on an installed tool, or on an approved workflow's page, saves a `.columbus` file. Send it any way you like.
-  - A workflow's file brings the tools it uses. Its schedule, past runs, data, connection details and passwords never travel.
-  - Your coworker opens it with **Open a shared file…** on their Tools or Workflows page. For a workflow, they choose which of their own connections stands for each one it names, and their export folder.
-  - Each part then waits for them to read and approve with their own Touch ID or Windows Hello, exactly like their own assistant's proposals. Nothing is installed or run by opening the file.
+  - **Share…** on an installed tool, or on an approved workflow's page, saves a `.columbus` file, **signed with your own sharing key**. A workflow's file brings the tools it uses; its schedule, runs, data, connection details, passwords and email recipients never travel.
+  - Your coworker opens it with **Open a shared file…**, sees who signed it (by the key's fingerprint, until they trust your key under your name), chooses their own connections, and approves each part with their own Touch ID or Windows Hello. Nothing is installed or run by opening the file.
+  - **Team library** (Tools page): pick a folder your team shares; Columbus lists the shared files in it and whether each is new, the same as yours, or an update.
+  - **Tools for everyone:** IT can install a shared tool for everyone on a computer (`columbus-mcp tools org-install FILE`).
   - Off by default: turn on **Allow shared tools and workflows** on the Tools page.
-- **Workflows list every connection they read:** a workflow must now list every connection its steps use, including ones named inside a step's inputs.
+- **Map snapshots can label features** with a field you or your assistant choose.
+- **Workflows can email their report**, once your organization sets up a mail server in the policy (Workflows page, Email).
+- **Workflows list every connection they read,** including ones named inside a step's inputs.
+
+**After updating:** run the engine setup once more (Mac: `sh engine/setup-engine.sh` in your Columbus folder; Windows: `engine\setup-engine.ps1`). It adds what PDF import and map labels need.
 
 **In 0.12.0:** Esri shapefiles and file geodatabases.
 
