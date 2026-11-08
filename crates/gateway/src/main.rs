@@ -25,6 +25,11 @@
 //! columbus-mcp tools install ID     install a waiting tool (confirmed on the terminal)
 //! columbus-mcp tools decline ID     delete a waiting tool
 //! columbus-mcp tools remove ID      remove an installed tool
+//! columbus-mcp env add ID --python PATH [--trust governed|trusted] [--confinement A|B] [--description TEXT]
+//!                                   register a Python environment (confirmed on the terminal)
+//! columbus-mcp env confirm ID       probe and confirm it again after a change
+//! columbus-mcp env list             registered environments and their state
+//! columbus-mcp env remove ID        remove one (confirmed on the terminal)
 //! columbus-mcp --version
 //! ```
 
@@ -36,6 +41,7 @@ mod config;
 mod context;
 mod doc_import_cli;
 mod edit_tools;
+mod env_cli;
 mod export_tools;
 mod fetch_tools;
 mod gis_tools;
@@ -118,6 +124,10 @@ async fn main() -> Result<()> {
         ["tools", "org-install", file] => org_tools_cli::install(file).await,
         ["tools", "org-remove", id] => org_tools_cli::remove(id),
         ["tools", "org-list"] => org_tools_cli::list(),
+        ["env", "add", id, rest @ ..] => env_cli::add(id, rest),
+        ["env", "confirm", id] => env_cli::confirm(id),
+        ["env", "list"] => env_cli::list(),
+        ["env", "remove", id] => env_cli::remove(id),
         ["servers", "list"] => review_cli::list().await,
         ["servers", "review", id] => review_cli::review(id).await.map(|_| ()),
         ["servers", "approve", id] => review_cli::approve(id, false).await,
@@ -149,7 +159,7 @@ async fn main() -> Result<()> {
             Ok(())
         }
         _ => bail!(
-            "usage: columbus-mcp [serve] | audit verify FILE | secret set|delete ID | servers list|review|approve|signin|signout ID | registry update [--from DIR|URL]|query JSON | plugins list|approve ID | tools list|show|install|decline|remove ID|org-install FILE|org-remove ID|org-list | workflow run ID [--scheduled]|validate FILE|list | --version"
+            "usage: columbus-mcp [serve] | audit verify FILE | secret set|delete ID | servers list|review|approve|signin|signout ID | registry update [--from DIR|URL]|query JSON | plugins list|approve ID | tools list|show|install|decline|remove ID|org-install FILE|org-remove ID|org-list | env add ID --python PATH [--trust governed|trusted]|confirm|remove ID|list | workflow run ID [--scheduled]|validate FILE|list | --version"
         ),
     }
 }

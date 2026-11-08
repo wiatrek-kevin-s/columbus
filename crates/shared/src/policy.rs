@@ -361,6 +361,58 @@ pub struct OrgPolicy {
     /// Notes Columbus drafts from a connection's database.
     #[serde(default)]
     pub notes: NotesPolicy,
+    /// The person's own Python environments (F-7, build brief Part 5).
+    #[serde(default)]
+    pub environments: EnvironmentsPolicy,
+    /// Scripts' approval options (F-7).
+    #[serde(default)]
+    pub scripts: ScriptsPolicy,
+}
+
+/// Registered Python environments that scripts may run in (F-7). Every
+/// switch is off by default; unknown keys are refused.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct EnvironmentsPolicy {
+    /// The master switch: off, environments can't be registered, created
+    /// or used, and scripts run only in the engine's Python.
+    #[serde(default)]
+    pub allow: bool,
+    /// Trusted (unconfined) environments may be registered and used.
+    #[serde(default)]
+    pub allow_trusted: bool,
+    /// Governed environments may run at level B (with network).
+    #[serde(default)]
+    pub allow_network: bool,
+    /// Package index hosts Columbus may reach when it creates an
+    /// environment.
+    #[serde(default = "index_hosts")]
+    pub index_hosts: Vec<String>,
+}
+
+fn index_hosts() -> Vec<String> {
+    vec!["pypi.org".into(), "files.pythonhosted.org".into()]
+}
+
+impl Default for EnvironmentsPolicy {
+    fn default() -> Self {
+        EnvironmentsPolicy {
+            allow: false,
+            allow_trusted: false,
+            allow_network: false,
+            index_hosts: index_hosts(),
+        }
+    }
+}
+
+/// Script approval options (F-7); unknown keys are refused.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ScriptsPolicy {
+    /// "Allow this script for the session" on the approval card (governed
+    /// level-A environments and the engine only). Off by default.
+    #[serde(default)]
+    pub session_approval: bool,
 }
 
 /// Project databases: local DuckDB files the assistant builds from governed
@@ -616,6 +668,8 @@ impl Default for OrgPolicy {
             fetch_hosts: vec![],
             companion: CompanionPolicy::default(),
             notes: NotesPolicy::default(),
+            environments: EnvironmentsPolicy::default(),
+            scripts: ScriptsPolicy::default(),
         }
     }
 }
@@ -1175,6 +1229,33 @@ expires: 2027-06-30
         assert!(a.dataset_allowed("\"ROADS\".\"CONTROL_SECTION\""));
         assert!(!a.dataset_allowed("ROADS.ROADWAY_AUDIT"));
         assert!(!a.dataset_allowed("HR.EMPLOYEES"));
+    }
+
+    #[test]
+    fn environment_switches_default_off_and_refuse_unknown_keys() {
+        let p = OrgPolicy::parse("connection_types: [gpkg]\n", Path::new("p.yaml")).unwrap();
+        assert!(!p.environments.allow && !p.environments.allow_trusted);
+        assert!(!p.environments.allow_network && !p.scripts.session_approval);
+        assert_eq!(
+            p.environments.index_hosts,
+            vec!["pypi.org".to_string(), "files.pythonhosted.org".to_string()]
+        );
+        assert_eq!(OrgPolicy::default().environments, p.environments);
+        let p = OrgPolicy::parse(
+            "environments: { allow: true, allow_trusted: true, allow_network: true, index_hosts: [pypi.corp.example] }\nscripts: { session_approval: true }\n",
+            Path::new("p.yaml"),
+        )
+        .unwrap();
+        assert!(p.environments.allow && p.environments.allow_trusted);
+        assert!(p.environments.allow_network && p.scripts.session_approval);
+        assert_eq!(p.environments.index_hosts, vec!["pypi.corp.example"]);
+        for bad in [
+            "environments: { allow: true, allow_everything: true }\n",
+            "scripts: { session_approvals: true }\n",
+            "environments: { allow: yes-please }\n",
+        ] {
+            assert!(OrgPolicy::parse(bad, Path::new("p.yaml")).is_err(), "{bad}");
+        }
     }
 
     #[test]

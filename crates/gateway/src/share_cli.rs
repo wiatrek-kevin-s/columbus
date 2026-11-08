@@ -133,6 +133,7 @@ fn record(state: &State, seen: &Seen, decision: &str, reason: String) -> Result<
             tools_hash: None,
             labels: vec![],
             flow_decision: None,
+            environment: None,
         })
         .map(|_| ())
         .map_err(|e| format!("refused: the audit log could not be written ({e})"))

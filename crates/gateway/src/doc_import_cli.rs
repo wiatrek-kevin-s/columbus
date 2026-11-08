@@ -106,6 +106,7 @@ fn record(state: &State, decision: &str, reason: String, sha: Option<String>) {
         tools_hash: None,
         labels: vec![],
         flow_decision: None,
+        environment: None,
     });
 }
 
