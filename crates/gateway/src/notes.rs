@@ -1229,6 +1229,7 @@ impl Gateway {
             code: None,
             standing: None,
             always_covers: None,
+            script_session: false,
         };
         match self.seek_approval(&ctx, ask).await {
             Ok(Sought::Granted(id)) => rec.approval = Some(id),
@@ -1480,6 +1481,7 @@ impl Gateway {
             code: None,
             standing: Some(&scopes),
             always_covers: Some(always_covers),
+            script_session: false,
         };
         drop(policy);
         let mut rec = rec;

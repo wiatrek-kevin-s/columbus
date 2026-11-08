@@ -56,6 +56,12 @@ pub(crate) struct Ask<'a> {
     /// What that wider grant covers, in the person's words; shown with the
     /// choice and added to the summary.
     pub always_covers: Option<String>,
+    /// A script that may be allowed for the session (REQ-17, R-15: policy
+    /// `scripts.session_approval`, the engine or a governed level-A
+    /// environment): "Allow this script for the session" is offered, and
+    /// grants exactly `standing` (its code hash and environment), so the
+    /// same code with other inputs runs without asking in this session.
+    pub script_session: bool,
 }
 
 impl Gateway {
@@ -102,7 +108,14 @@ impl Gateway {
                 .consume(id, ask.tool, ask.request, self.now())?;
             return Ok(Sought::Granted(id.to_string()));
         }
-        if !ask.every_time && !matches!(ask.risk, Risk::Script | Risk::Edit) {
+        // Scripts stand only as the session approval of their code, and
+        // never without scopes to bind it to.
+        let script_session = ask.script_session
+            && ask.risk == Risk::Script
+            && ask.standing.is_some_and(|s| !s.is_empty());
+        let may_stand =
+            !ask.every_time && (script_session || !matches!(ask.risk, Risk::Script | Risk::Edit));
+        if may_stand {
             let stands = match ask.standing {
                 Some(scopes) => st.approvals.standing_covers(ask.tool, scopes),
                 None => st.approvals.standing_allows(ask.tool, ask.request),
@@ -119,9 +132,10 @@ impl Gateway {
                 ask.summary
             )));
         }
-        // Scripts are approved one run at a time and edits one change set
-        // at a time, wherever the person is asked.
-        let offer_always = !ask.every_time && !matches!(ask.risk, Risk::Script | Risk::Edit);
+        // Scripts are approved one run at a time (unless allowed for the
+        // session, above) and edits one change set at a time, wherever the
+        // person is asked.
+        let offer_always = may_stand;
         let covers = ask.always_covers.clone().filter(|_| offer_always);
         // The prompt in the person's client says what it covers too.
         let prompt = match &covers {
@@ -145,6 +159,9 @@ impl Gateway {
         let declined = || format!("the person declined: {}", ask.summary);
 
         let always_choice = offer_always.then(|| match &covers {
+            Some(c) if script_session => {
+                format!("Allow once, or allow this script for the session: {c}")
+            }
             Some(c) => format!("Allow once, or allow for this session: {c}"),
             None => "Allow once, or allow this exact request again for the rest of the session"
                 .to_string(),

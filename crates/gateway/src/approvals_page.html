@@ -158,8 +158,10 @@ button:disabled { opacity: .5; cursor: default; }
     det.appendChild(el("pre", null, JSON.stringify(a.request, null, 2)));
     c.appendChild(det);
     var actions = el("div", "actions");
-    var once = a.offer_always === false || a.risk === "script" || a.risk === "edit";
-    [["allow_once", "Allow once", "primary"], ["always_this_session", "Allow for this session", ""], ["decline", "Decline", "danger"]]
+    // A script is offered for the session only where the server says so
+    // (policy scripts.session_approval; never trusted or network ones).
+    var once = a.offer_always !== true || a.risk === "edit";
+    [["allow_once", "Allow once", "primary"], ["always_this_session", a.risk === "script" ? "Allow this script for the session" : "Allow for this session", ""], ["decline", "Decline", "danger"]]
       .filter(function (b) { return !(once && b[0] === "always_this_session"); })
       .forEach(function (b) {
         var btn = el("button", b[2], b[1]);

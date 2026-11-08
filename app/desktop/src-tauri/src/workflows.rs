@@ -601,6 +601,7 @@ mod tests {
             purpose: String::new(),
             fingerprint: String::new(),
             plain: vec![],
+            warnings: vec![],
             days: w.days().into_iter().map(String::from).collect(),
             at: Some("06:30".into()),
             tools: vec![],

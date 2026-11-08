@@ -3,8 +3,9 @@
 //!
 //! The agent is untrusted, so the script is too. It runs only when
 //! organization policy allows scripts, only after the person approves that
-//! exact code with those exact inputs (every run: no "allow for this
-//! session"), and only confined at level A through the `columbus-confine`
+//! exact code with those exact inputs (every run, unless policy
+//! `scripts.session_approval` lets them allow that code for the session:
+//! the engine and governed level-A environments only), and only confined at level A through the `columbus-confine`
 //! launcher: its own run folder is the one place it can write, the Python
 //! installation the one other place it can read, and it has no network.
 //! There is no unconfined fallback, whatever `allow_unconfined_local` says.
@@ -52,6 +53,12 @@ use crate::server::{
 /// so the code that runs is the code the person read. Python run on a file
 /// would honour `# coding: utf-7` and decode a comment into code.
 const RUN_TEXT: &str = "import sys, types; p = sys.argv[1]; t = open(p, encoding='utf-8', newline='').read(); m = types.ModuleType('__main__'); m.__file__ = p; m.__builtins__ = __builtins__; sys.modules['__main__'] = m; sys.argv = [p]; exec(compile(t, p, 'exec', dont_inherit=True), m.__dict__)";
+
+/// How a personal tool or workflow step whose environment can't be used
+/// stops (REQ-18, R-13c): it needs the person. A workflow run goes on with
+/// the steps that don't depend on it.
+pub(crate) const ENV_NEEDS_YOU: &str =
+    "needs you: the environment this tool runs in can't be used:";
 
 /// Largest script, in bytes.
 const MAX_CODE: usize = 100 * 1024;
@@ -117,17 +124,29 @@ impl ScriptEnv {
         self.level.is_none()
     }
     /// Whether "Allow this script for the session" may ever be offered for
-    /// a run here (AF-6, T-9: governed level A only). Never for trusted:
+    /// a run here (AF-6, REQ-17: governed level A only). Never for trusted:
     /// every trusted run is approved on its own.
-    #[allow(dead_code)]
     pub(crate) fn session_allow_possible(&self) -> bool {
         self.level == Some(columbus_confine::Level::A)
     }
-    /// Personal tools and workflow steps (T-9) take governed environments
-    /// only; this says why a trusted one is refused.
-    #[allow(dead_code)]
+    /// Personal tools and workflow steps (REQ-18) take governed
+    /// environments at level A only; this says why another is refused.
     pub(crate) fn usable_in_tools_and_steps(&self) -> Result<(), String> {
-        self.env.usable_in_tools_and_steps()
+        self.env.usable_in_tools_and_steps()?;
+        if self.level != Some(columbus_confine::Level::A) {
+            return Err(format!(
+                "environment {} runs with network (confinement B); personal tools and workflow steps run at level A only (no network), so they cannot use it. Use an environment at level A",
+                self.env.id
+            ));
+        }
+        Ok(())
+    }
+    /// The confinement profile of a personal tool running here: one per
+    /// tool and environment, so on Windows neither the environment's
+    /// scripts nor another tool are ever granted this tool's folder.
+    pub(crate) fn tool_profile(&self, tool: &str) -> String {
+        let h = columbus_shared::canon::sha256_hex(format!("{tool}\0{}", self.env.id).as_bytes());
+        format!("tool-env.{}", &h[..16])
     }
     pub(crate) fn python(&self) -> PathBuf {
         PathBuf::from(&self.env.python)
@@ -571,6 +590,51 @@ impl Gateway {
         })
     }
 
+    /// The environment `id`, ready for a personal tool or workflow step to
+    /// run in (F-5, F-6, REQ-18), or why not, in words that start with
+    /// [`ENV_NEEDS_YOU`]: missing, `changed`, trusted, at level B, or no
+    /// longer allowed by policy. A trusted one is refused for what it is,
+    /// whatever the policy says.
+    pub(crate) fn tool_environment(
+        &self,
+        id: &str,
+        policy: &columbus_shared::policy::OrgPolicy,
+    ) -> Result<ScriptEnv, String> {
+        use columbus_shared::environments as envs;
+        let needs = |why: String| format!("{ENV_NEEDS_YOU} {why}");
+        if let Some(e) = envs::view(&self.state.paths.environments, id).env {
+            e.usable_in_tools_and_steps().map_err(needs)?;
+        }
+        let se = self.script_environment(id, policy).map_err(needs)?;
+        se.usable_in_tools_and_steps().map_err(needs)?;
+        Ok(se)
+    }
+
+    /// [`tool_environment`](Self::tool_environment), then the interpreter
+    /// checked confined (as `check_environment`), with the profile the
+    /// tool runs under.
+    pub(crate) async fn tool_environment_checked(
+        &self,
+        tool: &str,
+        id: &str,
+        policy: &columbus_shared::policy::OrgPolicy,
+    ) -> Result<(ScriptEnv, crate::plugins::ToolEnv), String> {
+        let se = self.tool_environment(id, policy)?;
+        let launcher = columbus_confine::ready(columbus_confine::Level::A).map_err(|e| {
+            format!("tools run only confined (level A: no network, writes only their own folder), and {e}; Columbus never runs one unconfined")
+        })?;
+        self.check_environment(Some(&launcher), &se, policy.plugins.memory_mb)
+            .await
+            .map_err(|why| format!("{ENV_NEEDS_YOU} {why}"))?;
+        let te = crate::plugins::ToolEnv {
+            python: se.python(),
+            read_only: se.read_only.clone(),
+            level: se.level,
+            profile: se.tool_profile(tool),
+        };
+        Ok((se, te))
+    }
+
     /// Check, confined exactly as its scripts will be, that the
     /// environment's interpreter starts and still sees the packages the
     /// person confirmed (R-13b). An interpreter that cannot start confined
@@ -865,7 +929,7 @@ async fn wait_for(
 #[tool_router(router = script_router, vis = "pub(crate)")]
 impl Gateway {
     #[tool(
-        description = "Run a Python script on workspace layers, for what the GIS tools cannot do. The person sees the full code and approves every run. It runs confined: no network, it can write only its own run folder, and it is stopped at the time limit. Inputs (name -> ws:// handle) are copied to in/<name>.<ext> and listed in inputs.json; every file it writes in out/ comes back as a workspace output carrying the inputs' data labels; stdout and stderr come back (64 KB each). Needs organization policy to allow scripts (whoami: scripts_allowed). By default it runs in the engine's Python, which has no ArcPy; pass environment to run in one the person registered (whoami: environments), under the same rules. A trusted environment (experimental; where policy allows it, for example for ArcPy) runs unconfined as the person, still approved every run, and its outputs carry the session's data labels plus environment:<id>.",
+        description = "Run a Python script on workspace layers, for what the GIS tools cannot do. The person sees the full code and approves every run (where organization policy allows it, they may allow that exact code for the session: the same code with new inputs then runs without asking, any change asks again). It runs confined: no network, it can write only its own run folder, and it is stopped at the time limit. Inputs (name -> ws:// handle) are copied to in/<name>.<ext> and listed in inputs.json; every file it writes in out/ comes back as a workspace output carrying the inputs' data labels; stdout and stderr come back (64 KB each). Needs organization policy to allow scripts (whoami: scripts_allowed). By default it runs in the engine's Python, which has no ArcPy; pass environment to run in one the person registered (whoami: environments), under the same rules. A trusted environment (experimental; where policy allows it, for example for ArcPy) runs unconfined as the person, still approved every run, and its outputs carry the session's data labels plus environment:<id>.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -1030,8 +1094,23 @@ impl Gateway {
         } else {
             "no network; can write only its own run folder".to_string()
         };
+        // REQ-17, R-15: under policy scripts.session_approval, the engine
+        // and governed level-A environments may be allowed for the session,
+        // bound to this exact code and environment (as confirmed) in this
+        // Columbus session; never a trusted or level-B one.
+        let session_ok = policy.scripts.session_approval
+            && senv.as_ref().is_none_or(ScriptEnv::session_allow_possible);
+        let session_scope = [json!({"session_script": code_sha256,
+            "environment": senv.as_ref().map(|e| json!({"id": e.env.id, "confirmed": e.env.confirmation_hash()}))})];
+        let session_words = format!(
+            "\"Allow this script for the session\" runs this exact code (sha256 {}){} again with any inputs, without asking, until this chat or AI app connection ends; any change to the code asks again",
+            &digest[..12],
+            senv.as_ref()
+                .map(|e| format!(" in environment {}", e.env.id))
+                .unwrap_or_else(|| " in the engine's Python".into())
+        );
         let summary = format!(
-            "Run a Python script ({lines} line{}, {} bytes, sha256 {}){where_runs} on {}; {reach}; stopped after {timeout} s.{} Scripts are approved one run at a time.",
+            "Run a Python script ({lines} line{}, {} bytes, sha256 {}){where_runs} on {}; {reach}; stopped after {timeout} s.{} {}",
             if lines == 1 { "" } else { "s" },
             args.code.len(),
             &digest[..12],
@@ -1048,6 +1127,11 @@ impl Gateway {
                 String::new()
             } else {
                 format!(" Data in play came from: {}.", from.join(", "))
+            },
+            if session_ok {
+                "You can allow this script for the session."
+            } else {
+                "Scripts are approved one run at a time."
             },
         );
         let bound_inputs: Vec<Value> = inputs
@@ -1077,13 +1161,14 @@ impl Gateway {
             summary,
             detail: Some(detail),
             approval_id: args.approval_id.as_deref(),
-            // Every run, never for the session. T-9's session approval may
-            // only ever apply where `ScriptEnv::session_allow_possible`
-            // (or the engine); a trusted run is always asked on its own.
-            every_time: true,
+            // Every run, unless policy allows the session approval here
+            // (`ScriptEnv::session_allow_possible`, or the engine); a
+            // trusted run is always asked on its own.
+            every_time: !session_ok,
             code: Some(&args.code),
-            standing: None,
-            always_covers: None,
+            standing: session_ok.then_some(&session_scope[..]),
+            always_covers: session_ok.then_some(session_words),
+            script_session: session_ok,
         };
         match self.seek_approval(&ctx, ask).await {
             Ok(Sought::Granted(id)) => rec.approval = Some(id),

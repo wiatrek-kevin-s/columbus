@@ -69,6 +69,12 @@ servers, downloads, and `export_output` (exports are made by `outputs.folder`, b
 personal tool is the way to put your own code in a workflow: propose it with `propose_tool`
 first; once the person has installed it, the workflow can use it.
 
+A personal tool step runs in the tool's own environment (its `environment`, or the engine's
+Python). Add `environment: <id>` to the step to run it in another registered environment:
+governed, at level A (whoami lists them); never a trusted one. If that environment is missing,
+changed or no longer allowed when the workflow runs, the step stops with "needs you" and the run
+goes on with the steps that don't use its result.
+
 ### References between steps
 
 A whole text value `"${step}"` is the layer (or file) that step made: its workspace handle.

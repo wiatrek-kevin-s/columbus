@@ -281,6 +281,10 @@ pub struct PluginManifest {
     /// (internet) only where organization policy lists it for plugins.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confinement: Option<PluginConfinement>,
+    /// F-5, personal tools only: the registered governed environment the
+    /// tool runs in (its id, never a path); absent: the engine's Python.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<String>,
     pub tools: BTreeMap<String, PluginTool>,
 }
 
@@ -299,6 +303,9 @@ impl PluginManifest {
                 "id {:?}: ids starting with \"personal.\" are the person's own tools, installed from the Columbus app",
                 m.id
             ));
+        }
+        if m.environment.is_some() {
+            return Err("environment: only personal tools run in a registered environment; an engine plugin runs in the engine's Python".into());
         }
         Ok(m)
     }
@@ -364,6 +371,13 @@ impl PluginManifest {
         if let Some(l) = m.confinement.as_ref().and_then(|c| c.level.as_deref()) {
             if !l.eq_ignore_ascii_case("A") {
                 return Err("a personal tool runs at confinement level A only".into());
+            }
+        }
+        if let Some(e) = &m.environment {
+            if !columbus_shared::environments::id_ok(e) {
+                return Err(format!(
+                    "environment {e:?} is not an environment id (a-z, 0-9 and -, at most 40)"
+                ));
             }
         }
         if m.tools.len() != 1 || !m.tools.contains_key(tools::TOOL) {
@@ -736,6 +750,16 @@ impl Plugin {
             .map(|(_, l)| l.as_str().to_string())
             .unwrap_or_else(|| "unconfined".into())
     }
+}
+
+/// The registered environment a personal tool runs in (F-5), as checked
+/// for this run: its interpreter, the folders it may read (its prefixes, as
+/// confirmed), its confinement level and the confinement profile's name.
+pub(crate) struct ToolEnv {
+    pub python: PathBuf,
+    pub read_only: Vec<PathBuf>,
+    pub level: Option<columbus_confine::Level>,
+    pub profile: String,
 }
 
 /// The confinement a plugin runs at (Rule 5): its declared level (A when
@@ -1157,19 +1181,27 @@ impl Plugins {
     }
 
     fn launch(&self, p: &Plugin) -> Launch {
-        self.launch_from(p, &p.dir, &p.folder)
+        self.launch_from(p, &p.dir, &p.folder, None)
     }
 
     /// Start the plugin from the files in `dir` (its own folder, or a copy
     /// Columbus made of exactly the files it checked), with `folder` (under
-    /// `plugins/` in the workspace) as the one place it may write.
-    fn launch_from(&self, p: &Plugin, dir: &Path, folder: &str) -> Launch {
+    /// `plugins/` in the workspace) as the one place it may write. A
+    /// personal tool in a registered environment (F-5) runs that
+    /// environment's interpreter, reading its folders instead of the
+    /// engine's, under a profile of its own.
+    fn launch_from(&self, p: &Plugin, dir: &Path, folder: &str, env: Option<&ToolEnv>) -> Launch {
         let own = plugin_dir(&self.workspace, folder);
         let tmp = own.join("tmp");
         let _ = std::fs::create_dir_all(&tmp);
+        let python = env.map_or_else(|| self.python.clone(), |e| e.python.clone());
+        let python_read = match env {
+            Some(e) => e.read_only.clone(),
+            None => python_dirs(&self.python),
+        };
         let (program, args, extra_read) = match p.manifest.runtime {
             Runtime::Python => (
-                self.python.clone(),
+                python,
                 vec![
                     OsString::from("-I"),
                     OsString::from("-u"),
@@ -1179,7 +1211,7 @@ impl Plugins {
                 ],
                 // The interpreter and its libraries, and the SDK beside the
                 // plugin host.
-                python_dirs(&self.python)
+                python_read
                     .into_iter()
                     .chain(self.host_script.parent().map(PathBuf::from))
                     .collect::<Vec<_>>(),
@@ -1212,8 +1244,11 @@ impl Plugins {
         }
         if let Some((launcher, level)) = &p.confine {
             let spec = columbus_confine::Spec {
-                level: *level,
-                name: format!("plugin.{}", p.manifest.id),
+                level: env.and_then(|e| e.level).unwrap_or(*level),
+                name: env.map_or_else(
+                    || format!("plugin.{}", p.manifest.id),
+                    |e| e.profile.clone(),
+                ),
                 // Its own folder only, never the workspace.
                 read_write: vec![own.clone()],
                 read_only: std::iter::once(dir.to_path_buf())
@@ -1295,7 +1330,16 @@ impl Plugins {
                 let folder = format!("{}.check-{}", p.folder, &tag[..12]);
                 let result = async {
                     self.stage_code(p, &code)?;
-                    self.fresh_worker_in(p, &code, &folder).await.map(|_| ())
+                    // A tool that runs in an environment may import what
+                    // only that environment has: its files are checked
+                    // here, and its describe at every run, in the
+                    // environment (which is checked then too).
+                    if p.manifest.environment.is_some() {
+                        return Ok(());
+                    }
+                    self.fresh_worker_in(p, &code, &folder, None)
+                        .await
+                        .map(|_| ())
                 }
                 .await;
                 let _ = std::fs::remove_dir_all(&code);
@@ -1344,8 +1388,15 @@ impl Plugins {
     /// A worker of its own for one run of a personal tool, started from
     /// `code` (see [`stage_code`](Self::stage_code)) with an empty folder.
     /// It ends when the run's last reference to it goes.
-    pub async fn fresh_worker(&self, p: &Plugin, code: &Path) -> Result<Worker, String> {
-        self.fresh_worker_in(p, code, &p.folder).await
+    /// `env`: the registered environment it runs in (checked just now), or
+    /// None for the engine's Python.
+    pub async fn fresh_worker(
+        &self,
+        p: &Plugin,
+        code: &Path,
+        env: Option<&ToolEnv>,
+    ) -> Result<Worker, String> {
+        self.fresh_worker_in(p, code, &p.folder, env).await
     }
 
     async fn fresh_worker_in(
@@ -1353,6 +1404,7 @@ impl Plugins {
         p: &Plugin,
         code: &Path,
         folder: &str,
+        env: Option<&ToolEnv>,
     ) -> Result<Worker, String> {
         if let Some(g) = &p.gate {
             return Err(describe_status(p.id(), g));
@@ -1370,7 +1422,7 @@ impl Plugins {
                 ))
             }
         }
-        let w = Worker::new(self.launch_from(p, code, folder));
+        let w = Worker::new(self.launch_from(p, code, folder, env));
         let d = w
             .describe(Duration::from_secs(30))
             .await

@@ -357,7 +357,8 @@ class Renderer {
 }
 
 // An approval prompt from the chat's own session, answered here as the
-// chat window always did: buttons wait a second, scripts are once only.
+// chat window always did: buttons wait a second, scripts are once only
+// unless the server offers "Allow this script for the session" (policy).
 function liveCard(r, e) {
   const card = el("div", "ask");
   card.setAttribute("role", "alertdialog");
@@ -388,7 +389,11 @@ function liveCard(r, e) {
   };
   const buttons = [
     ["Allow once", "allow_once", "primary", "Allowed once."],
-    ...(e.offer_always ? [["Allow for this session", "always_this_session", "", "Allowed for this session."]] : []),
+    ...(e.offer_always
+      ? [e.code != null
+          ? ["Allow this script for the session", "always_this_session", "", "Allowed this script for the session."]
+          : ["Allow for this session", "always_this_session", "", "Allowed for this session."]]
+      : []),
     ["Decline", "decline", "danger", "Declined."],
   ];
   for (const [label, decision, cls, done] of buttons) {
