@@ -101,8 +101,8 @@
           "expected": "row total equals the fake service's count; object-id batches used; capped result carries fetch.truncated"
         }
       ],
-      "status": "todo",
-      "evidence": ""
+      "status": "done",
+      "evidence": "Commit 8306ce2. crates/gateway/tests/fetch.rs arcgis_paging_loses_no_rows: (a) empty page with exceededTransferLimit mid-stream -> 7/7 rows, every request orderByFields=OBJECTID_1 ASC; (b) supportsPagination false -> returnIdsOnly then objectIds batches (server log), 5/5 rows; (c) more pages than the 500 cap -> 500 rows with fetch.truncated; also read limit cut and 429 Retry-After (3 retries then R-14). Workspace 300 passed; pytest 183 passed 35 skipped."
     },
     {
       "id": "T-6",

@@ -35,6 +35,8 @@ Kit version 1.1 · as of 2026-11-08, session S1 not started
 | 2026-11-08 | gdb exports use `TARGET_ARCGIS_VERSION=ARCGIS_PRO_3_2_OR_LATER` only when a value is outside 32 bits; otherwise 32-bit integers | Keeps exports readable by every ArcGIS when nothing needs Pro 3.2 | Decided |
 | 2026-11-08 | gdb export names must be a letter then letters, digits and `_`; refused otherwise | GDAL would rename silently, and R-8 says the layer name is the export name | Decided |
 | 2026-11-08 | `.xlsx` workbooks are closed after every read (fix found by Windows CI on PR #1) | An open workbook locks the analyst's file in Excel | Decided |
+| 2026-11-08 | Shared pager in `crates/gateway/src/arcgis_pager.rs`; layers without `advancedQueryCapabilities` (before 10.3) use object-id batches; page size is the smaller of 1,000 and `maxRecordCount` | Offset paging on old servers can't be trusted; a server cap smaller than the request would skip rows | Decided |
+| 2026-11-08 | Esri query paging rules checked against Esri's own `query?f=help` pages (served by live ArcGIS servers); the developers.arcgis.com page needs a fetch approval nobody was present to give | They confirm empty pages with `exceededTransferLimit`, deterministic order and the `returnIdsOnly` + `objectIds` route | Decided |
 | 2026-11-08 | Python baseline is 149 passed, not the audit's 115 | `main` moved past the audit commit 8b6bf173 before the kit upload; more tests and no failures, so no action | Decided |
 
 ## Change requests
@@ -55,6 +57,8 @@ Newest first, written as you go. Mark each claim verified (checked this session)
 - 2026-11-08 T-3 done: commit 4bfc56c; files.rs 4/4, test_files.py 22/22 (verified); workspace 295, pytest 171. A-5 confirmed: read_parquet keeps CRS from `geo` metadata.
 - 2026-11-08 PR #1 CI run 42520073092: 12/13 jobs passed; Python worker on Windows failed (xlsx file left open). Fixed in 3ef74e8.
 - 2026-11-08 T-4 done: commit 435ebdc; export_formats.rs 2/2 (verified), test_export.py 12/12; workspace 297, pytest 183.
+- 2026-11-08 PR #1 merged (80559e2) after CI run 42522569468 green on 13 jobs; second failure was gis.rs matching a fragment of a hidden value inside random ids, fixed in 39aecb8.
+- 2026-11-08 T-5 done: commit 8306ce2; fetch.rs pass (verified); workspace 300, pytest 183.
 
 ### Kit → Session S1 (2026-11-08)
 
