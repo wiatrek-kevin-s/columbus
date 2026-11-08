@@ -37,6 +37,15 @@ Kit version 1.1 · as of 2026-11-08, session S1 not started
 | 2026-11-08 | `.xlsx` workbooks are closed after every read (fix found by Windows CI on PR #1) | An open workbook locks the analyst's file in Excel | Decided |
 | 2026-11-08 | Shared pager in `crates/gateway/src/arcgis_pager.rs`; layers without `advancedQueryCapabilities` (before 10.3) use object-id batches; page size is the smaller of 1,000 and `maxRecordCount` | Offset paging on old servers can't be trusted; a server cap smaller than the request would skip rows | Decided |
 | 2026-11-08 | Esri query paging rules checked against Esri's own `query?f=help` pages (served by live ArcGIS servers); the developers.arcgis.com page needs a fetch approval nobody was present to give | They confirm empty pages with `exceededTransferLimit`, deterministic order and the `returnIdsOnly` + `objectIds` route | Decided |
+| 2026-11-08 | Oracle measured geometries are built in the worker from SDO_GTYPE, SDO_ELEM_INFO and SDO_ORDINATES; measured arcs, compound shapes and polygons are refused with a plain error | `SDO_UTIL.TO_WKBGEOMETRY` writes 3302 lines as 2D (found by CI); wrong coordinates are worse than a refusal | Decided |
+| 2026-11-08 | Engine requires shapely>=2.1; `geometry.m_dropped` fires whenever an input had M and the output has none | M support starts in shapely 2.1; one generic rule covers every vertex-rebuilding op | Decided |
+| 2026-11-08 | Environment confirmations live in `environments/.confirmed.json`; every run first does a confined packages-only probe, and the full probe (arcpy) runs only at add or confirm, at the keyboard | F-4 gains no field; in-place package edits are caught; arcpy's licence check needs the person's profile | Decided |
+| 2026-11-08 | Registered interpreters must be named python, python3, python3.N or python.exe; one AppContainer profile per environment; CLI adds `env confirm`, `env list` | Registration never runs another program; no ACL grant carries over | Decided |
+| 2026-11-08 | Top-level policy still accepts unknown keys; the new `environments` and `scripts` sections refuse them | Refusing at top level could break existing policy files (no rule loosens, none tightens unasked) | Decided |
+| 2026-11-08 | Columbus's uv is `uv==0.13.7` (current on PyPI, checked), hash-pinned in `workers/python/requirements-uv.txt` and installed into the engine; found via `uv.find_uv_bin()`, never PATH | Fits D-5 (pip, hash-pinned) and T-15 | Decided |
+| 2026-11-08 | Environment creation runs uv through a per-creation proxy on 127.0.0.1 that allows only `environments.index_hosts`; uv gets a cleared environment, `--no-config`, `--no-build`, no Python downloads | Catches redirects and index links to other hosts at the network level | Decided |
+| 2026-11-08 | Proposals are approved from the terminal (`env approve <id>`) now; the app's approve button comes with T-12 (Settings › Environments) | The app UI is T-12's scope | Decided |
+| 2026-11-08 | Third-party notices file (uv MIT/Apache-2.0) is created in T-16 | No notices file exists yet; uv is installed from PyPI, not bundled | Decided |
 | 2026-11-08 | Python baseline is 149 passed, not the audit's 115 | `main` moved past the audit commit 8b6bf173 before the kit upload; more tests and no failures, so no action | Decided |
 
 ## Change requests
@@ -59,6 +68,9 @@ Newest first, written as you go. Mark each claim verified (checked this session)
 - 2026-11-08 T-4 done: commit 435ebdc; export_formats.rs 2/2 (verified), test_export.py 12/12; workspace 297, pytest 183.
 - 2026-11-08 PR #1 merged (80559e2) after CI run 42522569468 green on 13 jobs; second failure was gis.rs matching a fragment of a hidden value inside random ids, fixed in 39aecb8.
 - 2026-11-08 T-5 done: commit 8306ce2; fetch.rs pass (verified); workspace 300, pytest 183.
+- 2026-11-08 T-19: first PR #2 CI run 42525997319 failed 3 jobs (gdb_export compared a raw temp path with the canonical one on macOS/Windows; Windows `\\?\` paths broke the GeoPackage M-flag check; Oracle WKB lost measures). Fixed in b3ec68e; run 42529178838 green on 13 jobs incl. Oracle; PR #2 merged (4148908). T-19 done (verified in CI).
+- 2026-11-08 T-6 done: commit 3accf6e; environments.rs 7/7 on Linux, macOS and Windows (CI run 42528260440). **A-1 confirmed** on all three systems.
+- 2026-11-08 T-7 done: commit 40e90d2; environment_create.rs 3/3 incl. real PyPI (verified); uv 0.13.7 pinned with hashes.
 
 ### Kit → Session S1 (2026-11-08)
 
