@@ -51,9 +51,6 @@ pub const MAX_INSTALLED: usize = 100;
 /// Longest line shown, in characters: the person must see every line whole.
 pub const MAX_LINE: usize = 200;
 
-/// The person's tools folder: `COLUMBUS_TOOLS`, else `tools/` beside the
-/// session workspaces (`COLUMBUS_WORKSPACES`'s parent, or the person's
-/// local Columbus folder).
 /// Where the organization's tools are (installed for everyone by whoever
 /// administers the computer): `COLUMBUS_ORG_TOOLS`, or `tools` in the
 /// organization's folder (ProgramData, /Library/Application Support).
@@ -62,6 +59,83 @@ pub fn org_tools_dir() -> PathBuf {
         .unwrap_or_else(|| crate::paths::platform_dirs().0.join("tools"))
 }
 
+/// Whether the organization's tools folder can be trusted as written by
+/// whoever administers the computer: the folder, `approved.yaml` and each
+/// tool's folder and files are real (no links), and, in the default place
+/// on a Mac or Linux, owned by root and writable by no one else. (On
+/// Windows the folder's permissions are the administrator's to set, as for
+/// the policy file; `allow_org_tools` is off until the policy turns it on.)
+/// `COLUMBUS_ORG_TOOLS`, set by the person themselves, skips the owner
+/// check but not the link check. Why not, when it can't be.
+pub fn org_tools_trusted(root: &Path) -> Result<(), String> {
+    let explicit = crate::paths::env_path("COLUMBUS_ORG_TOOLS").is_some();
+    let check = |p: &Path, dir: bool| -> Result<(), String> {
+        let m = std::fs::symlink_metadata(p).map_err(|e| format!("{}: {e}", p.display()))?;
+        let ok_kind = if dir {
+            m.file_type().is_dir()
+        } else {
+            m.file_type().is_file()
+        };
+        if !ok_kind {
+            return Err(format!(
+                "{} is a link or not a {}",
+                p.display(),
+                if dir { "folder" } else { "file" }
+            ));
+        }
+        #[cfg(unix)]
+        if !explicit {
+            use std::os::unix::fs::MetadataExt;
+            if m.uid() != 0 || m.mode() & 0o022 != 0 {
+                return Err(format!(
+                    "{} must be owned by root and writable by no one else (it holds tools everyone runs)",
+                    p.display()
+                ));
+            }
+        }
+        let _ = explicit;
+        Ok(())
+    };
+    check(root, true)?;
+    if std::fs::symlink_metadata(root.join(APPROVED)).is_ok() {
+        check(&root.join(APPROVED), false)?;
+    }
+    for e in std::fs::read_dir(root)
+        .map_err(|e| format!("{}: {e}", root.display()))?
+        .flatten()
+    {
+        let name = e.file_name().to_string_lossy().to_string();
+        if !id_ok(&name) {
+            continue;
+        }
+        let dir = root.join(&name);
+        check(&dir, true)?;
+        for f in [MANIFEST, ENTRY] {
+            if std::fs::symlink_metadata(dir.join(f)).is_ok() {
+                check(&dir.join(f), false)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The organization's tools in force under `allow_org_tools`: ready ones,
+/// from a folder that can be trusted ([`org_tools_trusted`]); none if the
+/// policy keeps them off.
+pub fn org_tools_in_force(allowed: bool) -> Vec<ToolView> {
+    let root = org_tools_dir();
+    if !allowed || org_tools_trusted(&root).is_err() {
+        return vec![];
+    }
+    list_installed(&root)
+        .into_iter()
+        .filter(|t| t.state.as_deref() == Some("ready"))
+        .collect()
+}
+
+/// The person's tools folder: `COLUMBUS_TOOLS`, else `tools/` beside the
+/// session workspaces (`COLUMBUS_WORKSPACES`'s parent, or the person's
+/// local Columbus folder).
 pub fn tools_dir() -> PathBuf {
     if let Some(d) = crate::paths::env_path("COLUMBUS_TOOLS") {
         return d;
@@ -633,6 +707,13 @@ pub fn place(
     check_files(id, manifest, entry)?;
     let hash = content_hash(manifest, entry);
     std::fs::create_dir_all(root).map_err(|e| format!("{}: {e}", root.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o755));
+    }
+    // Never into a folder others could have changed.
+    org_tools_trusted(root)?;
     let staging = root.join(format!(".install-{id}-{}", uuid::Uuid::new_v4().simple()));
     std::fs::create_dir_all(&staging).map_err(|e| format!("{}: {e}", staging.display()))?;
     let placed = (|| {

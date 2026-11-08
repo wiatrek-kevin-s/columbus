@@ -710,7 +710,7 @@ pub struct Plugin {
     /// its id, or for a proposed tool's test run an id of its own, so a test
     /// never shares a folder with the installed tool.
     folder: String,
-    gate: Option<PluginStatus>,
+    pub(crate) gate: Option<PluginStatus>,
     /// The launcher and level, or None for an unconfined pilot.
     confine: Option<(PathBuf, columbus_confine::Level)>,
     worker: OnceCell<Result<Arc<Worker>, String>>,
@@ -1000,6 +1000,15 @@ impl Plugins {
         };
         if (org && !policy.allow_org_tools) || (!org && !policy.allow_personal_tools) {
             return host(plugins, notes);
+        }
+        if org {
+            if !root.exists() {
+                return host(plugins, notes);
+            }
+            if let Err(e) = tools::org_tools_trusted(root) {
+                notes.push(format!("Organization tools not loaded: {e}"));
+                return host(plugins, notes);
+            }
         }
         let approvals = tools::read_approvals(root);
         let confine = match columbus_confine::ready(columbus_confine::Level::A) {

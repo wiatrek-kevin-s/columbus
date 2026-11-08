@@ -308,11 +308,16 @@ async fn email_report(state: &State, workflow: &Workflow, record: &Value) -> Opt
         });
     };
     let Some(p) = policy.email.as_ref() else {
-        let why = "the organization no longer sets up email for workflows (policy email)".to_string();
+        let why =
+            "the organization no longer sets up email for workflows (policy email)".to_string();
         audit("denied", why.clone());
         return Some(json!({"status": "failed", "error": why}));
     };
-    let to: Vec<String> = e.to.iter().filter(|a| p.allows(a) && wf::address_ok(a)).cloned().collect();
+    let to: Vec<String> =
+        e.to.iter()
+            .filter(|a| p.allows(a) && wf::address_ok(a))
+            .cloned()
+            .collect();
     let refused: Vec<&String> = e.to.iter().filter(|a| !to.contains(a)).collect();
     if to.is_empty() {
         let why = "none of its addresses is in a domain the organization allows now".to_string();
@@ -333,13 +338,22 @@ async fn email_report(state: &State, workflow: &Workflow, record: &Value) -> Opt
             .filter_map(|f| f["path"].as_str().map(String::from))
             .collect();
         for f in files {
-            let size = std::fs::symlink_metadata(&f).ok().filter(|m| m.is_file()).map(|m| m.len());
+            let size = std::fs::symlink_metadata(&f)
+                .ok()
+                .filter(|m| m.is_file())
+                .map(|m| m.len());
             match size {
                 Some(n) if p.attachments && total + n <= cap => {
                     total += n;
                     attachments.push(f);
                 }
-                _ => left_out.push(Path::new(&f).file_name().and_then(|n| n.to_str()).unwrap_or("").to_string()),
+                _ => left_out.push(
+                    Path::new(&f)
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("")
+                        .to_string(),
+                ),
             }
         }
     }
@@ -363,7 +377,11 @@ async fn email_report(state: &State, workflow: &Workflow, record: &Value) -> Opt
     if !left_out.is_empty() {
         body.push_str(&format!(
             "\n\nNot attached ({}): {}.\n",
-            if p.attachments { "over the size your organization allows" } else { "your organization doesn't allow attachments" },
+            if p.attachments {
+                "over the size your organization allows"
+            } else {
+                "your organization doesn't allow attachments"
+            },
             left_out.join(", ")
         ));
     }
@@ -388,14 +406,30 @@ async fn email_report(state: &State, workflow: &Workflow, record: &Value) -> Opt
                     record["run"].as_str().unwrap_or(""),
                     to.join(", "),
                     attachments.len(),
-                    if refused.is_empty() { String::new() } else { format!("; not to {} (domain not allowed)", refused.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")) }
+                    if refused.is_empty() {
+                        String::new()
+                    } else {
+                        format!(
+                            "; not to {} (domain not allowed)",
+                            refused
+                                .iter()
+                                .map(|s| s.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        )
+                    }
                 ),
             );
-            Some(json!({"status": "sent", "to": to, "attachments": attachments.len(), "not_sent_to": refused, "not_attached": left_out}))
+            Some(
+                json!({"status": "sent", "to": to, "attachments": attachments.len(), "not_sent_to": refused, "not_attached": left_out}),
+            )
         }
         Err(err) => {
             let why = err.to_string();
-            audit("error", format!("emailing the report of {} failed: {why}", workflow.id));
+            audit(
+                "error",
+                format!("emailing the report of {} failed: {why}", workflow.id),
+            );
             Some(json!({"status": "failed", "error": why}))
         }
     }

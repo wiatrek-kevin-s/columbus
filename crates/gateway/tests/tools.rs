@@ -903,6 +903,7 @@ async fn signed_and_installed_for_everyone(env: &Env, py: &str) {
         "Ana",
         &share::public_key(&key).unwrap(),
         "now",
+        &[],
     )
     .unwrap();
     let r = share_import(&other, py, &req);
@@ -938,6 +939,7 @@ async fn signed_and_installed_for_everyone(env: &Env, py: &str) {
     let org = columbus_shared::tools::list_installed(&other.root.join("org-tools"));
     assert_eq!(org.len(), 1);
     assert_eq!(org[0].state.as_deref(), Some("ready"));
+    other.policy("allow_org_tools: true\n");
     let c = start(&other, py).await;
     let d = call(&c, "describe_tool", json!({"name": TOOL})).await;
     if can_confine() {

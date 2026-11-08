@@ -256,9 +256,11 @@ fn attachment_mb() -> u32 {
 impl EmailPolicy {
     /// Whether this address may be emailed: its domain is one listed.
     pub fn allows(&self, address: &str) -> bool {
-        address
-            .rsplit_once('@')
-            .is_some_and(|(_, d)| self.allowed_domains.iter().any(|a| a.eq_ignore_ascii_case(d)))
+        address.rsplit_once('@').is_some_and(|(_, d)| {
+            self.allowed_domains
+                .iter()
+                .any(|a| a.eq_ignore_ascii_case(d))
+        })
     }
 }
 
@@ -311,8 +313,9 @@ pub struct OrgPolicy {
     #[serde(default)]
     pub require_signed_shares: bool,
     /// Tools the organization installed for everyone (in its tools folder,
-    /// approved by whoever administers it). On by default; off hides them.
-    #[serde(default = "yes")]
+    /// approved by whoever administers it). Off by default: the
+    /// administrator who installs them turns this on.
+    #[serde(default)]
     pub allow_org_tools: bool,
     /// Email for workflows' reports, as IT sets it up; none means no email.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -598,7 +601,7 @@ impl Default for OrgPolicy {
             snapshot_labels: true,
             share_signers: vec![],
             require_signed_shares: false,
-            allow_org_tools: true,
+            allow_org_tools: false,
             email: None,
             allow_workflows: false,
             limits: OrgLimits::DEFAULT,

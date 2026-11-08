@@ -1648,12 +1648,23 @@ impl Gateway {
         let everyone = self.state.org_tools.current();
         let mine = self.state.tools.current();
         // The organization's tool wins over a personal one with its id.
-        let theirs: std::collections::BTreeSet<String> =
-            everyone.all().iter().map(|p| p.id().to_string()).collect();
+        // Only a ready one: an unapproved or changed copy hides nothing.
+        let theirs: std::collections::BTreeSet<String> = everyone
+            .all()
+            .iter()
+            .filter(|p| p.gate.is_none())
+            .map(|p| p.id().to_string())
+            .collect();
         org.all()
             .iter()
             .map(|p| (org.clone(), p.clone()))
-            .chain(everyone.all().iter().map(|p| (everyone.clone(), p.clone())))
+            .chain(
+                everyone
+                    .all()
+                    .iter()
+                    .filter(|p| p.gate.is_none())
+                    .map(|p| (everyone.clone(), p.clone())),
+            )
             .chain(
                 mine.all()
                     .iter()

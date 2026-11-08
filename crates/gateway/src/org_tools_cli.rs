@@ -80,6 +80,9 @@ async fn run(state: &State, file: &str) -> Result<Vec<String>, String> {
             "its signature doesn't match it: the file was changed after it was signed".into(),
         );
     }
+    if policy.require_signed_shares && signer["status"] != "trusted" {
+        return Err("this computer's policy takes only shared files signed by someone trusted (require_signed_shares), and this one isn't".into());
+    }
     if shared.tools.is_empty() {
         return Err("it holds no tools".into());
     }
@@ -112,6 +115,23 @@ async fn run(state: &State, file: &str) -> Result<Vec<String>, String> {
         ready.push(built);
     }
     for b in ready {
+        // Recorded first: nothing is installed for everyone without its line.
+        state
+            .audit
+            .append(&AuditRecord {
+                user: state.user.clone(),
+                client: "columbus-mcp tools".into(),
+                session: Some(state.session.clone()),
+                tool: "org_install_tool".into(),
+                decision: "allowed".into(),
+                reason: Some(format!(
+                    "installing {} for everyone (hash {}) from a file shared by {}, {signed}",
+                    b.id, b.hash, shared.shared_by
+                )),
+                request: Some(sha.clone()),
+                ..Default::default()
+            })
+            .map_err(|e| format!("refused: the audit log could not be written ({e})"))?;
         let info = json!({
             "installed": chrono::Local::now().to_rfc3339(),
             "by": state.user,
@@ -133,16 +153,7 @@ async fn run(state: &State, file: &str) -> Result<Vec<String>, String> {
                 b.id
             )
         })?;
-        record(
-            state,
-            "org_install_tool",
-            "allowed",
-            format!(
-                "installed {} for everyone (hash {hash}) from a file shared by {}, {signed}",
-                b.id, shared.shared_by
-            ),
-            Some(sha.clone()),
-        );
+        let _ = hash;
         lines.push(format!(
             "Installed {} ({}) for everyone, in {}.",
             b.id,
@@ -151,7 +162,7 @@ async fn run(state: &State, file: &str) -> Result<Vec<String>, String> {
         ));
     }
     if !policy.allow_org_tools {
-        lines.push("Note: this computer's policy turns organization tools off (allow_org_tools: false); they are not used until it is on.".into());
+        lines.push("Note: organization tools are off until this computer's policy turns them on (allow_org_tools: true).".into());
     }
     Ok(lines)
 }

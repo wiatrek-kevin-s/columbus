@@ -93,7 +93,9 @@ pub async fn share_export(
         }
         p
     };
-    std::fs::write(&path, file).map_err(|e| format!("{}: {e}", path.display()))?;
+    // Written beside and moved into place: never through a link left where
+    // the file goes (a shared folder is anyone's to put one in).
+    tools::write_atomic(&path, file.as_bytes())?;
     Ok(Some(json!({
         "path": path.display().to_string(),
         "signed": signed.is_none(),
@@ -138,7 +140,15 @@ pub async fn share_my_key() -> Result<Value, String> {
 /// Trust a sender's key under a name: files they sign then show as theirs.
 #[tauri::command]
 pub fn share_trust(name: String, key: String) -> Result<(), String> {
-    share::trust(&share::trust_file(), &name, &key, &tools::now())
+    let policy =
+        columbus_shared::policy::OrgPolicy::load(&paths::policy_file()).unwrap_or_default();
+    share::trust(
+        &share::trust_file(),
+        &name,
+        &key,
+        &tools::now(),
+        &policy.share_signers,
+    )
 }
 
 #[tauri::command]
@@ -205,7 +215,7 @@ pub async fn share_team_folder(
 fn team_file(name: &str) -> Result<PathBuf, String> {
     let dir = team_folder().ok_or("choose a team library folder first")?;
     if name.is_empty()
-        || name.contains(['/', '\\'])
+        || name.contains(['/', '\\', ':'])
         || name.starts_with('.')
         || !name.ends_with(&format!(".{}", share::EXTENSION))
     {
@@ -234,11 +244,12 @@ pub async fn share_team_list() -> Result<Value, String> {
             .filter(|n| n.ends_with(&format!(".{}", share::EXTENSION)) && !n.starts_with('.'))
             .collect();
         names.sort();
-        let more = names.len() > 200;
-        names.truncate(200);
+        let more = names.len() > 100;
+        names.truncate(100);
+        let ctx = here();
         let files: Vec<Value> = names
             .iter()
-            .map(|n| match team_file(n).and_then(|p| describe(&p)) {
+            .map(|n| match team_file(n).and_then(|p| describe_in(&p, &ctx)) {
                 Ok(mut v) => {
                     v["name"] = json!(n);
                     v
@@ -293,13 +304,53 @@ pub async fn share_open(app: AppHandle) -> Result<Option<Value>, String> {
         .map_err(|e| e.to_string())?
 }
 
+/// What describing a shared file compares it with, read once for many.
+struct Here {
+    troot: PathBuf,
+    installed: Vec<tools::ToolView>,
+    waiting: Vec<String>,
+    workflows: Vec<String>,
+    workflows_waiting: Vec<String>,
+    policy: columbus_shared::policy::OrgPolicy,
+    connections: Vec<String>,
+    trusted: Vec<share::TrustedSender>,
+}
+
+fn here() -> Here {
+    let troot = tools::tools_dir();
+    let root = wf::workflows_dir();
+    Here {
+        installed: tools::list_installed(&troot),
+        waiting: tools::list_proposals(&troot)
+            .into_iter()
+            .map(|t| t.id)
+            .collect(),
+        workflows: wf::list_installed(&root, &troot)
+            .into_iter()
+            .map(|x| x.id)
+            .collect(),
+        workflows_waiting: wf::list_proposals(&root, &troot)
+            .into_iter()
+            .map(|x| x.id)
+            .collect(),
+        policy: columbus_shared::policy::OrgPolicy::load(&paths::policy_file()).unwrap_or_default(),
+        connections: crate::settings::connection_ids(),
+        trusted: share::trusted(&share::trust_file()),
+        troot,
+    }
+}
+
 fn describe(path: &std::path::Path) -> Result<Value, String> {
+    describe_in(path, &here())
+}
+
+fn describe_in(path: &std::path::Path, here: &Here) -> Result<Value, String> {
     let bytes = share::read_bytes(path)?;
     let sha256 = columbus_shared::canon::sha256_hex(&bytes);
     let s = share::parse_bytes(&bytes)?;
-    let troot = tools::tools_dir();
-    let installed: BTreeMap<String, (String, bool)> = tools::list_installed(&troot)
-        .into_iter()
+    let installed: BTreeMap<String, (String, bool)> = here
+        .installed
+        .iter()
         .map(|t| {
             (
                 t.id.clone(),
@@ -307,10 +358,7 @@ fn describe(path: &std::path::Path) -> Result<Value, String> {
             )
         })
         .collect();
-    let waiting: Vec<String> = tools::list_proposals(&troot)
-        .into_iter()
-        .map(|t| t.id)
-        .collect();
+    let waiting = &here.waiting;
     let tool_list: Vec<Value> = s
         .tools
         .iter()
@@ -336,22 +384,17 @@ fn describe(path: &std::path::Path) -> Result<Value, String> {
         Some(text) => {
             let w = wf::check(text)?;
             let needs = share::needs(&w);
-            let root = wf::workflows_dir();
-            let replaces = wf::list_installed(&root, &troot)
-                .iter()
-                .any(|x| x.id == w.id);
-            let waiting = wf::list_proposals(&root, &troot)
-                .iter()
-                .any(|x| x.id == w.id);
+            let replaces = here.workflows.contains(&w.id);
+            let waiting = here.workflows_waiting.contains(&w.id);
             json!({"id": w.id, "name": w.name, "purpose": w.purpose, "plain": wf::describe(&w),
                 "review": w.review.as_ref().map(|r| r.criteria.clone()), "needs": needs,
                 "replaces": replaces, "waiting": waiting})
         }
         None => Value::Null,
     };
-    let policy =
-        columbus_shared::policy::OrgPolicy::load(&paths::policy_file()).unwrap_or_default();
-    let connections: Vec<String> = crate::settings::connection_ids();
+    let policy = &here.policy;
+    let connections = &here.connections;
+    let _ = &here.troot;
     Ok(json!({
         "path": path.display().to_string(),
         "file": path.file_name().and_then(|n| n.to_str()).unwrap_or(""),
@@ -359,7 +402,7 @@ fn describe(path: &std::path::Path) -> Result<Value, String> {
         "kind": s.kind,
         "shared_by": s.shared_by,
         "shared_at": s.shared_at,
-        "signer": share::signer(&s, &share::trusted(&share::trust_file()), &policy.share_signers),
+        "signer": share::signer(&s, &here.trusted, &policy.share_signers),
         "require_signed": policy.require_signed_shares,
         "columbus": s.columbus,
         "tools": tool_list,

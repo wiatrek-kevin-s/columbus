@@ -393,6 +393,18 @@ async fn check(state: &State, request: &str, seen: &mut Seen) -> Result<Plan, St
                 "organization policy does not allow the tool {tool}"
             ));
         }
+        if state
+            .org_tools
+            .current()
+            .all()
+            .iter()
+            .any(|p| p.id() == built.id && p.gate.is_none())
+        {
+            return Err(format!(
+                "your organization already installed {} for everyone; it's the one that runs here",
+                built.id
+            ));
+        }
         if state.tools.taken().contains(&built.id) {
             return Err(format!(
                 "{} is the id of one of your organization's plugins or connected servers",

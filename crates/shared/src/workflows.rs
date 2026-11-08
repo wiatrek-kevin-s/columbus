@@ -608,13 +608,18 @@ pub fn check(text: &str) -> Result<Workflow, String> {
             return Err("outputs.email.to lists 1 to 10 addresses".into());
         }
         if let Some(a) = e.to.iter().find(|a| !address_ok(a)) {
-            return Err(format!("outputs.email.to: {a:?} is not a plain email address"));
+            return Err(format!(
+                "outputs.email.to: {a:?} is not a plain email address"
+            ));
         }
         if !matches!(e.when.as_deref(), None | Some("always") | Some("problems")) {
             return Err("outputs.email.when is always or problems".into());
         }
         if e.attach && wf.outputs.folder.is_none() {
-            return Err("outputs.email.attach sends the files the run exports: give outputs.folder too".into());
+            return Err(
+                "outputs.email.attach sends the files the run exports: give outputs.folder too"
+                    .into(),
+            );
         }
     }
     if let Some(f) = &wf.outputs.folder {
@@ -751,13 +756,16 @@ pub fn fingerprint(file: &[u8], tool_hashes: &BTreeMap<String, String>) -> Strin
 pub fn tool_hashes(wf: &Workflow, tools_root: &Path) -> Result<BTreeMap<String, String>, String> {
     // The organization's tool of an id is the one that runs, as in a
     // session; then the person's own.
-    let org = tools::list_installed(&tools::org_tools_dir());
+    let allowed = crate::policy::OrgPolicy::load(&crate::paths::policy_file())
+        .map(|p| p.allow_org_tools)
+        .unwrap_or(false);
+    let org = tools::org_tools_in_force(allowed);
     let installed = tools::list_installed(tools_root);
     let mut out = BTreeMap::new();
     for id in wf.personal_tools() {
         let found = org
             .iter()
-            .find(|t| t.id == id && t.state.as_deref() == Some("ready"))
+            .find(|t| t.id == id)
             .or_else(|| installed.iter().find(|t| t.id == id));
         match found {
             Some(t) if t.state.as_deref() == Some("ready") => {
@@ -1393,8 +1401,14 @@ mod tests {
         let with = |e: &str| WF.replace("outputs:\n", &format!("outputs:\n  email: {e}\n"));
         let w = check(&with("{ to: [ana@agency.gov], when: problems }")).unwrap();
         let plain = describe(&w).join(" ");
-        assert!(plain.contains("ana@agency.gov") && plain.contains("doesn't simply succeed"), "{plain}");
-        assert!(check(&with("{ to: [\"ana@agency.gov\\r\\nBcc: x@evil.example\"] }")).is_err());
+        assert!(
+            plain.contains("ana@agency.gov") && plain.contains("doesn't simply succeed"),
+            "{plain}"
+        );
+        assert!(check(&with(
+            "{ to: [\"ana@agency.gov\\r\\nBcc: x@evil.example\"] }"
+        ))
+        .is_err());
         assert!(check(&with("{ to: [\"Ana <ana@agency.gov>\"] }")).is_err());
         assert!(check(&with("{ to: [] }")).is_err());
         assert!(check(&with("{ to: [ana@agency.gov], when: sometimes }")).is_err());

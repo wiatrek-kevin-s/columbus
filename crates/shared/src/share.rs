@@ -560,7 +560,8 @@ pub fn verify(s: &ShareFile) -> Signed {
     ) else {
         return Signed::Invalid;
     };
-    if key.len() != 32 || bytes.len() != 64 {
+    // One spelling of a key only (lowercase hex), so it is found as trusted.
+    if key.len() != 32 || bytes.len() != 64 || !key_ok(&sig.key) {
         return Signed::Invalid;
     }
     match ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, &key)
@@ -571,11 +572,11 @@ pub fn verify(s: &ShareFile) -> Signed {
     }
 }
 
-/// A key's fingerprint, as people read it to each other: the first 16 hex
-/// digits of its SHA-256, in groups of four.
+/// A key's fingerprint, as people read it to each other: the first 32 hex
+/// digits (128 bits) of its SHA-256, in groups of four.
 pub fn fingerprint(key_hex: &str) -> String {
     let h = crate::canon::sha256_hex(key_hex.to_ascii_lowercase().as_bytes()).to_ascii_uppercase();
-    h.as_bytes()[..16]
+    h.as_bytes()[..32]
         .chunks(4)
         .map(|c| std::str::from_utf8(c).unwrap_or(""))
         .collect::<Vec<_>>()
@@ -609,11 +610,35 @@ pub fn trust_file() -> std::path::PathBuf {
 
 /// The person's trusted senders (unreadable entries left out).
 pub fn trusted(file: &Path) -> Vec<TrustedSender> {
-    std::fs::read_to_string(file)
-        .ok()
-        .and_then(|t| serde_yaml::from_str::<Vec<TrustedSender>>(&t).ok())
-        .unwrap_or_default()
+    read_trusted(file).unwrap_or_default()
+}
+
+/// The trusted senders file as it is, or why it can't be read (a file that
+/// isn't there is an empty list).
+fn read_trusted(file: &Path) -> Result<Vec<TrustedSender>, String> {
+    let text = match std::fs::read_to_string(file) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+        Err(e) => return Err(format!("{}: {e}", file.display())),
+    };
+    let all: Vec<TrustedSender> = serde_yaml::from_str(&text)
+        .map_err(|e| format!("{} can't be read ({e}); fix or remove it", file.display()))?;
+    Ok(all
         .into_iter()
+        .filter(|t| key_ok(&t.key) && name_ok(&t.name))
+        .collect())
+}
+
+/// Keys the organization vouches for, as the policy lists them, normalised
+/// (lowercase); entries that aren't a key and a plain name are left out.
+pub fn org_signers(listed: &[TrustedSender]) -> Vec<TrustedSender> {
+    listed
+        .iter()
+        .map(|t| TrustedSender {
+            name: t.name.trim().to_string(),
+            key: t.key.trim().to_ascii_lowercase(),
+            added: t.added.clone(),
+        })
         .filter(|t| key_ok(&t.key) && name_ok(&t.name))
         .collect()
 }
@@ -625,8 +650,16 @@ fn name_ok(name: &str) -> bool {
         && tools::plain_chars(name).is_ok()
 }
 
-/// Trust a key under a name (replacing an earlier name for it).
-pub fn trust(file: &Path, name: &str, key: &str, now: &str) -> Result<(), String> {
+/// Trust a key under a name (replacing an earlier name for it). A name
+/// already given to another key, the person's or the organization's, is
+/// refused: one name, one key.
+pub fn trust(
+    file: &Path,
+    name: &str,
+    key: &str,
+    now: &str,
+    org: &[TrustedSender],
+) -> Result<(), String> {
     let name = name.trim();
     if !name_ok(name) {
         return Err("give the sender's name: one plain line of at most 80 characters".into());
@@ -634,7 +667,20 @@ pub fn trust(file: &Path, name: &str, key: &str, now: &str) -> Result<(), String
     if !key_ok(key) {
         return Err("that is not a sharing key".into());
     }
-    let mut all = trusted(file);
+    let mut all = read_trusted(file)?;
+    let same = |t: &TrustedSender| t.name.eq_ignore_ascii_case(name) && t.key != key;
+    if let Some(t) = all.iter().find(|t| same(t)) {
+        return Err(format!(
+            "you already trust {} with another key ({}). If they have a new key, remove the old one first, after checking with them",
+            t.name,
+            fingerprint(&t.key)
+        ));
+    }
+    if org_signers(org).iter().any(same) {
+        return Err(format!(
+            "your organization already vouches for {name} with another key; this is not that key"
+        ));
+    }
     all.retain(|t| t.key != key);
     all.push(TrustedSender {
         name: name.to_string(),
@@ -647,7 +693,7 @@ pub fn trust(file: &Path, name: &str, key: &str, now: &str) -> Result<(), String
 
 /// Stop trusting a key.
 pub fn untrust(file: &Path, key: &str) -> Result<(), String> {
-    let mut all = trusted(file);
+    let mut all = read_trusted(file)?;
     let n = all.len();
     all.retain(|t| t.key != key);
     if all.len() == n {
@@ -667,6 +713,7 @@ pub fn signer(s: &ShareFile, mine: &[TrustedSender], org: &[TrustedSender]) -> s
         Signed::Invalid => json!({"status": "invalid"}),
         Signed::Valid(key) => {
             let fp = fingerprint(&key);
+            let org = org_signers(org);
             if let Some(t) = org.iter().find(|t| t.key == key) {
                 json!({"status": "trusted", "by": "organization", "name": t.name, "key": key, "fingerprint": fp})
             } else if let Some(t) = mine.iter().find(|t| t.key == key) {
@@ -706,10 +753,12 @@ mod signing_tests {
         let pk = public_key(&key).unwrap();
         assert_eq!(verify(&f), Signed::Valid(pk.clone()));
         // Read back from its JSON, it still verifies.
-        let back = parse(&to_json(&f).unwrap());
-        if let Ok(b) = back {
-            assert_eq!(verify(&b), Signed::Valid(pk.clone()));
-        }
+        let back: ShareFile = serde_json::from_str(&to_json(&f).unwrap()).unwrap();
+        assert_eq!(verify(&back), Signed::Valid(pk.clone()));
+        // The same key in capitals is not a key Columbus reads.
+        let mut upper = f.clone();
+        upper.signature.as_mut().unwrap().key = pk.to_ascii_uppercase();
+        assert_eq!(verify(&upper), Signed::Invalid);
         // Any change breaks it; so does another key's name on it.
         let mut changed = f.clone();
         changed.shared_by = "someone else".into();
@@ -717,7 +766,7 @@ mod signing_tests {
         let mut swapped = f.clone();
         swapped.signature.as_mut().unwrap().key = public_key(&new_key().unwrap()).unwrap();
         assert_eq!(verify(&swapped), Signed::Invalid);
-        assert_eq!(fingerprint(&pk).len(), 19);
+        assert_eq!(fingerprint(&pk).len(), 39);
     }
 
     #[test]
@@ -725,10 +774,26 @@ mod signing_tests {
         let dir = tempfile::tempdir().unwrap();
         let f = dir.path().join("t.yaml");
         let pk = public_key(&new_key().unwrap()).unwrap();
-        assert!(trust(&f, "Ana\u{202e}", &pk, "now").is_err());
-        assert!(trust(&f, "Ana", "zz", "now").is_err());
-        trust(&f, "Ana", &pk, "now").unwrap();
-        trust(&f, "Ana Ruiz", &pk, "now").unwrap();
+        assert!(trust(&f, "Ana\u{202e}", &pk, "now", &[]).is_err());
+        assert!(trust(&f, "Ana", "zz", "now", &[]).is_err());
+        trust(&f, "Ana", &pk, "now", &[]).unwrap();
+        trust(&f, "Ana Ruiz", &pk, "now", &[]).unwrap();
+        // One name, one key: another key under a trusted name is refused.
+        let other = public_key(&new_key().unwrap()).unwrap();
+        assert!(trust(&f, "ana ruiz", &other, "now", &[]).is_err());
+        let org = [TrustedSender {
+            name: "Bea".into(),
+            key: other.to_ascii_uppercase(),
+            added: String::new(),
+        }];
+        assert!(trust(
+            &f,
+            "Bea",
+            &public_key(&new_key().unwrap()).unwrap(),
+            "now",
+            &org
+        )
+        .is_err());
         let t = trusted(&f);
         assert_eq!(t.len(), 1);
         assert_eq!(t[0].name, "Ana Ruiz");
@@ -736,9 +801,20 @@ mod signing_tests {
         let k = new_key().unwrap();
         sign(&mut s, &k).unwrap();
         assert_eq!(signer(&s, &t, &[])["status"], "unknown");
-        trust(&f, "Bo", &public_key(&k).unwrap(), "now").unwrap();
+        trust(&f, "Bo", &public_key(&k).unwrap(), "now", &[]).unwrap();
         assert_eq!(signer(&s, &trusted(&f), &[])["name"], "Bo");
         untrust(&f, &public_key(&k).unwrap()).unwrap();
         assert_eq!(trusted(&f).len(), 1);
+        // A file that can't be read is never written over.
+        std::fs::write(&f, "{not: [a list").unwrap();
+        assert!(trust(
+            &f,
+            "Cy",
+            &public_key(&new_key().unwrap()).unwrap(),
+            "now",
+            &[]
+        )
+        .is_err());
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "{not: [a list");
     }
 }
