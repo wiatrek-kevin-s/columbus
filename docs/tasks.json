@@ -63,8 +63,8 @@
           "expected": "a files connection is allowed"
         }
       ],
-      "status": "todo",
-      "evidence": ""
+      "status": "done",
+      "evidence": "Commit 4bfc56c. Python test_files.py 22 passed (Formats, FormatEdges, TypingAndNames, Freshness incl. two-process single rebuild); gateway files.rs 4 passed incl. every_format_lists_describes_and_queries and the_old_file_type_in_policy_allows_files_connections. CSV/XLSX/GeoJSON/FGB/GeoParquet/KML list, describe, query; 000123456 text, 12.500 real; cp1252 with file.encoding warn; Name_2; header-only 0 rows; append seen, touch no rebuild, delete drops dataset, two processes one rebuild; connection_types [file] allows files. A-5 confirmed. Workspace 295 passed; pytest 171 passed 35 skipped."
     },
     {
       "id": "T-4",
