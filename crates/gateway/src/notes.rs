@@ -1569,6 +1569,15 @@ impl Gateway {
             "suggest_note_changes",
             &json!({"changes": asked, "why": args.why}),
         )?;
+        // A suggestion is a change to the notes, made later: an
+        // organization that turns off update_notes turns this off too.
+        if !self.state.policy().tool_allowed("update_notes") {
+            return Err(self.deny(
+                &ctx,
+                rec,
+                "organization policy does not allow changes to notes (update_notes), so none can be suggested",
+            ));
+        }
         let why = args.why.trim().replace('\r', "");
         if why.is_empty() {
             return Err(self.deny(&ctx, rec, "say `why`: where the information came from"));
@@ -1668,9 +1677,13 @@ impl Gateway {
         if let Err(e) = crate::note_suggestions::keep(&root, &suggestion) {
             return Err(self.deny(&ctx, rec, e));
         }
+        // The audit record is what accepting trusts: the suggestion's id,
+        // the hash of what it says, and the data the session had read.
         let mut rec = rec;
         rec.reason = Some(format!(
-            "suggested changes to {} note(s): {}",
+            "suggestion {} sha256 {}: changes to {} note(s): {}",
+            suggestion.id,
+            crate::note_suggestions::content_hash(&suggestion),
             planned.len(),
             planned
                 .iter()
@@ -1678,7 +1691,16 @@ impl Gateway {
                 .collect::<Vec<_>>()
                 .join(", ")
         ));
-        self.audit(&ctx, rec)?;
+        rec.labels = planned
+            .iter()
+            .flat_map(|p| p.carries.iter().cloned())
+            .collect::<BTreeSet<String>>()
+            .into_iter()
+            .collect();
+        if let Err(e) = self.audit(&ctx, rec) {
+            let _ = crate::note_suggestions::forget(&root, &suggestion.id);
+            return Err(e);
+        }
         Ok(Json(Output {
             result: json!({
                 "status": "suggested",
@@ -1961,7 +1983,17 @@ fn apply_changes(
         let add = clean(add, 8000).map_err(|e| format!("add_to_body: {e}"))?;
         lines.push(format!("added to the note:\n{add}"));
         if kind == "domain" {
-            card.insert(k("notes"), k(&add));
+            // Added after what the note says already, never in its place.
+            let before = card
+                .get(k("notes"))
+                .and_then(|v| v.as_str())
+                .map(|t| t.trim_end().to_string())
+                .filter(|t| !t.is_empty());
+            let text = match before {
+                Some(b) => format!("{b}\n\n{}", add.trim()),
+                None => add.trim().to_string(),
+            };
+            card.insert(k("notes"), k(&text));
         }
     }
     Ok(lines)

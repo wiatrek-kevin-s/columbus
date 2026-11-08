@@ -92,8 +92,11 @@ impl Gateway {
                 return Err(self.deny(&ctx, rec, format!("labels: {f:?} is not a field name")));
             }
         }
-        let label_fields: Vec<Option<String>> =
-            args.layers.iter().map(|h| label_map.get(h).cloned()).collect();
+        let label_fields: Vec<Option<String>> = args
+            .layers
+            .iter()
+            .map(|h| label_map.get(h).cloned())
+            .collect();
         let mut paths = Vec::new();
         for h in &args.layers {
             match self.own_output(h) {

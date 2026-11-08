@@ -152,6 +152,10 @@ fn kind_from_folder(path: &Path, root: &Path) -> Option<&'static str> {
 }
 
 fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+    walk_in(dir, true, out)
+}
+
+fn walk_in(dir: &Path, top: bool, out: &mut Vec<PathBuf>) {
     let Ok(rd) = std::fs::read_dir(dir) else {
         return;
     };
@@ -168,11 +172,12 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
             continue;
         }
         if is_dir {
-            // Originals and scripts are not entries.
-            if matches!(name, "sources" | "scripts" | "checks" | "proposals") {
+            // Originals and scripts are not entries; nor are the suggestions
+            // waiting at the top of the person's notes.
+            if matches!(name, "sources" | "scripts" | "checks") || (top && name == "proposals") {
                 continue;
             }
-            walk(&p, out);
+            walk_in(&p, false, out);
         } else if !p.is_dir() {
             out.push(p);
         }

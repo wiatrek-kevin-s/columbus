@@ -258,7 +258,7 @@ function suggestions(body) {
     const act = async (what) => {
       accept.disabled = dismiss.disabled = true;
       try {
-        await invoke("note_suggestions", what === "accept" ? { accept: sg.id } : { dismiss: sg.id });
+        await invoke("note_suggestions", what === "accept" ? { accept: sg.id, shown: sg.shown } : { dismiss: sg.id });
         toast(what === "accept" ? "Done: the note is changed." : "Dismissed.");
         load();
       } catch (e) { showError(e2, e); accept.disabled = dismiss.disabled = false; }
@@ -279,10 +279,14 @@ function suggestions(body) {
         ...flags.map((f) => h("p", { class: "small notice warn" }, f)),
         h("pre", { class: "box" }, (n.lines || []).join("\n")));
     });
+    if (sg.problem) accept.disabled = true;
+    const extra = [];
+    if (sg.problem) extra.push(h("p", { class: "notice warn small" }, `This can't be accepted now: ${shown(sg.problem, 400)}`));
+    if ((sg.asks || []).length) extra.push(h("p", { class: "notice warn small" }, `Your organization's data rule${sg.asks.length > 1 ? "s" : ""} ${sg.asks.join(", ")} ask${sg.asks.length > 1 ? "" : "s"} for your approval for this: accepting is that approval.`));
     return h("div", { class: "tool stack" },
       h("p", { class: "small muted" }, `${shown(sg.client, 80)} · ${when}`),
       h("p", {}, h("span", { class: "muted" }, "Why, in the assistant's words: "), shown(sg.why, 600)),
-      ...notes, e2,
+      ...extra, ...notes, e2,
       h("div", { class: "row" }, accept, dismiss));
   }
 }

@@ -945,11 +945,40 @@ async fn suggestions_wait_for_the_person_to_accept_or_dismiss() {
         "{l}"
     );
     let id = list[0]["id"].as_str().unwrap().to_string();
+    let shown = list[0]["shown"].as_str().unwrap().to_string();
+    // Only what the person was shown is written.
+    let wrong = notes_cli(
+        &root,
+        &py,
+        &[
+            "notes",
+            "suggestions",
+            &json!({"accept": id, "shown": "00"}).to_string(),
+        ],
+    );
+    assert_eq!(wrong["ok"], false, "{wrong}");
+    // A suggestion changed on disk after it was made can't be accepted.
+    let file = root.join("notes/proposals").join(format!("{id}.json"));
+    let kept = std::fs::read_to_string(&file).unwrap();
+    std::fs::write(&file, kept.replace("one row per segment", "EVIL")).unwrap();
+    let l2 = notes_cli(&root, &py, &["notes", "suggestions", "{}"]);
+    assert!(
+        l2["suggestions"][0]["problem"]
+            .as_str()
+            .unwrap()
+            .contains("changed"),
+        "{l2}"
+    );
+    std::fs::write(&file, &kept).unwrap();
     // Accepting makes the change, as the person; the note stays reviewed.
     let a = notes_cli(
         &root,
         &py,
-        &["notes", "suggestions", &json!({"accept": id}).to_string()],
+        &[
+            "notes",
+            "suggestions",
+            &json!({"accept": id, "shown": shown}).to_string(),
+        ],
     );
     assert_eq!(a["ok"], true, "{a}");
     let now = std::fs::read_to_string(&note).unwrap();
@@ -968,7 +997,11 @@ async fn suggestions_wait_for_the_person_to_accept_or_dismiss() {
     let again = notes_cli(
         &root,
         &py,
-        &["notes", "suggestions", &json!({"accept": id}).to_string()],
+        &[
+            "notes",
+            "suggestions",
+            &json!({"accept": id, "shown": shown}).to_string(),
+        ],
     );
     assert_eq!(again["ok"], false, "{again}");
 

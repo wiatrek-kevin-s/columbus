@@ -602,6 +602,7 @@ dependencies = [
  "globset",
  "hex",
  "libc",
+ "ring",
  "schemars 1.2.3",
  "serde",
  "serde_json",

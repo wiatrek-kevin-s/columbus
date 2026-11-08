@@ -874,12 +874,14 @@ pub async fn notes_list() -> Result<Value, String> {
         let notes: Vec<Value> = walk(&root, 6, &|p| p.extension().is_some_and(|e| e == "md"))
             .into_iter()
             .filter(|(rel, _)| {
-                !Path::new(rel).components().any(|c| {
-                    matches!(
-                        c.as_os_str().to_str(),
-                        Some("sources" | "scripts" | "checks" | "proposals")
-                    )
-                })
+                let mut parts = Path::new(rel).components();
+                parts.next().and_then(|c| c.as_os_str().to_str()) != Some("proposals")
+                    && !Path::new(rel).components().any(|c| {
+                        matches!(
+                            c.as_os_str().to_str(),
+                            Some("sources" | "scripts" | "checks")
+                        )
+                    })
             })
             .map(|(rel, m)| {
                 let fm = read_head(&root.join(&rel))
@@ -1129,10 +1131,11 @@ pub async fn notes_check(app: tauri::AppHandle) -> Result<Value, String> {
 pub async fn note_suggestions(
     app: tauri::AppHandle,
     accept: Option<String>,
+    shown: Option<String>,
     dismiss: Option<String>,
 ) -> Result<Value, String> {
     let request = match (accept, dismiss) {
-        (Some(id), None) => json!({"accept": id}),
+        (Some(id), None) => json!({"accept": id, "shown": shown.unwrap_or_default()}),
         (None, Some(id)) => json!({"dismiss": id}),
         (None, None) => json!({}),
         _ => return Err("accept or dismiss, not both".into()),
