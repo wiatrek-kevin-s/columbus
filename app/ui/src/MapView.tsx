@@ -7,7 +7,7 @@ import "maplibre-gl/dist/maplibre-gl.css";
 import workerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?url";
 
 maplibregl.setWorkerUrl(workerUrl);
-import type { FeatureCollection } from "./api";
+import { authorization, isWebLayerUrl, webApi, WebLayerError, type FeatureCollection, type WebSourceInfo } from "./api";
 import { formatLength, lineMetres } from "./measure";
 
 export interface MapLayer {
@@ -15,6 +15,46 @@ export interface MapLayer {
   name: string;
   color: string;
   data: FeatureCollection;
+}
+
+/** A web layer on the map (T-25): drawn through this server only. */
+export interface WebDraw {
+  id: string;
+  rev: string;
+  info: WebSourceInfo;
+  opacity: number;
+}
+
+/** What the map learnt about a web layer, for its row in the list. */
+export interface WebState {
+  error?: string | null;
+  drawn?: boolean;
+  total?: number;
+  shown?: number;
+  exceeded?: boolean;
+}
+
+// Web layers' sources: `w~<id>~<rev>` (on the map) and `wb~<id>~<rev>`
+// (as the basemap). Their layers carry the same id, plus -fill, -line and
+// -point for feature layers.
+const webSid = (d: WebDraw, base: boolean) => `${base ? "wb" : "w"}~${d.id}~${d.rev}`;
+const isWeb = (sid: string | undefined) => !!sid && (sid.startsWith("w~") || sid.startsWith("wb~"));
+const webIdOf = (sid: string) => sid.split("~")[1] || "";
+const FEATURE_PARTS = ["-fill", "-line", "-point"];
+const WEB_COLOR = "#7b3fa0";
+
+/** A feature's attributes as a small table (text only). */
+function attributeTable(props: Record<string, unknown>): HTMLElement {
+  const t = document.createElement("table");
+  t.className = "web-attrs";
+  for (const [k, v] of Object.entries(props)) {
+    const tr = t.insertRow();
+    const th = document.createElement("th");
+    th.textContent = k;
+    tr.append(th);
+    tr.insertCell().textContent = v == null ? "" : String(v);
+  }
+  return t;
 }
 
 // OpenFreeMap: free vector basemaps, no key. The page's policy allows this
@@ -74,6 +114,13 @@ export function MapView(props: {
   tools?: ReactNode;
   onIdentify: (handle: string, feature: number) => void;
   onBasemapFailed: () => void;
+  /** Web layers turned on, bottom first. */
+  webLayers?: WebDraw[];
+  /** A raster web layer chosen as the basemap. */
+  webBase?: WebDraw | null;
+  /** A web layer to zoom to; `n` changes for each click. */
+  webFit?: { id: string; n: number } | null;
+  onWebState?: (id: string, s: WebState) => void;
 }) {
   const box = useRef<HTMLDivElement>(null);
   const map = useRef<maplibregl.Map | null>(null);
@@ -88,6 +135,14 @@ export function MapView(props: {
   onBasemapFailed.current = props.onBasemapFailed;
   const onIdentify = useRef(props.onIdentify);
   onIdentify.current = props.onIdentify;
+  const onWebState = useRef(props.onWebState);
+  onWebState.current = props.onWebState;
+  // Feature layers drawn now, and their requests in flight.
+  const webFeatures = useRef<{ sid: string; d: WebDraw }[]>([]);
+  const inFlight = useRef(new Map<string, AbortController>());
+  const drawnOnce = useRef(new Set<string>());
+  const failedOnce = useRef(new Set<string>());
+  const refreshTimer = useRef(0);
   // Measure: one line at a time. While measuring, clicks add points
   // instead of identifying; a double-click finishes the line, the next
   // click starts a new one, and Escape clears it.
@@ -108,10 +163,21 @@ export function MapView(props: {
       center: [-98.5, 39.5],
       zoom: 3,
       attributionControl: { compact: true },
+      // Web layers come from this server only (D-14), with the window's
+      // session token in a header, never in the address. Nothing else gets
+      // it.
+      transformRequest: (url: string) => {
+        if (!isWebLayerUrl(url)) return { url };
+        const a = authorization();
+        return a ? { url, headers: { Authorization: a } } : { url };
+      },
     });
     m.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
     m.addControl(new maplibregl.ScaleControl({ unit: "imperial" }), "bottom-left");
     m.on("style.load", () => {
+      // A new style holds none of the web layers' sources yet.
+      drawnOnce.current.clear();
+      failedOnce.current.clear();
       styled.current = true;
       setReady((n) => n + 1);
     });
@@ -119,6 +185,14 @@ export function MapView(props: {
     m.on("moveend", () => {
       const b = m.getBounds();
       if (box.current) box.current.dataset.view = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()].join(",");
+      scheduleFeatures();
+    });
+    // A web layer's first tile: it draws.
+    m.on("sourcedata", (e: maplibregl.MapSourceDataEvent) => {
+      if (!isWeb(e.sourceId) || !e.tile || drawnOnce.current.has(e.sourceId)) return;
+      drawnOnce.current.add(e.sourceId);
+      failedOnce.current.delete(e.sourceId);
+      onWebState.current?.(webIdOf(e.sourceId), { drawn: true, error: null });
     });
     m.on("click", (e: maplibregl.MapMouseEvent) => {
       if (!measuringRef.current) return;
@@ -143,7 +217,23 @@ export function MapView(props: {
       e.preventDefault();
       setFinished(true);
     });
-    m.on("error", (e: maplibregl.ErrorEvent) => {
+    m.on("error", (e: maplibregl.ErrorEvent & { sourceId?: string }) => {
+      // A web layer's tile failed: say why on its row (R-14 wording from
+      // this server), once; the map and the other layers carry on.
+      if (isWeb(e.sourceId)) {
+        const sid = e.sourceId as string;
+        if (failedOnce.current.has(sid)) return;
+        failedOnce.current.add(sid);
+        const err = e.error as Error & { body?: Blob; status?: number };
+        const say = (msg: string) => onWebState.current?.(webIdOf(sid), { error: msg });
+        if (err?.body && typeof err.body.text === "function") {
+          err.body
+            .text()
+            .then((t) => say(JSON.parse(t).error || err.message))
+            .catch(() => say(err.message || "Some of this layer's tiles could not be loaded."));
+        } else say(err?.message || "Some of this layer's tiles could not be loaded.");
+        return;
+      }
       // Offline, or the basemap host blocked: carry on with a plain
       // background, so the session's own layers still show.
       if (failed.current) return;
@@ -157,6 +247,8 @@ export function MapView(props: {
     });
     map.current = m;
     return () => {
+      for (const c of inFlight.current.values()) c.abort();
+      window.clearTimeout(refreshTimer.current);
       m.remove();
       map.current = null;
     };
@@ -244,6 +336,186 @@ export function MapView(props: {
     // tests.
     if (box.current) box.current.dataset.layers = String(props.layers.filter((l) => m.getSource(id(l.handle))).length);
   }, [props.layers, ready]);
+
+  // Feature layers: the view's features, at most the server's limit, again
+  // after each move (a moment after it stops).
+  function scheduleFeatures() {
+    window.clearTimeout(refreshTimer.current);
+    refreshTimer.current = window.setTimeout(loadFeatures, 250);
+  }
+  function loadFeatures() {
+    const m = map.current;
+    if (!m) return;
+    const b = m.getBounds();
+    let bbox: [number, number, number, number] = [
+      Math.max(-180, b.getWest()),
+      Math.max(-85.06, b.getSouth()),
+      Math.min(180, b.getEast()),
+      Math.min(85.06, b.getNorth()),
+    ];
+    if (!(bbox[0] < bbox[2] && bbox[1] < bbox[3])) bbox = [-180, -85.06, 180, 85.06];
+    for (const { sid, d } of webFeatures.current) {
+      inFlight.current.get(sid)?.abort();
+      const ctrl = new AbortController();
+      inFlight.current.set(sid, ctrl);
+      webApi.features(d.id, bbox, ctrl.signal).then(
+        (fc) => {
+          if (ctrl.signal.aborted) return;
+          inFlight.current.delete(sid);
+          const src = m.getSource(sid) as GeoJSONSource | undefined;
+          if (!src) return;
+          src.setData(fc as unknown as GeoJSON.FeatureCollection);
+          onWebState.current?.(d.id, { error: null, drawn: true, total: fc.total, shown: fc.features.length, exceeded: fc.exceeded });
+        },
+        (e) => {
+          if (ctrl.signal.aborted || (e as Error).name === "AbortError") return;
+          inFlight.current.delete(sid);
+          const src = m.getSource(sid) as GeoJSONSource | undefined;
+          src?.setData(EMPTY);
+          onWebState.current?.(d.id, { error: e instanceof WebLayerError ? e.message : String((e as Error).message || e), shown: 0 });
+        },
+      );
+    }
+  }
+
+  // Keep the web layers on the map in step with the list: the basemap one
+  // at the bottom, the others above it in order, the session's own layers
+  // and the measured line above them all.
+  useEffect(() => {
+    const m = map.current;
+    if (!m || !styled.current) return;
+    const want = new Map<string, { d: WebDraw; base: boolean }>();
+    if (props.webBase) want.set(webSid(props.webBase, true), { d: props.webBase, base: true });
+    for (const d of props.webLayers || []) want.set(webSid(d, false), { d, base: false });
+    for (const l of [...(m.getStyle().layers || [])]) {
+      const src = (l as { source?: string }).source;
+      if (isWeb(src) && !want.has(src as string)) m.removeLayer(l.id);
+    }
+    for (const s of Object.keys(m.getStyle().sources || {})) {
+      if (isWeb(s) && !want.has(s)) {
+        inFlight.current.get(s)?.abort();
+        inFlight.current.delete(s);
+        drawnOnce.current.delete(s);
+        failedOnce.current.delete(s);
+        m.removeSource(s);
+      }
+    }
+    const features: { sid: string; d: WebDraw }[] = [];
+    let added = false;
+    for (const [sid, { d, base }] of want) {
+      const info = d.info;
+      const ex = info.extent;
+      const bounds = ex && ex[0] < ex[2] && ex[1] < ex[3] ? (ex as [number, number, number, number]) : undefined;
+      if (info.raster && info.tiles) {
+        if (!m.getSource(sid)) {
+          m.addSource(sid, {
+            type: "raster",
+            tiles: [location.origin + info.tiles],
+            tileSize: info.tile_size || 256,
+            minzoom: info.min_zoom ?? 0,
+            maxzoom: info.max_zoom ?? 22,
+            ...(bounds ? { bounds } : {}),
+            ...(info.attribution ? { attribution: info.attribution } : {}),
+          });
+          m.addLayer({ id: sid, type: "raster", source: sid });
+        }
+        m.setPaintProperty(sid, "raster-opacity", base ? 1 : d.opacity);
+      } else if (info.features) {
+        if (!m.getSource(sid)) {
+          m.addSource(sid, { type: "geojson", data: EMPTY, ...(info.attribution ? { attribution: info.attribution } : {}) });
+          m.addLayer({
+            id: `${sid}-fill`,
+            source: sid,
+            type: "fill",
+            filter: ["in", ["geometry-type"], ["literal", ["Polygon", "MultiPolygon"]]],
+            paint: { "fill-color": WEB_COLOR },
+          });
+          m.addLayer({
+            id: `${sid}-line`,
+            source: sid,
+            type: "line",
+            filter: ["in", ["geometry-type"], ["literal", ["Polygon", "MultiPolygon", "LineString", "MultiLineString"]]],
+            paint: { "line-color": WEB_COLOR, "line-width": 1.2 },
+          });
+          m.addLayer({
+            id: `${sid}-point`,
+            source: sid,
+            type: "circle",
+            filter: ["in", ["geometry-type"], ["literal", ["Point", "MultiPoint"]]],
+            paint: { "circle-color": WEB_COLOR, "circle-radius": 3.5, "circle-stroke-color": "#ffffff", "circle-stroke-width": 0.8 },
+          });
+          added = true;
+          // A feature's attributes on click (hidden fields were removed by
+          // the server).
+          for (const part of FEATURE_PARTS) {
+            if (bound.current.has(sid + part)) continue;
+            bound.current.add(sid + part);
+            m.on("click", sid + part, (e: maplibregl.MapLayerMouseEvent) => {
+              if (measuringRef.current) return;
+              const f = e.features?.[0];
+              if (!f) return;
+              new maplibregl.Popup({ maxWidth: "320px" })
+                .setLngLat(e.lngLat)
+                .setDOMContent(attributeTable((f.properties || {}) as Record<string, unknown>))
+                .addTo(m);
+            });
+          }
+        }
+        m.setPaintProperty(`${sid}-fill`, "fill-opacity", d.opacity * 0.35);
+        m.setPaintProperty(`${sid}-line`, "line-opacity", d.opacity);
+        m.setPaintProperty(`${sid}-point`, "circle-opacity", d.opacity);
+        m.setPaintProperty(`${sid}-point`, "circle-stroke-opacity", d.opacity);
+        features.push({ sid, d });
+      }
+    }
+    // Order: the basemap layer just above the background; the others, bottom
+    // first, below the session's own layers.
+    const layerIds = (sid: string, d: WebDraw) => (d.info.raster ? [sid] : FEATURE_PARTS.map((p) => sid + p));
+    if (props.webBase) {
+      const sid = webSid(props.webBase, true);
+      const above = (m.getStyle().layers || []).find((l) => l.id !== "background" && l.id !== sid);
+      for (const lid of layerIds(sid, props.webBase)) if (m.getLayer(lid)) m.moveLayer(lid, above?.id);
+    }
+    const firstOwn = (m.getStyle().layers || []).find((l) => l.id.startsWith("l-") || l.id.startsWith(MEASURE))?.id;
+    for (const d of props.webLayers || []) {
+      for (const lid of layerIds(webSid(d, false), d)) if (m.getLayer(lid)) m.moveLayer(lid, firstOwn);
+    }
+    webFeatures.current = features;
+    if (added) loadFeatures();
+    // What the map holds, bottom first, with each layer's opacity: for the
+    // window's own tests.
+    if (box.current) {
+      const held = (m.getStyle().layers || [])
+        .filter((l) => isWeb((l as { source?: string }).source) && !l.id.endsWith("-fill") && !l.id.endsWith("-line"))
+        .map((l) => {
+          const sid = (l as { source: string }).source;
+          const op = l.type === "raster" ? m.getPaintProperty(l.id, "raster-opacity") : m.getPaintProperty(l.id, "circle-opacity");
+          return { id: webIdOf(sid), base: sid.startsWith("wb~"), opacity: typeof op === "number" ? op : 1 };
+        });
+      box.current.dataset.web = JSON.stringify(held);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [props.webLayers, props.webBase, ready, props.layers]);
+
+  // Zoom to a web layer's extent, once per click.
+  const webFitted = useRef<number | null>(null);
+  useEffect(() => {
+    const m = map.current;
+    const f = props.webFit;
+    if (!m || !f || webFitted.current === f.n) return;
+    webFitted.current = f.n;
+    const d = [...(props.webLayers || []), ...(props.webBase ? [props.webBase] : [])].find((x) => x.id === f.id);
+    const ex = d?.info.extent;
+    if (!ex) return;
+    m.fitBounds(
+      [
+        [Math.max(-180, ex[0]), Math.max(-85, ex[1])],
+        [Math.min(180, ex[2]), Math.min(85, ex[3])],
+      ],
+      { padding: 30, maxZoom: 18, duration: 500 },
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [props.webFit]);
 
   // Zoom to a layer when asked, once per request (`handle` or
   // `handle#<anything>` to ask again), as soon as its data is here.

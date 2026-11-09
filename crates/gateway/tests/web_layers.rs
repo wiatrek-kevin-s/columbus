@@ -531,6 +531,26 @@ async fn web_layers_go_through_the_gateway_only() {
         !text.contains("fake.test") && !text.contains("http"),
         "{text}"
     );
+    // Each carries a short revision (T-25), so the page redraws an edited
+    // layer: a hash, the same on every list, different between sources.
+    let revs: Vec<String> = list["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["rev"].as_str().unwrap_or("").to_string())
+        .collect();
+    assert!(
+        revs.iter()
+            .all(|r| r.len() == 12 && r.chars().all(|c| c.is_ascii_hexdigit())),
+        "{revs:?}"
+    );
+    let unique: std::collections::HashSet<_> = revs.iter().collect();
+    assert_eq!(unique.len(), revs.len(), "{revs:?}");
+    let (_, again) = seen.json(&format!("{base}/api/web/sources"), &tok).await;
+    assert_eq!(
+        again["sources"], list["sources"],
+        "the same sources, the same revisions"
+    );
 
     // Every allowed source draws through the proxy.
     for id in [

@@ -46,6 +46,7 @@ mod chat;
 mod datagroups;
 mod doc_import;
 mod environments;
+mod maplayers;
 mod projects;
 mod registry;
 mod settings;
@@ -525,6 +526,11 @@ fn main() {
             settings::settings_tool_remove,
             settings::settings_tool_files,
             settings::settings_arcgis_signin,
+            maplayers::map_layers_list,
+            maplayers::map_layer_inspect,
+            maplayers::map_layer_save,
+            maplayers::map_layer_test,
+            maplayers::map_layer_remove,
             environments::settings_environments,
             environments::settings_env_add,
             environments::settings_env_confirm,

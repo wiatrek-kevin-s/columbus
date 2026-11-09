@@ -237,3 +237,31 @@ tbody tr.selected { background: var(--select); box-shadow: inset 3px 0 var(--hyd
 .map-bar button { padding: 1px 9px; font-size: 12px; }
 .map-bar button[aria-pressed="true"] { background: var(--hydro); border-color: var(--hydro); color: var(--hydro-ink); }
 .measure-result { font-variant-numeric: tabular-nums; }
+
+/* Web map layers (T-25): a panel under the map's bar. */
+.web-layers { position: relative; }
+.web-layers > button[aria-expanded="true"] { background: var(--select); }
+.web-panel {
+  position: absolute; top: calc(100% + 6px); left: 0; z-index: 6; width: 330px; max-height: 60vh; overflow: auto;
+  display: grid; gap: 8px; padding: 10px 12px; font-size: 12.5px;
+  background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; box-shadow: 0 4px 14px rgb(0 0 0 / 0.12);
+}
+.web-panel p { margin: 0; }
+.web-notice { display: flex; gap: 8px; align-items: center; padding: 6px 8px; background: var(--warn-bg); color: var(--ink); border-radius: 4px; }
+.web-notice span { flex: 1; font-weight: 600; }
+.web-base { display: flex; gap: 8px; align-items: center; }
+.web-base select { flex: 1; font: inherit; padding: 2px 4px; border: 1px solid var(--rule); border-radius: 4px; background: var(--panel); color: var(--ink); }
+.web-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 0; }
+.web-row { padding: 6px 0; border-top: 1px solid var(--rule); }
+.web-head { display: flex; align-items: center; gap: 6px; }
+.web-head input { margin: 0; flex: none; }
+.web-title { font-weight: 600; overflow-wrap: anywhere; flex: 1; }
+.web-kind { color: var(--ink-soft); font-size: 11.5px; white-space: nowrap; }
+.web-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin: 4px 0 0 20px; }
+.web-tools label { display: flex; align-items: center; gap: 4px; }
+.web-tools input[type="range"] { width: 90px; }
+.web-row .note, .web-row .error { margin: 4px 0 0 20px; }
+.web-row .note { color: var(--warn); }
+.web-add { border-top: 1px solid var(--rule); padding-top: 8px; display: grid; gap: 6px; justify-items: start; }
+.web-attrs { font-size: 12px; color: #17324d; }
+.web-attrs th, .web-attrs td { padding: 1px 6px; border-bottom: 1px solid #d3dce2; position: static; background: none; }

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-map-layer-inspect"
+description = "Enables the map_layer_inspect command without any pre-configured scope."
+commands.allow = ["map_layer_inspect"]
+
+[[permission]]
+identifier = "deny-map-layer-inspect"
+description = "Denies the map_layer_inspect command without any pre-configured scope."
+commands.deny = ["map_layer_inspect"]

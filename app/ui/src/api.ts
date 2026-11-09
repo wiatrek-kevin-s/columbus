@@ -137,6 +137,90 @@ async function call<T>(path: string, init: RequestInit = {}): Promise<T> {
 
 const q = (handle: string) => encodeURIComponent(handle);
 
+// ---------- Web map layers (T-25; the server side is T-24) ----------
+
+/** A web layer the person can turn on: an id and a title, never an address. */
+export interface WebSource {
+  id: string;
+  title: string;
+  kind: "xyz" | "wmts" | "wms" | "arcgis-map" | "arcgis-image" | "arcgis-features";
+  raster: boolean;
+  attribution: string | null;
+  secured: boolean;
+  origin: "saved" | "policy";
+  /** Changes when the layer is edited (address, layer or sign-in). */
+  rev?: string;
+}
+
+/** What the map needs to draw one web layer. */
+export interface WebSourceInfo {
+  id: string;
+  title: string;
+  kind: WebSource["kind"];
+  raster: boolean;
+  attribution: string | null;
+  secured: boolean;
+  extent: [number, number, number, number] | null;
+  min_zoom?: number | null;
+  max_zoom?: number | null;
+  tiles?: string;
+  tile_size?: number;
+  features?: string;
+  max_features?: number;
+  fields?: string[];
+  geometry_type?: string | null;
+}
+
+export interface WebFeatures {
+  type: "FeatureCollection";
+  features: GeoJSON.Feature[];
+  total: number;
+  exceeded: boolean;
+}
+
+/** A web layer's own failure (R-14 wording from the server): the session
+ * is still signed in. */
+export class WebLayerError extends Error {
+  constructor(
+    message: string,
+    public status: number,
+  ) {
+    super(message);
+  }
+}
+
+/** The header the map sends with its own requests to this server's web
+ * layer addresses (MapLibre's transformRequest): never in a URL. */
+export function authorization(): string | null {
+  return token ? `Bearer ${token}` : null;
+}
+
+/** Only this server's web-layer addresses get the session token. */
+export function isWebLayerUrl(url: string): boolean {
+  return url.startsWith(`${location.origin}/api/web/`);
+}
+
+async function web<T>(path: string, signal?: AbortSignal): Promise<T> {
+  if (!token) throw new SignedOut("not signed in");
+  const r = await fetch(path, { cache: "no-store", signal, headers: { Authorization: `Bearer ${token}` } });
+  const body = await r.json().catch(() => ({}));
+  // The session's own refusal (its token gone) signs the window out; a
+  // layer's (needs sign-in, host refused, service down) does not.
+  if ((r.status === 401 && body.error === "not signed in") || (r.status === 403 && body.error === "wrong host")) {
+    token = null;
+    throw new SignedOut("signed out");
+  }
+  if (!r.ok) throw new WebLayerError(body.error || `the server answered ${r.status}`, r.status);
+  return body as T;
+}
+
+export const webApi = {
+  sources: () => web<{ enabled: boolean; sources: WebSource[]; notes: string[] }>("/api/web/sources"),
+  source: (id: string) => web<WebSourceInfo>(`/api/web/source/${q(id)}`),
+  features: (id: string, bbox: [number, number, number, number], signal?: AbortSignal) =>
+    web<WebFeatures>(`/api/web/features/${q(id)}?bbox=${bbox.map((n) => n.toFixed(6)).join(",")}`, signal),
+};
+
 export const api = {
   state: () => call<{ session: string; version: number; pending: number; scope: Scope }>("/api/state"),
   review: () => call<{ opened: boolean }>("/api/review", { method: "POST" }),

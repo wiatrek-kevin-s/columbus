@@ -1,12 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, currentScope, signIn, SignedOut, type Approval, type Check, type FeatureCollection, type OutputCard, type Overview } from "./api";
+import { api, currentScope, signIn, SignedOut, webApi, type Approval, type Check, type FeatureCollection, type OutputCard, type Overview, type WebSource, type WebSourceInfo } from "./api";
 import { ApprovalCard } from "./ApprovalCard";
-import { MapView, type MapLayer } from "./MapView";
+import { MapView, type MapLayer, type WebDraw, type WebState } from "./MapView";
 import { Table } from "./Table";
+import { NO_WEB_PREFS, ordered, WebLayers, type WebPrefs } from "./WebLayers";
 
 // Distinct, colour-blind-aware hues for layers, in the order they appear.
 const COLORS = ["#1767c2", "#c2185b", "#2e7d32", "#ef6c00", "#6a1b9a", "#00838f", "#8d6e63", "#546e7a"];
 const POLL_MS = 2000;
+// How often the list of web layers is read again (one added, edited or
+// removed in the Columbus app shows in every chat).
+const WEB_POLL_MS = 5000;
 
 type Phase = "starting" | "ready" | "no-link" | "used" | "ended";
 
@@ -146,6 +150,10 @@ export function App() {
     const on = (e: MessageEvent) => {
       if (e.source !== window.parent || !APP_ORIGINS.includes(e.origin)) return;
       const d = e.data as { type?: unknown; view?: unknown; basemap?: unknown; theme?: unknown } | null;
+      if (d && d.type === "columbus-web-layers") {
+        webReload.current();
+        return;
+      }
       if (!d || d.type !== "columbus-embed") return;
       if (d.view === "map" || d.view === "table" || d.view === "split") setEmbedView(d.view);
       if (typeof d.basemap === "boolean" && !basemapSet.current) {
@@ -160,6 +168,49 @@ export function App() {
     window.parent.postMessage({ type: "columbus-embed-ready" }, "*");
     return () => window.removeEventListener("message", on);
   }, []);
+  // ---------- Web map layers (T-25) ----------
+  const [webList, setWebList] = useState<WebSource[] | null>(null);
+  const [webEnabled, setWebEnabled] = useState(true);
+  const [webListError, setWebListError] = useState<string | null>(null);
+  const [webInfo, setWebInfo] = useState<Record<string, WebSourceInfo | { error: string }>>({});
+  const [webState, setWebState] = useState<Record<string, WebState>>({});
+  const [webPrefs, setWebPrefsState] = useState<WebPrefs>(NO_WEB_PREFS);
+  const [webNotice, setWebNotice] = useState(false);
+  const [webFit, setWebFit] = useState<{ id: string; n: number } | null>(null);
+  const webReload = useRef<() => void>(() => {});
+  // Per chat: this window's session, as Zoom to selection.
+  const webKey = overview ? `columbus.web.${overview.session}` : null;
+  useEffect(() => {
+    if (!webKey) return;
+    try {
+      const v = JSON.parse(localStorage.getItem(webKey) || "null");
+      if (v && typeof v === "object") setWebPrefsState({ ...NO_WEB_PREFS, ...v });
+    } catch {
+      /* not remembered: all off */
+    }
+  }, [webKey]);
+  const setWebPrefs = (f: (p: WebPrefs) => WebPrefs) => {
+    setWebPrefsState((p) => {
+      const next = f(p);
+      try {
+        if (webKey) localStorage.setItem(webKey, JSON.stringify(next));
+      } catch {
+        /* the choice is not remembered */
+      }
+      return next;
+    });
+  };
+  // The privacy notice, the first time any web layer is turned on in this
+  // chat (R-21).
+  const firstOn = () => {
+    if (!webPrefs.noticed) {
+      setWebNotice(true);
+      return true;
+    }
+    return false;
+  };
+  const revOf = (id: string) => webList?.find((x) => x.id === id)?.rev || "0";
+
   const canDecide = currentScope() === "approve" && !FRAMED;
   const [reviewing, setReviewing] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -187,6 +238,98 @@ export function App() {
   useEffect(() => {
     if (phase === "ready") api.overview().then(setOverview, signedOut);
   }, [phase, signedOut]);
+
+  // The web layers the person can turn on: read now, every few seconds, when
+  // the window gets the focus, and when the app says one changed.
+  useEffect(() => {
+    if (phase !== "ready") return;
+    let live = true;
+    const load = () =>
+      webApi.sources().then(
+        (r) => {
+          if (!live) return;
+          setWebEnabled(r.enabled);
+          setWebListError(null);
+          setWebList((old) => (old && JSON.stringify(old) === JSON.stringify(r.sources) ? old : r.sources));
+        },
+        (e) => {
+          if (!live) return;
+          if (e instanceof SignedOut) return signedOut(e);
+          setWebListError(String((e as Error).message || e));
+        },
+      );
+    webReload.current = load;
+    load();
+    const t = window.setInterval(load, WEB_POLL_MS);
+    window.addEventListener("focus", load);
+    return () => {
+      live = false;
+      window.clearInterval(t);
+      window.removeEventListener("focus", load);
+      webReload.current = () => {};
+    };
+  }, [phase, signedOut]);
+
+  // A layer removed in the app is off here too.
+  useEffect(() => {
+    if (!webList) return;
+    const ids = new Set(webList.map((x) => x.id));
+    if (webPrefs.on.some((id) => !ids.has(id)) || (webPrefs.base && !ids.has(webPrefs.base))) {
+      setWebPrefs((p) => ({ ...p, on: p.on.filter((id) => ids.has(id)), base: p.base && ids.has(p.base) ? p.base : null }));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [webList, webPrefs.on, webPrefs.base]);
+
+  // What the map needs for each layer turned on (or chosen as basemap),
+  // read again when the layer is edited.
+  useEffect(() => {
+    if (!webList) return;
+    for (const id of [...webPrefs.on, ...(webPrefs.base ? [webPrefs.base] : [])]) {
+      const src = webList.find((x) => x.id === id);
+      if (!src) continue;
+      const key = `${id}~${src.rev || "0"}`;
+      if (webInfo[key]) continue;
+      setWebInfo((w) => ({ ...w, [key]: { error: "" } }));
+      webApi.source(id).then(
+        (info) => {
+          setWebInfo((w) => ({ ...w, [key]: info }));
+          setWebState((st) => ({ ...st, [id]: { ...st[id], error: null } }));
+        },
+        (e) => {
+          if (e instanceof SignedOut) return signedOut(e);
+          const msg = String((e as Error).message || e);
+          setWebInfo((w) => ({ ...w, [key]: { error: msg } }));
+          setWebState((st) => ({ ...st, [id]: { ...st[id], error: msg, drawn: false } }));
+        },
+      );
+    }
+  }, [webList, webPrefs.on, webPrefs.base, webInfo, signedOut]);
+
+  const webDraw = (id: string): WebDraw | null => {
+    const rev = revOf(id);
+    const info = webInfo[`${id}~${rev}`];
+    if (!info || "error" in info) return null;
+    return { id, rev, info, opacity: webPrefs.opacity[id] ?? 1 };
+  };
+  const webLayers: WebDraw[] = useMemo(
+    () =>
+      ordered(webList || [], webPrefs.order)
+        .filter((x) => webPrefs.on.includes(x.id) && x.id !== webPrefs.base)
+        .map((x) => webDraw(x.id))
+        .filter((x): x is WebDraw => x !== null)
+        .reverse(),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [webList, webPrefs, webInfo],
+  );
+  const webBase = useMemo(
+    () => {
+      if (!webPrefs.base) return null;
+      const d = webDraw(webPrefs.base);
+      return d && d.info.raster ? d : null;
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [webList, webPrefs.base, webInfo],
+  );
 
   // Poll for changes: new outputs, and requests waiting for the person.
   useEffect(() => {
@@ -345,7 +488,14 @@ export function App() {
         </div>
         {overview?.basemap_allowed && (
           <label className="switch" title="Street basemap from OpenFreeMap. When on, the area in view is sent to that site to fetch map tiles.">
-            <input type="checkbox" checked={basemap} onChange={(e) => setBasemap(e.target.checked)} />
+            <input
+              type="checkbox"
+              checked={basemap && !webPrefs.base}
+              onChange={(e) => {
+                setBasemap(e.target.checked);
+                if (e.target.checked) setWebPrefs((p) => ({ ...p, base: null }));
+              }}
+            />
             Basemap
           </label>
         )}
@@ -435,19 +585,72 @@ export function App() {
           )}
           <MapView
             layers={mapLayers}
-            basemap={basemap && !!overview?.basemap_allowed}
+            basemap={basemap && !!overview?.basemap_allowed && !webBase}
             fitTo={fitTo}
             selected={selected}
             zoomTo={zoomTo}
             zoomToSelection={zoomToSelection}
             onZoomToSelection={setZoomToSelection}
             tools={
-              FRAMED && overview?.basemap_allowed ? (
-                <label className="switch" title="Street basemap from OpenFreeMap. When on, the area in view is sent to that site to fetch map tiles.">
-                  <input type="checkbox" checked={basemap} onChange={(e) => setBasemap(e.target.checked)} />
-                  Basemap
-                </label>
-              ) : undefined
+              <>
+                {FRAMED && overview?.basemap_allowed && (
+                  <label className="switch" title="Street basemap from OpenFreeMap. When on, the area in view is sent to that site to fetch map tiles.">
+                    <input
+                      type="checkbox"
+                      checked={basemap && !webPrefs.base}
+                      onChange={(e) => {
+                        setBasemap(e.target.checked);
+                        if (e.target.checked) setWebPrefs((p) => ({ ...p, base: null }));
+                      }}
+                    />
+                    Basemap
+                  </label>
+                )}
+                <WebLayers
+                  enabled={webEnabled}
+                  list={webList}
+                  listError={webListError}
+                  prefs={webPrefs}
+                  state={webState}
+                  streetsAllowed={!!overview?.basemap_allowed}
+                  streetsOn={basemap}
+                  notice={webNotice}
+                  framed={FRAMED}
+                  onToggle={(id, on) => {
+                    const notice = on && firstOn();
+                    setWebPrefs((p) => ({
+                      ...p,
+                      noticed: p.noticed || notice,
+                      on: on ? [...new Set([...p.on, id])] : p.on.filter((x) => x !== id),
+                      order: p.order.includes(id) ? p.order : [...ordered(webList || [], p.order).map((x) => x.id)],
+                    }));
+                  }}
+                  onOpacity={(id, v) => setWebPrefs((p) => ({ ...p, opacity: { ...p.opacity, [id]: v } }))}
+                  onMove={(id, by) =>
+                    setWebPrefs((p) => {
+                      const ids = ordered(webList || [], p.order).map((x) => x.id);
+                      const i = ids.indexOf(id);
+                      const j = i + by;
+                      if (i < 0 || j < 0 || j >= ids.length) return p;
+                      [ids[i], ids[j]] = [ids[j], ids[i]];
+                      return { ...p, order: ids };
+                    })
+                  }
+                  onZoom={(id) => setWebFit({ id, n: Date.now() })}
+                  onBasemap={(choice) => {
+                    if (choice === "streets" || choice === "none") {
+                      setBasemap(choice === "streets");
+                      setWebPrefs((p) => ({ ...p, base: null }));
+                    } else {
+                      const notice = firstOn();
+                      setBasemap(false);
+                      setWebPrefs((p) => ({ ...p, noticed: p.noticed || notice, base: choice.web }));
+                    }
+                  }}
+                  onDismissNotice={() => setWebNotice(false)}
+                  onAdd={() => window.parent.postMessage({ type: "columbus-add-web-layer" }, "*")}
+                />
+              </>
             }
             onBasemapFailed={() => {
               setBasemap(false);
@@ -457,6 +660,10 @@ export function App() {
               setActive(h);
               setSelected({ handle: h, feature: f });
             }}
+            webLayers={webLayers}
+            webBase={webBase}
+            webFit={webFit}
+            onWebState={(id, st) => setWebState((all) => ({ ...all, [id]: { ...all[id], ...st } }))}
           />
           <section className="table" aria-label="Attribute table">
             <Table

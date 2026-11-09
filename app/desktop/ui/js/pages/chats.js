@@ -3,6 +3,7 @@
 // panel (Map, Table, Chart, Document, Files). Everything the model, the
 // server or a file says is shown as text, never as markup.
 import { $, el, h, icon, invoke, listen, store, button, pageHead, when, ago, size, plural, timeLeft, clientName, toast, emptyState, askConfirm, askText } from "../core.js";
+import { openWebLayerEditor, onChange as onWebLayersChange } from "./maplayers.js";
 
 // Model and thinking names, once the chat settings are read.
 const NAMES = new Map();
@@ -474,15 +475,22 @@ class Panel {
     this.onMessage = (ev) => {
       if (!this.frame || ev.source !== this.frame.contentWindow || ev.origin !== this.origin) return;
       if (ev.data && ev.data.type === "columbus-embed-ready") this.post();
+      // The map's Add web layer: the app's own dialog (the page gets nothing
+      // but word that the list changed).
+      if (ev.data && ev.data.type === "columbus-add-web-layer") openWebLayerEditor(null);
     };
     window.addEventListener("message", this.onMessage);
     this.unsub = store.on((k) => { if (k === "prefs") this.post(); });
+    this.unsubLayers = onWebLayersChange(() => {
+      if (this.frame && this.origin && this.frame.contentWindow) this.frame.contentWindow.postMessage({ type: "columbus-web-layers" }, this.origin);
+    });
     this.setTab("map");
   }
 
   destroy() {
     window.removeEventListener("message", this.onMessage);
     this.unsub();
+    this.unsubLayers();
     this.frame = null;
   }
 

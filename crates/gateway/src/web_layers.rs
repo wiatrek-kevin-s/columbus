@@ -1560,6 +1560,9 @@ fn tile_url(c: &Caps, z: u8, x: u32, y: u32) -> Result<Url, WebError> {
 
 /// `GET /api/web/sources`: every web layer the person can turn on, by id
 /// and title (no address). Caches of removed sources are dropped here.
+/// `rev` changes when a source's address, layer or sign-in changes (an
+/// Edit), so the map page knows to draw it afresh (T-25); it is a short
+/// hash, never the address.
 pub(crate) fn sources(env: &Env) -> Value {
     let (all, notes) = all(env);
     purge_unknown(
@@ -1577,6 +1580,7 @@ pub(crate) fn sources(env: &Env) -> Value {
             "attribution": s.attribution,
             "secured": s.auth_from.is_some(),
             "origin": o.as_str(),
+            "rev": s.fingerprint()[..12].to_string(),
         })).collect::<Vec<_>>() } else { vec![] },
         "notes": notes,
     })
