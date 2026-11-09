@@ -447,8 +447,8 @@
           "expected": "that source's cache folder is gone in each case"
         }
       ],
-      "status": "todo",
-      "evidence": ""
+      "status": "done",
+      "evidence": "Commit ca47383. crates/gateway/tests/web_layers.rs web_layers_go_through_the_gateway_only: XYZ, WMTS, WMS, MapServer (cached, dynamic), ImageServer, FeatureServer served through the proxy; disallowed host, unlisted WMTS tile host, redirect, tokenless/wrong token, raw URL refused with nothing fetched; secured MapServer token seen only by the vouched host, unvouched host gets none; no token in any page response; no MCP tool touches web layers, whoami lists titles only, list_outputs/map_snapshot mention none; caches dropped on remove and sign-out. CI run https://github.com/wiatrek-kevin-s/columbus/actions/runs/42637569401 green on 13 jobs. Workspace 369."
     },
     {
       "id": "T-25",
