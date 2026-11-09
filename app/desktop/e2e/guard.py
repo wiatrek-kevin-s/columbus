@@ -13,6 +13,15 @@
   app and exits, and WebKitWebDriver then waits for a browser that never
   comes. So a session starts only once the earlier app has let go of the
   name, and every WebDriver command has a time limit.
+- `stop` ends the app for every script, the same way. Ending a session
+  closes the page; WebKitWebDriver then kills the app it started, just
+  after it answers. tauri-driver, on SIGTERM, kills WebKitWebDriver at once,
+  so stopping the driver straight after the answer sometimes killed
+  WebKitWebDriver first and left the app running on its own, page closed
+  and window open, holding the name for good (about 1 stop in 6 here). So
+  `stop` waits for the app to go before it stops the driver; an app still
+  there after APP_GRACE seconds is ended (SIGTERM, then SIGKILL) and the
+  log says so.
 """
 
 import atexit
@@ -36,6 +45,9 @@ BUS_NAME = json.loads(_CONF.read_text())["identifier"] + ".SingleInstance"
 DRIVER_PORT, NATIVE_PORT = 4444, 4445
 # One WebDriver command (not a wait): starting a session launches the app.
 COMMAND_LIMIT = 120
+# How long the app may take to go once its session has ended (it usually
+# takes well under a second), and how long it gets after SIGTERM.
+APP_GRACE, TERM_GRACE = 10, 10
 
 _name = "e2e"
 _last = "starting"
@@ -188,13 +200,52 @@ def driver(env, app):
 
 
 def stop(d, proc):
-    """End the session and the driver (bounded)."""
+    """End the session, the app and the driver (bounded).
+
+    The driver stays up until the app has gone (see the module's notes); an
+    app that outlives APP_GRACE is ended here and reported."""
     try:
         d.quit()
     finally:
-        proc.terminate()
         try:
-            proc.wait(timeout=30)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait(timeout=10)
+            _until_quiet(lambda: not app_running(), APP_GRACE)
+        finally:
+            proc.terminate()
+            try:
+                proc.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=10)
+        if app_running():
+            end_app()
+
+
+def _until_quiet(cond, seconds):
+    """Wait up to `seconds` for `cond`; whether it came true."""
+    end = time.monotonic() + seconds
+    while not cond():
+        if time.monotonic() > end:
+            return False
+        time.sleep(0.05)
+    return True
+
+
+def end_app():
+    """End an app that did not go when its session ended: SIGTERM, then
+    SIGKILL, each reported. Fails the script if the name is still held."""
+    pid = _app_pid()
+    if pid is None:
+        _until(lambda: not app_running(), TERM_GRACE, "the app from the previous session is still running")
+        return
+    why = {signal.SIGTERM: f"was still running {APP_GRACE}s after its session ended",
+           signal.SIGKILL: f"was still running {TERM_GRACE}s after SIGTERM"}
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        print(f"{_name}: guard: the app (pid {pid}) {why[sig]}; sending {sig.name}", flush=True)
+        try:
+            os.kill(pid, sig)
+        except OSError:
+            pass
+        if _until_quiet(lambda: not app_running(), TERM_GRACE):
+            print(f"{_name}: guard: the app (pid {pid}) ended after {sig.name}", flush=True)
+            return
+    raise SystemExit(f"{_name}: step '{last()}': the app (pid {pid}) is still running after SIGKILL")
