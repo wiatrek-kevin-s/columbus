@@ -422,8 +422,8 @@
           "expected": "map fits route 2; view unchanged with the toggle off; measure shows 328 ft (within 1%)"
         }
       ],
-      "status": "todo",
-      "evidence": ""
+      "status": "done",
+      "evidence": "Commit e35e63b. app/ui/e2e/map.py (real Chromium, real session; CI Companion window job): click row 2 of a 3-route layer -> route 2 fitted and centred, routes 1 and 3 out of view; toggle off, click row 3 -> view exactly unchanged; measure a 100 m line -> '328 ft (99.9 m)' within 1%. CI run https://github.com/wiatrek-kevin-s/columbus/actions/runs/42630389678 green on 13 jobs. Workspace 358, pytest 225."
     },
     {
       "id": "T-24",
