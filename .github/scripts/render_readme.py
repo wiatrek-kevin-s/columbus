@@ -15,7 +15,7 @@ from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parents[2]
 CSS = Path(sys.argv[1])
-OUT = Path(sys.argv[2])
+OUT = Path(sys.argv[2]).resolve()
 OUT.mkdir(parents=True, exist_ok=True)
 
 req = urllib.request.Request(
