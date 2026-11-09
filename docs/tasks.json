@@ -295,8 +295,8 @@
           "expected": "same rows as before the change; all CI database jobs pass"
         }
       ],
-      "status": "todo",
-      "evidence": ""
+      "status": "done",
+      "evidence": "Commits b7ece5c, c1a8cab, b807b84. postgis.rs postgis_bbox_uses_the_spatial_index (EXPLAIN of the exact executed SQL with enable_seqscan=off names roadway_inventory_geom_gist; rows equal the unpushed query for an EPSG:3081 and a lon/lat box); oracle_bbox_uses_the_spatial_index (SDO_FILTER, native/4326/3857 boxes exact; unindexed table not pushed, correct rows); sql_server_bbox_uses_the_spatial_index (Filter(), exact; geography not pushed, correct); GeoPackage EXPLAIN QUERY PLAN shows rtree_roads_geom, same rows without an R-tree; files cache R-tree. All database jobs green in CI run https://github.com/wiatrek-kevin-s/columbus/actions/runs/42555648758 (Desktop app Linux re-run once after a hang in sources.py, then green). Workspace 356 passed."
     },
     {
       "id": "T-14",
@@ -312,8 +312,8 @@
           "expected": "engine start under 20 s and warm query_features on 100,000 rows under 4 s; measured values printed and recorded in the progress log"
         }
       ],
-      "status": "todo",
-      "evidence": ""
+      "status": "done",
+      "evidence": "Commit f8c1d88. crates/gateway/tests/benchmark.rs engine_start_and_a_warm_query_on_100k_rows_are_fast, CI step 'Benchmark (Linux)' in run https://github.com/wiatrek-kevin-s/columbus/actions/runs/42557772645: BENCH engine_start_s=0.48 first_query_s=1.71 warm_query_s=1.61 rows=100000 (targets 10 s / 2 s, limits 20 s / 4 s). Local: 0.79 / 1.77 / 1.64."
     },
     {
       "id": "T-15",
