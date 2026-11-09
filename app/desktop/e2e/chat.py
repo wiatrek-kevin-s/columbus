@@ -18,7 +18,6 @@ address from the environment.
 
 import json
 import os
-import subprocess
 import sys
 import tempfile
 import threading
@@ -26,10 +25,14 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.support.ui import Select, WebDriverWait
+from selenium.webdriver.support.ui import Select
+
+import guard
+from guard import step
+
+WebDriverWait = guard.Wait  # its time-outs name the step that was waiting
 
 REPO = Path(__file__).resolve().parents[3]
 GATEWAY = Path(sys.argv[1]).resolve()
@@ -79,6 +82,7 @@ class Stand(BaseHTTPRequestHandler):
 
 
 def main():
+    guard.start("desktop chat e2e", minutes=10)
     OUT.mkdir(exist_ok=True)
     root = Path(tempfile.mkdtemp())
     import geopandas as gpd
@@ -108,21 +112,17 @@ def main():
     if os.environ.get("E2E_BUNDLED_SERVER"):
         # The server that comes with the app, beside it as a release puts it.
         del env["COLUMBUS_SERVER"]
-    driver_proc = subprocess.Popen(["tauri-driver"], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    time.sleep(2)
-    opts = webdriver.common.options.ArgOptions()
-    opts.set_capability("tauri:options", {"application": str(APP)})
-    opts.set_capability("browserName", "wry")
-    d = webdriver.Remote("http://127.0.0.1:4444", options=opts)
+    step("the app")
+    d, driver_proc = guard.driver(env, APP)
     try:
         wait = WebDriverWait(d, 60)
         wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "a.btn.primary[href='#/chats/fresh']"))).click()
         box = wait.until(EC.visibility_of_element_located((By.ID, "text")))
-        # With a key and the server found, the chat says nothing about setup.
+        step("With a key and the server found, the chat says nothing about setup")
         wait.until(lambda drv: drv.execute_script("return document.querySelector('.chat-empty') !== null"))
         time.sleep(1)
         assert "No AI is connected" not in d.find_element(By.ID, "log").text
-        # This chat thinks harder than the default.
+        step("This chat thinks harder than the default")
         WebDriverWait(d, 10).until(lambda drv: drv.find_elements(By.CSS_SELECTOR, "#chat-effort option[value='high']"))
         Select(d.find_element(By.ID, "chat-effort")).select_by_value("high")
         box.send_keys("Export the tracts to my outbox.")
@@ -141,32 +141,32 @@ def main():
         d.save_screenshot(str(OUT / "chat-done.png"))
         logtext = d.find_element(By.ID, "log").text
         assert "Allowed once." in logtext, logtext
-        # A table in the reply is drawn as a table, its cells as text.
+        step("A table in the reply is drawn as a table, its cells as text")
         cells = d.execute_script("return [...document.querySelectorAll('#log table.md tbody tr')].map(r => [...r.cells].map(c => c.textContent))")
         assert cells == [["tracts", "2"], ["tracts.prov.json", "1"]], cells
-        # Tool steps fold into one line per turn; the steps are inside.
+        step("Tool steps fold into one line per turn; the steps are inside")
         steps = d.execute_script("return document.getElementById('log').textContent")
         assert 'Querying "tracts" on "tiger"' in steps, steps
         assert d.find_elements(By.CSS_SELECTOR, "#log details.steps"), "steps fold into a line"
         assert (root / "outbox" / "tracts.gpkg").exists(), "the export happened"
-        # The model never saw the key in a message, and only Columbus tools.
+        step("The model never saw the key in a message, and only Columbus tools")
         key, first = SEEN[0]
         assert key == "sk-ant-test-0123456789abcdef"
         assert first["model"] == "claude-sonnet-5-5", first["model"]
         assert first.get("output_config") == {"effort": "high"}, first.get("output_config")
         names = {t["name"] for t in first["tools"]}
         assert "whoami" in names and "export_output" in names, names
-        # The page has no way to read the key back.
+        step("The page has no way to read the key back")
         got = d.execute_async_script(
             "const done = arguments[arguments.length - 1];"
             "window.__TAURI__.core.invoke('chat_settings').then(s => done(JSON.stringify(s))).catch(e => done('ERR ' + e));")
         assert "sk-ant" not in got, got
 
-        # Another model for the rest of this chat.
+        step("Another model for the rest of this chat")
         before = len(SEEN)
         Select(d.find_element(By.ID, "chat-model")).select_by_value("claude-opus-5-5")
         WebDriverWait(d, 10).until(lambda drv: "From here on: Claude Opus 5.5, thinking high." in drv.find_element(By.ID, "log").text)
-        # A script: the AI's code in a labelled box, apart from the server's words.
+        step("A script: the AI's code in a labelled box, apart from the server's words")
         box.send_keys("Now run a script.")
         WebDriverWait(d, 10).until(lambda drv: drv.find_element(By.ID, "send").is_enabled())
         d.find_element(By.ID, "send").click()
@@ -187,7 +187,7 @@ def main():
         WebDriverWait(d, 60).until(lambda drv: "The script was declined." in drv.find_element(By.ID, "log").text)
         assert "Declined." in d.find_element(By.ID, "log").text
 
-        # Stop while a prompt waits: its card is withdrawn, not left live.
+        step("Stop while a prompt waits: its card is withdrawn, not left live")
         box.send_keys("And one more.")
         WebDriverWait(d, 10).until(lambda drv: drv.find_element(By.ID, "send").is_enabled())
         d.find_element(By.ID, "send").click()
@@ -197,14 +197,14 @@ def main():
         d.find_element(By.ID, "stop").click()
         WebDriverWait(d, 20).until(lambda drv: "No longer waiting" in card.text)
         assert not card.find_elements(By.TAG_NAME, "button"), "no live buttons after Stop"
-        # The output panel shows the chat's own session's page.
+        step("The output panel shows the chat's own session's page")
         frame = WebDriverWait(d, 40).until(EC.presence_of_element_located((By.CSS_SELECTOR, "#chatview .outpanel iframe")))
         d.switch_to.frame(frame)
         WebDriverWait(d, 40).until(lambda drv: "tracts" in drv.execute_script("return document.body.textContent"))
         d.switch_to.default_content()
         d.save_screenshot(str(OUT / "chat-panel.png"))
 
-        # The chat is saved: listed under Chats, found by what was said.
+        step("The chat is saved: listed under Chats, found by what was said")
         d.execute_script("location.hash = '#/chats'")
         WebDriverWait(d, 20).until(lambda drv: "Export the tracts to my outbox." in drv.execute_script("return document.querySelector('main').textContent"))
         search = d.find_element(By.CSS_SELECTOR, "input[aria-label='Search chats']")
@@ -216,6 +216,7 @@ def main():
         kinds = [x["kind"] for x in lines]
         assert kinds[0] == "meta" and "you" in kinds and "approval" in kinds and "answer" in kinds, kinds
         assert not any("sk-ant" in json.dumps(x) for x in lines), "the key is never in a transcript"
+        step("A new chat ends this one; the saved one reads back, and cannot be continued")
         # A new chat ends this one; the saved one reads back, and cannot be continued.
         # From the Chats page, as the person found: New chat is a new chat,
         # never the one they had open.
@@ -237,8 +238,7 @@ def main():
         d.save_screenshot(str(OUT / "chat-saved.png"))
         print("desktop chat e2e: ok")
     finally:
-        d.quit()
-        driver_proc.terminate()
+        guard.stop(d, driver_proc)
         stand.shutdown()
 
 

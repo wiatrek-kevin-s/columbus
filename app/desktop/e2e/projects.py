@@ -14,13 +14,15 @@ import os
 import subprocess
 import sys
 import tempfile
-import time
 from pathlib import Path
 
-from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.support.ui import WebDriverWait
+
+import guard
+from guard import step
+
+WebDriverWait = guard.Wait  # its time-outs name the step that was waiting
 
 REPO = Path(__file__).resolve().parents[3]
 GATEWAY = Path(sys.argv[1]).resolve()
@@ -40,6 +42,7 @@ def click(d, how, what):
 
 
 def main():
+    guard.start("desktop projects e2e", minutes=10)
     OUT.mkdir(exist_ok=True)
     root = Path(tempfile.mkdtemp())
     (root / "connections").mkdir()
@@ -56,12 +59,8 @@ def main():
                COLUMBUS_WORKER=str(REPO / "workers/python/columbus_worker.py"), COLUMBUS_PYTHON=sys.executable,
                COLUMBUS_APPROVALS_BROWSER="none", COLUMBUS_LOG="warn",
                XDG_CONFIG_HOME=str(root / "config"), XDG_DATA_HOME=str(root / "data"))
-    proc = subprocess.Popen(["tauri-driver"], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    time.sleep(2)
-    opts = webdriver.common.options.ArgOptions()
-    opts.set_capability("tauri:options", {"application": str(APP)})
-    opts.set_capability("browserName", "wry")
-    d = webdriver.Remote("http://127.0.0.1:4444", options=opts)
+    step("the app")
+    d, proc = guard.driver(env, APP)
     wait = WebDriverWait(d, 30)
     try:
         wait.until(lambda drv: drv.execute_script("return !!document.getElementById('page-title')"))
@@ -81,21 +80,21 @@ def main():
         assert "name: Tract review 2027" in saved and "acres" in saved, saved
         assert "- tiger" in saved and "payroll" not in saved, saved
         assert "export_folder: outbox" in saved, saved
-        # Its project databases, as Columbus's server lists them for it.
+        step("Its project databases, as Columbus's server lists them for it")
         wait.until(lambda drv: "None yet" in text(drv, "pj-dbs") or "Couldn't" in text(drv, "pj-dbs"))
         assert "None yet" in text(d, "pj-dbs"), text(d, "pj-dbs")
 
-        # A chat in the project says so.
+        step("A chat in the project says so")
         wait.until(EC.element_to_be_clickable((By.ID, "pj-chat"))).click()
         wait.until(lambda drv: "Tract review 2027" in text(drv, "chat-sub"))
 
-        # The list shows it, with its connections.
+        step("The list shows it, with its connections")
         d.execute_script("location.hash = '#/projects'")
         wait.until(lambda drv: "Tract review 2027" in text(drv, "pj-list"))
         assert "Uses tiger" in text(d, "pj-list"), text(d, "pj-list")
         d.save_screenshot(str(OUT / "projects-list.png"))
 
-        # A changed instruction is saved; deleting removes the file.
+        step("A changed instruction is saved; deleting removes the file")
         click(d, By.XPATH, "//ul[@id='pj-list']/li[@data-id='tract-review-2027']//a")
         box = wait.until(EC.visibility_of_element_located((By.ID, "pj-instructions")))
         box.send_keys(" District 14 only.")
@@ -110,8 +109,7 @@ def main():
         d.save_screenshot(str(OUT / "projects-failed.png"))
         raise
     finally:
-        d.quit()
-        proc.terminate()
+        guard.stop(d, proc)
         subprocess.run(["pkill", "-f", str(APP)], check=False)
 
 

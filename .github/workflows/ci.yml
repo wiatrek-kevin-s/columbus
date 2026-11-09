@@ -168,6 +168,9 @@ jobs:
           dbus-run-session -- xvfb-run -a python app/desktop/e2e/deeplink.py target/debug/columbus-mcp app/desktop/src-tauri/target/debug/columbus-desktop
       - name: The main window (chat, connections, sign-in, environments, tools, workflows, approvals, audit), driven through WebDriver (Linux)
         if: runner.os == 'Linux'
+        # Each script stops itself after 10 minutes (app/desktop/e2e/guard.py);
+        # this bounds the step as a whole, so a hang cannot use up the job.
+        timeout-minutes: 30
         run: |
           # The package was renamed in newer Ubuntu releases.
           sudo apt-get install -y webkitgtk-webdriver || sudo apt-get install -y webkit2gtk-driver

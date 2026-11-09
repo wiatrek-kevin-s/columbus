@@ -20,10 +20,13 @@ import tempfile
 import time
 from pathlib import Path
 
-from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.support.ui import WebDriverWait
+
+import guard
+from guard import step
+
+WebDriverWait = guard.Wait  # its time-outs name the step that was waiting
 
 REPO = Path(__file__).resolve().parents[3]
 GATEWAY = Path(sys.argv[1]).resolve()
@@ -69,12 +72,7 @@ def env_for(root, confirm):
 
 
 def session(root, confirm):
-    proc = subprocess.Popen(["tauri-driver"], env=env_for(root, confirm), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    time.sleep(2)
-    opts = webdriver.common.options.ArgOptions()
-    opts.set_capability("tauri:options", {"application": str(APP)})
-    opts.set_capability("browserName", "wry")
-    d = webdriver.Remote("http://127.0.0.1:4444", options=opts)
+    d, proc = guard.driver(env_for(root, confirm), APP)
     wait = WebDriverWait(d, 30)
     wait.until(lambda drv: drv.execute_script("return !!document.getElementById('page-title')"))
     d.execute_script("location.hash = '#/workflows'")
@@ -95,6 +93,7 @@ def text(d, eid):
 
 
 def main():
+    guard.start("desktop workflows e2e", minutes=10)
     OUT.mkdir(exist_ok=True)
     root = Path(tempfile.mkdtemp())
     import geopandas as gpd
@@ -113,6 +112,7 @@ def main():
     propose(root, WORKFLOW.replace("id: tract-export", "id: tract-copy").replace("name: Tract export", "name: Tract copy"))
 
     # The person declines to confirm: nothing is approved.
+    step("the app, confirming denied: nothing is approved")
     d, proc, wait = session(root, "deny")
     try:
         wait.until(lambda drv: "Tract export" in text(drv, "wf-waiting"))
@@ -123,15 +123,16 @@ def main():
         assert not (root / "workflows" / "approved.yaml").exists(), "nothing approved without the person"
         click(d, By.ID, "wf-review-close")
     finally:
-        d.quit()
-        proc.terminate()
-        # The app is single-instance: the next session needs this one gone.
+        step("closing the first app")
+        guard.stop(d, proc)
+        # The app is single-instance: the next session needs this one gone
+        # (the next session also waits until it has let go of its name).
         subprocess.run(["pkill", "-f", str(APP)], check=False)
-        time.sleep(1)
 
+    step("the app again, confirming allowed")
     d, proc, wait = session(root, "allow")
     try:
-        # No scheduler on Linux: the page says so.
+        step("No scheduler on Linux: the page says so")
         assert d.find_element(By.ID, "wf-nosched").is_displayed()
         click(d, By.XPATH, "//ul[@id='wf-waiting']/li[.//b[text()='Tract export']]//button[normalize-space()='Review']")
         dlg = wait.until(EC.visibility_of_element_located((By.ID, "wf-review")))
@@ -145,11 +146,12 @@ def main():
         wait.until(lambda drv: not dlg.is_displayed())
         wait.until(lambda drv: "Tract export" in text(drv, "wf-installed"))
         assert "tract-export" in (root / "workflows" / "approved.yaml").read_text()
+        step("Open a shared file is offered on the list")
         # Open a shared file is offered on the list (the file dialog itself
         # is the system's).
         assert d.find_element(By.ID, "wf-open-shared").is_displayed()
 
-        # Run now: the real server runs it, and its report shows.
+        step("Run now: the real server runs it, and its report shows")
         click(d, By.XPATH, "//ul[@id='wf-installed']/li[@data-id='tract-export']//button[normalize-space()='Run now']")
         try:
             WebDriverWait(d, 120).until(lambda drv: drv.find_elements(By.ID, "wf-report") and "Succeeded" in text(drv, "wf-report"))
@@ -160,21 +162,21 @@ def main():
         assert "exported to the outbox folder" in report, report
         assert any(p.name.startswith("tract-export-tracts-") for p in (root / "outbox").iterdir()), list((root / "outbox").iterdir())
         d.save_screenshot(str(OUT / "workflows-run.png"))
-        # The report is its own page; the workflow's page lists the run.
+        step("The report is its own page; the workflow's page lists the run")
         click(d, By.ID, "wf-back")
         wait.until(lambda drv: drv.find_elements(By.XPATH, "//ul[@id='wf-run-list']/li"))
         assert "Started by you" in text(d, "wf-run-list")
         d.execute_script("location.hash = '#/workflows'")
         wait.until(lambda drv: "last run" in text(drv, "wf-installed"))
 
-        # The other is declined.
+        step("The other is declined")
         click(d, By.XPATH, "//ul[@id='wf-waiting']/li[.//b[text()='Tract copy']]//button[normalize-space()='Decline']")
         wait.until(lambda drv: "Tract copy" not in text(drv, "wf-waiting"))
         assert not (root / "workflows" / "proposals" / "tract-copy").exists()
 
-        # Removing it, from its own page: off, its runs kept.
+        step("Removing it, from its own page: off, its runs kept")
         click(d, By.XPATH, "//ul[@id='wf-installed']/li[@data-id='tract-export']//a")
-        # Share is offered for an approved workflow.
+        step("Share is offered for an approved workflow")
         assert wait.until(EC.presence_of_element_located((By.ID, "wf-share"))).is_enabled()
         wait.until(EC.element_to_be_clickable((By.ID, "wf-remove"))).click()
         wait.until(lambda drv: drv.find_elements(By.ID, "wf-installed") and "Tract export" not in text(drv, "wf-installed"))
@@ -182,8 +184,7 @@ def main():
         assert list((root / "workflows" / "runs" / "tract-export").iterdir()), "runs are kept"
         print("desktop workflows e2e: ok")
     finally:
-        d.quit()
-        proc.terminate()
+        guard.stop(d, proc)
 
 
 if __name__ == "__main__":
