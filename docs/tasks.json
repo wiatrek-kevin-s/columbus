@@ -565,8 +565,8 @@
           "expected": "release v0.14.0 marked pre-release lists the Mac and Windows .mcpb, app installers and server zips; the progress log records the link"
         }
       ],
-      "status": "todo",
-      "evidence": ""
+      "status": "done",
+      "evidence": "Release workflow run https://github.com/wiatrek-kevin-s/columbus/actions/runs/42712984935 (all jobs green) on main e73620f (CI run 42710641418 green). Release https://github.com/wiatrek-kevin-s/columbus/releases/tag/v0.14.0 published 2026-11-09 as a pre-release 'Columbus 0.14.0 (test release)' with columbus-0.14.0-{macos-arm64,windows-x64}.mcpb and .zip, columbus-app-0.14.0-macos-arm64.dmg, columbus-app-0.14.0-windows-x64-setup.exe and .msi. Release notes list what is not in this release (CR-1, CR-3) and mark arcpy and trusted environments experimental."
     },
     {
       "id": "T-18",

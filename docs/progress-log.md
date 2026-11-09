@@ -4,8 +4,8 @@ Kit version 1.1 · as of 2026-11-08, session S1 not started
 
 ## Where things stand
 
-- **Session:** S8 (release) · **Task:** T-17
-- **Next step:** merge the review-fix PR, run CI on main, dispatch the Release workflow with tag v0.14.0 (T-17), then the owner's message
+- **Session:** done · **Task:** none (0.14.0 released)
+- **Next step:** the owner's follow-ups (below in the newest handoff note); the separate UI-review project; CR-1 and CR-3 in a Blueprint round
 - **Waiting on the owner:** nothing
 - **Homework received:** setup round answered ("skip" on Dependabot alerts); H-1 and H-2 are optional, after release
 
@@ -96,6 +96,12 @@ Status: raised, approved, declined, or Sent to Blueprint (touches a one-way door
 
 Newest first, written as you go. Mark each claim verified (checked this session) or unverified.
 
+### Release (2026-11-09)
+
+- **Released:** https://github.com/wiatrek-kevin-s/columbus/releases/tag/v0.14.0 (pre-release, from main e73620f; Release run 42712984935). Every task T-1–T-25 except T-18 is done; R-101 done; R-102 blocked only on the owner merging Dependabot #9, #13, #11.
+- **Owner's follow-ups:** sidebar description, website and topics; upload `docs/images/social-card.png` as the social preview; turn on private vulnerability reporting; merge Dependabot #9, #13 and #11 (Rust advisories); optionally allow GitHub Actions to create pull requests (so the weekly engine-pins job can open its PR) and turn on Dependabot alerts; the optional manual checks H-1 and H-2 (docs/manual-checks.md); start the UI-review project (items for it: app title truncation, Tools page "null", relaunch hand-off, small tour pictures, the app's four "coming" panels).
+- **Later:** CR-1 (tool lint list in environments) and CR-3 (docs site) for a Blueprint round. The remaining Dependabot PRs (#7, #8, #10, #12, #14, #15) are routine updates for a later round.
+
 ### Final review and release (2026-11-09)
 
 - **Final review** (fresh subagent, docs/final-review.md; full notes kept by the lead): every acceptance check T-1–T-16, T-19–T-25 passes on re-run; 375 Rust / 225 Python tests, no engine skips; security negative tests all held. Findings: **F-1 Fix now** (large CSV OOM-killed the engine) → R-101; **F-2** (advisories, 30) → R-102 cheap parts; F-3 = CR-1 (20, Sent to Blueprint); accepted under 20: F-4 no required checks on main (Release has its own CI gate), F-5 A-2 unconfirmed / no paste-code field in the app, F-6 backslash in rebuilt where (theoretical), F-7 relaunch hand-off, F-8 Tools page "null", F-9 record slips (PR #16 named #7, fixed here; badge; two old workflow registrations), F-10 folder-wide row_filter fails files without the column (safely), raw GDAL text for a broken GeoJSON.
@@ -174,6 +180,7 @@ Newest first, written as you go. Mark each claim verified (checked this session)
 - 2026-11-09 PR #6 merged (5543dd9) after CI run 42649289887 green.
 - 2026-11-09 T-23 done: 7ea37ee; row_job_end_to_end_on_oracle ran in the Oracle job; run 42651014882 green (attempt 2; attempt 1 hit the app-exit wait, since root-caused in 45c6238).
 - 2026-11-09 shell.py stale element root-caused (approvals page rebuilt buttons every poll): fixed in c198acd; run 42673657061 green; merged into S7.
+- 2026-11-09 T-17 done: v0.14.0 released (pre-release) from e73620f; Release run 42712984935; PR #17 merged (e73620f) after CI run 42708308018 green.
 - 2026-11-09 Final review done (F-1 Fix now). R-101 done: fb20570, run 42705526192 green on 14 jobs; R-102: e393259 Pillow 13, pip-audit clean; Dependabot merges left to the owner. Re-check confirmed both.
 - 2026-11-09 T-16 done: 4d0ad47 and 641fde0..364de06; run 42685605864 green on 15 jobs; README 10-second test passed (7/10, then a polish round).
 
