@@ -222,8 +222,8 @@
           "expected": "the first four are refused with no request sent (checked on the fake server's request log); the 429 is retried at most 3 times then gives the R-14 message; the large layer returns 200,000 rows with query.read_limit"
         }
       ],
-      "status": "todo",
-      "evidence": ""
+      "status": "done",
+      "evidence": "Commit 37459a3. crates/gateway/tests/arcgis.rs: arcgis_lists_describes_and_queries_a_public_service (3 datasets Roadways_0, Roadways_1, Inspections; request where exactly '(DISTRICT = 14) AND (LANES > 2)' with f=json, returnM=true, hidden SSN never in outFields or results; M on every workspace row; sql_select -> query.unsupported) and arcgis_refuses_before_any_request_retries_429_and_stops_at_the_read_limit (host off policy, parser-subset, hidden field, '1=1) OR (1=1' refused with the fake's request log unchanged; 429 retried 3 times then R-14 message; 250,000-row layer -> 200,000 rows with query.read_limit). Workspace 338 passed; pytest 221 passed 36 skipped."
     },
     {
       "id": "T-11",
