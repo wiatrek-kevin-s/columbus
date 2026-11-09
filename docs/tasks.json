@@ -251,8 +251,8 @@
           "expected": "the query is refused with 'the portal does not vouch for' the host; the fake server's log shows no token"
         }
       ],
-      "status": "todo",
-      "evidence": ""
+      "status": "done",
+      "evidence": "Commit 7c9cf15. crates/gateway/tests/arcgis_signin.rs: sign_in_queries_with_a_bearer_refreshes_once_and_asks_again_when_lapsed (F-3b entry stored with 4 keys; list/describe/query carry the bearer in headers only; expired access token -> exactly one refresh; lapsed refresh -> 'Sign in again: columbus-mcp arcgis signin svc', nothing sent); fake token value found 0 times in tool results, audit, workspaces/provenance and connections; a_service_the_portal_does_not_vouch_for_never_gets_the_token ('the portal does not vouch for', no token in the fake's log); without_a_credential_store_sign_in_is_refused (R-17); the_paste_code_fallback_signs_in_and_is_offered_when_the_browser_does_not_return. A-2 unconfirmed (docs not reachable): loopback default plus urn:ietf:wg:oauth:2.0:oob fallback both implemented. Workspace 348 passed; pytest 221 passed 36 skipped."
     },
     {
       "id": "T-12",
