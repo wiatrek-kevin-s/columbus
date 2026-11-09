@@ -1223,6 +1223,78 @@ def geojson_pages_to_layer(pages: list[str], out_stem: str, max_features: int) -
     return {"output_path": path, "summary": layer_summary(df), "checks": checks, "truncated": truncated}
 
 
+def _esrijson_page(path: str):
+    """One ArcGIS query page (``f=json``) as a (Geo)DataFrame, read with
+    GDAL's ESRIJSON driver only (the ``ESRIJSON:`` prefix: GDAL picks no
+    other driver by content). Read through Arrow, so Z and M values are
+    kept (AF-17)."""
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", r"Measured \(M\) geometry types are not supported", UserWarning)
+        return gpd.read_file("ESRIJSON:" + path, engine="pyogrio", use_arrow=True)
+
+
+def esrijson_pages_to_layer(pages: list[str], out_stem: str | None, layer: str, fields: list[str],
+                            geometry: bool, return_rows: int) -> dict[str, Any]:
+    """Build a workspace layer from an ``arcgis`` connection's query pages,
+    which the gateway fetched and trimmed to the fields it allows. Only
+    ``fields`` are kept, in that order, plus the geometry when ``geometry``.
+    M values are written with ``write_ogr`` (ISO WKB). Without ``out_stem``
+    nothing is written (sample_rows): only the first rows come back."""
+    frames = []
+    crs = None
+    for path in pages:
+        try:
+            df = _esrijson_page(path)
+        except Exception as e:  # noqa: BLE001 - GDAL's reason, plainly
+            raise GISError("arcgis.format", f"an ArcGIS page could not be read as Esri JSON: {e}") from None
+        if isinstance(df, gpd.GeoDataFrame) and df.crs is not None and crs is None:
+            crs = df.crs
+        frames.append(df)
+    frames = [f for f in frames if len(f)] or frames[:1]
+    if frames:
+        df = pd.concat(frames, ignore_index=True) if len(frames) > 1 else frames[0]
+    else:
+        df = pd.DataFrame()
+    for f in fields:
+        if f not in df.columns:
+            df[f] = None
+    gname = df.geometry.name if isinstance(df, gpd.GeoDataFrame) and geometry else None
+    keep = list(fields) + ([gname] if gname else [])
+    df = df[[c for c in keep if c in df.columns]]
+    if geometry:
+        if gname is None:
+            df = gpd.GeoDataFrame(df, geometry=gpd.GeoSeries([None] * len(df)), crs=crs)
+        else:
+            df = gpd.GeoDataFrame(df, geometry=gname, crs=df.crs or crs)
+    else:
+        df = pd.DataFrame(df)
+    shown = []
+    for i in range(min(return_rows, len(df))):
+        row = df.iloc[i]
+        vals = [_row_value(row[c]) for c in fields]
+        if geometry:
+            geom = row[df.geometry.name]
+            if geom is None or (not isinstance(geom, shapely.Geometry)):
+                vals.append(None)
+            else:
+                vals.append({"geometry": geom.geom_type + (" M" if shapely.has_m(geom) else ""),
+                             "bounds": [round(float(v), 6) for v in geom.bounds] if not geom.is_empty else None})
+        shown.append(vals)
+    path = write_layer(df, out_stem, layer=layer) if out_stem else None
+    what = "The result"
+    checks = _layer_checks(df, what) if isinstance(df, gpd.GeoDataFrame) else []
+    return {
+        "columns": list(fields) + (["geometry"] if geometry else []),
+        "rows": shown,
+        "rows_returned": len(shown),
+        "output_path": path,
+        "summary": layer_summary(df),
+        "checks": checks,
+    }
+
+
 # Delivery format names (as a context pack writes them) -> (driver, extension).
 EXPORT_FORMATS = {
     "gpkg": ("GPKG", ".gpkg"), "geopackage": ("GPKG", ".gpkg"),

@@ -1729,7 +1729,7 @@ impl Gateway {
                         Ok(_) => "ok".into(),
                         Err(e) => e.to_string(),
                     },
-                    engine_ready: Self::engine_ready(&c.kind),
+                    engine_ready: Self::engine_ready(&c.kind) || crate::arcgis::is_arcgis(&c.kind),
                 }
             })
             .collect()
@@ -2393,7 +2393,7 @@ impl Gateway {
             query_seconds: Some(access.limits.max_seconds()),
             rows_returned_per_call: access.return_rows,
             expires: conn.expires.map(|d| d.to_string()),
-            engine_ready: Self::engine_ready(&conn.kind),
+            engine_ready: Self::engine_ready(&conn.kind) || crate::arcgis::is_arcgis(&conn.kind),
             data_group_datasets: (!self.state.scope.data_groups.is_empty()).then(|| {
                 // Each dataset the groups name on this connection, as it is
                 // read here: whether the connection allows it at all, and
@@ -2438,7 +2438,7 @@ impl Gateway {
             Ok(v) => v,
             Err(e) => return Err(self.deny(&ctx, rec, e)),
         };
-        if !Self::engine_ready(&conn.kind) {
+        if !Self::engine_ready(&conn.kind) && !crate::arcgis::is_arcgis(&conn.kind) {
             return Err(self.deny(
                 &ctx,
                 rec,
@@ -2461,23 +2461,29 @@ impl Gateway {
             return Ok(out(result));
         }
         let timeout = access.limits.max_seconds();
-        let handle = match self.handle(&conn) {
-            Ok(h) => h,
-            Err(e) => return Err(self.deny(&ctx, rec, e)),
+        let reply = if crate::arcgis::is_arcgis(&conn.kind) {
+            // The gateway reads the service itself (Part 4).
+            self.arcgis_list(&access, &conn)
+                .await
+                .map(|d| json!({"datasets": d}))
+        } else {
+            let handle = match self.handle(&conn) {
+                Ok(h) => h,
+                Err(e) => return Err(self.deny(&ctx, rec, e)),
+            };
+            self.state
+                .worker
+                .core(
+                    "list_datasets",
+                    json!({"connection": handle, "timeout_s": timeout, "schemas": Self::listed_schemas(&conn)}),
+                    Duration::from_secs(timeout + 10),
+                )
+                .await
+                .map_err(Self::worker_error)
         };
-        let reply = self
-            .state
-            .worker
-            .core(
-                "list_datasets",
-                json!({"connection": handle, "timeout_s": timeout, "schemas": Self::listed_schemas(&conn)}),
-                Duration::from_secs(timeout + 10),
-            )
-            .await;
         let reply = match reply {
             Ok(v) => v,
-            Err(e) => {
-                let msg = Self::worker_error(e);
+            Err(msg) => {
                 self.audit(
                     &ctx,
                     AuditRecord {
@@ -3045,6 +3051,10 @@ impl Gateway {
             Ok(v) => v,
             Err(e) => return Err(self.deny(&ctx, rec, e)),
         };
+        if crate::arcgis::is_arcgis(&conn.kind) {
+            // R-12: an ArcGIS service takes no SQL.
+            return Err(self.deny(&ctx, rec, crate::arcgis::sql_unsupported(&conn)));
+        }
         let max_rows = access.limits.max_rows();
         let cols = match self.table_columns(&access, &conn).await {
             Ok(c) => c,

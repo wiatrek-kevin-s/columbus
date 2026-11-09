@@ -97,7 +97,7 @@ pub(crate) fn public_ip(ip: IpAddr) -> bool {
 
 /// Test builds may fetch from plain HTTP on 127.0.0.1, so the end-to-end
 /// test can run a local server. Release builds never do.
-fn test_loopback() -> bool {
+pub(crate) fn test_loopback() -> bool {
     cfg!(debug_assertions) && std::env::var_os("COLUMBUS_FETCH_TEST_LOOPBACK").is_some()
 }
 
@@ -557,6 +557,7 @@ impl Gateway {
                 order_by: None,
                 format: "geojson".into(),
                 out_sr: Some("4326".into()),
+                return_zm: false,
                 read_limit: cap,
                 page_size: page,
                 max_pages: MAX_PAGES,

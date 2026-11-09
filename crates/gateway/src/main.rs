@@ -38,6 +38,7 @@
 
 mod approval_flow;
 mod approvals_page;
+mod arcgis;
 mod arcgis_pager;
 mod companion;
 mod config;

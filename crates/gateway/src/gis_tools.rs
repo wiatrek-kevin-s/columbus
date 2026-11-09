@@ -303,6 +303,8 @@ struct Read {
     max_rows: u64,
     /// Hidden fields left out by the server.
     hidden: Vec<String>,
+    /// For an `arcgis` read: the layer, request and pages (provenance).
+    arcgis: Option<Value>,
 }
 
 impl Gateway {
@@ -314,7 +316,6 @@ impl Gateway {
         dataset: &str,
         refresh: bool,
     ) -> Result<Value, String> {
-        let from = dataset_sql(dataset, SqlDialect::for_connection_type(&conn.kind))?;
         // Keyed by the settings version it was made under: an answer from
         // older settings is never served under newer ones.
         let key = (
@@ -327,6 +328,17 @@ impl Gateway {
                 return Ok(v.clone());
             }
         }
+        if crate::arcgis::is_arcgis(&conn.kind) {
+            let info = self.arcgis_info(access, conn, dataset, refresh).await?;
+            let info = Self::visible_info(info, access, dataset);
+            self.state
+                .datasets
+                .lock()
+                .expect("datasets")
+                .insert(key, info.clone());
+            return Ok(info);
+        }
+        let from = dataset_sql(dataset, SqlDialect::for_connection_type(&conn.kind))?;
         let cols = self.table_columns(access, conn).await?;
         let count = check_select(
             &format!("SELECT COUNT(*) AS n FROM {from}"),
@@ -511,6 +523,55 @@ impl Gateway {
         if crate::raster_tools::is_rasters(&conn.kind) {
             return Err(crate::raster_tools::not_tabular(&conn));
         }
+        if crate::arcgis::is_arcgis(&conn.kind) {
+            if !access.dataset_allowed(&q.dataset) {
+                return Err(format!(
+                    "dataset {:?} is not in this connection's allowed datasets",
+                    q.dataset
+                ));
+            }
+            let a = self
+                .arcgis_read(&access, &conn, q, stem, return_rows, limit)
+                .await?;
+            // As for every read: no field the policy hides may come back.
+            let leaked = a
+                .reply
+                .get("columns")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .chain(
+                    a.reply
+                        .get("summary")
+                        .and_then(|s| s.get("fields"))
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten(),
+                )
+                .filter_map(Value::as_str)
+                .any(|c| access.field_hidden(c));
+            if leaked {
+                if let Some(p) = &a.path {
+                    let _ = std::fs::remove_file(p);
+                }
+                return Err(
+                    "the engine returned a field hidden by organization policy; result discarded"
+                        .into(),
+                );
+            }
+            return Ok(Read {
+                reply: a.reply,
+                executed_sql: a.executed,
+                path: a.path,
+                rows_read: a.rows_read,
+                hit_limit: a.hit_limit,
+                info: a.info,
+                filters: a.filters,
+                max_rows: a.max_rows,
+                hidden: a.hidden,
+                arcgis: Some(a.record),
+            });
+        }
         if !Self::engine_ready(&conn.kind) {
             return Err(format!(
                 "reading {} connections is not supported yet",
@@ -627,6 +688,7 @@ impl Gateway {
             filters,
             max_rows,
             hidden: checked.hidden.clone(),
+            arcgis: None,
         })
     }
 
@@ -884,7 +946,7 @@ impl Gateway {
                 ),
             ));
         }
-        if !Self::engine_ready(&conn.kind) {
+        if !Self::engine_ready(&conn.kind) && !crate::arcgis::is_arcgis(&conn.kind) {
             return Err(self.deny(
                 &ctx,
                 rec,
@@ -1100,7 +1162,10 @@ impl Gateway {
                 id: &prov,
                 started,
                 inputs: json!([{"connection": args.connection, "dataset": args.dataset, "request": request}]),
-                steps: json!([{"tool": "query_features", "executed_sql": r.executed_sql, "engine": "python-worker"}]),
+                steps: match &r.arcgis {
+                    Some(a) => json!([{"tool": "query_features", "executed_sql": r.executed_sql, "engine": "gateway-http+python-worker", "arcgis": a}]),
+                    None => json!([{"tool": "query_features", "executed_sql": r.executed_sql, "engine": "python-worker"}]),
+                },
                 labels: self.labels(),
                 checks: &checks,
                 outputs: layer.iter().map(|l| l.handle.clone()).collect(),

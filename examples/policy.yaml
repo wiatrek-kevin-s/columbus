@@ -5,10 +5,11 @@
 # GeoPackage/SQLite only, read-only, no scripts, no edits.
 
 # Connection types allowed at all.
-connection_types: [gpkg, sqlite, shapefile, filegdb, files, oracle, sqlserver, postgis, rasters]
+connection_types: [gpkg, sqlite, shapefile, filegdb, files, oracle, sqlserver, postgis, rasters, arcgis]
 
-# Hosts any connection may reach (wildcards allowed).
-hosts: ["*.corp.example", "oraprod.corp.example"]
+# Hosts any connection may reach (wildcards allowed). An arcgis connection's
+# service host (and a signed-in one's portal host) must be listed here.
+hosts: ["*.corp.example", "oraprod.corp.example", "services.arcgis.com"]
 
 # Tools: leave empty to allow all built-in tools; deny_tools always wins.
 tools: []

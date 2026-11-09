@@ -890,6 +890,142 @@ pub fn check_where(text: &str, dialect: SqlDialect) -> Result<String, Denied> {
     }
 }
 
+/// The names a where clause uses, once it passes [`check_where`]: for
+/// checks that need no catalog (a hidden field named, before any request
+/// is sent). A qualified name (`t.x`) is refused.
+pub fn where_names(text: &str, dialect: SqlDialect) -> Result<Vec<String>, Denied> {
+    let checked = check_where(text, dialect)?;
+    let expr = parse_expr(&checked, dialect)?;
+    let mut names: Vec<String> = Vec::new();
+    let mut qualified: Option<String> = None;
+    let _ = visit_expressions(&expr, |e| {
+        match e {
+            Expr::Identifier(i) => {
+                if !names.contains(&i.value) {
+                    names.push(i.value.clone());
+                }
+            }
+            Expr::CompoundIdentifier(parts) => {
+                qualified = Some(
+                    parts
+                        .iter()
+                        .map(|p| p.value.as_str())
+                        .collect::<Vec<_>>()
+                        .join("."),
+                );
+                return ControlFlow::Break(());
+            }
+            _ => {}
+        }
+        ControlFlow::Continue(())
+    });
+    if let Some(q) = qualified {
+        return Err(Denied::Query(format!(
+            "{q} is a qualified name; name the layer's fields alone"
+        )));
+    }
+    Ok(names)
+}
+
+/// A where clause for an ArcGIS service, rebuilt from its parsed form
+/// (R-10, R-10b).
+#[derive(Debug, Clone, PartialEq)]
+pub struct RebuiltWhere {
+    /// The clause to send: re-rendered from the parse, each field written
+    /// as the layer publishes it.
+    pub sql: String,
+    /// The fields it names, as the layer publishes them, in order of first use.
+    pub fields: Vec<String>,
+}
+
+/// Parse `text` with the `query_features` where parser ([`check_where`]),
+/// then write it back out with every name replaced by the layer field it
+/// means (matched case-insensitively against `fields`, which must be plain
+/// names). A name `hidden` says the policy hides is refused naming it; a
+/// name the layer lacks, or a qualified name (`t.x`), is refused too.
+/// Nothing of the caller's text reaches the service except through the
+/// parsed form, so `1=1) OR (1=1` cannot escape the parentheses it is put
+/// in: it does not parse.
+pub fn rebuild_arcgis_where(
+    text: &str,
+    fields: &[String],
+    hidden: &dyn Fn(&str) -> bool,
+) -> Result<RebuiltWhere, Denied> {
+    let dialect = SqlDialect::Generic;
+    let checked = check_where(text, dialect)?;
+    let mut expr = parse_expr(&checked, dialect)?;
+    let plain = |n: &str| {
+        !n.is_empty()
+            && n.len() <= 128
+            && n.chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+            && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    };
+    let mut named: Vec<String> = Vec::new();
+    let mut problem: Option<String> = None;
+    let _ = visit_expressions_mut(&mut expr, |e| {
+        match e {
+            Expr::Identifier(i) if hidden(&i.value) => {
+                problem = Some(format!(
+                    "{} is hidden by organization policy, so it can't be used to filter or sort",
+                    i.value
+                ));
+                return ControlFlow::Break(());
+            }
+            Expr::Identifier(i) => {
+                let found = fields
+                    .iter()
+                    .find(|f| f.as_str() == i.value)
+                    .or_else(|| fields.iter().find(|f| f.eq_ignore_ascii_case(&i.value)));
+                match found {
+                    Some(f) if plain(f) => {
+                        if !named.contains(f) {
+                            named.push(f.clone());
+                        }
+                        *e = Expr::Identifier(Ident::new(f.clone()));
+                    }
+                    Some(f) => {
+                        problem = Some(format!(
+                            "the field {f:?} can't be used in a where clause on this service"
+                        ));
+                        return ControlFlow::Break(());
+                    }
+                    None => {
+                        problem = Some(format!("the layer has no field {:?}", i.value));
+                        return ControlFlow::Break(());
+                    }
+                }
+            }
+            Expr::CompoundIdentifier(parts) => {
+                problem = Some(format!(
+                    "{} is a qualified name; name the layer's fields alone",
+                    parts
+                        .iter()
+                        .map(|p| p.value.as_str())
+                        .collect::<Vec<_>>()
+                        .join(".")
+                ));
+                return ControlFlow::Break(());
+            }
+            _ => {}
+        }
+        ControlFlow::Continue(())
+    });
+    if let Some(p) = problem {
+        return Err(Denied::Query(p));
+    }
+    let sql = expr.to_string();
+    // The rebuilt text must read back as itself, as check_where's does.
+    let again = parse_expr(&sql, dialect).map(|x| x.to_string());
+    if again.as_deref() != Ok(sql.as_str()) {
+        return Err(Denied::Query(
+            "the where clause could not be checked reliably (a name or literal does not read back as written)".into(),
+        ));
+    }
+    Ok(RebuiltWhere { sql, fields: named })
+}
+
 fn single_select(sql: &str, dialect: SqlDialect) -> Result<Query, Denied> {
     let d = dialect.parser_dialect();
     let mut stmts = Parser::parse_sql(d.as_ref(), sql)
@@ -1687,6 +1823,56 @@ mod tests {
     use super::*;
     use crate::policy::{Connection, EffectiveAccess, OrgPolicy, ProjectScope};
     use chrono::Utc;
+
+    #[test]
+    fn arcgis_where_is_rebuilt_from_the_parse() {
+        let fields: Vec<String> = ["OBJECTID", "DISTRICT", "LANES", "NAME", "Shape__Length"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let none = |_: &str| false;
+        let w = rebuild_arcgis_where("lanes>2", &fields, &none).unwrap();
+        assert_eq!(w.sql, "LANES > 2");
+        assert_eq!(w.fields, vec!["LANES"]);
+        let w = rebuild_arcgis_where(
+            "\"district\" = 14 AND (name LIKE 'O''Br%' OR upper(Name) IN ('A','B'))",
+            &fields,
+            &none,
+        )
+        .unwrap();
+        assert_eq!(
+            w.sql,
+            "DISTRICT = 14 AND (NAME LIKE 'O''Br%' OR upper(NAME) IN ('A', 'B'))"
+        );
+        assert_eq!(w.fields, vec!["DISTRICT", "NAME"]);
+        // Escapes, unknown names, qualified names and other statements are refused.
+        for bad in [
+            "1=1) OR (1=1",
+            "LANES > 2; DROP TABLE x",
+            "LANES > (SELECT 1)",
+            "SSN = 1",
+            "t.LANES > 2",
+            "sleep(5) = 0",
+        ] {
+            assert!(rebuild_arcgis_where(bad, &fields, &none).is_err(), "{bad}");
+        }
+        // A hidden field is refused by name (R-10b), even one the layer lacks.
+        let ssn = |n: &str| n.eq_ignore_ascii_case("ssn");
+        let e = rebuild_arcgis_where("NAME = 'x' OR ssn LIKE '1%'", &fields, &ssn).unwrap_err();
+        assert!(e.to_string().contains("ssn is hidden"), "{e}");
+        assert_eq!(
+            where_names("ssn LIKE '1%' AND \"Lanes\" > 2", SqlDialect::Generic).unwrap(),
+            vec!["ssn", "Lanes"]
+        );
+        assert!(where_names("1=1) OR (1=1", SqlDialect::Generic).is_err());
+        // A trailing comment is not part of the parse, so it is not sent.
+        assert_eq!(
+            rebuild_arcgis_where("LANES > 2 -- x", &fields, &none)
+                .unwrap()
+                .sql,
+            "LANES > 2"
+        );
+    }
 
     fn access(kind: &str, filter: Option<&str>) -> EffectiveAccess {
         let mut conn: Connection = serde_yaml::from_str(

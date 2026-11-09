@@ -86,6 +86,9 @@ pub(crate) struct LayerQuery {
     pub format: String,
     /// `outSR`, when the caller wants features reprojected by the server.
     pub out_sr: Option<String>,
+    /// Ask for Z and M values too (`returnZ`, `returnM`), which ArcGIS
+    /// leaves out unless asked.
+    pub return_zm: bool,
     /// Most features to keep; the page that crosses it is cut.
     pub read_limit: u64,
     /// Features asked for per page (lowered to the layer's `maxRecordCount`).
@@ -126,6 +129,8 @@ pub(crate) struct Page {
     /// The page's JSON. When the read limit cut it, re-serialized with the
     /// kept features only.
     pub body: Vec<u8>,
+    /// The same, parsed.
+    pub json: Value,
     /// Size and SHA-256 of the bytes the server sent.
     pub raw_bytes: usize,
     pub raw_sha256: String,
@@ -200,7 +205,10 @@ fn short(s: &str) -> String {
 
 /// Send with the 429 rule, then explain any failure plainly; returns the
 /// raw body and its JSON.
-async fn send_json<T: Transport>(t: &mut T, req: &HttpRequest) -> Result<(Vec<u8>, Value), String> {
+pub(crate) async fn send_json<T: Transport>(
+    t: &mut T,
+    req: &HttpRequest,
+) -> Result<(Vec<u8>, Value), String> {
     let host = host_of(&req.url);
     let mut attempt = 0;
     loop {
@@ -290,6 +298,10 @@ fn base_pairs(q: &LayerQuery) -> Vec<(String, String)> {
     if let Some(sr) = &q.out_sr {
         p.push(("outSR".into(), sr.clone()));
     }
+    if q.return_zm {
+        p.push(("returnZ".into(), "true".into()));
+        p.push(("returnM".into(), "true".into()));
+    }
     if let Some(e) = &q.envelope {
         p.push((
             "geometry".into(),
@@ -349,12 +361,30 @@ fn feature_count(v: &Value) -> u64 {
         .unwrap_or(0)
 }
 
-/// Keep at most `keep` features of a page; returns the body to store.
-fn cut(raw: Vec<u8>, mut v: Value, keep: u64) -> Vec<u8> {
+/// Keep at most `keep` features of a page; returns the body to store and
+/// its JSON.
+fn cut(raw: Vec<u8>, mut v: Value, keep: u64) -> (Vec<u8>, Value) {
     if let Some(a) = v.get_mut("features").and_then(Value::as_array_mut) {
         a.truncate(keep as usize);
     }
-    serde_json::to_vec(&v).unwrap_or(raw)
+    let body = serde_json::to_vec(&v).unwrap_or(raw);
+    (body, v)
+}
+
+/// A page as the caller stores it.
+fn page(request: String, raw: Vec<u8>, v: Value, keep: u64, was_cut: bool) -> Page {
+    let raw_bytes = raw.len();
+    let raw_sha256 = columbus_shared::canon::sha256_hex(&raw);
+    let (body, json) = if was_cut { cut(raw, v, keep) } else { (raw, v) };
+    Page {
+        request,
+        body,
+        json,
+        raw_bytes,
+        raw_sha256,
+        features: keep,
+        cut: was_cut,
+    }
 }
 
 /// Read a layer, handing each page to `sink` as it arrives.
@@ -409,15 +439,7 @@ where
             let room = limit - rows;
             let keep = got.min(room);
             let was_cut = keep < got;
-            let page = Page {
-                request: req.url.to_string(),
-                raw_bytes: raw.len(),
-                raw_sha256: columbus_shared::canon::sha256_hex(&raw),
-                body: if was_cut { cut(raw, v, keep) } else { raw },
-                features: keep,
-                cut: was_cut,
-            };
-            sink(page)?;
+            sink(page(req.url.to_string(), raw, v, keep, was_cut))?;
             rows += keep;
             if was_cut || (rows >= limit && more) {
                 return Ok(done(rows, pages, Stop::ReadLimit, Mode::Offset, &info));
@@ -495,19 +517,18 @@ where
         let room = limit - rows;
         let keep = got.min(room);
         let was_cut = keep < got;
-        sink(Page {
-            request: format!(
+        sink(page(
+            format!(
                 "POST {} objectIds {}..{} ({n} ids)",
                 url,
                 batch[0],
                 batch[n - 1]
             ),
-            raw_bytes: raw.len(),
-            raw_sha256: columbus_shared::canon::sha256_hex(&raw),
-            body: if was_cut { cut(raw, v, keep) } else { raw },
-            features: keep,
-            cut: was_cut,
-        })?;
+            raw,
+            v,
+            keep,
+            was_cut,
+        ))?;
         rows += keep;
         at += n;
         if was_cut {
@@ -569,6 +590,7 @@ mod tests {
             order_by: None,
             format: "json".into(),
             out_sr: None,
+            return_zm: false,
             read_limit: 10,
             page_size: 10,
             max_pages: 10,

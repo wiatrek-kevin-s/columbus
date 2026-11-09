@@ -2086,6 +2086,44 @@ def geojson_layer(params: dict[str, Any]) -> dict[str, Any]:
         raise _refused(e) from None
 
 
+def esrijson_layer(params: dict[str, Any]) -> dict[str, Any]:
+    """An ``arcgis`` connection's query pages (Esri JSON the gateway fetched
+    and trimmed) as a workspace layer: GDAL's ESRIJSON driver reads them,
+    keeping Z and M."""
+    g = _gis()
+    pages, stem = params.get("pages"), params.get("out_stem")
+    fields = params.get("fields")
+    if not isinstance(pages, list) or not all(isinstance(x, str) for x in pages):
+        raise WorkerError(INVALID_PARAMS, "pages are required")
+    if stem is not None and not isinstance(stem, str):
+        raise WorkerError(INVALID_PARAMS, "out_stem must be a path")
+    if not isinstance(fields, list) or not all(isinstance(f, str) for f in fields):
+        raise WorkerError(INVALID_PARAMS, "fields are required")
+    keep = _hidden_mask(fields, params.get("hide_fields"))
+    hidden = [f for f, k in zip(fields, keep) if not k]
+    fields = [f for f, k in zip(fields, keep) if k]
+    try:
+        out = g.esrijson_pages_to_layer(pages, stem or None, str(params.get("layer_name") or "query"), fields,
+                                        bool(params.get("geometry")), int(params.get("return_rows") or 0))
+    except g.GISError as e:
+        raise _refused(e) from None
+    out["hidden_columns"] = hidden
+    return out
+
+
+def crs_describe(params: dict[str, Any]) -> dict[str, Any]:
+    """CRS facts and checks for an authority code and an extent in it (an
+    ``arcgis`` layer's ``latestWkid``, described by the gateway)."""
+    g = _gis()
+    code = params.get("code")
+    crs = g.crs_from_spec({"code": code}) if isinstance(code, str) and code else None
+    extent = params.get("extent")
+    if not (isinstance(extent, list) and len(extent) == 4 and all(isinstance(v, (int, float)) for v in extent)):
+        extent = None
+    return {"crs": g.crs_facts(crs), "checks": g.crs_checks(crs, extent, has_geometry=bool(params.get("has_geometry", True)),
+                                                         what="The dataset")}
+
+
 def export_layer(params: dict[str, Any]) -> dict[str, Any]:
     g = _gis()
     path, stem = params.get("path"), params.get("out_stem")
@@ -2284,6 +2322,8 @@ for _name, _fn in (
     ("display_geojson", display_geojson),
     ("export_layer", export_layer),
     ("geojson_layer", geojson_layer),
+    ("esrijson_layer", esrijson_layer),
+    ("crs_describe", crs_describe),
     ("describe_raster", describe_raster),
     ("raster_op", raster_op),
     ("registry_search", registry_search),

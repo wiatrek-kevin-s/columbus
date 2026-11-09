@@ -763,6 +763,10 @@ fn build(form: &ConnForm, old: Option<&Connection>) -> Result<Connection, String
         crs: None,
         x: None,
         y: None,
+        // The arcgis settings (F-3) come to this form with T-12.
+        url: None,
+        auth: None,
+        page_size: None,
     })
 }
 
