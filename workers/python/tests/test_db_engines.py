@@ -271,6 +271,11 @@ class OracleTests(unittest.TestCase):
         one = w.list_datasets({"connection": ora_conn(), "only": "roads.roads"})["datasets"]
         self.assertEqual([d["name"] for d in one], ["ROADS.ROADS"])
         self.assertEqual(one[0]["geometry_type"], "LINESTRING")
+        # T-13: a valid spatial index on GEOM, so a bbox can use SDO_FILTER;
+        # ROUTES has none.
+        self.assertIs(one[0]["spatial_index"], True)
+        routes = w.list_datasets({"connection": ora_conn(), "only": "roads.routes"})["datasets"]
+        self.assertIs(routes[0]["spatial_index"], False)
 
     def test_unsupported_geometry_comes_back_as_a_placeholder(self):
         r = sel(ora_conn(), "SELECT id, shape FROM roads.parcels ORDER BY id")

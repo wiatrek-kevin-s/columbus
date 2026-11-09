@@ -1128,11 +1128,13 @@ def _ora_list(conn: dict[str, Any], timeout_s: float, schemas=None, only: str | 
         # one (without it Oracle raises an error), so the gateway pushes a
         # bbox into it only when this says so (T-13).
         try:
+            xw = where.replace("owner", "x.table_owner").replace("%s", "x.table_name")
             cur.execute(
-                "SELECT i.table_owner, i.table_name, i.column_name FROM all_sdo_index_info i "
-                "JOIN all_indexes x ON x.owner = i.index_owner AND x.index_name = i.index_name "
-                f"WHERE {iw} AND x.status = 'VALID' AND NVL(x.domidx_status, 'VALID') = 'VALID' "
-                "AND NVL(x.domidx_opstatus, 'VALID') = 'VALID'",
+                "SELECT x.table_owner, x.table_name, c.column_name FROM all_indexes x "
+                "JOIN all_ind_columns c ON c.index_owner = x.owner AND c.index_name = x.index_name "
+                "WHERE x.ityp_owner = 'MDSYS' AND x.ityp_name IN ('SPATIAL_INDEX', 'SPATIAL_INDEX_V2') "
+                "AND x.status = 'VALID' AND NVL(x.domidx_status, 'VALID') = 'VALID' "
+                f"AND NVL(x.domidx_opstatus, 'VALID') = 'VALID' AND {xw}",
                 binds,
             )
             for owner, table, col in cur.fetchall():
