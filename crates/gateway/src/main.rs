@@ -75,6 +75,7 @@ mod secrets;
 mod server;
 mod share_cli;
 mod snapshot_tools;
+mod web_layers;
 mod worker;
 mod workflows;
 
@@ -150,6 +151,12 @@ async fn main() -> Result<()> {
         ["servers", "signin", id] => review_cli::signin(id).await,
         ["arcgis", "signin", id, flags @ ..] => arcgis_auth::signin_cli(id, flags).await,
         ["arcgis", "signout", id] => arcgis_auth::signout_cli(id),
+        // Web map layers, for the Columbus app (T-24): never an MCP tool.
+        ["map-source", "inspect", url, flags @ ..] => web_layers::cli::inspect(url, flags).await,
+        ["map-source", "save", json, flags @ ..] => web_layers::cli::save(json, flags).await,
+        ["map-source", "test", id] => web_layers::cli::test(id).await,
+        ["map-source", "remove", id] => web_layers::cli::remove(id),
+        ["map-source", "list"] => web_layers::cli::list(),
         ["registry", "update"] => registry_tools::update(None).await,
         ["share", "import", request] => share_cli::import(request).await,
         ["notes", "import", request] => doc_import_cli::import(request).await,
@@ -176,7 +183,7 @@ async fn main() -> Result<()> {
             Ok(())
         }
         _ => bail!(
-            "usage: columbus-mcp [serve] | audit verify FILE | secret set|delete ID | servers list|review|approve|signin|signout ID | arcgis signin ID [--paste-code]|signout ID | registry update [--from DIR|URL]|query JSON | plugins list|approve ID | tools list|show|install|decline|remove ID|org-install FILE|org-remove ID|org-list | env add ID --python PATH [--trust governed|trusted]|confirm|remove|approve|decline ID|list|proposals | workflow run ID [--scheduled]|open ID RUN|validate FILE|list | --version"
+            "usage: columbus-mcp [serve] | audit verify FILE | secret set|delete ID | servers list|review|approve|signin|signout ID | arcgis signin ID [--paste-code]|signout ID | map-source inspect URL [--kind K] [--auth-from ID]|save JSON|- [--replace]|test ID|remove ID|list | registry update [--from DIR|URL]|query JSON | plugins list|approve ID | tools list|show|install|decline|remove ID|org-install FILE|org-remove ID|org-list | env add ID --python PATH [--trust governed|trusted]|confirm|remove|approve|decline ID|list|proposals | workflow run ID [--scheduled]|open ID RUN|validate FILE|list | --version"
         ),
     }
 }

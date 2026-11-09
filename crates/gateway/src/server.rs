@@ -345,6 +345,11 @@ pub struct WhoAmI {
     /// `environment`: {id, trust, status, python_version, arcpy, reason}.
     /// Only `ready` ones run. Empty while policy turns environments off.
     pub environments: Vec<Value>,
+    /// Web map layers the person can show on their own map, by title only.
+    /// You cannot see, add, change or turn them on, and they are not
+    /// workspace layers; to analyse an ArcGIS layer, use an arcgis
+    /// connection.
+    pub web_layers: Vec<String>,
     pub labels: Vec<String>,
     pub notes: Vec<String>,
 }
@@ -1233,7 +1238,7 @@ impl State {
                     "{id} was deleted, but its ArcGIS sign-in record could not be removed: {e}"
                 );
             }
-            match crate::arcgis_auth::sign_out(&self.secrets, &id) {
+            match crate::arcgis_auth::sign_out(&self.secrets, &id, &self.paths) {
                 Ok(true) => tracing::info!("{id} was deleted, so its ArcGIS sign-in was removed"),
                 Ok(false) => {}
                 Err(e) => tracing::warn!(
@@ -2103,6 +2108,7 @@ impl Gateway {
             } else {
                 vec![]
             },
+            web_layers: crate::web_layers::titles(&self.state.settings(), &self.state.paths),
             labels: self.labels(),
             notes: {
                 let mut notes = self.state.notes.clone();

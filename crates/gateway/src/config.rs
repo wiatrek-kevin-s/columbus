@@ -36,6 +36,9 @@ pub struct Paths {
     pub environments: PathBuf,
     /// Where Columbus creates environments (`<Columbus data>/envs`).
     pub envs: PathBuf,
+    /// The person's saved web map layers (F-13): `map-sources/` beside the
+    /// connections folder, or `COLUMBUS_MAP_SOURCES`.
+    pub map_sources: PathBuf,
 }
 
 #[cfg(test)]
@@ -63,6 +66,7 @@ impl Paths {
             tools: columbus_shared::tools::tools_dir(),
             environments: columbus_shared::environments::environments_dir(),
             envs: columbus_shared::environments::envs_dir(),
+            map_sources: columbus_shared::map_sources::map_sources_dir(),
             python: env_path("COLUMBUS_PYTHON")
                 .or_else(bundled_engine)
                 .unwrap_or_else(|| {

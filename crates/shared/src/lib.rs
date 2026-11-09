@@ -10,6 +10,7 @@ pub mod datagroups;
 pub mod env_create;
 pub mod environments;
 pub mod error;
+pub mod map_sources;
 pub mod paths;
 pub mod policy;
 pub mod proctree;
