@@ -27,8 +27,9 @@
 //! * `/arcgis/rest/services/Public/FeatureServer`: the same layer, public
 //!   (no token needed);
 //! * `/test/log` (every request but `/test/*`: method, Host, target and the
-//!   two token headers), `/test/expire-access` and `/test/lapse` (forget
-//!   every access or refresh token).
+//!   two token headers), `/test/grants` (each ArcGIS token call's
+//!   `grant_type` and `redirect_uri`), `/test/expire-access` and
+//!   `/test/lapse` (forget every access or refresh token).
 //!
 //! Its ArcGIS tokens look like `FAKE-arcgis-access-zq7k-<n>` and
 //! `FAKE-arcgis-refresh-zq7k-<n>`, so a test can search for them.
@@ -126,6 +127,8 @@ struct Auth {
     arcgis_codes: HashMap<String, (String, String)>,
     arcgis_access: Vec<String>,
     arcgis_refresh: Vec<String>,
+    /// Each ArcGIS token call's grant_type (and redirect_uri), never a token.
+    arcgis_grants: Vec<Value>,
     log: Vec<Value>,
     /// code -> (challenge, scope)
     codes: HashMap<String, (String, String)>,
@@ -339,6 +342,8 @@ async fn arcgis_token(State(s): State<Shared>, RawForm(f): RawForm) -> Response 
         return arcgis_error(400, "invalid_client", "Invalid client_id");
     }
     let mut new_refresh = true;
+    a.arcgis_grants
+        .push(json!({"grant_type": f.get("grant_type"), "redirect_uri": f.get("redirect_uri")}));
     match f.get("grant_type").map(String::as_str) {
         Some("authorization_code") => {
             let Some((challenge, redirect)) = f.get("code").and_then(|c| a.arcgis_codes.remove(c))
@@ -525,6 +530,10 @@ async fn test_log(State(s): State<Shared>) -> Json<Value> {
     Json(json!(s.lock().unwrap().log.clone()))
 }
 
+async fn test_grants(State(s): State<Shared>) -> Json<Value> {
+    Json(json!(s.lock().unwrap().arcgis_grants.clone()))
+}
+
 async fn test_expire_access(State(s): State<Shared>) -> StatusCode {
     s.lock().unwrap().arcgis_access.clear();
     StatusCode::NO_CONTENT
@@ -603,6 +612,7 @@ async fn main() {
             get(public_service).post(public_service),
         )
         .route("/test/log", get(test_log))
+        .route("/test/grants", get(test_grants))
         .route("/test/expire-access", post(test_expire_access))
         .route("/test/lapse", post(test_lapse))
         .with_state(shared.clone())

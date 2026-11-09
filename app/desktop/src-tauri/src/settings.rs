@@ -1189,6 +1189,8 @@ pub async fn settings_delete_connection(id: String, forget_password: bool) -> Re
         if let Ok(e) = secret_entry(&format!("arcgis:{id}")) {
             let _ = e.delete_credential();
         }
+        // And the record of when that sign-in ends (never a token).
+        let _ = columbus_shared::arcgis_state::forget(&dir, &id);
         // A connected server's key of the same name stays.
         if forget_password && !manifest_credentials().contains(&id.to_lowercase()) {
             if let Ok(e) = secret_entry(&id) {

@@ -3,6 +3,7 @@
 //! decides what an agent's request is allowed to do.
 
 pub mod approvals;
+pub mod arcgis_state;
 pub mod audit;
 pub mod canon;
 pub mod datagroups;

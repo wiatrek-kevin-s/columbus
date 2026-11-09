@@ -55,11 +55,14 @@ never guess an address.
 
 ### Steps
 
-Each step is one call, with the same arguments you would give it in a chat. A step's `tool` is
-one of:
+Each step is one call, with the same arguments you would give it in a chat, on any of the
+person's connection types in `scope.connections`: databases, GeoPackages, `files` folders and
+`arcgis` services alike. A step on a signed-in `arcgis` connection keeps its sign-in alive by
+itself; if the sign-in has lapsed, the step stops with "needs you: sign in again (columbus-mcp
+arcgis signin <id>)". A step's `tool` is one of:
 
 - `list_datasets`, `describe_dataset`, `sample_rows`
-- `query_features`, `sql_select`
+- `query_features`, `sql_select` (not on `arcgis` services, which take no SQL)
 - `vector_op`, `raster_op`, `verify`, `read_output`
 - an installed personal tool, by its full name `personal.<name>.run`, with `args` as you
   would pass to `run_tool`'s `args`
@@ -119,7 +122,9 @@ need.
 
 `outputs.folder` exports the layers of the steps it lists to one of the policy's export
 folders (whoami lists them), named `<workflow>-<step>-<date>`, with a provenance file beside
-each. Use a folder whose `granted` is true: an export elsewhere needs the person's approval, so
+each. `format` is `gpkg` (the default), `gdb` (a new file geodatabase per layer, named
+`<workflow>_<step>_<date>.gdb`, since a feature class name has no `-`), `geojson`, `fgb`, `shp`,
+`csv`, or `tif` for raster results. Use a folder whose `granted` is true: an export elsewhere needs the person's approval, so
 a run would stop with "needs you" and export nothing. Every run also keeps a report (steps,
 row counts, checks, deliveries, provenance ids), which the person reads in the app.
 

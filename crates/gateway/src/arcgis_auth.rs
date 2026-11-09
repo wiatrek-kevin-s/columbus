@@ -37,6 +37,10 @@ use serde_json::Value;
 use sha2::Digest;
 
 use crate::secrets::SecretStore;
+pub(crate) use columbus_shared::arcgis_state::forget as forget_state;
+use columbus_shared::arcgis_state::{
+    expires_at as refresh_expires_at, record as record_refresh_expiry,
+};
 
 /// The out-of-band redirect: the portal shows the code to copy (A-2).
 pub(crate) const OOB: &str = "urn:ietf:wg:oauth:2.0:oob";
@@ -49,8 +53,7 @@ const WAIT: Duration = Duration::from_secs(300);
 /// How long a portal's list of federated servers is reused.
 const SERVERS_TTL: Duration = Duration::from_secs(300);
 /// R-19: a refresh token with fewer days left than this is exchanged for
-/// a new one (T-20 does the exchange, with `exchange_refresh_token`).
-#[allow(dead_code)]
+/// a new one before a workflow step uses the connection (`keep_alive`).
 pub(crate) const EXCHANGE_BELOW_DAYS: i64 = 7;
 
 /// The credential-store entry holding a connection's tokens (F-3b).
@@ -275,6 +278,8 @@ struct Grant {
     access_token: Option<String>,
     refresh_token: Option<String>,
     expires_in: Option<i64>,
+    /// How long the refresh token lasts, when the portal says (seconds).
+    refresh_expires_in: Option<i64>,
     username: Option<String>,
 }
 
@@ -380,6 +385,7 @@ async fn token_call(
         access_token: s("access_token").filter(|t| !t.is_empty()),
         refresh_token: s("refresh_token").filter(|t| !t.is_empty()),
         expires_in: v.get("expires_in").and_then(Value::as_i64),
+        refresh_expires_in: v.get("refresh_token_expires_in").and_then(Value::as_i64),
         username: s("username"),
     })
 }
@@ -422,17 +428,17 @@ pub(crate) async fn refresh(
 }
 
 /// Swap the refresh token for a new one (grant_type=exchange_refresh_token,
-/// R-19), keeping the access token. For T-20, which calls it when fewer
-/// than `EXCHANGE_BELOW_DAYS` remain. `redirect_uri` must be one the app
-/// registers; `OOB` always is.
-#[allow(dead_code)]
+/// R-19), keeping the access token unless a new one comes too; also how
+/// long the new refresh token lasts, when the portal says. `keep_alive`
+/// calls it when fewer than `EXCHANGE_BELOW_DAYS` remain. `redirect_uri`
+/// must be one the app registers; `OOB` always is.
 pub(crate) async fn exchange_refresh_token(
     portal: &Portal,
     client_id: &str,
     redirect_uri: &str,
     id: &str,
     t: &Tokens,
-) -> Result<Tokens, String> {
+) -> Result<(Tokens, Option<i64>), String> {
     let g = token_call(
         portal,
         client_id,
@@ -446,15 +452,84 @@ pub(crate) async fn exchange_refresh_token(
     .await
     .map_err(|e| plain(e, id))?;
     let refresh = g.refresh_token.ok_or_else(|| sign_in_again(id))?;
-    Ok(Tokens {
-        access_token: g.access_token.unwrap_or_else(|| t.access_token.clone()),
-        refresh_token: refresh,
-        expires_at: match g.expires_in {
-            Some(s) => iso(Utc::now() + chrono::Duration::seconds(s)),
-            None => t.expires_at.clone(),
+    let access_came = g.access_token.is_some();
+    Ok((
+        Tokens {
+            access_token: g.access_token.unwrap_or_else(|| t.access_token.clone()),
+            refresh_token: refresh,
+            expires_at: match g.expires_in.filter(|_| access_came) {
+                Some(s) => iso(Utc::now() + chrono::Duration::seconds(s)),
+                None => t.expires_at.clone(),
+            },
+            portal: t.portal.clone(),
         },
-        portal: t.portal.clone(),
-    })
+        g.refresh_expires_in,
+    ))
+}
+
+// ---------------------------------------------------------------------
+// Keeping a sign-in alive for unattended runs (R-19, REQ-26).
+
+/// A workflow step's stop for a sign-in that has lapsed (REQ-26), exactly.
+pub(crate) fn needs_sign_in(id: &str) -> String {
+    format!("needs you: sign in again ({})", signin_command(id))
+}
+
+/// What `keep_alive` did.
+#[derive(Debug, PartialEq)]
+pub(crate) enum Kept {
+    /// A public service, or a sign-in with `EXCHANGE_BELOW_DAYS` or more left.
+    AsIs,
+    /// The refresh token was exchanged for a new one, and stored.
+    Exchanged,
+    /// The exchange could not be made for another reason (the portal did
+    /// not answer, say); the step goes on with the sign-in as it is.
+    NotNow(String),
+}
+
+/// R-19, before a workflow step uses `conn`: if fewer than
+/// `EXCHANGE_BELOW_DAYS` of the refresh token's life remain (or that is
+/// not known), swap it for a new one with `exchange_refresh_token` and
+/// store it. A sign-in that has lapsed (or was never made, or is for
+/// another portal) gives `needs_sign_in`. No token reaches any message.
+pub(crate) async fn keep_alive(
+    store: &SecretStore,
+    conn: &Connection,
+    policy: &OrgPolicy,
+    connections: &std::path::Path,
+) -> Result<Kept, String> {
+    let Some((portal, client_id)) = portal(conn, policy)? else {
+        return Ok(Kept::AsIs);
+    };
+    let id = conn.id.as_str();
+    usable_store(store).map_err(|e| format!("{id} needs an ArcGIS sign-in, but {e}."))?;
+    let lock = refresh_lock(id);
+    let _one = lock.lock().await;
+    let Some(t) = load(store, id)? else {
+        return Err(needs_sign_in(id));
+    };
+    if t.portal != portal.key() {
+        return Err(needs_sign_in(id));
+    }
+    let now = Utc::now();
+    match refresh_expires_at(connections, id, &t.portal) {
+        Some(end) if end <= now => return Err(needs_sign_in(id)),
+        Some(end) if end - now >= chrono::Duration::days(EXCHANGE_BELOW_DAYS) => {
+            return Ok(Kept::AsIs)
+        }
+        _ => {}
+    }
+    match exchange_refresh_token(&portal, &client_id, OOB, id, &t).await {
+        Ok((fresh, secs)) => {
+            save(store, id, &fresh)?;
+            if let Err(e) = record_refresh_expiry(connections, id, &fresh.portal, secs) {
+                tracing::warn!("{id}: when its new ArcGIS sign-in ends could not be recorded: {e}");
+            }
+            Ok(Kept::Exchanged)
+        }
+        Err(e) if e == sign_in_again(id) => Err(needs_sign_in(id)),
+        Err(e) => Ok(Kept::NotNow(e)),
+    }
 }
 
 /// One lock per connection, so two calls at once refresh once.
@@ -735,7 +810,7 @@ impl Pending {
         self,
         code: &str,
         id: &str,
-    ) -> Result<(Tokens, Option<String>), String> {
+    ) -> Result<(Tokens, Option<String>, Option<i64>), String> {
         let g = token_call(
             &self.portal,
             &self.client_id,
@@ -765,6 +840,7 @@ impl Pending {
                 portal: self.portal.key(),
             },
             g.username,
+            g.refresh_expires_in,
         ))
     }
 }
@@ -840,7 +916,7 @@ async fn paste_flow(
     client_id: &str,
     id: &str,
     lines: &mut tokio::sync::mpsc::UnboundedReceiver<String>,
-) -> Result<(Tokens, Option<String>), String> {
+) -> Result<(Tokens, Option<String>, Option<i64>), String> {
     use std::io::Write;
     let p = begin(portal, client_id, Redirect::Paste).await?;
     open(&p.url);
@@ -867,7 +943,7 @@ pub async fn signin_cli(id: &str, flags: &[&str]) -> anyhow::Result<()> {
     usable_store(&store).map_err(|e| anyhow!("ArcGIS sign-in refused: {e}."))?;
     println!("Signing in to ArcGIS at {} for {id}.", portal.key());
     let mut lines = terminal_lines();
-    let (tokens, user) = if paste {
+    let (tokens, user, refresh_secs) = if paste {
         paste_flow(&portal, &client_id, id, &mut lines).await
     } else {
         let mut p = begin(&portal, &client_id, Redirect::Loopback)
@@ -898,6 +974,12 @@ pub async fn signin_cli(id: &str, flags: &[&str]) -> anyhow::Result<()> {
     }
     .map_err(|e| anyhow!(e))?;
     save(&store, id, &tokens).map_err(|e| anyhow!(e))?;
+    // When the refresh token ends (not secret), so unattended runs can
+    // exchange it in time (R-19).
+    let connections = crate::config::Paths::from_env().connections;
+    if let Err(e) = record_refresh_expiry(&connections, id, &tokens.portal, refresh_secs) {
+        println!("(when this sign-in ends could not be recorded, so the next workflow run renews it early: {e})");
+    }
     println!(
         "Signed in{} for {id}. The sign-in is kept in {} and is never shown; Columbus refreshes it by itself.",
         user.map(|u| format!(" as {u}")).unwrap_or_default(),
@@ -910,6 +992,7 @@ pub async fn signin_cli(id: &str, flags: &[&str]) -> anyhow::Result<()> {
 pub fn signout_cli(id: &str) -> anyhow::Result<()> {
     let store = SecretStore::from_env();
     usable_store(&store).map_err(|e| anyhow!("{e}."))?;
+    let _ = forget_state(&crate::config::Paths::from_env().connections, id);
     if sign_out(&store, id).map_err(|e| anyhow!(e))? {
         println!(
             "Signed out of ArcGIS for {id}: its sign-in was removed from the credential store."
@@ -1038,9 +1121,10 @@ mod tests {
             r#"{"access_token":"FAKE-new-access","expires_in":1800,"refresh_token":"FAKE-new-refresh","refresh_token_expires_in":1209600}"#,
         )
         .await;
-        let t = exchange_refresh_token(&p, "AppId1", OOB, "svc", &stored())
+        let (t, secs) = exchange_refresh_token(&p, "AppId1", OOB, "svc", &stored())
             .await
             .unwrap();
+        assert_eq!(secs, Some(1_209_600));
         assert_eq!(t.refresh_token, "FAKE-new-refresh");
         assert_eq!(t.access_token, "FAKE-new-access");
         let req = h.await.unwrap();

@@ -1218,6 +1218,12 @@ impl State {
         };
         drop(live);
         for id in signed_out {
+            // Its non-secret record of when the sign-in ends goes too.
+            if let Err(e) = crate::arcgis_auth::forget_state(&self.paths.connections, &id) {
+                tracing::warn!(
+                    "{id} was deleted, but its ArcGIS sign-in record could not be removed: {e}"
+                );
+            }
             match crate::arcgis_auth::sign_out(&self.secrets, &id) {
                 Ok(true) => tracing::info!("{id} was deleted, so its ArcGIS sign-in was removed"),
                 Ok(false) => {}

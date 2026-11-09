@@ -81,7 +81,8 @@ pub const STEP_TOOLS: &[&str] = &[
 ];
 
 /// Export formats `outputs.folder` may ask for.
-pub const FORMATS: &[&str] = &["gpkg", "geojson", "fgb", "shp", "csv"];
+/// (F-11 adds `gdb`, a new file geodatabase, and `tif`, for raster results.)
+pub const FORMATS: &[&str] = &["gpkg", "gdb", "geojson", "fgb", "shp", "csv", "tif"];
 
 const DAYS: &[&str] = &["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
 
@@ -294,7 +295,7 @@ pub struct FolderOut {
     pub export: String,
     /// The steps whose layers are exported.
     pub steps: Vec<String>,
-    /// gpkg (default), geojson, fgb, shp or csv.
+    /// gpkg (default), gdb, geojson, fgb, shp, csv, or tif for raster results.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub format: Option<String>,
 }
