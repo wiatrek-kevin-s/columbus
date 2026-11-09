@@ -224,36 +224,34 @@ async fn capture(mut r: impl AsyncRead + Unpin) -> Captured {
     Captured { kept, total }
 }
 
-/// Ends the script's process group if the call is dropped part way (the
-/// client cancelled): nothing it started is left running. On Windows the
-/// launcher's job object does this when the launcher is killed.
-/// A direct (trusted) run on Windows has no job object, so its tree is
-/// ended with `taskkill /T`.
-struct GroupGuard {
-    pid: Option<u32>,
-    tree: bool,
+/// Ends the script and everything it started, at the time limit, when it
+/// ends (anything it left running), and if the call is dropped part way
+/// (the client cancelled). A confined run is the launcher's: its process
+/// group on Unix, and on Windows the launcher's own job object, closed
+/// when the launcher is killed. A direct (trusted) run is a
+/// [`columbus_shared::proctree::Tree`]: its process group on Unix, a job
+/// object of its own on Windows.
+enum GroupGuard {
+    Launcher(Option<u32>),
+    Direct(columbus_shared::proctree::Tree),
 }
 
 impl GroupGuard {
     fn kill(&mut self) {
-        #[cfg(unix)]
-        if let Some(pid) = self.pid {
-            if pid > 1 {
-                // The script was started as the leader of its own group.
-                unsafe { libc::kill(-(pid as i32), libc::SIGKILL) };
+        match self {
+            GroupGuard::Launcher(pid) => {
+                #[cfg(unix)]
+                if let Some(pid) = *pid {
+                    if pid > 1 {
+                        // The launcher was started as the leader of its own group.
+                        unsafe { libc::kill(-(pid as i32), libc::SIGKILL) };
+                    }
+                }
+                #[cfg(not(unix))]
+                let _ = pid;
             }
+            GroupGuard::Direct(tree) => tree.kill(),
         }
-        #[cfg(windows)]
-        if let (Some(pid), true) = (self.pid, self.tree) {
-            let _ = std::process::Command::new("taskkill")
-                .args(["/T", "/F", "/PID", &pid.to_string()])
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status();
-        }
-        #[cfg(not(windows))]
-        let _ = self.tree;
     }
 }
 
@@ -809,7 +807,7 @@ pub(crate) fn trusted_env(run: &Path) -> Vec<(String, OsString)> {
 /// Run `program args` directly, unconfined, as the person (trusted
 /// environments only), in `cwd` with only `env`; wait for it within
 /// `timeout`, and end everything it started: its process group on Unix,
-/// its process tree on Windows.
+/// a job object of its own on Windows ([`columbus_shared::proctree`]).
 pub(crate) async fn run_direct(
     cwd: &Path,
     program: &str,
@@ -826,8 +824,6 @@ pub(crate) async fn run_direct(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
-    #[cfg(unix)]
-    cmd.process_group(0);
     wait_for(cmd, timeout, true).await
 }
 
@@ -851,20 +847,27 @@ pub(crate) async fn run_under(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
-    #[cfg(unix)]
-    cmd.process_group(0);
     wait_for(cmd, timeout, false).await
 }
 
 /// Start `cmd`, wait for it within `timeout`, and end everything it
-/// started. `tree`: also end its process tree on Windows (a direct run has
-/// no launcher job object to do it).
+/// started. `tree`: a direct run, whose tree is ended through
+/// [`columbus_shared::proctree`] (it has no launcher job object to do it).
+/// Output is read on tasks that are waited on for at most a short grace
+/// once the tree is gone, never for a pipe's end that a left-behind
+/// process could hold open.
 async fn wait_for(
     mut cmd: tokio::process::Command,
     timeout: Duration,
     tree: bool,
 ) -> Result<Ran, String> {
     let started = Instant::now();
+    if tree {
+        columbus_shared::proctree::prepare(cmd.as_std_mut());
+    } else {
+        #[cfg(unix)]
+        cmd.process_group(0);
+    }
     let mut child = cmd.spawn().map_err(|e| {
         if tree {
             format!("could not start the script: {e}")
@@ -872,9 +875,20 @@ async fn wait_for(
             format!("could not start the confined script: {e}")
         }
     })?;
-    let mut group = GroupGuard {
-        pid: child.id(),
-        tree,
+    let mut group = if tree {
+        #[cfg(windows)]
+        let t = match (child.id(), child.raw_handle()) {
+            (Some(pid), Some(h)) => columbus_shared::proctree::Tree::adopt(pid, h),
+            _ => {
+                let _ = child.start_kill();
+                return Err("could not start the script: it ended at once".into());
+            }
+        };
+        #[cfg(unix)]
+        let t = columbus_shared::proctree::Tree::adopt(child.id().unwrap_or(0));
+        GroupGuard::Direct(t)
+    } else {
+        GroupGuard::Launcher(child.id())
     };
     let out = tokio::spawn(capture(child.stdout.take().expect("piped stdout")));
     let err = tokio::spawn(capture(child.stderr.take().expect("piped stderr")));
@@ -886,19 +900,16 @@ async fn wait_for(
             return Err(format!("lost track of the script: {e}"));
         }
         Err(_) => {
-            // The whole tree: the group on Linux, the job (closed with
-            // the launcher) on Windows.
+            // The whole tree: the group on Unix; on Windows the run's job
+            // object, or the launcher's (closed with the launcher).
             group.kill();
             let _ = child.start_kill();
             (child.wait().await.ok(), true)
         }
     };
-    // Anything it left running in its group goes too. (On Windows the tree
-    // was ended above on a time-out; a process that has exited has no tree
-    // left to find by its id.)
-    #[cfg(unix)]
+    // Anything it left running goes too, which also closes its copies of
+    // the output pipes.
     group.kill();
-    group.pid = None;
     let seconds = started.elapsed().as_secs_f64();
     let grace = Duration::from_secs(5);
     let empty = || Captured {

@@ -160,8 +160,10 @@ impl Env {
 
 fn setup(py: Option<&str>, policy: &str) -> Env {
     let dir = tempfile::tempdir().unwrap();
-    // A real path: macOS's temp folder is behind a link.
-    let root = std::fs::canonicalize(dir.path()).unwrap();
+    // A real path: macOS's temp folder is behind a link. On Windows,
+    // without the `\\?\` prefix canonicalize adds (a person's path never
+    // has it, and Python reports sys.prefix without it).
+    let root = plain_path(std::fs::canonicalize(dir.path()).unwrap());
     if let Some(py) = py {
         make_fixture(py, &root);
     }
@@ -180,6 +182,13 @@ fn setup(py: Option<&str>, policy: &str) -> Env {
     )
     .unwrap();
     env
+}
+
+fn plain_path(p: PathBuf) -> PathBuf {
+    match p.to_str().and_then(|s| s.strip_prefix(r"\\?\")) {
+        Some(rest) if !rest.starts_with("UNC") => PathBuf::from(rest),
+        _ => p,
+    }
 }
 
 fn trusted_allowed() -> EnvironmentsPolicy {
@@ -228,6 +237,15 @@ fn cli(env: &Env, args: &[&str], extra: &[(&str, &str)]) -> std::process::Output
         .env("COLUMBUS_WORKSPACES", env.root.join("workspaces"))
         .env("COLUMBUS_AUDIT_DIR", env.root.join("audit"))
         .stdin(std::process::Stdio::null());
+    // Nobody is at the keyboard. The id is read from the terminal itself,
+    // not stdin: on Unix a test has no terminal, so the prompt fails at
+    // once; on Windows the test's console would wait for typing forever,
+    // so the command gets no console (DETACHED_PROCESS).
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0000_0008);
+    }
     for (k, v) in extra {
         cmd.env(k, v);
     }
@@ -384,6 +402,42 @@ fn audit_text(env: &Env) -> String {
     std::fs::read_to_string(&path).unwrap()
 }
 
+/// Run a test's body on a thread of its own and fail, saying so, if it
+/// has not finished within `limit`: a hang (a process that was not
+/// ended, a pipe that never closes) becomes a failure with a message
+/// instead of a test that never ends. The body's `step:` lines show how
+/// far it got.
+fn within<F, Fut>(limit: Duration, name: &'static str, body: F)
+where
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = ()>,
+{
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name(name.into())
+        .spawn(move || {
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| rt.block_on(body())));
+            let _ = tx.send(r);
+        })
+        .unwrap();
+    match rx.recv_timeout(limit) {
+        Ok(Ok(())) => {}
+        Ok(Err(panic)) => std::panic::resume_unwind(panic),
+        Err(_) => panic!(
+            "{name} did not finish within {} s: something it started was not ended (see the last step: line above)",
+            limit.as_secs()
+        ),
+    }
+}
+
+fn at_step(what: &str) {
+    eprintln!("step: {what}");
+}
+
 /// Check 1 (REQ-15, D-3): without environments.allow_trusted a trusted
 /// environment is refused. With it, the script runs unconfined as the
 /// person (it reads a file outside the workspace); the card carries the
@@ -392,8 +446,16 @@ fn audit_text(env: &Env) -> String {
 /// carry the session's labels plus environment:pro; and exporting that
 /// output to a folder under a flow rule asks for approval, while the same
 /// session's other output goes without asking.
-#[tokio::test]
-async fn trusted_runs_need_the_switch_are_approved_each_time_and_labelled() {
+#[test]
+fn trusted_runs_need_the_switch_are_approved_each_time_and_labelled() {
+    within(
+        Duration::from_secs(600),
+        "trusted_runs_need_the_switch_are_approved_each_time_and_labelled",
+        trusted_runs,
+    );
+}
+
+async fn trusted_runs() {
     let Some(py) = engine() else { return };
     let base = "allow_scripts: true\napprovals: { page: true, wait_seconds: 0 }\n\
                 flows:\n  - { from: [\"environment:*\"], to: [\"folder:*\"], action: approve }\n";
@@ -412,9 +474,11 @@ async fn trusted_runs_need_the_switch_are_approved_each_time_and_labelled() {
     assert!(e.contains("allow_trusted"), "{e}");
     assert!(!env.yaml("pro").exists());
     // Registered while an earlier policy allowed it; the switch is now off.
+    at_step("registered trusted pro");
     let reg = register(&env, "pro", &vpy, Trust::Trusted, &trusted_allowed()).unwrap();
     assert_eq!(reg.trust, Trust::Trusted);
 
+    at_step("gateway without the switch");
     // Without the switch: refused, with the reason.
     let c = start(&env, &py).await;
     let card = environment(&c, "pro").await;
@@ -440,6 +504,7 @@ async fn trusted_runs_need_the_switch_are_approved_each_time_and_labelled() {
     );
     c.cancel().await.unwrap();
 
+    at_step("gateway with the switch");
     // With the switch.
     env.policy(&format!(
         "{base}environments: {{ allow: true, allow_trusted: true }}\n"
@@ -467,12 +532,13 @@ table = db.execute("SELECT table_name FROM gpkg_contents").fetchone()[0]
 db.execute(f'DELETE FROM "{{table}}" WHERE lanes = 2')
 db.commit()
 db.close()
-print("prefix", os.path.normcase(os.path.realpath(sys.prefix)) == os.path.normcase(os.path.realpath({venv:?})))
+print("prefix", os.path.normcase(os.path.realpath(sys.prefix)) == os.path.normcase(os.path.realpath({venv:?})), sys.prefix)
 print("outside:", open({outside:?}).read())
 "#,
         venv = venv.display().to_string(),
         outside = outside.display().to_string(),
     );
+    at_step("first trusted run_python");
     let args = json!({"code": code, "inputs": {"roads": roads}, "environment": "pro"});
     let first = ok(&call(&c, "run_python", args.clone()).await);
     assert_eq!(first["result"]["status"], "approval_required", "{first}");
@@ -493,6 +559,7 @@ print("outside:", open({outside:?}).read())
     assert_eq!(shown["offer_always"], false, "{shown}");
     assert!(shown.get("always_covers").is_none(), "{shown}");
     assert_eq!(shown["detail"]["warning"], CARD, "{shown}");
+    at_step("approved; running");
     // "For this session" is not on offer: it counts as once.
     browser.decide(&id, "always_this_session").await;
     let mut with = args.clone();
@@ -507,6 +574,7 @@ print("outside:", open({outside:?}).read())
     assert_eq!(again["result"]["status"], "approval_required", "{again}");
     assert!(call(&c, "run_python", with).await.is_error == Some(true));
 
+    at_step("checking labels");
     // Outputs carry the session's labels plus environment:pro.
     let out = &r["result"]["outputs"][0];
     let handle = out["handle"].as_str().unwrap().to_string();
@@ -544,6 +612,7 @@ print("outside:", open({outside:?}).read())
     assert_eq!(step["confinement"]["level"], "none");
     assert_eq!(step["confinement"]["unconfined"], true);
 
+    at_step("exports");
     // REQ-15 failure case: the flow rule on environment:* asks before the
     // trusted output leaves for the folder; the session's own query
     // result, without that label, goes without asking.
@@ -588,8 +657,16 @@ print("outside:", open({outside:?}).read())
 /// stopped at the limit with everything it started, and reported; nothing
 /// is recorded. whoami marks arcpy and trusted environments experimental.
 /// The real limit is 120 s; the test shortens it (test builds only).
-#[tokio::test]
-async fn arcpy_licence_is_reported_in_plain_words_and_a_hung_probe_is_stopped() {
+#[test]
+fn arcpy_licence_is_reported_in_plain_words_and_a_hung_probe_is_stopped() {
+    within(
+        Duration::from_secs(600),
+        "arcpy_licence_is_reported_in_plain_words_and_a_hung_probe_is_stopped",
+        arcpy_licence,
+    );
+}
+
+async fn arcpy_licence() {
     let Some(py) = python("import venv") else {
         eprintln!("skipping: no Python");
         return;
@@ -604,6 +681,7 @@ async fn arcpy_licence_is_reported_in_plain_words_and_a_hung_probe_is_stopped() 
     let vpy = make_venv(&py, &venv);
     let product = install_stub_arcpy(&venv);
 
+    at_step("probe NotInitialized");
     // NotInitialized: arcpy imports, no licence is set.
     std::fs::write(&product, "NotInitialized\n").unwrap();
     let reg = register(&env, "pro", &vpy, Trust::Trusted, &trusted_allowed()).unwrap();
@@ -647,6 +725,7 @@ async fn arcpy_licence_is_reported_in_plain_words_and_a_hung_probe_is_stopped() 
         .unwrap()
         .contains("experimental"));
 
+    at_step("probe ArcInfo");
     // Pro opened and signed in: confirmed again with a fresh probe.
     std::fs::write(&product, "ArcInfo\n").unwrap();
     let found = envs::probe(&vpy, Duration::from_secs(120)).unwrap();
@@ -669,6 +748,7 @@ async fn arcpy_licence_is_reported_in_plain_words_and_a_hung_probe_is_stopped() 
         "arcpy: yes (experimental); ArcGIS Pro licence: Advanced"
     );
 
+    at_step("hung probe");
     // A probe that hangs for 200 s, with a child process of its own.
     let beat = env.root.join("heartbeat.txt");
     std::fs::write(&product, format!("sleep:200\n{}\n", beat.display())).unwrap();
@@ -696,10 +776,12 @@ async fn arcpy_licence_is_reported_in_plain_words_and_a_hung_probe_is_stopped() 
         before,
         "the probe's child kept running"
     );
+    at_step("after the hung probe");
     // Confirmation with a hung probe changes nothing.
     let card = environment(&c, "pro").await;
     assert_eq!(card["licence"], "ArcGIS Pro licence: Advanced");
 
+    at_step("terminal, hung probe");
     // At the keyboard: the terminal says so plainly and registers nothing
     // (test builds may shorten the 120 s limit; release builds never do).
     let out = cli(
@@ -716,6 +798,7 @@ async fn arcpy_licence_is_reported_in_plain_words_and_a_hung_probe_is_stopped() 
         "{stderr}"
     );
     assert!(!env.yaml("hung").exists());
+    at_step("terminal, quick probe");
     // Without the override the terminal uses the full 120 s; it is never
     // lengthened. A quick probe shows the limit and the licence words.
     std::fs::write(&product, "ArcView\n").unwrap();
