@@ -477,8 +477,8 @@
           "expected": "the layer is listed after restart and offered in both chats; Test reports it reachable; edit and remove take effect in both chats"
         }
       ],
-      "status": "todo",
-      "evidence": ""
+      "status": "done",
+      "evidence": "Commit c038f8f. app/ui/e2e/weblayers.py (Playwright, Companion window job): each of six fake kinds saved (map.hosts empty, confirm path), turned on, draws through the gateway; privacy notice once per chat; opacity/order/basemap applied and kept after reload; 12,000 features -> 'Showing 5,000 of 12,000 features. Zoom in to see all'; unreachable service shows the R-14 message, map keeps working; page reaches only its own origin plus tiles.openfreemap.org, direct requests blocked. app/desktop/e2e/weblayers.py (WebDriver): Connections › Map layers save (deny -> nothing saved), restart, both chats offer them, Test, Edit, Remove. CI run https://github.com/wiatrek-kevin-s/columbus/actions/runs/42646478559 green on 13 jobs. Workspace 369, pytest 225, app 27."
     },
     {
       "id": "T-23",

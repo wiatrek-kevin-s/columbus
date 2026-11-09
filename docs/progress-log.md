@@ -4,8 +4,8 @@ Kit version 1.1 · as of 2026-11-08, session S1 not started
 
 ## Where things stand
 
-- **Session:** S5 finishing (PR #5 open) · **Task:** T-13 next
-- **Next step:** merge PR #5 when CI is green, then S6 (T-13, T-14, T-15, T-21, T-22, T-24, T-25) on `rework/s6-speed-map`
+- **Session:** S6 finishing (PR #6 open) · **Task:** T-23 next
+- **Next step:** merge PR #6 when CI is green, then S7 (T-23, then T-16 with CR-2) on `rework/s7-docs`
 - **Waiting on the owner:** nothing
 - **Homework received:** setup round answered ("skip" on Dependabot alerts); H-1 and H-2 are optional, after release
 
@@ -62,12 +62,23 @@ Kit version 1.1 · as of 2026-11-08, session S1 not started
 | 2026-11-09 | A failed exchange for a reason other than a lapsed sign-in (portal down) lets the step go on with an `arcgis.signin_not_renewed` warning | Failing the read is worse; the next run retries | Decided |
 | 2026-11-09 | The app's Sign in asks for Touch ID / Windows Hello first, then runs `arcgis signin` and opens only an https authorize URL under the connection's portal; environments are confirmed like connections | Sign-in widens what the assistant can read; no rule loosens | Decided |
 | 2026-11-09 | gdb workflow deliveries turn non-alphanumeric characters in the name into `_` | The gdb export refuses `-` (R-8 naming) | Decided |
+| 2026-11-09 | Bbox pushdown goes in as a placeholder swapped in after checking and falls back to the unpushed query if it doesn't fit; not pushed where an index can't be trusted (SRID-0 PostGIS, SQL Server geography, Oracle without a valid index, shapefile/FGDB, zero-area boxes, Oracle geodetic boxes over 119°); files caches gain R-trees | Same rows either way (REQ-19); speed only where it is safe | Decided |
+| 2026-11-09 | The benchmark is an ignored test run in its own Linux CI step; engine start = launch to the first GIS answer on a one-row layer; warm = the second identical read of 100,000 rows | Targets apply to the Linux runner only | Decided |
+| 2026-11-09 | `sources.py` CI hang root-caused: the single-instance app (D-Bus name) still held by the closing first session; fixed in the test with `e2e/guard.py` (wait for the name, 120 s per WebDriver call, 10-minute overall limit, step names) and `timeout-minutes: 30` on the step | Not the product; a hang must fail with a message | Decided |
+| 2026-11-09 | **A-4 not confirmed** for uv-compiled, hash-pinned files (GitHub docs silent; dependabot-core #10039, #12047). Fallback: `.github/workflows/engine-requirements.yml` regenerates the pins weekly and opens a pull request; `dependabot.yml` covers cargo, npm and Actions | The brief's fallback, no paid service | Decided |
+| 2026-11-09 | **macOS minimum is 15** (Apple Silicon). rasterio 1.5's macOS arm64 wheels need 15; capping rasterio at 1.4 would have kept 14 | Narrows supported Macs | Asked (owner: "macOS 15+") |
+| 2026-11-09 | Opening a run in a chat copies its outputs (fingerprinted in `run.json`) under the workflow's scope and labels; the run's exports are protected by folder and name; runs made before this change refuse to open ("run the workflow again") | R-20: the run never changes | Decided |
+| 2026-11-09 | Zoom to selection is on by default and remembered per session; Measure is geodesic (WGS 84), shown in feet then metres | AF-20 | Decided |
+| 2026-11-09 | Web layers: capability hosts approved at save live in `map-sources/.hosts.json` (F-13 unchanged); org-supplied sources fail closed; only 256 px Web Mercator layers offered; tile cache 500 MB; tile requests are not audited; `whoami` lists titles only; new dependency roxmltree 0.21.2 (MIT OR Apache-2.0) | D-14 and the security baseline | Decided |
+| 2026-11-09 | Web layer settings are remembered per chat (session); a source's `rev` (12 hex of its fingerprint, never the address) lets the map redraw after an Edit | REQ-33 | Decided |
 | 2026-11-08 | Python baseline is 149 passed, not the audit's 115 | `main` moved past the audit commit 8b6bf173 before the kit upload; more tests and no failures, so no action | Decided |
 
 ## Change requests
 
 | ID | Date | What and why | Options | Recommendation | Status |
 |---|---|---|---|---|---|
+| CR-2 | 2026-11-08 | Professional README and GitHub front page: real-data pictures, demo animation, how-it-works diagram, shorter README, SECURITY/CONTRIBUTING, sidebar. Plan: https://claude.ai/artifact/PM8rt1U5CoxQ2KMdyZoQLz | Do it in T-16 | Do it in T-16 | Approved by the owner |
+| CR-3 | 2026-11-08 | Documentation site (Zensical on GitHub Pages leaning; own domain optional) | Later round | Later | Waiting: name, domain, versioning need a Blueprint round; not in 0.14 |
 | CR-1 | 2026-11-08 | Let a personal tool in an environment import that environment's other packages (today the tool lint allows only its fixed module list, so whitebox or arcpy can't be used from a tool; `run_python` scripts can use them) | Keep the list; allow any package installed in the governed environment; allow a per-organization list | Keep the list this round (no rule loosens); decide in Blueprint | Sent to Blueprint (blocks no task) |
 
 Status: raised, approved, declined, or Sent to Blueprint (touches a one-way door; affected tasks paused).
@@ -75,6 +86,14 @@ Status: raised, approved, declined, or Sent to Blueprint (touches a one-way door
 ## Handoff notes
 
 Newest first, written as you go. Mark each claim verified (checked this session) or unverified.
+
+### Session S6 → S7 (2026-11-09)
+
+- **Done:** S5 merged (PR #5, 27d6725). S6: T-13, T-14, T-15, T-21, T-22, T-24, T-25 on `rework/s6-speed-map`, PR #6. Each verified in a dispatched CI run green on 13 jobs (last: 42646478559).
+- **Decisions and deviations:** see Decisions. A-4 used the fallback. macOS minimum is 15 (owner).
+- **Loose ends:** T-16 must carry CR-2 (the README plan doc), the macOS 15 minimum, the uv licence notice (third-party notices file), the ArcGIS admin steps (redirect URIs `http://127.0.0.1` and `urn:ietf:wg:oauth:2.0:oob`, the org's own client id) in docs/manual-checks.md, and CR-1 in the release notes. For the final review: relaunching the app within ~2 s of closing it hands off to the closing instance and nothing opens; e2e scripts still occasionally wait on the previous app to close (guard reports it plainly). `cargo test --test web_layers` / `workflow_reach` alone need `cargo build --example fake_oauth_server` first.
+- **Machine:** server restarts stopped helpers three times; each resumed from its saved work. Disk is small: builds without debug info.
+- **Next:** S7.
 
 ### Session S5 → S6 (2026-11-09)
 
@@ -119,6 +138,15 @@ Newest first, written as you go. Mark each claim verified (checked this session)
 - 2026-11-09 T-11 done: commit 7c9cf15; arcgis_signin.rs pass; token found 0 times outside the credential store. A-2 unconfirmed, both redirect paths built.
 - 2026-11-09 T-12 done: commit e544226; app e2e sources.py ok locally and in CI run 42549810624 (13 jobs green).
 - 2026-11-09 T-20 done: commit 38a94ab; workflow_reach.rs pass (gdb delivery; 6-day exchange, 8-day none, expired stops with "needs you").
+- 2026-11-09 PR #5 merged (27d6725) after CI run 42552085685 green on 13 jobs.
+- 2026-11-09 T-13 done: b7ece5c, c1a8cab, b807b84; EXPLAIN names the GiST index; Oracle, SQL Server, GeoPackage, files use their indexes; CI run 42555648758.
+- 2026-11-09 T-14 done: f8c1d88; CI Linux `BENCH engine_start_s=0.48 warm_query_s=1.61 rows=100000` (targets 10 s and 2 s), run 42557772645.
+- 2026-11-09 sources.py hang in run 42555648758 (cancelled after ~20 min; re-run green) root-caused and fixed in a324f6d; run 42561672255 green.
+- 2026-11-09 T-15 done: 1c974f1; run 42614233624 green; 0 engine skips in CI; tampered hash refused; A-4 fallback.
+- 2026-11-09 T-21 done: d3c084e; run 42626537952 green (includes the vector_op filter, AF-21).
+- 2026-11-09 T-22 done: e35e63b; run 42630389678 green; 100 m line shows 328 ft.
+- 2026-11-09 T-24 done: ca47383; run 42637569401 green.
+- 2026-11-09 T-25 done: c038f8f; run 42646478559 green.
 
 ### Kit → Session S1 (2026-11-08)
 
