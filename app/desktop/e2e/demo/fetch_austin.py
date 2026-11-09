@@ -118,6 +118,7 @@ def main():
         if len(roads) < 1000 or len(blocks) < 300 or len(crashes) < 20:
             sys.exit("the extract is smaller than expected; check the sources")
 
+        out.parent.mkdir(parents=True, exist_ok=True)
         if out.exists():
             out.unlink()
         roads.to_file(out, layer="roads", driver="GPKG", engine="pyogrio")
