@@ -6,6 +6,8 @@
 -- the tests use to show the engine keeps every query's effects from being
 -- kept even when the login could write.
 SET NOCOUNT ON;
+-- sqlcmd starts with QUOTED_IDENTIFIER OFF; spatial indexes need it on.
+SET QUOTED_IDENTIFIER ON;
 IF DB_ID('gis') IS NULL CREATE DATABASE gis;
 GO
 USE gis;
