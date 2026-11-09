@@ -59,7 +59,7 @@ ROOT = Path(ARGS.root)
 W, H = 1600, 1000
 # The hero's window: the chat and its map, cropped, at about the size the
 # README shows them (900 pixels wide), so the words are readable.
-HERO = (1240, 860)
+HERO = (1240, 760)
 QUESTION = "Which fatal crashes from 2020 to 2023 happened within 150 feet of IH 35 in central Austin? Count them by year."
 EXPORT_ASK = "Export those crashes to the review folder for the safety team."
 CRASHES = "fars_fatal_crashes_2020_2023"

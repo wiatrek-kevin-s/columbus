@@ -35,8 +35,8 @@
 ## What it does
 
 - **Reaches all your data.** Oracle and SQL Server geodatabases, file geodatabases and shapefiles, ArcGIS Online and Portal layers, CSV and Excel, GeoPackage, PostGIS and rasters. You add each one once, in the app.
-- **Keeps your rules, in code.** Every connection is read-only unless your organization allows edits. Row filters and hidden fields apply before the AI sees anything. Exports, edits and scripts wait for your yes, unless you approved them ahead of time (a pre-approved folder, a tool you installed). Every step is logged on your computer.
-- **Does real GIS work.** Queries, joins, buffers and overlays, raster analysis, your own Python, and ArcGIS Pro's arcpy (experimental). Every result comes back with checks (row counts, coordinate systems, valid shapes), and jobs you repeat become scheduled workflows.
+- **Keeps your rules, in code.** Every connection is read-only unless your organization allows edits. Row filters and hidden fields apply before the AI sees anything. Exports, edits and scripts wait for your yes, unless you approved them ahead of time. Every step is logged on your computer.
+- **Does real GIS work.** Queries, joins, buffers and overlays, raster analysis, your own Python and ArcGIS Pro's arcpy (experimental). Every result is checked (row counts, coordinate systems, valid shapes), and repeated jobs become scheduled workflows.
 
 ## See it work
 
@@ -74,12 +74,12 @@ Step by step: [Windows](docs/install.md) · [Mac](docs/install-macos.md). The ap
 
 <table>
   <tr>
-    <td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/tour-connections-dark.png"><img src="docs/images/tour-connections-light.png" alt="The Connections page listing an Oracle enterprise geodatabase, a file geodatabase, a folder of crash records, a GeoPackage of streets and an ArcGIS Online layer, each read only, with what the assistant may see in plain words."></picture><br><b>Connections.</b> Each source, and in plain words what the AI may see.</td>
-    <td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/tour-approval-dark.png"><img src="docs/images/tour-approval-light.png" alt="An export request in the chat, showing the layer, the folder and the file it will write, with Allow once and Deny buttons."></picture><br><b>Approvals.</b> An export shows exactly what it will write, and where.</td>
+    <td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/tour-connections-dark.png"><img src="docs/images/tour-connections-light.png" alt="The Connections page listing an Oracle enterprise geodatabase, a file geodatabase, a folder of crash records, a GeoPackage of streets and an ArcGIS Online layer, each read only, with what the assistant may see in plain words."></picture><br><b>Connections.</b> What the AI may see, in plain words.</td>
+    <td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/tour-approval-dark.png"><img src="docs/images/tour-approval-light.png" alt="An export request in the chat, showing the layer, the folder and the file it will write, with Allow once and Deny buttons."></picture><br><b>Approvals.</b> What an export will write, and where.</td>
   </tr>
   <tr>
-    <td><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/tour-workflow-run-dark.png"><img src="docs/images/tour-workflow-run-light.png" alt="The Workflows page with a weekly crash check and the report of its last run: steps, row counts, checks and the exported files."></picture><br><b>Workflows.</b> A repeated job, run on a schedule, with a report each time.</td>
-    <td><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/tour-checks-dark.png"><img src="docs/images/tour-checks-light.png" alt="The map in front, with a layer's details open: its checks, the datasets it was made from and its provenance record."></picture><br><b>Checks and provenance.</b> Each result, what it was made from, and how.</td>
+    <td><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/tour-workflow-run-dark.png"><img src="docs/images/tour-workflow-run-light.png" alt="The Workflows page with a weekly crash check and the report of its last run: steps, row counts, checks and the exported files."></picture><br><b>Workflows.</b> Repeated jobs, with a report each run.</td>
+    <td><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/tour-checks-dark.png"><img src="docs/images/tour-checks-light.png" alt="The map in front, with a layer's details open: its checks, the datasets it was made from and its provenance record."></picture><br><b>Checks and provenance.</b> What each result was made from.</td>
   </tr>
 </table>
 
