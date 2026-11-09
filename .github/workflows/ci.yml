@@ -45,6 +45,13 @@ jobs:
         # Still run everything when the launcher tests fail: the other
         # tests' messages help find why.
         if: success() || failure()
+      # The benchmark (REQ-20): engine start and a warm query_features on
+      # 100,000 rows, timed on the Linux runner its targets are set for. It
+      # prints "BENCH engine_start_s=… warm_query_s=…"; it fails only at 20 s
+      # or 4 s (twice the targets).
+      - name: Benchmark (Linux)
+        if: runner.os == 'Linux' && (success() || failure())
+        run: cargo test -p columbus-mcp --test benchmark --locked -- --ignored --nocapture
 
   python-worker:
     name: Python worker
