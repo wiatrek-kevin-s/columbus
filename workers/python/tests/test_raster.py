@@ -12,6 +12,8 @@ import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
+sys.path.insert(0, HERE)
+from engine_required import skip_unless_engine  # noqa: E402
 
 try:
     import geopandas as gpd
@@ -61,7 +63,7 @@ def read1(path):
         return d.read(1), d.nodata, d.profile, d.tags(ns="IMAGE_STRUCTURE")
 
 
-@unittest.skipUnless(HAVE_RASTER, "raster engine not installed")
+@skip_unless_engine(HAVE_RASTER, "raster engine not installed")
 class RasterTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

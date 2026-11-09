@@ -4,6 +4,8 @@
 //! other projects'. A project that cannot be read stops the session from
 //! starting, rather than starting it with everything.
 
+mod support;
+
 use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
 
@@ -14,15 +16,7 @@ use rmcp::{RoleClient, ServiceExt};
 use serde_json::{json, Value};
 
 fn python(modules: &str) -> Option<String> {
-    ["python3", "python"]
-        .into_iter()
-        .map(String::from)
-        .find(|p| {
-            StdCommand::new(p)
-                .args(["-c", &format!("import {modules}")])
-                .output()
-                .is_ok_and(|o| o.status.success())
-        })
+    support::python_for(&format!("import {modules}"))
 }
 
 struct Env {

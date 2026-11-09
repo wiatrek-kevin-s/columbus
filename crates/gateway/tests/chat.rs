@@ -6,6 +6,8 @@
 //! reached the chat window as a prompt and was honoured, and the events the
 //! window would show.
 
+mod support;
+
 use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
 use std::sync::{Arc, Mutex};
@@ -19,15 +21,7 @@ use serde_json::{json, Value};
 use tokio::sync::oneshot;
 
 fn python() -> Option<String> {
-    ["python3", "python"]
-        .into_iter()
-        .map(String::from)
-        .find(|p| {
-            StdCommand::new(p)
-                .args(["-c", "import geopandas, pyogrio, shapely, pyproj"])
-                .output()
-                .is_ok_and(|o| o.status.success())
-        })
+    support::python_for("import geopandas, pyogrio, shapely, pyproj")
 }
 
 #[derive(Default)]

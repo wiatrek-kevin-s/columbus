@@ -13,9 +13,9 @@
 //! by the read-only session at the database underneath.
 
 mod measures_chain;
+mod support;
 
 use std::path::{Path, PathBuf};
-use std::process::Command as StdCommand;
 
 use rmcp::model::{CallToolRequestParams, CallToolResult};
 use rmcp::service::RunningService;
@@ -27,15 +27,7 @@ const PASSWORD: &str = "columbus_rw_test";
 const CONN: &str = "roads-ora";
 
 fn python() -> Option<String> {
-    ["python3", "python"]
-        .into_iter()
-        .map(String::from)
-        .find(|p| {
-            StdCommand::new(p)
-                .args(["-c", "import oracledb, geopandas"])
-                .output()
-                .is_ok_and(|o| o.status.success())
-        })
+    support::python_for("import oracledb, geopandas")
 }
 
 struct Env {

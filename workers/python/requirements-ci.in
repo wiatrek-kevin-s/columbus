@@ -1,0 +1,14 @@
+# Test-only packages CI installs beside the engine (never shipped, never in
+# the engine the setup scripts make). This is the source:
+# requirements-ci.txt is generated from it, exact versions and SHA-256
+# hashes, resolved together with requirements-gis.txt and requirements-db.txt
+# so they install side by side. Edit this file, then run
+#   python packaging/engine/compile-requirements.py
+#
+# - playwright: drives the companion window in a browser (app/ui/e2e).
+# - selenium: drives the desktop app through WebDriver (app/desktop/e2e).
+# - pyyaml: reads the settings files those scripts check.
+# (psycopg, for PostGIS, comes from requirements-db.txt.)
+playwright>=1.48
+selenium>=4.25
+pyyaml>=6

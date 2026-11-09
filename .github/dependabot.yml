@@ -1,0 +1,55 @@
+# Weekly version updates (build brief, "Keeping it running"). Dependabot
+# opens a pull request per update; CI runs on all three systems, and only a
+# green one is merged.
+#
+# The engine's Python requirement files (workers/python/requirements-*.txt)
+# are pinned by version and SHA-256 and generated from their .in sources
+# with `uv pip compile --universal --generate-hashes`. GitHub's documentation
+# does not say Dependabot can regenerate files made that way, so the weekly
+# "Engine requirements" workflow (.github/workflows/engine-requirements.yml)
+# does it instead (build brief A-4 fallback). The pip entry below is kept
+# with no version-update pull requests, so security updates can still be
+# proposed for that folder if the owner turns them on.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      cargo:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  - package-ecosystem: cargo
+    directory: /app/desktop/src-tauri
+    schedule:
+      interval: weekly
+    groups:
+      cargo-desktop:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  - package-ecosystem: npm
+    directories: [/app/ui, /app/desktop]
+    schedule:
+      interval: weekly
+    groups:
+      npm:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  - package-ecosystem: pip
+    directory: /workers/python
+    schedule:
+      interval: weekly
+    # Version updates come from the Engine requirements workflow (see above).
+    open-pull-requests-limit: 0
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]

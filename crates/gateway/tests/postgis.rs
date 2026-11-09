@@ -11,6 +11,8 @@
 //! to show that writes are still refused: by the server's checks first, and
 //! by the read-only session at the database underneath.
 
+mod support;
+
 use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
 
@@ -23,15 +25,7 @@ use serde_json::{json, Value};
 const PASSWORD: &str = "columbus_rw_test";
 
 fn python() -> Option<String> {
-    ["python3", "python"]
-        .into_iter()
-        .map(String::from)
-        .find(|p| {
-            StdCommand::new(p)
-                .args(["-c", "import psycopg"])
-                .output()
-                .is_ok_and(|o| o.status.success())
-        })
+    support::python_for("import psycopg")
 }
 
 struct Env {

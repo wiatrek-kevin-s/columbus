@@ -21,6 +21,8 @@ import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
+sys.path.insert(0, HERE)
+from engine_required import skip_engine  # noqa: E402
 
 import columbus_worker as w  # noqa: E402
 
@@ -31,7 +33,7 @@ def streamed_layer(test, conn, sql, geom, crs="EPSG:4326", rows=600):
     try:
         import geopandas as gpd
     except ImportError:
-        test.skipTest("GIS engine not installed")
+        skip_engine(test, "GIS engine not installed")
     with tempfile.TemporaryDirectory() as d:
         r = w.query_layer({"connection": conn, "sql": sql, "max_rows": 100_000, "geometry_column": geom,
                            "crs_spec": {"code": crs}, "return_rows": 3, "stream_after": 100,
@@ -151,7 +153,7 @@ class OracleTests(unittest.TestCase):
             sys.path.insert(0, HERE)
             import test_measures as tm
         if not tm.HAVE_GIS:
-            self.skipTest("GIS engine (with shapely 2.1+) not installed")
+            skip_engine(self, "GIS engine (with shapely 2.1+) not installed")
         with tempfile.TemporaryDirectory() as d:
             tm.measure_chain(self, ora_conn(), "SELECT id, route_id, district, geom FROM roads.routes ORDER BY id",
                              "GEOM", d, 400, key="ROUTE_ID", district="DISTRICT")

@@ -12,6 +12,8 @@ import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
+sys.path.insert(0, HERE)
+from engine_required import skip_unless_engine  # noqa: E402
 
 try:
     import geopandas as gpd
@@ -48,7 +50,7 @@ def make_fixture(folder: str) -> str:
     return path
 
 
-@unittest.skipUnless(HAVE_GIS, "GIS engine not installed")
+@skip_unless_engine(HAVE_GIS, "GIS engine not installed")
 class CrsTests(unittest.TestCase):
     def test_facts(self):
         f = g.crs_facts(g.crs_from_spec({"org": "EPSG", "org_id": 3081}))
@@ -105,7 +107,7 @@ class CrsTests(unittest.TestCase):
         self.assertIn("geometry.mixed_types", ids)
 
 
-@unittest.skipUnless(HAVE_GIS, "GIS engine not installed")
+@skip_unless_engine(HAVE_GIS, "GIS engine not installed")
 class WorkerGisTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

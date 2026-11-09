@@ -8,6 +8,8 @@
 //! Needs Python with geopandas, pyogrio, shapely, pyproj and rasterio;
 //! skipped otherwise.
 
+mod support;
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
@@ -21,15 +23,7 @@ use serde_json::{json, Value};
 const BIG: i64 = 3_000_000_000_123;
 
 fn python(import: &str) -> Option<String> {
-    ["python3", "python"]
-        .into_iter()
-        .map(String::from)
-        .find(|p| {
-            StdCommand::new(p)
-                .args(["-c", import])
-                .output()
-                .is_ok_and(|o| o.status.success())
-        })
+    support::python_for(import)
 }
 
 /// Five crash points in EPSG:3081, one with a parcel id beyond 32 bits, and

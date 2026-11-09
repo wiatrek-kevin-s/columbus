@@ -8,7 +8,9 @@
 #   powershell -ExecutionPolicy Bypass -File engine\setup-engine.ps1
 #
 # The packages are wheels that bundle GDAL and PROJ, so no separate GDAL
-# install is needed. Needs Python 3.12 (the python.org installer, or
+# install is needed. Every package is pinned by exact version and SHA-256
+# and installed with --require-hashes, so a file that differs from the
+# pinned one is refused. Needs Python 3.12 (the python.org installer, or
 # `winget install Python.Python.3.12`) and access to PyPI, or a wheelhouse
 # folder given with -Wheels for offline installs (it must also hold the exact
 # DuckDB wheels requirements-projectdb.txt pins by hash, and the uv wheel
@@ -44,14 +46,14 @@ $vpy = Join-Path $venv "Scripts\python.exe"
 & $vpy -m pip install --upgrade pip
 if ($LASTEXITCODE -ne 0) { throw "setup stopped: pip install failed (exit $LASTEXITCODE)" }
 if ($Wheels) {
-    & $vpy -m pip install --no-index --find-links $Wheels -r $req -r $db
+    & $vpy -m pip install --no-index --find-links $Wheels --require-hashes -r $req -r $db
     if ($LASTEXITCODE -ne 0) { throw "setup stopped: pip install failed (exit $LASTEXITCODE)" }
     & $vpy -m pip install --no-index --find-links $Wheels --require-hashes --no-deps --only-binary :all: -r $pdb
     if ($LASTEXITCODE -ne 0) { throw "setup stopped: the hash-checked DuckDB install (requirements-projectdb.txt) failed (exit $LASTEXITCODE)" }
     & $vpy -m pip install --no-index --find-links $Wheels --require-hashes --no-deps --only-binary :all: -r $uvreq
     if ($LASTEXITCODE -ne 0) { throw "setup stopped: the hash-checked uv install (requirements-uv.txt) failed (exit $LASTEXITCODE)" }
 } else {
-    & $vpy -m pip install -r $req -r $db
+    & $vpy -m pip install --require-hashes -r $req -r $db
     if ($LASTEXITCODE -ne 0) { throw "setup stopped: pip install failed (exit $LASTEXITCODE)" }
     & $vpy -m pip install --require-hashes --no-deps --only-binary :all: -r $pdb
     if ($LASTEXITCODE -ne 0) { throw "setup stopped: the hash-checked DuckDB install (requirements-projectdb.txt) failed (exit $LASTEXITCODE)" }

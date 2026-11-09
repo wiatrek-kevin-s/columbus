@@ -25,6 +25,8 @@ import warnings
 HERE = os.path.dirname(os.path.abspath(__file__))
 SDK_DIR = os.path.dirname(HERE)
 sys.path.insert(0, SDK_DIR)
+sys.path.insert(0, HERE)
+from engine_required import skip_unless_engine  # noqa: E402
 
 try:
     import geopandas as gpd
@@ -226,7 +228,7 @@ def measure_chain(test, conn: dict, sql: str, geom: str, folder: str, rows: int,
     test.assertIn(("geometry.m_dropped", "info"), [(c["id"], c["severity"]) for c in buf["checks"]])
 
 
-@unittest.skipUnless(HAVE_GIS, "GIS engine (with shapely 2.1+) not installed")
+@skip_unless_engine(HAVE_GIS, "GIS engine (with shapely 2.1+) not installed")
 class MeasuresTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -572,7 +574,7 @@ class _VArray:
         return list(self._items)
 
 
-@unittest.skipUnless(HAVE_GIS, "GIS engine (with shapely 2.1+) not installed")
+@skip_unless_engine(HAVE_GIS, "GIS engine (with shapely 2.1+) not installed")
 class OracleSdoBuildTests(unittest.TestCase):
     """LRS SDO_GEOMETRY built from (SDO_GTYPE, SDO_ELEM_INFO, SDO_ORDINATES)
     in the worker: SDO_UTIL.TO_WKBGEOMETRY writes 3302 as 2D, reading
@@ -714,7 +716,7 @@ class _FakeDb:
         pass
 
 
-@unittest.skipUnless(HAVE_GIS, "GIS engine (with shapely 2.1+) not installed")
+@skip_unless_engine(HAVE_GIS, "GIS engine (with shapely 2.1+) not installed")
 class OracleQueryLayerLrsTests(unittest.TestCase):
     """query_layer on the Oracle engine with a stand-in driver: the
     worker's outer SELECT asks for the LRS arrays, and both the in-memory

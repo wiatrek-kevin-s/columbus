@@ -1,0 +1,24 @@
+# Project databases (project_db): DuckDB and its spatial extension.
+# This is the source: requirements-projectdb.txt is generated from it, pinned
+# by version and by the SHA-256 of every file (CPython 3.12 and 3.13 on
+# Windows x64, macOS arm64 and Linux x64). Edit this file, then run
+#   python packaging/engine/compile-requirements.py
+# Install the .txt on its own, so every wheel is checked and nothing else is
+# pulled in:
+#
+#   python -m pip install --require-hashes --no-deps --only-binary :all: -r workers/python/requirements-projectdb.txt
+#
+# duckdb-extension-spatial is a community package (not DuckDB Labs') that
+# carries DuckDB Labs' own signed spatial.duckdb_extension for this exact
+# DuckDB version. Columbus never imports the package (its __init__.py never
+# runs): the worker finds the file with importlib.util.find_spec, and DuckDB
+# checks the binary's signature when it loads it (unsigned extensions are
+# refused). The extension is never downloaded at run time. Without it,
+# project databases still work; only the spatial SQL functions are missing.
+# The two versions must match, so both are exact here and move together, by
+# hand: change both, then regenerate.
+duckdb==1.5.5
+duckdb-extension-spatial==1.5.5
+# pytz: DuckDB's Python client needs it to return TIMESTAMP WITH TIME ZONE
+# values (now(), current_timestamp, timestamptz columns); pure Python.
+pytz>=2025.2

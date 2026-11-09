@@ -20,6 +20,8 @@
 //! Needs Python with geopandas, pyogrio, shapely and pyproj, and a machine
 //! that can confine at level A; skipped otherwise.
 
+mod support;
+
 use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
 use std::time::{Duration, Instant};
@@ -41,15 +43,7 @@ const TOOL: &str = "personal.layer-report.run";
 const NEEDS_YOU: &str = "needs you";
 
 fn python(import: &str) -> Option<String> {
-    ["python3", "python"]
-        .into_iter()
-        .map(String::from)
-        .find(|p| {
-            StdCommand::new(p)
-                .args(["-c", import])
-                .output()
-                .is_ok_and(|o| o.status.success())
-        })
+    support::python_for(import)
 }
 
 fn engine() -> Option<String> {

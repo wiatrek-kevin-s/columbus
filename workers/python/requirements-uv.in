@@ -1,0 +1,13 @@
+# uv, the installer Columbus runs to create the environments the person
+# approves (propose_environment, build brief Part 5).
+# This is the source: requirements-uv.txt is generated from it, pinned by
+# version and by the SHA-256 of every wheel. Edit this file, then run
+#   python packaging/engine/compile-requirements.py
+# Install the .txt into the engine on its own, so every wheel is checked and
+# nothing else is pulled in:
+#
+#   python -m pip install --require-hashes --no-deps --only-binary :all: -r workers/python/requirements-uv.txt
+#
+# Columbus finds it inside the engine (uv.find_uv_bin()), never on PATH.
+# uv is MIT OR Apache-2.0 (Astral); its licence files are in the wheel.
+uv>=0.13.7,<1

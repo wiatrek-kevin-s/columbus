@@ -7,6 +7,8 @@ import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
+sys.path.insert(0, HERE)
+from engine_required import skip_unless_engine  # noqa: E402
 
 try:
     import geopandas as gpd
@@ -18,7 +20,7 @@ except ImportError:  # pragma: no cover
     gpd = None
 
 
-@unittest.skipIf(gpd is None, "needs geopandas and rasterio")
+@skip_unless_engine(gpd is not None, "needs geopandas and rasterio")
 class SnapshotTest(unittest.TestCase):
     def setUp(self):
         self.d = tempfile.mkdtemp()

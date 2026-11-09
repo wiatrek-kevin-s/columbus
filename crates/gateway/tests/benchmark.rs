@@ -22,6 +22,8 @@
 //! run there by its own step in the "Rust (ubuntu-latest)" job:
 //! `cargo test -p columbus-mcp --test benchmark --locked -- --ignored --nocapture`.
 
+mod support;
+
 use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
 use std::time::{Duration, Instant};
@@ -37,14 +39,7 @@ const ENGINE_START_TARGET: f64 = 10.0;
 const WARM_QUERY_TARGET: f64 = 2.0;
 
 fn python() -> Option<String> {
-    let mut candidates: Vec<String> = std::env::var("COLUMBUS_PYTHON").into_iter().collect();
-    candidates.extend(["python3".to_string(), "python".to_string()]);
-    candidates.into_iter().find(|p| {
-        StdCommand::new(p)
-            .args(["-c", "import geopandas, pyogrio, shapely, pyproj"])
-            .output()
-            .is_ok_and(|o| o.status.success())
-    })
+    support::python_for("import geopandas, pyogrio, shapely, pyproj")
 }
 
 /// 100,000 points in EPSG:3081 with a few typical attributes, and a

@@ -12,6 +12,7 @@ import unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 sys.path.insert(0, HERE)
+from engine_required import skip_unless_engine  # noqa: E402
 
 try:
     import shapely  # noqa: F401
@@ -50,7 +51,7 @@ class TypingAndNames(unittest.TestCase):
         self.assertEqual(checks[0]["id"], "csv.headers")
 
 
-@unittest.skipUnless(HAVE_GIS, "needs shapely and pyproj")
+@skip_unless_engine(HAVE_GIS, "needs shapely and pyproj")
 class Cache(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -230,7 +231,7 @@ def _meta(conn, dataset):
     return row
 
 
-@unittest.skipUnless(HAVE_FORMATS, "needs the GIS engine (geopandas, pyogrio, pyarrow)")
+@skip_unless_engine(HAVE_FORMATS, "needs the GIS engine (geopandas, pyogrio, pyarrow)")
 class Formats(unittest.TestCase):
     """One fixture per format: each lists, describes and queries."""
 
@@ -296,7 +297,7 @@ class Formats(unittest.TestCase):
         self.assertEqual(self.rows("SELECT COUNT(*) FROM empty"), [(0,)])
 
 
-@unittest.skipUnless(HAVE_FORMATS, "needs the GIS engine (geopandas, pyogrio, pyarrow)")
+@skip_unless_engine(HAVE_FORMATS, "needs the GIS engine (geopandas, pyogrio, pyarrow)")
 class FormatEdges(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -390,7 +391,7 @@ class FormatEdges(unittest.TestCase):
         self.assertIn("'a.b' in book.xlsx", reasons["book/a_b.csv"])
 
 
-@unittest.skipUnless(HAVE_GIS, "needs shapely and pyproj")
+@skip_unless_engine(HAVE_GIS, "needs shapely and pyproj")
 class Freshness(unittest.TestCase):
     """R-7 to R-7c, with the rebuild count ``builds`` in the cache."""
 

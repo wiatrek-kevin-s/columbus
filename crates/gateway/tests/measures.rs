@@ -10,6 +10,7 @@
 //! otherwise.
 
 mod measures_chain;
+mod support;
 
 use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
@@ -19,18 +20,9 @@ use rmcp::transport::{ConfigureCommandExt, TokioChildProcess};
 use rmcp::{RoleClient, ServiceExt};
 
 fn python() -> Option<String> {
-    ["python3", "python"]
-        .into_iter()
-        .map(String::from)
-        .find(|p| {
-            StdCommand::new(p)
-                .args([
-                    "-c",
-                    "import geopandas, pyogrio, pyproj, shapely; assert hasattr(shapely, 'has_m')",
-                ])
-                .output()
-                .is_ok_and(|o| o.status.success())
-        })
+    support::python_for(
+        "import geopandas, pyogrio, pyproj, shapely; assert hasattr(shapely, 'has_m')",
+    )
 }
 
 /// 40 routes (route i: id R<i>, district 14 or 9, measures from

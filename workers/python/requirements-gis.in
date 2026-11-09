@@ -1,0 +1,25 @@
+# The GIS engine for the Python worker (describe_dataset, query_features,
+# vector_op, verify, raster_op). The worker's protocol, SQL reads and plugin host need
+# only the standard library; these add GDAL-backed reading and writing,
+# geometry and coordinate systems. All publish wheels for Windows, macOS and
+# Linux that bundle GDAL and PROJ, so no separate GDAL install is needed.
+#
+# This is the source: requirements-gis.txt is generated from it, pinned by
+# exact version and by the SHA-256 of every file, for Windows x64, macOS
+# arm64 and Linux x64 on CPython 3.12 and 3.13. Edit this file, then run
+#   python packaging/engine/compile-requirements.py
+# and install the .txt with --require-hashes (never this file).
+geopandas>=1.0,<2
+pyogrio>=0.10,<1
+# 2.1 or later: line geometries with M values (T-19).
+shapely>=2.1,<3
+pyproj>=3.6,<4
+pandas>=2.2,<4
+rasterio>=1.4,<2
+# Streams shapefile and file geodatabase reads (columbus_esri); without it
+# they're read a page at a time, more slowly.
+pyarrow>=15
+# Reads the text of PDFs imported into the person's notes (Documents >
+# Import, columbus_docs); without it PDF import says so. Pure Python.
+pypdf>=4,<7
+pillow>=10.1,<13

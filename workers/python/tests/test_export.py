@@ -10,6 +10,8 @@ import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
+sys.path.insert(0, HERE)
+from engine_required import skip_unless_engine  # noqa: E402
 
 try:
     # First: it sets GDAL_SKIP and the other GDAL settings before GDAL loads.
@@ -37,7 +39,7 @@ def ids(result):
     return [c["id"] for c in result["checks"]]
 
 
-@unittest.skipUnless(HAVE_ENGINE, "GIS engine not installed")
+@skip_unless_engine(HAVE_ENGINE, "GIS engine not installed")
 class GdbExportTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -121,7 +123,7 @@ class GdbExportTests(unittest.TestCase):
         self.assertIn("tif only", e.exception.message)
 
 
-@unittest.skipUnless(HAVE_ENGINE, "GIS engine not installed")
+@skip_unless_engine(HAVE_ENGINE, "GIS engine not installed")
 class TifExportTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

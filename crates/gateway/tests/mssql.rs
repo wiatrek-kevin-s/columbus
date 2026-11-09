@@ -14,6 +14,8 @@
 //! is rolled back). SQL Server has no read-only session: a read-only login
 //! is the real guarantee.
 
+mod support;
+
 use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
 
@@ -27,15 +29,7 @@ const PASSWORD: &str = "Columbus_rw_test1";
 const CONN: &str = "roads-ms";
 
 fn python() -> Option<String> {
-    ["python3", "python"]
-        .into_iter()
-        .map(String::from)
-        .find(|p| {
-            StdCommand::new(p)
-                .args(["-c", "import pyodbc, geopandas"])
-                .output()
-                .is_ok_and(|o| o.status.success())
-        })
+    support::python_for("import pyodbc, geopandas")
 }
 
 struct Env {

@@ -11,6 +11,7 @@ from unittest import mock
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 sys.path.insert(0, HERE)
+from engine_required import skip_unless_engine  # noqa: E402
 
 try:
     import geopandas as gpd
@@ -23,7 +24,7 @@ except ImportError:  # the engine's GIS packages
 import columbus_worker as w  # noqa: E402
 
 
-@unittest.skipUnless(HAVE_GIS, "needs geopandas, pyogrio and shapely")
+@skip_unless_engine(HAVE_GIS, "needs geopandas, pyogrio and shapely")
 class EsriTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

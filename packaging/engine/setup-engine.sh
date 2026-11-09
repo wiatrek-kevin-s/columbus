@@ -9,7 +9,10 @@
 #   sh engine/setup-engine.sh --python /path/to/python3.12 --wheels /path/to/wheels
 #
 # The packages are wheels that bundle GDAL and PROJ, so no separate GDAL
-# install is needed. Needs Python 3.12 (the python.org installer, or
+# install is needed. Every package is pinned by exact version and SHA-256
+# (the requirement files are generated from their .in sources by
+# compile-requirements.py) and installed with --require-hashes, so a file
+# that differs from the pinned one is refused. Needs Python 3.12 (the python.org installer, or
 # `brew install python@3.12`) and access to PyPI, or a folder of downloaded
 # wheels given with --wheels for offline installs.
 set -eu
@@ -53,11 +56,11 @@ echo "Creating $venv with $python"
 vpy="$venv/bin/python3"
 "$vpy" -m pip install --upgrade pip
 if [ -n "$wheels" ]; then
-    "$vpy" -m pip install --no-index --find-links "$wheels" -r "$req" -r "$db"
+    "$vpy" -m pip install --no-index --find-links "$wheels" --require-hashes -r "$req" -r "$db"
     "$vpy" -m pip install --no-index --find-links "$wheels" --require-hashes --no-deps --only-binary :all: -r "$pdb"
     "$vpy" -m pip install --no-index --find-links "$wheels" --require-hashes --no-deps --only-binary :all: -r "$uvreq"
 else
-    "$vpy" -m pip install -r "$req" -r "$db"
+    "$vpy" -m pip install --require-hashes -r "$req" -r "$db"
     "$vpy" -m pip install --require-hashes --no-deps --only-binary :all: -r "$pdb"
     "$vpy" -m pip install --require-hashes --no-deps --only-binary :all: -r "$uvreq"
 fi

@@ -18,6 +18,8 @@ jobs:
     env:
       # Tests that need PyPI (creating an environment) fail here instead of skipping.
       COLUMBUS_TEST_REQUIRE_NETWORK: "1"
+      # Engine tests fail here instead of skipping when the engine is missing (REQ-22).
+      COLUMBUS_TEST_REQUIRE_ENGINE: "1"
     strategy:
       fail-fast: false
       matrix:
@@ -31,7 +33,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-      - run: python -m pip install -r workers/python/requirements-gis.txt
+      - run: python -m pip install --require-hashes -r workers/python/requirements-gis.txt
       - run: python -m pip install --require-hashes --no-deps --only-binary ":all:" -r workers/python/requirements-projectdb.txt
       # Columbus's own uv, which creates the environments the person approves.
       - run: python -m pip install --require-hashes --no-deps --only-binary ":all:" -r workers/python/requirements-uv.txt
@@ -57,6 +59,9 @@ jobs:
     name: Python worker
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
+    env:
+      # Engine tests fail here instead of skipping when the engine is missing (REQ-22).
+      COLUMBUS_TEST_REQUIRE_ENGINE: "1"
     strategy:
       fail-fast: false
       matrix:
@@ -67,7 +72,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: python -m pip install -r workers/python/requirements-gis.txt
+      - run: python -m pip install --require-hashes -r workers/python/requirements-gis.txt
       - run: python -m pip install --require-hashes --no-deps --only-binary ":all:" -r workers/python/requirements-projectdb.txt
       - run: python -m unittest discover -s workers/python/tests -v
       - name: Skills library
@@ -77,6 +82,9 @@ jobs:
     name: Companion window
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    env:
+      # Engine tests fail here instead of skipping when the engine is missing (REQ-22).
+      COLUMBUS_TEST_REQUIRE_ENGINE: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -89,7 +97,9 @@ jobs:
           cache-dependency-path: app/ui/package-lock.json
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: python -m pip install -r workers/python/requirements-gis.txt playwright
+      - run: python -m pip install --require-hashes -r workers/python/requirements-gis.txt
+      # Test-only extras, exact-pinned and hashed.
+      - run: python -m pip install --require-hashes -r workers/python/requirements-ci.txt
       - run: python -m playwright install --with-deps chromium
       - name: Build the window
         working-directory: app/ui
@@ -112,6 +122,9 @@ jobs:
     name: Desktop app (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
+    env:
+      # The Linux runs install the engine (REQ-22).
+      COLUMBUS_TEST_REQUIRE_ENGINE: ${{ matrix.os == 'ubuntu-latest' && '1' || '0' }}
     strategy:
       fail-fast: false
       matrix:
@@ -162,7 +175,7 @@ jobs:
       - name: Links reach the running app (Linux)
         if: runner.os == 'Linux'
         run: |
-          python -m pip install -r workers/python/requirements-gis.txt
+          python -m pip install --require-hashes -r workers/python/requirements-gis.txt
           ( cd app/ui && npm ci && npm run build )
           cargo build -p columbus-mcp --locked
           dbus-run-session -- xvfb-run -a python app/desktop/e2e/deeplink.py target/debug/columbus-mcp app/desktop/src-tauri/target/debug/columbus-desktop
@@ -176,9 +189,9 @@ jobs:
           sudo apt-get install -y webkitgtk-webdriver || sudo apt-get install -y webkit2gtk-driver
           command -v WebKitWebDriver || ls /usr/lib/*/webkit*gtk*/ 2>/dev/null
           cargo install tauri-driver --locked
-          python -m pip install selenium
+          # selenium and pyyaml, exact-pinned and hashed.
+          python -m pip install --require-hashes -r workers/python/requirements-ci.txt
           dbus-run-session -- xvfb-run -a -s "-screen 0 1400x900x24" python app/desktop/e2e/chat.py target/debug/columbus-mcp app/desktop/src-tauri/target/debug/columbus-desktop
-          python -m pip install pyyaml
           dbus-run-session -- xvfb-run -a -s "-screen 0 1400x900x24" python app/desktop/e2e/settings.py target/debug/columbus-mcp app/desktop/src-tauri/target/debug/columbus-desktop
           # Files and ArcGIS connections, ArcGIS sign-in against the fake portal, Settings › Environments (T-12).
           cargo build -p columbus-mcp --example fake_oauth_server --locked
@@ -211,13 +224,16 @@ jobs:
       COLUMBUS_TEST_PG_HOST: localhost
       COLUMBUS_TEST_PG_PORT: "5432"
       COLUMBUS_TEST_PG_DB: gis
+      # Engine tests fail here instead of skipping when the engine is missing (REQ-22).
+      COLUMBUS_TEST_REQUIRE_ENGINE: "1"
       PGPASSWORD: postgres
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: python -m pip install "psycopg[binary]" -r workers/python/requirements-gis.txt
+      # psycopg comes from requirements-db.txt (exact-pinned, hashed).
+      - run: python -m pip install --require-hashes -r workers/python/requirements-gis.txt -r workers/python/requirements-db.txt
       - run: python -m pip install --require-hashes --no-deps --only-binary ":all:" -r workers/python/requirements-projectdb.txt
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
@@ -251,12 +267,14 @@ jobs:
       COLUMBUS_TEST_ORA_HOST: localhost
       COLUMBUS_TEST_ORA_PORT: "1521"
       COLUMBUS_TEST_ORA_SERVICE: FREEPDB1
+      # Engine tests fail here instead of skipping when the engine is missing (REQ-22).
+      COLUMBUS_TEST_REQUIRE_ENGINE: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: python -m pip install -r workers/python/requirements-gis.txt -r workers/python/requirements-db.txt
+      - run: python -m pip install --require-hashes -r workers/python/requirements-gis.txt -r workers/python/requirements-db.txt
       - run: python -m pip install --require-hashes --no-deps --only-binary ":all:" -r workers/python/requirements-projectdb.txt
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
@@ -295,6 +313,8 @@ jobs:
       COLUMBUS_TEST_MSSQL_HOST: localhost
       COLUMBUS_TEST_MSSQL_PORT: "1433"
       COLUMBUS_TEST_MSSQL_DB: gis
+      # Engine tests fail here instead of skipping when the engine is missing (REQ-22).
+      COLUMBUS_TEST_REQUIRE_ENGINE: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -312,7 +332,7 @@ jobs:
             sudo ACCEPT_EULA=Y apt-get install -y msodbcsql18 unixodbc
           fi
           odbcinst -q -d
-      - run: python -m pip install -r workers/python/requirements-gis.txt -r workers/python/requirements-db.txt
+      - run: python -m pip install --require-hashes -r workers/python/requirements-gis.txt -r workers/python/requirements-db.txt
       - run: python -m pip install --require-hashes --no-deps --only-binary ":all:" -r workers/python/requirements-projectdb.txt
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2

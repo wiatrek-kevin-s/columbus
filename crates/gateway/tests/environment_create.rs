@@ -17,6 +17,8 @@
 //! uses a package index this test serves on 127.0.0.1, with no network.
 //! Both need the GIS engine (skipped otherwise) with uv installed in it.
 
+mod support;
+
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
@@ -37,15 +39,7 @@ const NOW: &str = "2026-11-08T10:00:00-06:00";
 const REQUIRE_NETWORK: &str = "COLUMBUS_TEST_REQUIRE_NETWORK";
 
 fn engine() -> Option<String> {
-    let py = ["python3", "python"]
-        .into_iter()
-        .map(String::from)
-        .find(|p| {
-            StdCommand::new(p)
-                .args(["-c", "import geopandas, pyogrio, shapely, pyproj"])
-                .output()
-                .is_ok_and(|o| o.status.success())
-        });
+    let py = support::python_for("import geopandas, pyogrio, shapely, pyproj");
     if py.is_none() {
         eprintln!("skipping: the GIS engine is not installed");
     }
