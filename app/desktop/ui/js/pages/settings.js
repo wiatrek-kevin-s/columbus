@@ -2,7 +2,7 @@
 // preferences, privacy, keyboard, the organization's policy in force
 // (read only, with today's switches, each turned on only after the person
 // confirms at the keyboard in the app's own code), and About.
-import { $, h, el, invoke, store, pageHead, showError, savePrefs, applyTheme, toast, button } from "../core.js";
+import { $, h, el, invoke, store, pageHead, showError, savePrefs, applyTheme, toast, button, openDialog } from "../core.js";
 
 const SWITCHES = {
   allow_edits: ["Allow edits.", "Your assistant may write to connections set to read-write, and only after you approve each change set. When off, every connection is read-only."],
@@ -45,17 +45,18 @@ export async function render(main, rest) {
   const sub = rest[0] || "ai";
   const page = h("div", { class: "page" });
   main.append(page);
-  const titles = { ai: "Models and accounts", general: "General", privacy: "Privacy and sandbox", keyboard: "Keyboard", org: "Organization" };
+  const titles = { ai: "Models and accounts", general: "General", privacy: "Privacy and sandbox", keyboard: "Keyboard", environments: "Environments", org: "Organization" };
   page.append(pageHead(titles[sub] || "Settings", {
     ai: "The AI the app's chat uses. Columbus's rules are the same whichever AI you use.",
     general: "How the app looks, and about this version.",
     privacy: "What stays on this computer, and where files live.",
     keyboard: "Shortcuts in the main window.",
+    environments: "Python interpreters your assistant's scripts may run in, besides the GIS engine's own, such as an ArcGIS Pro clone. You register and confirm each one; your assistant cannot.",
     org: "The policy in force on this computer, and the switches your organization lets you change. Your assistant cannot change any of these.",
   }[sub]));
   const body = h("div", { class: "pad stack" });
   page.append(h("div", { class: "scroll" }, body));
-  const fn = { ai, general, privacy, keyboard, org }[sub] || ai;
+  const fn = { ai, general, privacy, keyboard, environments, org }[sub] || ai;
   return fn(body);
 }
 
@@ -193,6 +194,144 @@ async function keyboard(body) {
   const tbody = h("tbody", {}, ...rows.map(([k, t]) => h("tr", {}, h("td", { class: "nowrap" }, h("span", { class: "kbd" }, k)), h("td", {}, t))));
   body.append(h("section", { class: "card" }, h("table", { class: "t" }, h("thead", {}, h("tr", {}, h("th", {}, "Keys"), h("th", {}, "Does"))), tbody)),
     h("p", { class: "small muted" }, "Approval cards in your chat are answered with their buttons, which wait a second before they work so a keystroke meant for something else cannot approve a request. Editable shortcuts come later."));
+}
+
+// ---------- Environments ----------
+// Registering, confirming again, removing and approving are confirmed at
+// the keyboard (Touch ID, password or Windows Hello) in the app's Rust
+// code, like a connection; this page cannot skip that.
+async function environments(body) {
+  const error = h("p", { id: "env-error", class: "error-text", role: "alert", hidden: true });
+  const notice = h("p", { id: "env-notice", class: "notice ok", role: "status", hidden: true });
+  const off = h("div", { id: "env-off", class: "notice warn", hidden: true });
+  const list = h("ul", { id: "environments", class: "list", "aria-live": "polite" });
+  const none = h("p", { id: "no-env", class: "pad muted", hidden: true }, "No environments yet. Scripts run in the GIS engine's own Python.");
+  const waiting = h("ul", { id: "env-proposals", class: "list", "aria-live": "polite" });
+  const noneWaiting = h("p", { id: "no-proposals", class: "pad muted small", hidden: true }, "Nothing waiting. When your assistant asks for a new environment (propose_environment), it waits here for you.");
+  const conf = h("p", { id: "env-confirm-note", class: "small muted" });
+  const foot = h("p", { class: "small muted wrap-any" }, "Registrations are kept in ", h("code", { id: "env-dir" }), ".");
+  const add = button("Add environment", "primary", () => openAdd(), { id: "env-add" });
+  body.append(error, notice, off,
+    h("section", { class: "card" }, h("div", { class: "hd" }, h("h2", {}, "Registered"), h("span", { class: "more" }, add)), h("div", { class: "bd flush" }, list, none)),
+    h("section", { class: "card" }, h("div", { class: "hd" }, h("h2", {}, "Asked for by your assistant")), h("div", { class: "bd flush" }, waiting, noneWaiting)),
+    conf, foot);
+  let st = null;
+  const say = (text) => { notice.textContent = text; notice.hidden = false; showError(error, null); };
+  const act = async (btn, label, fn) => {
+    btn.disabled = true;
+    const was = btn.textContent;
+    btn.textContent = label;
+    showError(error, null);
+    notice.hidden = true;
+    try { await fn(); } catch (e) { showError(error, e); } finally { btn.disabled = false; btn.textContent = was; }
+    await refresh();
+  };
+  const draw = () => {
+    $("env-dir").textContent = st.dir;
+    conf.textContent = st.confirm_with === "not available on this system"
+      ? "On this system, environments cannot be registered here (there is no Touch ID or Windows Hello to confirm them): use columbus-mcp env add in a terminal instead."
+      : `Adding, confirming, removing and approving ask for ${st.confirm_with} first. Declining does not.`;
+    off.hidden = st.allow;
+    off.replaceChildren(h("div", {}, h("b", {}, "Environments are off. "), "Your organization's policy (environments.allow) does not allow them, so scripts run only in the GIS engine's Python and none can be added."));
+    add.disabled = !st.allow;
+    list.replaceChildren();
+    none.hidden = st.environments.length > 0;
+    for (const e of st.environments) {
+      const li = el("li", e.status === "ready" ? "conn" : "conn bad");
+      const text = el("div", "text");
+      text.append(h("div", { class: "row wrap" }, el("b", null, e.id), el("span", "where", e.python || "")));
+      const chips = el("div", "chips");
+      chips.append(el("span", `badge ${e.status === "ready" ? "pass" : "warn"}`, e.status === "ready" ? "Ready" : e.status === "changed" ? "Changed: confirm it again" : "Cannot be read"));
+      if (e.trust) chips.append(el("span", e.trust === "trusted" ? "chip rw" : "chip ro", e.trust === "trusted" ? "Trusted (experimental)" : `Governed, level ${e.confinement}`));
+      if (e.python_version) chips.append(el("span", "chip", `Python ${e.python_version}`));
+      text.append(chips);
+      if (e.arcpy_line) text.append(el("span", "where env-arcpy", e.arcpy_line));
+      if (e.trust_line) text.append(el("span", "where", e.trust_line));
+      if (e.reason) text.append(el("span", "where error-text env-reason", `Why: ${e.reason}.`));
+      if (e.description) text.append(el("span", "where", e.description));
+      const acts = h("div", { class: "acts" });
+      if (e.status !== "invalid") {
+        const c = button(e.status === "ready" ? "Confirm again" : "Confirm", e.status === "ready" ? "sm" : "sm primary", () => act(c, "Checking…", async () => {
+          await invoke("settings_env_confirm", { id: e.id });
+          say(`Confirmed ${e.id}. Scripts can run in it again.`);
+        }), { title: "Check the interpreter and its packages again, and confirm it as it is now" });
+        acts.append(c);
+      }
+      const r = button("Remove", "sm danger", () => act(r, "Removing…", async () => say(await invoke("settings_env_remove", { id: e.id }))));
+      acts.append(r);
+      li.append(text, acts);
+      list.append(li);
+    }
+    waiting.replaceChildren();
+    noneWaiting.hidden = st.proposals.length > 0;
+    for (const p of st.proposals) {
+      const li = el("li", "conn");
+      const text = el("div", "text");
+      text.append(h("div", { class: "row wrap" }, el("b", null, p.id), el("span", "where", `Python ${p.python_version || "(the engine's own version)"}`)));
+      const chips = el("div", "chips");
+      for (const pkg of p.packages) chips.append(el("span", "chip mono", pkg));
+      text.append(chips, el("span", "where", `Why: ${p.reason}`));
+      text.append(el("span", "where", `Columbus creates it with its own uv from ${st.index_hosts.join(", ")} only, wheels only, and registers it governed.`));
+      const a = button("Approve", "sm primary", () => act(a, "Creating…", async () => {
+        await invoke("settings_env_approve", { id: p.id, fingerprint: p.fingerprint });
+        say(`Created and registered ${p.id}.`);
+      }), { disabled: !st.allow });
+      const d = button("Decline", "sm", () => act(d, "Declining…", async () => {
+        await invoke("settings_env_decline", { id: p.id });
+        say(`Declined ${p.id}.`);
+      }));
+      li.append(text, h("div", { class: "acts" }, a, d));
+      waiting.append(li);
+    }
+  };
+  const refresh = async () => {
+    try { st = await invoke("settings_environments"); draw(); } catch (e) { showError(error, e); }
+  };
+
+  const openAdd = () => {
+    const inp = (name, attrs = {}) => h("input", { name, autocomplete: "off", spellcheck: "false", ...attrs });
+    const trust = h("select", { name: "trust" }, h("option", { value: "governed" }, "Governed: confined, extracts only"),
+      h("option", { value: "trusted", disabled: !st.allow_trusted }, st.allow_trusted ? "Trusted (experimental): unconfined, each run approved" : "Trusted (your organization does not allow it)"));
+    const confinement = h("select", { name: "confinement" }, h("option", { value: "A" }, "A: no network"),
+      h("option", { value: "B", disabled: !st.allow_network }, st.allow_network ? "B: may reach the internet" : "B (your organization does not allow it)"));
+    const browse = h("button", { type: "button", class: "btn" }, "Choose file…");
+    const err = h("p", { id: "env-form-error", class: "error-text", role: "alert", hidden: true });
+    const form = h("form", { id: "env-form", class: "stack" },
+      h("div", { class: "grid2" },
+        h("label", { class: "field" }, "Id", inp("env_id", { required: true, maxlength: "40", placeholder: "e.g. pro-clone" }), h("small", {}, "Lowercase letters, digits and -.")),
+        h("label", { class: "field" }, "Trust", trust),
+        h("label", { class: "field wide" }, "Python interpreter", h("span", { class: "pick" }, inp("env_python", { required: true }), browse), h("small", {}, "The full path to python.exe (Windows) or bin/python, e.g. an ArcGIS Pro clone's.")),
+        h("label", { class: "field" }, "Confinement", confinement),
+        h("label", { class: "field" }, "Description", inp("env_description"))),
+      err);
+    const save = h("button", { type: "submit", id: "env-save", class: "btn primary", form: "env-form" }, "Add");
+    const cancel = h("button", { type: "button", class: "btn" }, "Cancel");
+    const d = openDialog("Add environment", form, [h("span", { class: "spacer" }), cancel, save], "Add environment");
+    d.id = "env-dialog";
+    cancel.addEventListener("click", () => d.close());
+    browse.addEventListener("click", async () => {
+      try { const p = await invoke("settings_pick", { kind: "python" }); if (p) form.env_python.value = p; } catch (e) { showError(err, e); }
+    });
+    form.addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      save.disabled = true;
+      save.textContent = "Checking…";
+      showError(err, null);
+      try {
+        const e = await invoke("settings_env_add", { id: form.env_id.value, python: form.env_python.value, trust: trust.value, confinement: confinement.value, description: form.env_description.value || null });
+        d.close();
+        say(`Registered ${e.id}. Your assistant's scripts can run in it.`);
+        await refresh();
+      } catch (e) {
+        showError(err, e);
+      } finally {
+        save.disabled = false;
+        save.textContent = "Add";
+      }
+    });
+    form.env_id.focus();
+  };
+  await refresh();
 }
 
 // ---------- Organization ----------

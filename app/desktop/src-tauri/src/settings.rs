@@ -19,7 +19,7 @@
 use std::path::{Path, PathBuf};
 
 use columbus_shared::paths;
-use columbus_shared::policy::{Connection, DatasetRules, Mode, OrgPolicy};
+use columbus_shared::policy::{ArcgisAuth, ArcgisOAuth, Connection, DatasetRules, Mode, OrgPolicy};
 use columbus_shared::tools;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -38,6 +38,8 @@ const KINDS: &[&str] = &[
     "postgis",
     "sqlserver",
     "oracle",
+    "files",
+    "arcgis",
 ];
 
 #[derive(Serialize)]
@@ -113,6 +115,29 @@ pub struct ConnForm {
     /// A new password; None keeps the stored one.
     #[serde(default)]
     password: Option<String>,
+    /// `files` (F-2): read subfolders too.
+    #[serde(default)]
+    recursive: bool,
+    /// `files` (F-2): `EPSG:<code>` for CSV and Excel geometry.
+    #[serde(default)]
+    crs: Option<String>,
+    /// `files` (F-2): the coordinate columns, both or neither.
+    #[serde(default)]
+    x: Option<String>,
+    #[serde(default)]
+    y: Option<String>,
+    /// `arcgis` (F-3): the service or layer address.
+    #[serde(default)]
+    url: Option<String>,
+    /// `arcgis` (F-3): `none` (or empty) or `oauth`.
+    #[serde(default)]
+    auth: Option<String>,
+    #[serde(default)]
+    portal: Option<String>,
+    #[serde(default)]
+    client_id: Option<String>,
+    #[serde(default)]
+    page_size: Option<u64>,
 }
 
 fn id_ok(id: &str) -> bool {
@@ -678,10 +703,14 @@ fn build(form: &ConnForm, old: Option<&Connection>) -> Result<Connection, String
     if matches!(form.kind.as_str(), "shapefile" | "filegdb") && mode != Mode::Read {
         return Err("shapefiles and file geodatabases are read only in Columbus".into());
     }
+    if matches!(form.kind.as_str(), "files" | "arcgis") && mode != Mode::Read {
+        return Err("folders of files and ArcGIS services are read only in Columbus".into());
+    }
     let file_kind = matches!(
         form.kind.as_str(),
-        "gpkg" | "sqlite" | "shapefile" | "filegdb" | "rasters"
+        "gpkg" | "sqlite" | "shapefile" | "filegdb" | "rasters" | "files"
     );
+    let arcgis = form.kind == "arcgis";
     let path = trimmed(&form.path);
     if file_kind {
         let p = path.as_deref().ok_or("choose the file or folder")?;
@@ -711,7 +740,14 @@ fn build(form: &ConnForm, old: Option<&Connection>) -> Result<Connection, String
                 return Err(format!("{p} is not a folder of shapefiles or a .shp file"))
             }
             "gpkg" | "sqlite" if !pb.is_file() => return Err(format!("{p} is not a file")),
+            "files" if !(pb.is_dir() || pb.is_file()) => {
+                return Err(format!("{p} is not a folder or a file"))
+            }
             _ => {}
+        }
+    } else if arcgis {
+        if trimmed(&form.url).is_none() {
+            return Err("give the service's address (ending in FeatureServer or MapServer, or a layer number)".into());
         }
     } else if form.kind == "oracle" {
         if trimmed(&form.dsn).is_none() && trimmed(&form.host).is_none() {
@@ -741,15 +777,32 @@ fn build(form: &ConnForm, old: Option<&Connection>) -> Result<Connection, String
         deny,
     };
     datasets.permits("").map_err(|e| e.to_string())?;
-    Ok(Connection {
+    let files = form.kind == "files";
+    let db = !file_kind && !arcgis;
+    let auth = if !arcgis {
+        None
+    } else {
+        match trimmed(&form.auth).as_deref() {
+            None | Some("none") => None,
+            Some("oauth") => Some(ArcgisAuth::OAuth(ArcgisOAuth {
+                kind: "oauth".into(),
+                portal: trimmed(&form.portal)
+                    .ok_or("give the portal's address for signing in, e.g. https://www.arcgis.com")?,
+                client_id: trimmed(&form.client_id)
+                    .ok_or("give your organization's ArcGIS app client id (your ArcGIS administrator has it)")?,
+            })),
+            Some(other) => return Err(format!("sign-in must be none or oauth, not {other:?}")),
+        }
+    };
+    let conn = Connection {
         id: form.id.clone(),
         kind: form.kind.clone(),
-        dsn: trimmed(&form.dsn).filter(|_| !file_kind),
+        dsn: trimmed(&form.dsn).filter(|_| db),
         path: path.filter(|_| file_kind),
-        host: trimmed(&form.host).filter(|_| !file_kind),
-        port: form.port.filter(|_| !file_kind),
-        database: trimmed(&form.database).filter(|_| !file_kind),
-        user: trimmed(&form.user).filter(|_| !file_kind),
+        host: trimmed(&form.host).filter(|_| db),
+        port: form.port.filter(|_| db),
+        database: trimmed(&form.database).filter(|_| db),
+        user: trimmed(&form.user).filter(|_| db),
         sslmode: trimmed(&form.sslmode).filter(|_| form.kind == "postgis"),
         search_path: trimmed(&form.search_path).filter(|_| form.kind == "postgis"),
         mode,
@@ -758,16 +811,20 @@ fn build(form: &ConnForm, old: Option<&Connection>) -> Result<Connection, String
         limits: old.map(|o| o.limits).unwrap_or_default(),
         expires: old.and_then(|o| o.expires),
         description: trimmed(&form.description),
-        // The files settings (F-2) aren't on this form yet.
-        recursive: None,
-        crs: None,
-        x: None,
-        y: None,
-        // The arcgis settings (F-3) come to this form with T-12.
-        url: None,
-        auth: None,
-        page_size: None,
-    })
+        // The files settings (F-2), kept when editing (T-12).
+        recursive: (files && form.recursive).then_some(true),
+        crs: trimmed(&form.crs).filter(|_| files),
+        x: trimmed(&form.x).filter(|_| files),
+        y: trimmed(&form.y).filter(|_| files),
+        // The arcgis settings (F-3).
+        url: trimmed(&form.url).filter(|_| arcgis),
+        auth,
+        page_size: form.page_size.filter(|_| arcgis),
+    };
+    // The server's own checks (F-2, F-3), in the form's words.
+    conn.validate(Path::new("the form"))
+        .map_err(|e| e.to_string().replace("the form: ", ""))?;
+    Ok(conn)
 }
 
 /// Whether going from `old` to `new` gives access to anything `old` did
@@ -815,7 +872,7 @@ pub(crate) fn loosens(old: Option<&Connection>, new: &Connection) -> bool {
 }
 
 /// One change at a time, across the window's commands.
-static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
+pub(crate) static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Write a file whole (a fresh temporary file beside it, flushed to disk),
 /// then move it into place, keeping the old file's permissions. A link is
@@ -893,6 +950,7 @@ fn widening(old: Option<&Connection>, new: &Connection, password: bool) -> Strin
             })
         })
         .or_else(|| new.dsn.clone())
+        .or_else(|| new.url.clone())
         .unwrap_or_default();
     let mut parts: Vec<String> = Vec::new();
     match old {
@@ -1047,7 +1105,13 @@ fn save_connection(form: ConnForm) -> Result<String, String> {
     }
     let old = existing.and_then(|(_, c)| c.as_ref().ok());
     let new = build(&form, old)?;
-    let password = form.password.as_deref().filter(|p| !p.is_empty());
+    // Folders of files and ArcGIS services use no password (an ArcGIS
+    // sign-in is kept under arcgis:<id>, by Sign in).
+    let uses_password = !matches!(new.kind.as_str(), "files" | "arcgis");
+    let password = form
+        .password
+        .as_deref()
+        .filter(|p| !p.is_empty() && uses_password);
     // A password left under this name (by an earlier connection, the
     // command line, or a connected server's key) would go to the new place.
     if old.is_none() && manifest_credentials().contains(&new.id.to_lowercase()) {
@@ -1056,7 +1120,7 @@ fn save_connection(form: ConnForm) -> Result<String, String> {
             new.id
         ));
     }
-    if old.is_none() && password.is_none() && secret_may_exist(&new.id) {
+    if old.is_none() && uses_password && password.is_none() && secret_may_exist(&new.id) {
         return Err(format!(
             "a password named {:?} is already stored on this computer (from an earlier connection or a connected server). Enter this connection's password, or choose another name",
             new.id
@@ -1136,6 +1200,200 @@ pub async fn settings_delete_connection(id: String, forget_password: bool) -> Re
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// One ArcGIS sign-in from the app at a time.
+static SIGNING_IN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// How long the app waits for a sign-in: Columbus's own wait for the
+/// browser (5 minutes), the code exchange (30 s) and a margin.
+const SIGNIN_LIMIT: std::time::Duration = std::time::Duration::from_secs(420);
+
+/// Sign in to an `arcgis` connection with `auth: oauth` (REQ-11, T-11):
+/// after the person confirms at the keyboard, Columbus's own server runs
+/// `columbus-mcp arcgis signin <id>` (PKCE, a one-shot 127.0.0.1 redirect)
+/// and prints the portal's sign-in address, which the app opens in the
+/// person's browser. The tokens go from that program to the credential
+/// store; the app never sees them. Returns the outcome in plain words.
+#[tauri::command]
+pub async fn settings_arcgis_signin(app: tauri::AppHandle, id: String) -> Result<String, String> {
+    let (server, engine) = crate::registry::program(&app)?;
+    tauri::async_runtime::spawn_blocking(move || arcgis_signin(&server, engine.as_deref(), &id))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// The portal the saved `arcgis` connection `id` signs in at.
+fn signin_portal(id: &str) -> Result<String, String> {
+    let conn = scan(&paths::connections_dir())
+        .into_iter()
+        .find_map(|(_, c)| c.ok().filter(|c| c.id == id))
+        .ok_or_else(|| format!("there is no connection {id:?}; save it first"))?;
+    if !columbus_shared::policy::is_arcgis(&conn.kind) {
+        return Err(format!(
+            "{id} is not an ArcGIS connection, so it has no ArcGIS sign-in"
+        ));
+    }
+    conn.auth
+        .as_ref()
+        .and_then(ArcgisAuth::oauth)
+        .map(|o| o.portal.trim().trim_end_matches('/').to_string())
+        .ok_or_else(|| {
+            format!("{id} is a public ArcGIS service (sign-in: none); it needs no sign-in")
+        })
+}
+
+/// Whether `url` is the sign-in page of `portal`: under it, https (or, in
+/// test builds reaching a local fake portal, http to this computer).
+fn signin_url_ok(url: &str, portal: &str) -> bool {
+    let https = url.starts_with("https://");
+    let local = columbus_shared::policy::arcgis_test_loopback()
+        && (url.starts_with("http://127.0.0.1:") || url.starts_with("http://localhost:"));
+    (https || local)
+        && url.starts_with(&format!("{portal}/"))
+        && url.contains("/oauth2/authorize?")
+        && !url.chars().any(|c| c.is_whitespace() || c.is_control())
+}
+
+fn arcgis_signin(server: &Path, engine: Option<&Path>, id: &str) -> Result<String, String> {
+    use std::io::{BufRead, Read};
+    use std::sync::atomic::Ordering;
+    let portal = signin_portal(id)?;
+    if SIGNING_IN.swap(true, Ordering::SeqCst) {
+        return Err("A sign-in is already waiting in your browser: finish it there, or wait a few minutes for it to end.".into());
+    }
+    struct Done;
+    impl Drop for Done {
+        fn drop(&mut self) {
+            SIGNING_IN.store(false, Ordering::SeqCst);
+        }
+    }
+    let _done = Done;
+    confirm(&format!(
+        "sign in to ArcGIS at {portal} for {id}, so your assistant can read the layers shared with you there"
+    ))?;
+    let mut cmd = std::process::Command::new(server);
+    cmd.args(["arcgis", "signin", id])
+        .env("COLUMBUS_SIGNIN_BROWSER", "print")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    if let Some(e) = engine {
+        cmd.env("COLUMBUS_PYTHON", e);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000);
+    }
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("{}: {e}", server.display()))?;
+    let out = child.stdout.take().expect("piped");
+    let mut err = child.stderr.take().expect("piped");
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        for line in std::io::BufReader::new(out).lines().map_while(Result::ok) {
+            if tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    let (err_tx, err_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut s = String::new();
+        let _ = (&mut err).take(64 << 10).read_to_string(&mut s);
+        let _ = err_tx.send(s);
+    });
+    let start = std::time::Instant::now();
+    let mut lines = vec![];
+    let mut opened = false;
+    let status = loop {
+        while let Ok(line) = rx.try_recv() {
+            if let Some(url) = line.strip_prefix("open: ") {
+                let url = url.trim();
+                if opened || !signin_url_ok(url, &portal) {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err("Columbus gave an unexpected sign-in address, so nothing was opened. Sign in from a terminal instead: columbus-mcp arcgis signin ".to_string() + id);
+                }
+                opened = true;
+                if let Err(e) = open_browser(url) {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!("Your browser could not be opened ({e}). Sign in from a terminal instead: columbus-mcp arcgis signin {id}"));
+                }
+            } else {
+                lines.push(line);
+            }
+        }
+        match child.try_wait() {
+            Ok(Some(st)) => break st,
+            Ok(None) if start.elapsed() < SIGNIN_LIMIT => {
+                std::thread::sleep(std::time::Duration::from_millis(100))
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("The sign-in did not finish in time. Press Sign in to try again, or sign in from a terminal with: columbus-mcp arcgis signin {id} --paste-code"));
+            }
+        }
+    };
+    // What is left of its output.
+    while let Ok(line) = rx.recv_timeout(std::time::Duration::from_secs(2)) {
+        if !line.starts_with("open: ") {
+            lines.push(line);
+        }
+    }
+    let stderr = err_rx
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .unwrap_or_default();
+    if status.success() {
+        return Ok(lines
+            .iter()
+            .rev()
+            .find(|l| l.starts_with("Signed in"))
+            .cloned()
+            .unwrap_or_else(|| format!("Signed in for {id}.")));
+    }
+    let why = stderr
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .map(|l| l.strip_prefix("Error: ").unwrap_or(l).to_string())
+        .unwrap_or_else(|| "Columbus did not say why".into());
+    if why.contains("no code was entered") {
+        return Err(format!("The browser did not come back to Columbus. Press Sign in to try again, or sign in from a terminal with: columbus-mcp arcgis signin {id} --paste-code"));
+    }
+    Err(format!("Not signed in: {why}"))
+}
+
+/// Open `url` in the person's browser.
+fn open_browser(url: &str) -> std::io::Result<()> {
+    use std::process::{Command, Stdio};
+    let mut cmd = if cfg!(windows) {
+        let root = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
+        let mut c = Command::new(Path::new(&root).join("System32").join("rundll32.exe"));
+        c.arg("url.dll,FileProtocolHandler").arg(url);
+        c
+    } else if cfg!(target_os = "macos") {
+        let mut c = Command::new("/usr/bin/open");
+        c.arg(url);
+        c
+    } else {
+        let mut c = Command::new("xdg-open");
+        c.arg(url);
+        c
+    };
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
 }
 
 /// Turn the organization's edit or script switch on or off. On is confirmed
@@ -1365,6 +1623,14 @@ pub async fn settings_pick(app: tauri::AppHandle, kind: String) -> Result<Option
             .set_title("Choose a SQLite database")
             .add_filter("SQLite", &["sqlite", "db", "sqlite3"])
             .blocking_pick_file(),
+        "files" => d
+            .set_title(
+                "Choose the folder of files (CSV, Excel, GeoJSON, KML, GeoParquet, FlatGeobuf)",
+            )
+            .blocking_pick_folder(),
+        "python" => d
+            .set_title("Choose the Python interpreter (python.exe, or bin/python)")
+            .blocking_pick_file(),
         _ => return Err("nothing to pick for this type".into()),
     };
     Ok(picked
@@ -1525,6 +1791,92 @@ mod more_tests {
             Some("owner_name")
         );
         assert_eq!(filter_uses_hidden("district = 14", &hidden), None);
+    }
+
+    fn form(json: Value) -> ConnForm {
+        serde_json::from_value(json).unwrap()
+    }
+
+    #[test]
+    fn files_and_arcgis_forms_build_their_settings() {
+        let dir = std::env::temp_dir();
+        let f = build(
+            &form(json!({"id": "drops", "kind": "files", "path": dir.display().to_string(), "mode": "read",
+                         "recursive": true, "crs": " EPSG:3081 ", "x": "EASTING", "y": "NORTHING",
+                         "url": "https://ignored.example/FeatureServer", "host": "ignored"})),
+            None,
+        )
+        .unwrap();
+        assert_eq!(f.recursive, Some(true));
+        assert_eq!(f.crs.as_deref(), Some("EPSG:3081"));
+        assert_eq!(
+            (f.x.as_deref(), f.y.as_deref()),
+            (Some("EASTING"), Some("NORTHING"))
+        );
+        assert!(f.url.is_none() && f.host.is_none(), "{f:?}");
+        // Checked as the server checks: x and y together, an EPSG code.
+        let e = build(&form(json!({"id": "d", "kind": "files", "path": dir.display().to_string(), "mode": "read", "x": "E"})), None).unwrap_err();
+        assert!(e.contains("give both or neither"), "{e}");
+        let e = build(&form(json!({"id": "d", "kind": "files", "path": dir.display().to_string(), "mode": "read", "crs": "4326"})), None).unwrap_err();
+        assert!(e.contains("EPSG code"), "{e}");
+        let e = build(&form(json!({"id": "d", "kind": "files", "path": dir.display().to_string(), "mode": "read-write"})), None).unwrap_err();
+        assert!(e.contains("read only"), "{e}");
+
+        let public = build(
+            &form(json!({"id": "assets", "kind": "arcgis", "mode": "read", "auth": "none",
+                         "url": "https://services.arcgis.com/abc/arcgis/rest/services/Roads/FeatureServer",
+                         "path": "/ignored", "portal": "https://www.arcgis.com", "client_id": "Ignored1", "page_size": 500})),
+            None,
+        )
+        .unwrap();
+        assert!(public.auth.is_none() && public.path.is_none() && public.recursive.is_none());
+        assert_eq!(public.page_size, Some(500));
+        let signed = build(
+            &form(json!({"id": "secure", "kind": "arcgis", "mode": "read", "auth": "oauth",
+                         "url": "https://services.arcgis.com/abc/arcgis/rest/services/Roads/FeatureServer/3",
+                         "portal": "https://www.arcgis.com", "client_id": "AbC123"})),
+            None,
+        )
+        .unwrap();
+        let o = signed.auth.as_ref().and_then(ArcgisAuth::oauth).unwrap();
+        assert_eq!(
+            (o.kind.as_str(), o.portal.as_str(), o.client_id.as_str()),
+            ("oauth", "https://www.arcgis.com", "AbC123")
+        );
+        // A changed portal is a loosening: the person confirms it.
+        let mut moved = signed.clone();
+        moved.auth = Some(ArcgisAuth::OAuth(ArcgisOAuth {
+            portal: "https://gis.example.org/portal".into(),
+            ..o.clone()
+        }));
+        assert!(loosens(Some(&signed), &moved));
+        let e = build(&form(json!({"id": "s", "kind": "arcgis", "mode": "read", "auth": "oauth", "url": "https://services.arcgis.com/abc/arcgis/rest/services/Roads/FeatureServer"})), None).unwrap_err();
+        assert!(e.contains("portal"), "{e}");
+        let e = build(&form(json!({"id": "s", "kind": "arcgis", "mode": "read", "url": "http://services.example.com/arcgis/rest/services/Roads/FeatureServer"})), None).unwrap_err();
+        assert!(e.contains("https"), "{e}");
+    }
+
+    #[test]
+    fn only_the_portals_sign_in_page_is_opened() {
+        let p = "https://www.arcgis.com";
+        assert!(signin_url_ok(
+            "https://www.arcgis.com/sharing/rest/oauth2/authorize?client_id=a&state=b",
+            p
+        ));
+        assert!(!signin_url_ok(
+            "https://evil.example/sharing/rest/oauth2/authorize?x=1",
+            p
+        ));
+        assert!(!signin_url_ok(
+            "https://www.arcgis.com.evil.example/sharing/rest/oauth2/authorize?x=1",
+            p
+        ));
+        assert!(!signin_url_ok("file:///etc/passwd", p));
+        assert!(!signin_url_ok("https://www.arcgis.com/home/index.html", p));
+        assert!(!signin_url_ok(
+            "https://www.arcgis.com/sharing/rest/oauth2/authorize?a=b c",
+            p
+        ));
     }
 
     #[test]

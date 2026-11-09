@@ -24,6 +24,8 @@
 //!   `FAKE_PORTAL_SERVERS` (comma-separated URLs; `{port}` is this port);
 //! * `/arcgis/rest/services/Secure/FeatureServer`: one point layer,
 //!   `Assets`, that answers only with a valid token (else code 499 or 498);
+//! * `/arcgis/rest/services/Public/FeatureServer`: the same layer, public
+//!   (no token needed);
 //! * `/test/log` (every request but `/test/*`: method, Host, target and the
 //!   two token headers), `/test/expire-access` and `/test/lapse` (forget
 //!   every access or refresh token).
@@ -472,6 +474,22 @@ async fn secure_service(
     if let Some(r) = arcgis_check(&s, &headers, &q) {
         return r;
     }
+    service_answer(&rest, &q)
+}
+
+/// The same layer, public: answers without a token (the app's Test of an
+/// `auth: none` connection, T-12).
+async fn public_service(
+    axum::extract::Path(rest): axum::extract::Path<String>,
+    RawQuery(q): RawQuery,
+    RawForm(f): RawForm,
+) -> Response {
+    let mut q = parse_pairs(&q.unwrap_or_default());
+    q.extend(parse_pairs(&String::from_utf8_lossy(&f)));
+    service_answer(&rest, &q)
+}
+
+fn service_answer(rest: &str, q: &HashMap<String, String>) -> Response {
     match rest.trim_end_matches('/') {
         "layers" => Json(json!({"layers": [assets_layer()], "tables": []})).into_response(),
         "0" => Json(assets_layer()).into_response(),
@@ -579,6 +597,10 @@ async fn main() {
         .route(
             "/arcgis/rest/services/Secure/FeatureServer/{*rest}",
             get(secure_service).post(secure_service),
+        )
+        .route(
+            "/arcgis/rest/services/Public/FeatureServer/{*rest}",
+            get(public_service).post(public_service),
         )
         .route("/test/log", get(test_log))
         .route("/test/expire-access", post(test_expire_access))

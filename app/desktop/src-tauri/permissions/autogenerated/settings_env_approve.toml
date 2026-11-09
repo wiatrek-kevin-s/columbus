@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-settings-env-approve"
+description = "Enables the settings_env_approve command without any pre-configured scope."
+commands.allow = ["settings_env_approve"]
+
+[[permission]]
+identifier = "deny-settings-env-approve"
+description = "Denies the settings_env_approve command without any pre-configured scope."
+commands.deny = ["settings_env_approve"]

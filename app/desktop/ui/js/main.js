@@ -23,7 +23,7 @@ const RAIL = [
 ];
 const SUBS = {
   activity: [["approvals", "Approvals"], ["audit", "Audit log"], ["exports", "Exports"]],
-  settings: [["ai", "Models and accounts"], ["general", "General"], ["privacy", "Privacy and sandbox"], ["keyboard", "Keyboard"], ["org", "Organization"]],
+  settings: [["ai", "Models and accounts"], ["general", "General"], ["privacy", "Privacy and sandbox"], ["keyboard", "Keyboard"], ["environments", "Environments"], ["org", "Organization"]],
 };
 const PAGES = {
   home: home.render,

@@ -159,7 +159,7 @@ jobs:
           ( cd app/ui && npm ci && npm run build )
           cargo build -p columbus-mcp --locked
           dbus-run-session -- xvfb-run -a python app/desktop/e2e/deeplink.py target/debug/columbus-mcp app/desktop/src-tauri/target/debug/columbus-desktop
-      - name: The main window (chat, connections, tools, workflows, approvals, audit), driven through WebDriver (Linux)
+      - name: The main window (chat, connections, sign-in, environments, tools, workflows, approvals, audit), driven through WebDriver (Linux)
         if: runner.os == 'Linux'
         run: |
           # The package was renamed in newer Ubuntu releases.
@@ -170,6 +170,9 @@ jobs:
           dbus-run-session -- xvfb-run -a -s "-screen 0 1400x900x24" python app/desktop/e2e/chat.py target/debug/columbus-mcp app/desktop/src-tauri/target/debug/columbus-desktop
           python -m pip install pyyaml
           dbus-run-session -- xvfb-run -a -s "-screen 0 1400x900x24" python app/desktop/e2e/settings.py target/debug/columbus-mcp app/desktop/src-tauri/target/debug/columbus-desktop
+          # Files and ArcGIS connections, ArcGIS sign-in against the fake portal, Settings › Environments (T-12).
+          cargo build -p columbus-mcp --example fake_oauth_server --locked
+          dbus-run-session -- xvfb-run -a -s "-screen 0 1400x900x24" python app/desktop/e2e/sources.py target/debug/columbus-mcp app/desktop/src-tauri/target/debug/columbus-desktop
           dbus-run-session -- xvfb-run -a -s "-screen 0 1400x900x24" python app/desktop/e2e/shell.py target/debug/columbus-mcp app/desktop/src-tauri/target/debug/columbus-desktop
           dbus-run-session -- xvfb-run -a -s "-screen 0 1400x900x24" python app/desktop/e2e/workflows.py target/debug/columbus-mcp app/desktop/src-tauri/target/debug/columbus-desktop
           dbus-run-session -- xvfb-run -a -s "-screen 0 1400x900x24" python app/desktop/e2e/projects.py target/debug/columbus-mcp app/desktop/src-tauri/target/debug/columbus-desktop
