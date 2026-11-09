@@ -181,6 +181,15 @@ def main():
         # test's stand-in for the browser is this file); the button asks
         # again, which the session limits to one page every 30 s.
         link = wait_file(root / "launch.txt")
+        # The page polls every few seconds; a poll that changes nothing the
+        # person sees keeps the very button they are about to click.
+        held = d.find_element(By.XPATH, "//*[@id='approvals']//button[normalize-space()='Decide in browser']")
+        time.sleep(6)  # past one inbox poll (5 s) and one session poll (4 s)
+        try:
+            still = d.execute_script("return arguments[0].isConnected", held)
+        except StaleElementReferenceException:
+            still = False
+        assert still, "a poll redrew the button under the person's click"
         click(d, By.XPATH, "//*[@id='approvals']//button[normalize-space()='Decide in browser']")
         wait.until(lambda drv: "Decide there" in text(drv, "#toast") or "Nothing is waiting" in text(drv, "#toast"))
         assert link.startswith(f"http://127.0.0.1:{port}/#t="), f"the session opened its browser page: {link}"

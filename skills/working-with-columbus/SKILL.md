@@ -61,7 +61,12 @@ Call `whoami` once, first, with no arguments. Read and keep:
   `describe_connection` shows the ones in force for it.
 - `connections[]`: each `id`, `type`, `mode` (`read` or `read-write`), `status` (`ok` or why
   not) and `engine_ready`. A connection with `engine_ready: false` (`sde` through ArcPy
-  today) passes checks but cannot be read yet.
+  today) passes checks but cannot be read yet. `files` (folders of CSV, Excel, GeoJSON...)
+  and `arcgis` (ArcGIS Online/Portal services; `signed_in` says whether a sign-in is stored)
+  are read-only (section 15).
+- `environments` (when `policy.environments_allowed`): Python environments for `run_python`,
+  each with `status`, `trust` and an `arcpy` line; `experimental: true` marks trusted and
+  arcpy ones. `web_layers`: titles of the person's map layers, which you can't use.
 - `always_on_rules`: the context pack's rules. Follow them for the whole session. Example
   from the sample pack: "Leave retired segments (STATUS = 'R') out of current-state work."
 - `project`, when present: the person's project this session works in. Follow its
@@ -451,6 +456,18 @@ with the whole `workflow.yaml`. Read
 or installed personal tools, every connection is listed in its scope, results go to an export
 folder, and a run never waits for approval. The person approves it in the Columbus app
 (Workflows); you cannot approve, run or schedule it. Needs `workflows_allowed` in `whoami`.
+
+### 15. Files, ArcGIS, environments and web layers
+
+Read [references/sources-and-environments.md](references/sources-and-environments.md) before
+using any of them. In short: `files` datasets are named by their path (`2026/crashes`,
+`inventory/2026`) and list what they skip; `arcgis` datasets take `query_features` but refuse
+`sql_select` (`query.unsupported`), and a sign-in is the person's (point them to **Sign in** or
+`columbus-mcp arcgis signin <id>`; never ask for a password or code). `run_python` takes
+`environment: <id>` for a `ready` environment; trusted ones (experimental) run unconfined, every
+run approved; ask for a new one with `propose_environment`. `vector_op` `filter` removes rows
+without a script or approval. Web map layers are the person's display only: you can't see,
+add or turn them on. Exports add `gdb` and `tif`.
 
 ### Worked session (illustrative values)
 

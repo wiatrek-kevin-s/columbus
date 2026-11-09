@@ -1,0 +1,29 @@
+# A registered Python environment (F-4): environments/<id>.yaml, beside the
+# connections folder. You don't write this file by hand: register one at
+# the keyboard with
+#   columbus-mcp env add pro --python <path to python.exe> [--trust governed|trusted]
+# or Settings > Environments > Add environment in the app. Columbus runs a
+# probe and writes the probe and confirmed_at itself; its confirmation is
+# kept apart (environments/.confirmed.json), so editing this file marks the
+# environment "changed" and it stops running until confirmed again
+# (columbus-mcp env confirm pro). Policy must say environments.allow: true
+# (and allow_trusted: true for a trusted one). This example shows the shape.
+#
+# trust: governed (the default) runs scripts confined, extracts only, at
+# confinement A (no network) or B (network; policy allow_network). trusted
+# (experimental) runs scripts unconfined as the person, every run approved;
+# arcpy is expected to need it. Personal tools and workflow steps use
+# governed level-A environments only.
+id: pro
+python: C:\Users\analyst\AppData\Local\ESRI\conda\envs\arcgispro-py3-clone\python.exe
+trust: governed
+confinement: A
+created_by: person
+description: Pro 3.5 clone with whitebox
+probe:
+  python_version: "3.11.10"
+  packages_sha256: 3f1c0a9e5b7d2c4e6f8a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e
+  arcpy: true
+  licence: ArcInfo
+  probed_at: "2026-11-12T10:03:41-06:00"
+confirmed_at: "2026-11-12T10:04:00-06:00"

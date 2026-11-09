@@ -53,7 +53,7 @@ jobs:
           Copy-Item packaging\engine\setup-engine.ps1, packaging\engine\pixi.toml "$out\engine"
           Copy-Item -Recurse app\ui\dist "$out\ui"
           Copy-Item -Recurse skills, docs, examples $out
-          Copy-Item README.md, LICENSE $out
+          Copy-Item README.md, LICENSE, THIRD-PARTY-NOTICES.md $out
           python packaging\mcpb\make_manifest.py windows $version "$out\manifest.json"
           if ($LASTEXITCODE -ne 0) { exit 1 }
           Compress-Archive -Path "$out\*" -DestinationPath "dist\columbus-$version-windows-x64.zip"
@@ -102,7 +102,7 @@ jobs:
           cp packaging/engine/setup-engine.sh packaging/engine/pixi.toml "$out/engine/"
           chmod +x "$out/engine/setup-engine.sh"
           cp -R app/ui/dist "$out/ui"
-          cp -R skills docs examples README.md LICENSE "$out/"
+          cp -R skills docs examples README.md LICENSE THIRD-PARTY-NOTICES.md "$out/"
           python3 packaging/mcpb/make_manifest.py macos "$version" "$out/manifest.json"
           (cd "$out" && zip -qry "../columbus-$version-macos-arm64.zip" .)
           cp "dist/columbus-$version-macos-arm64.zip" "dist/columbus-$version-macos-arm64.mcpb"
