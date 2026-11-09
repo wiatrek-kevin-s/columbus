@@ -22,11 +22,11 @@ jobs:
   windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
       - name: Build the companion window
@@ -61,7 +61,7 @@ jobs:
       - name: Smoke test
         shell: pwsh
         run: dist\columbus\columbus-mcp.exe --version
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: columbus-windows
           path: |
@@ -74,11 +74,11 @@ jobs:
     # means for opening them.
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
       - name: Build the companion window
@@ -113,7 +113,7 @@ jobs:
           # The engine setup on a copy, so the release does not ship a venv.
           cp -R dist/columbus "$RUNNER_TEMP/try"
           sh "$RUNNER_TEMP/try/engine/setup-engine.sh" --python "$(command -v python3.12 || command -v python3)"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: columbus-macos
           path: |
@@ -135,12 +135,12 @@ jobs:
             name: windows-x64
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
       - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: ${{ matrix.name == 'macos-arm64' && 'columbus-macos' || 'columbus-windows' }}
           path: server-dl
@@ -214,7 +214,7 @@ jobs:
             cp "$b"/nsis/*-setup.exe "dist/columbus-app-$version-windows-x64-setup.exe"
           fi
           ls -l dist
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: columbus-app-${{ matrix.name }}
           path: dist/*
@@ -224,8 +224,8 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/') || inputs.tag != ''
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
