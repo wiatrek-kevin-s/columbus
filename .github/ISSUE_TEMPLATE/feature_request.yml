@@ -1,0 +1,36 @@
+name: Feature request
+description: An idea that would make Columbus more useful.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: The GIS task or job, in your own words. What gets in the way today?
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would help
+      description: How you'd like it to work. Rough is fine.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Columbus version you use
+      placeholder: "0.14.0"
+  - type: dropdown
+    id: os
+    attributes:
+      label: System
+      options:
+        - Windows
+        - macOS
+        - Linux (server)
+  - type: textarea
+    id: rules
+    attributes:
+      label: Your organization's rules (optional)
+      description: Would it need a rule to loosen, or new access? Say so here; Columbus never loosens a rule by default.

@@ -1,0 +1,9 @@
+# A secured ArcGIS map service drawn with the sign-in of an arcgis
+# connection (auth_from). The token is added by Columbus, only for hosts
+# that connection's portal vouches for; it never reaches the map page.
+id: row-service
+title: ROW service
+kind: arcgis-map
+url: https://services.arcgis.com/abc/arcgis/rest/services/ROW_Owned/MapServer
+layer: "0"
+auth_from: row-polygons

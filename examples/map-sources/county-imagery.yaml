@@ -1,0 +1,14 @@
+# A web map layer (F-13): map-sources/<id>.yaml beside the connections
+# folder. Display only: drawn on the person's map through Columbus (which
+# makes every request), never seen by the assistant. Add one in the app
+# (Connections > Map layers > Add web layer, or Add web layer on the map),
+# which reads the service and confirms its host at the keyboard. kind is
+# xyz, wmts, wms, arcgis-map, arcgis-image or arcgis-features; url is https;
+# layer is the WMS/WMTS layer name or the ArcGIS layer number. Organization
+# policy can limit hosts (map.hosts) or supply layers (map.sources).
+id: county-imagery
+title: County imagery 2025
+kind: wmts
+url: https://imagery.example.gov/wmts/1.0.0/WMTSCapabilities.xml
+layer: ortho2025
+attribution: Example County GIS

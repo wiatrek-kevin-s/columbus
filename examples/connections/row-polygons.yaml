@@ -1,0 +1,22 @@
+# A signed-in ArcGIS Online or Portal layer (arcgis connection, F-3).
+# Read-only. The person signs in once, at the keyboard:
+#   columbus-mcp arcgis signin row-polygons      (or Sign in in the app)
+# Tokens go to the operating system's credential store as
+# arcgis:row-polygons, never into this file or any other.
+#
+# client_id is your organization's own ArcGIS OAuth app (Columbus ships
+# none): an ArcGIS administrator registers it once with the redirect URIs
+# http://127.0.0.1 and urn:ietf:wg:oauth:2.0:oob (docs/manual-checks.md,
+# H-1). Organization policy must list "arcgis" in connection_types, and
+# both the service's host and the portal's host in hosts.
+id: row-polygons
+type: arcgis
+url: https://services.arcgis.com/abc/arcgis/rest/services/ROW_Owned/FeatureServer/0
+auth:
+  type: oauth
+  portal: https://www.arcgis.com
+  client_id: YOUR-ORG-CLIENT-ID
+page_size: 2000                 # features per page (default: the layer's maxRecordCount)
+description: Owned right-of-way polygons (organization only)
+datasets:
+  allow: ["*"]

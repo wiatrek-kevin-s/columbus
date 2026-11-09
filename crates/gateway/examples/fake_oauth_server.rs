@@ -26,6 +26,11 @@
 //!   `Assets`, that answers only with a valid token (else code 499 or 498);
 //! * `/arcgis/rest/services/Public/FeatureServer`: the same layer, public
 //!   (no token needed);
+//! * `/arcgis/rest/services/ROW/FeatureServer`: public, one polygon layer,
+//!   `ROW`: the owned right of way along the three routes of the ROW job
+//!   fixture (T-23; `ROADS.ROW_ROUTES` in `tests/fixtures/oracle.sql`),
+//!   one polygon per route whose width steps at a measure (see
+//!   [`row_polygons`]);
 //! * `/test/log` (every request but `/test/*`: method, Host, target and the
 //!   two token headers), `/test/grants` (each ArcGIS token call's
 //!   `grant_type` and `redirect_uri`), `/test/expire-access` and
@@ -547,6 +552,118 @@ fn service_answer(rest: &str, q: &HashMap<String, String>) -> Response {
     }
 }
 
+// ---------- The ROW job's owned right of way (T-23) ----------
+
+/// The ROW job's routes, as in `ROADS.ROW_ROUTES` (tests/fixtures/oracle.sql)
+/// and the test's GeoPackage stand-in: each runs due east from lon
+/// `ROW_X0` for `ROW_LEN` degrees (1,000 ft at lat 30.25) at its own
+/// latitude, measures 0 to 1,000 ft.
+const ROW_X0: f64 = -97.75;
+const ROW_LEN: f64 = 0.003167;
+/// Metres in a degree of latitude at lat 30.25 (WGS 84).
+const M_PER_DEG_LAT: f64 = 110_856.6;
+
+/// Per route: name, latitude, then the polygon's width in feet before and
+/// after the measure (ft) where it steps. A: 80 ft, then 86 ft from 475;
+/// B: 90 ft; C: 100 ft, then 120 ft from 825.
+const ROW_WIDTHS: [(&str, f64, f64, f64, f64); 3] = [
+    ("A", 30.250, 80.0, 475.0, 86.0),
+    ("B", 30.252, 90.0, 500.0, 90.0),
+    ("C", 30.254, 100.0, 825.0, 120.0),
+];
+
+/// The polygons as Esri JSON rings (outer ring clockwise), each running 20
+/// ft past both ends of its route so a transect at an end crosses it whole.
+fn row_polygons() -> Vec<(u64, &'static str, Vec<[f64; 2]>)> {
+    let deg_lat = |ft: f64| ft * 0.3048 / M_PER_DEG_LAT;
+    let ext = 20.0 / 1000.0 * ROW_LEN;
+    ROW_WIDTHS
+        .iter()
+        .enumerate()
+        .map(|(i, &(name, y, w1, at, w2))| {
+            let (h1, h2) = (deg_lat(w1 / 2.0), deg_lat(w2 / 2.0));
+            let (xa, xb, xe) = (
+                ROW_X0 - ext,
+                ROW_X0 + at / 1000.0 * ROW_LEN,
+                ROW_X0 + ROW_LEN + ext,
+            );
+            let ring = vec![
+                [xa, y - h1],
+                [xa, y + h1],
+                [xb, y + h1],
+                [xb, y + h2],
+                [xe, y + h2],
+                [xe, y - h2],
+                [xb, y - h2],
+                [xb, y - h1],
+                [xa, y - h1],
+            ];
+            (i as u64 + 1, name, ring)
+        })
+        .collect()
+}
+
+fn row_layer() -> Value {
+    json!({
+        "id": 0, "name": "ROW", "type": "Feature Layer", "geometryType": "esriGeometryPolygon",
+        "objectIdField": "OBJECTID", "maxRecordCount": 1000,
+        "advancedQueryCapabilities": {"supportsPagination": true, "supportsOrderBy": true},
+        "extent": {"xmin": -97.751, "ymin": 30.249, "xmax": -97.746, "ymax": 30.255,
+                   "spatialReference": {"wkid": 4326, "latestWkid": 4326}},
+        "fields": [
+            {"name": "OBJECTID", "type": "esriFieldTypeOID", "alias": "OBJECTID"},
+            {"name": "ROUTE_NAME", "type": "esriFieldTypeString", "alias": "Route", "length": 20}
+        ],
+    })
+}
+
+async fn row_service(
+    axum::extract::Path(rest): axum::extract::Path<String>,
+    RawQuery(q): RawQuery,
+    RawForm(f): RawForm,
+) -> Response {
+    let mut q = parse_pairs(&q.unwrap_or_default());
+    q.extend(parse_pairs(&String::from_utf8_lossy(&f)));
+    match rest.trim_end_matches('/') {
+        "layers" => Json(json!({"layers": [row_layer()], "tables": []})).into_response(),
+        "0" => Json(row_layer()).into_response(),
+        "0/query" => {
+            let all = row_polygons();
+            if q.get("returnCountOnly").map(String::as_str) == Some("true") {
+                return Json(json!({"count": all.len()})).into_response();
+            }
+            if q.get("returnIdsOnly").map(String::as_str) == Some("true") {
+                let ids: Vec<u64> = all.iter().map(|(oid, _, _)| *oid).collect();
+                return Json(json!({"objectIdFieldName": "OBJECTID", "objectIds": ids}))
+                    .into_response();
+            }
+            let offset: usize = q
+                .get("resultOffset")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0);
+            let only: Option<Vec<u64>> = q
+                .get("objectIds")
+                .map(|v| v.split(',').filter_map(|x| x.trim().parse().ok()).collect());
+            let features: Vec<Value> = all
+                .into_iter()
+                .filter(|(oid, _, _)| only.as_ref().is_none_or(|o| o.contains(oid)))
+                .skip(offset)
+                .map(|(oid, name, ring)| {
+                    json!({"attributes": {"OBJECTID": oid, "ROUTE_NAME": name},
+                           "geometry": {"rings": [ring]}})
+                })
+                .collect();
+            Json(json!({
+                "objectIdFieldName": "OBJECTID", "geometryType": "esriGeometryPolygon",
+                "spatialReference": {"wkid": 4326, "latestWkid": 4326},
+                "fields": row_layer()["fields"], "features": features,
+            }))
+            .into_response()
+        }
+        _ => Json(json!({"error": {"code": 400, "message": "Invalid URL"}})).into_response(),
+    }
+}
+
 /// A sign-in pair, as if the person had signed in.
 async fn test_issue(State(s): State<Shared>) -> Json<Value> {
     let mut a = s.lock().unwrap();
@@ -905,6 +1022,10 @@ async fn main() {
         .route(
             "/arcgis/rest/services/Public/FeatureServer/{*rest}",
             get(public_service).post(public_service),
+        )
+        .route(
+            "/arcgis/rest/services/ROW/FeatureServer/{*rest}",
+            get(row_service).post(row_service),
         )
         .route("/web/xyz/{z}/{x}/{y}", get(web_xyz))
         .route(

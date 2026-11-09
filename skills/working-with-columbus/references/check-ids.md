@@ -21,6 +21,14 @@ Some ids also appear as **refusals**: the tool returns an error
 | `query.read_limit` | warn | query_features, sql_select | Stopped at the read limit; incomplete | Narrow with `where` or `bbox` before using it |
 | `policy.hidden_fields` | info | queries | Fields hidden by policy were left out | Do not try to get them |
 | `input.truncated` | warn | vector_op, verify | An input was cut off when it was made | Treat the result as partial; rebuild from a complete query |
+| `query.unsupported` | refusal | sql_select on an `arcgis` connection | An ArcGIS service takes no SQL | Use `query_features` with `fields`, `where`, `bbox` and `order_by` |
+| `query.bbox_index` | info | query_features with a bbox | Whether the bbox went to the source's spatial index | Nothing; the rows are the same either way |
+| `filter.rows` | info | vector_op filter | Rows kept of the total | Quote the counts |
+| `filter.empty` | warn | vector_op filter | The where kept nothing | Check value case, padding and nulls with `read_output` |
+| `csv.headers` | info | describe_dataset, queries on `files` | Blank headers became `field_<n>`; repeated ones got `_2`, `_3` | Use the new names in fields and where |
+| `xlsx.formulas`, `xlsx.errors` | warn | describe_dataset, queries on `files` | Formulas Excel never calculated, or error cells (both read as empty) | Ask the person to open, recalculate and save the workbook |
+| `arcgis.signin_renewed` | info | workflow steps on a signed-in `arcgis` connection | The ArcGIS sign-in was renewed for unattended runs | Nothing |
+| `arcgis.signin_not_renewed` | warn | workflow steps on a signed-in `arcgis` connection | The portal could not renew the sign-in; the step went on | The next run tries again; if it lapses, the person signs in again |
 
 ## Coordinate reference systems
 
@@ -117,3 +125,11 @@ Some ids also appear as **refusals**: the tool returns an error
 | `fetch.empty` | warn | registry_fetch returned no features; check the bbox (lon/lat) and layer |
 | `fetch.skipped` | warn | Malformed downloaded features were left out |
 | `registry.no_match` | info | Nothing matched |
+
+## Exports (0.14 additions)
+
+| id | Severity | Emitted by | Means | Do |
+| --- | --- | --- | --- | --- |
+| `export.needs_pro_3_2` | info | export_output `gdb`, workflow `gdb` deliveries | Whole numbers beyond 32 bits were kept exact as 64-bit integers | Tell the person ArcGIS Pro 3.2 or later is needed to open it |
+| `export.field_names` | warn | export_output `gdb` | Field names the format doesn't allow were changed; the list is in the message | Quote the renames |
+| `export.cog` | info | export_output `tif` | A raster that wasn't a Cloud-Optimized GeoTIFF was rewritten as one | Nothing |

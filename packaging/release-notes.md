@@ -1,24 +1,49 @@
 Columbus {{VERSION}}, a test release. Click a link to download that file.
 
-**New in this version:**
-- **Documents:**
-  - **Import** a Word, Excel, PDF, CSV, Markdown or text file as a draft note (an SOP, a reference note or a glossary). You preview exactly what your assistant will see first; the original is kept beside the note.
-  - **Proposals:** notes whose database changed since they were written, notes due for review, and changes your assistant **suggested** for you to **Accept** or **Dismiss** when you get to them (it can suggest changes to notes you've reviewed, which it can't change itself).
-- **Share tools and workflows with coworkers:**
-  - **Share…** on an installed tool, or on an approved workflow's page, saves a `.columbus` file, **signed with your own sharing key**. A workflow's file brings the tools it uses; its schedule, runs, data, connection details, passwords and email recipients never travel.
-  - Your coworker opens it with **Open a shared file…**, sees who signed it (by the key's fingerprint, until they trust your key under your name), chooses their own connections, and approves each part with their own Touch ID or Windows Hello. Nothing is installed or run by opening the file.
-  - **Team library** (Tools page): pick a folder your team shares; Columbus lists the shared files in it and whether each is new, the same as yours, or an update.
-  - **Tools for everyone:** IT can install a shared tool for everyone on a computer (`columbus-mcp tools org-install FILE`).
-  - Off by default: turn on **Allow shared tools and workflows** on the Tools page.
-- **Map snapshots can label features** with a field you or your assistant choose.
-- **Workflows can email their report**, once your organization sets up a mail server in the policy (Workflows page, Email).
-- **Workflows list every connection they read,** including ones named inside a step's inputs.
+## What's new in 0.14.0
 
-**After updating:** run the engine setup once more (Mac: `sh engine/setup-engine.sh` in your Columbus folder; Windows: `engine\setup-engine.ps1`). It adds what PDF import and map labels need.
+Columbus now reaches much more of your organization's data, without loosening any rule.
 
-**In 0.12.0:** Esri shapefiles and file geodatabases.
+- **Folders of files.** Add a folder (or one file) of CSV, Excel (`.xlsx`), GeoJSON, GeoParquet, KML or FlatGeobuf files as a connection, and query, analyse and export it like a GeoPackage. Points come from `lon`/`lat`, `x`/`y` or WKT columns; codes with leading zeros stay text; row filters and hidden fields apply as everywhere else.
+- **ArcGIS Online and Portal layers.** Add a feature or map service as a connection: list, describe, sample and query its layers under your row filters and hidden fields, with no row lost to paging. Public layers work at once; layers shared only in your organization need a one-time **Sign in** (your organization registers its own ArcGIS app first: see [manual-checks.md](https://github.com/wiatrek-kevin-s/columbus/blob/main/docs/manual-checks.md)). Your assistant never sees the sign-in.
+- **Your own Python.** Register a Python environment (a venv, an ArcGIS Pro clone) under **Settings › Environments**, and scripts can run in it. Governed environments (the default) run in the same sandbox as before. Your assistant can ask for a new environment with exact package versions, and Columbus builds it after you approve.
+- **Experimental: arcpy and trusted environments.** Where your organization allows it, a *trusted* environment runs scripts outside the sandbox, as you, each run approved; that is what arcpy is expected to need. `whoami` reports arcpy and your Pro licence in plain words. Both are marked **experimental** until checked on a real ArcGIS Pro computer (optional check H-2).
+- **File geodatabase and GeoTIFF exports.** `export_output` writes a new `.gdb` (64-bit whole numbers kept exact, flagged as needing ArcGIS Pro 3.2 or later) and raster results as Cloud-Optimized GeoTIFFs. Workflows can deliver both.
+- **Your weekly ROW job end to end.** Line geometries with M values (route measures) now survive every step. Workflows read files and ArcGIS layers and keep an ArcGIS sign-in alive across weekly runs. **Open in a chat** puts a run's results on the map for review; clicking a table row zooms to it; **Measure** gives feet and metres; `vector_op` `filter` removes rows ("leave out route X") without a script.
+- **Web map layers.** Add imagery and other services (XYZ, WMTS, WMS, ArcGIS map, image and feature services) to your map under **Connections › Map layers** or **Add web layer**. They are display only: every request goes through Columbus, and your assistant never sees them.
+- **Faster and safer underneath.** Bounding-box queries use each database's spatial index; every engine package is installed by exact version and hash; tests that need the engine can no longer be skipped silently.
 
-## Mac (Apple Silicon: M1 or later)
+**Needs macOS 15 or later on a Mac** (Apple Silicon). Windows 10 and 11 (64-bit) as before.
+
+### Not in this release
+
+- A personal tool can't yet import an environment's other packages (whitebox, arcpy) beyond the tool rules' module list; scripts can (CR-1, sent to Blueprint for a decision). So arcpy works in scripts you approve, not in personal tools or workflows.
+- A documentation website (CR-3, a later round).
+- Screen redesign: a separate review of the app's screens comes next.
+
+### What we could and couldn't confirm
+
+- **ArcGIS sign-in route (A-2): unconfirmed.** Esri's documentation couldn't be checked, so Columbus supports both ways back from the browser: straight to Columbus (`http://127.0.0.1`), or a code you paste into the terminal (`--paste-code`). Register both redirect URLs; H-1 tells you which your portal accepts.
+- **Engine updates (A-4): Dependabot can't update the hash-pinned engine lists.** A weekly workflow regenerates them and opens a pull request instead; crates, npm packages and GitHub Actions are updated by Dependabot.
+
+### Optional checks you can do (not needed to use this release)
+
+- **H-1:** register your organization's ArcGIS app and try a signed-in layer.
+- **H-2:** run one arcpy script on a Windows PC with ArcGIS Pro.
+
+Both are step by step in [docs/manual-checks.md](https://github.com/wiatrek-kevin-s/columbus/blob/main/docs/manual-checks.md).
+
+### Upgrading from 0.13
+
+1. Install the new extension and app (below).
+2. **Run the engine setup once more** (Mac: `sh engine/setup-engine.sh` in your Columbus folder; Windows: `engine\setup-engine.ps1`), from the new server folder. It reinstalls every package with hash checks and adds Columbus's own uv.
+3. Nothing else to change: the new policy keys (`environments`, `scripts.session_approval`, `map`) are off or empty by default, and `file` in `connection_types` is read as `files`. Folder-of-files caches rebuild once by themselves on first use.
+
+Licences of software Columbus carries are in `THIRD-PARTY-NOTICES.md` in the server folder.
+
+**In 0.13.0:** importing documents as notes, sharing tools and workflows with coworkers, labelled map snapshots, workflow email.
+
+## Mac (Apple Silicon, macOS 15 or later)
 
 **Already set up Columbus before? Update with these two files:**
 
