@@ -4,8 +4,8 @@ Kit version 1.1 · as of 2026-11-08, session S1 not started
 
 ## Where things stand
 
-- **Session:** S4 finishing (PR #4 open) · **Task:** T-10 next
-- **Next step:** merge PR #4 when CI is green, then S5 (T-10, T-11, T-12, T-20) on `rework/s5-arcgis`
+- **Session:** S5 finishing (PR #5 open) · **Task:** T-13 next
+- **Next step:** merge PR #5 when CI is green, then S6 (T-13, T-14, T-15, T-21, T-22, T-24, T-25) on `rework/s6-speed-map`
 - **Waiting on the owner:** nothing
 - **Homework received:** setup round answered ("skip" on Dependabot alerts); H-1 and H-2 are optional, after release
 
@@ -54,6 +54,14 @@ Kit version 1.1 · as of 2026-11-08, session S1 not started
 | 2026-11-08 | Personal tools and workflow steps run in governed level-A environments only; trusted is refused before the policy check | Keeps "personal tools run at level A" and D-3 | Decided |
 | 2026-11-08 | Session approval binds to code SHA-256 + environment id and its confirmed hash + the gateway process (one chat or one MCP connection) | R-15, slightly stricter | Decided |
 | 2026-11-08 | The tool-code lint keeps its fixed module list inside environments (CR-1) | No rule loosens unless the brief says so | Decided |
+| 2026-11-09 | `arcgis` connections stay out of the engine-only paths (plugin extracts, notes drafting, edits), which refuse them plainly; hidden-field and parser checks run before any request | No request leaves for a query that will be refused (R-10b) | Decided |
+| 2026-11-09 | ArcGIS transport pins one DNS answer, follows no redirects, waits 30 s per request and caps an answer at 256 MB; the layer list is cached 5 minutes | Same safety as `fetch_tools.rs` | Decided |
+| 2026-11-09 | **A-2 unconfirmed:** developers.arcgis.com needs a fetch approval nobody was present for, and web search found no Esri statement (FME and Esri's Unity SDK use a registered `http://localhost` with ports). Both the loopback redirect (`http://127.0.0.1:<port>/`, default) and the brief's `urn:ietf:wg:oauth:2.0:oob` paste-code fallback are built; manual-checks tells the admin to register both | Works whichever way Esri matches | Decided |
+| 2026-11-09 | A portal that can't list its federated servers vouches for none (fails closed); in release builds `arcgis:` entries are never written to files | R-17, R-18 | Decided |
+| 2026-11-09 | The refresh token's expiry (for R-19) is kept in `connections/.arcgis-state.json` (`{id: {refresh_expires_at, portal}}`, never a token), not in the F-3b entry; a missing record means exchange | F-3b is a one-way format and stays as specified; same pattern as `.confirmed.json` | Decided |
+| 2026-11-09 | A failed exchange for a reason other than a lapsed sign-in (portal down) lets the step go on with an `arcgis.signin_not_renewed` warning | Failing the read is worse; the next run retries | Decided |
+| 2026-11-09 | The app's Sign in asks for Touch ID / Windows Hello first, then runs `arcgis signin` and opens only an https authorize URL under the connection's portal; environments are confirmed like connections | Sign-in widens what the assistant can read; no rule loosens | Decided |
+| 2026-11-09 | gdb workflow deliveries turn non-alphanumeric characters in the name into `_` | The gdb export refuses `-` (R-8 naming) | Decided |
 | 2026-11-08 | Python baseline is 149 passed, not the audit's 115 | `main` moved past the audit commit 8b6bf173 before the kit upload; more tests and no failures, so no action | Decided |
 
 ## Change requests
@@ -67,6 +75,14 @@ Status: raised, approved, declined, or Sent to Blueprint (touches a one-way door
 ## Handoff notes
 
 Newest first, written as you go. Mark each claim verified (checked this session) or unverified.
+
+### Session S5 → S6 (2026-11-09)
+
+- **Done:** S4 merged (PR #4, 7517e06). S5: T-10, T-11, T-12, T-20 on `rework/s5-arcgis`, PR #5. CI run 42549810624 green on 13 jobs for T-10 to T-12, including the new app e2e `sources.py`.
+- **Decisions and deviations:** see Decisions. A-2 unconfirmed; both redirect paths built.
+- **Loose ends:** T-24 hooks: `arcgis_auth::signed_in(store, id)` before reusing a secured tile cache; `arcgis_auth::sign_out` is the one place sign-out happens (CLI and connection deletion). T-16 writes docs/manual-checks.md with the admin steps: register the org's own OAuth app with redirect URIs `http://127.0.0.1` and `urn:ietf:wg:oauth:2.0:oob`, then put its client id in `auth.client_id` (D-12). `cargo test --test workflow_reach` alone needs `cargo build --example fake_oauth_server` first.
+- **Machine:** disk is small; helpers build with `CARGO_INCREMENTAL=0` and no debug info. The app's Linux libraries are installed for local e2e.
+- **Next:** S6.
 
 ### Session S4 → S5 (2026-11-09)
 
@@ -98,6 +114,11 @@ Newest first, written as you go. Mark each claim verified (checked this session)
 - 2026-11-08 PR #3 merged (01814e9) after CI run 42530598019 green on 13 jobs.
 - 2026-11-08 T-8: commit 068a440 green on Linux and macOS; Windows CI (run 42531980419) hung, cancelled to read logs. Causes were in the tests (`\\?\` prefix in a path compare; a terminal prompt waiting on the runner's console). Fixed on `rework/s4-trusted-windows` with a job-object process tree; run 42539452409 green on 13 jobs. T-8 done.
 - 2026-11-09 T-9 done: commit 50e23d6; environments_tools.rs pass (verified after merge); workspace 330. A-6 recorded as expected (arcpy needs trusted; H-2 confirms).
+- 2026-11-09 PR #4 merged (7517e06) after CI run 42540620881 green on 13 jobs.
+- 2026-11-09 T-10 done: commit 37459a3; arcgis.rs 2/2 (fake FeatureServer with request log).
+- 2026-11-09 T-11 done: commit 7c9cf15; arcgis_signin.rs pass; token found 0 times outside the credential store. A-2 unconfirmed, both redirect paths built.
+- 2026-11-09 T-12 done: commit e544226; app e2e sources.py ok locally and in CI run 42549810624 (13 jobs green).
+- 2026-11-09 T-20 done: commit 38a94ab; workflow_reach.rs pass (gdb delivery; 6-day exchange, 8-day none, expired stops with "needs you").
 
 ### Kit → Session S1 (2026-11-08)
 

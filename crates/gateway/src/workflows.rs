@@ -802,6 +802,7 @@ pub async fn run_cli_with(id: &str, scheduled: bool, python: Option<&str>) -> an
 
     let status = run_steps(
         &client,
+        &state,
         &workflow,
         &mut record,
         deadline,
@@ -1041,8 +1042,50 @@ fn progress(record: &Value) {
     }
 }
 
+/// R-19, REQ-26: before a step uses a signed-in `arcgis` connection, its
+/// refresh token is exchanged for a new one if fewer than 7 days of its
+/// life remain (or that is not known). Err: the step stops with this
+/// message ("needs you: sign in again (…)" for a lapsed sign-in). Ok: the
+/// checks to add to the step's (a renewal that could not be made now).
+async fn keep_signed_in(state: &State, step: &wf::Step) -> Result<Vec<Value>, String> {
+    let settings = state.settings();
+    let mut checks = Vec::new();
+    for c in wf::step_connections(step) {
+        let Some(conn) = settings
+            .connections
+            .iter()
+            .find(|x| x.id == c && crate::arcgis::is_arcgis(&x.kind))
+        else {
+            continue;
+        };
+        let kept = crate::arcgis_auth::keep_alive(
+            &state.secrets,
+            conn,
+            &state.policy(),
+            &state.paths.connections,
+        )
+        .await?;
+        match kept {
+            crate::arcgis_auth::Kept::AsIs => {}
+            crate::arcgis_auth::Kept::Exchanged => checks.push(json!({
+                "id": "arcgis.signin_renewed",
+                "severity": "info",
+                "message": format!("{c}'s ArcGIS sign-in was renewed for another period (fewer than {} days were left)", crate::arcgis_auth::EXCHANGE_BELOW_DAYS),
+            })),
+            crate::arcgis_auth::Kept::NotNow(why) => checks.push(json!({
+                "id": "arcgis.signin_not_renewed",
+                "severity": "warn",
+                "message": format!("{c}'s ArcGIS sign-in ends within {} days and could not be renewed now ({why}); the next run tries again, or sign in again: {}", crate::arcgis_auth::EXCHANGE_BELOW_DAYS, crate::arcgis_auth::signin_command(&c)),
+            })),
+        }
+    }
+    Ok(checks)
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn run_steps(
     client: &Client,
+    state: &State,
     workflow: &Workflow,
     record: &mut Value,
     deadline: Instant,
@@ -1131,6 +1174,21 @@ async fn run_steps(
                 return Err("failed".into());
             }
         }
+        // A signed-in ArcGIS connection: kept alive, or the step needs you.
+        let sign_in_checks = match keep_signed_in(state, s).await {
+            Ok(c) => c,
+            Err(e) => {
+                let needs_you = e.starts_with(NEEDS_YOU);
+                step["status"] = json!(if needs_you { "needs_you" } else { "failed" });
+                step["error"] = json!(e);
+                push(record, step);
+                if needs_you {
+                    record["reason"] = json!(format!("Step {} stopped: {e}", s.id));
+                    return Err("needs_you".into());
+                }
+                return Err("failed".into());
+            }
+        };
         {
             // If the run is stopped at its limit during this step, its
             // record says so.
@@ -1143,6 +1201,19 @@ async fn run_steps(
         }
         let (ok, out, text) = call(client, &tool, args, left).await;
         step["finished"] = json!(Local::now().to_rfc3339());
+        // A sign-in that lapsed during the step (its access token could
+        // not be refreshed) needs the person too.
+        let text = match wf::step_connections(s)
+            .iter()
+            .find(|c| !ok && text.contains(&crate::arcgis_auth::sign_in_again(c)))
+        {
+            Some(c) => {
+                let e = crate::arcgis_auth::needs_sign_in(c);
+                record["reason"] = json!(format!("Step {} stopped: {e}", s.id));
+                e
+            }
+            None => text,
+        };
         if !ok {
             let needs_you = text.contains(NEEDS_YOU);
             step["status"] = json!(if needs_you { "needs_you" } else { "failed" });
@@ -1161,7 +1232,12 @@ async fn run_steps(
                 "failed".into()
             });
         }
-        let (fails, warns, checks) = checks_of(&out);
+        let (fails, mut warns, mut checks) = checks_of(&out);
+        warns += sign_in_checks
+            .iter()
+            .filter(|c| c["severity"] == "warn")
+            .count();
+        checks.extend(sign_in_checks);
         step["summary"] = json!(summary_of(&out));
         step["checks"] = json!(checks);
         step["provenance"] = out["provenance"].clone();
@@ -1504,7 +1580,12 @@ async fn deliver(
         };
         let base = format!("{}-{}", workflow.id, step);
         let base: String = base.chars().take(80 - 1 - when.len()).collect();
-        let name = format!("{base}-{when}");
+        let mut name = format!("{base}-{when}");
+        // F-11: a file geodatabase's feature class is named after the
+        // export, and its name is a letter then letters, digits and _.
+        if f.format.as_deref() == Some("gdb") {
+            name = name.replace(|c: char| !c.is_ascii_alphanumeric(), "_");
+        }
         let mut args = json!({"handle": h, "folder": f.export, "name": name});
         if let Some(fmt) = &f.format {
             args["format"] = json!(fmt);
@@ -1557,7 +1638,7 @@ fn status_words(s: &str) -> &'static str {
     match s {
         "succeeded" => "Succeeded",
         "succeeded_with_warnings" => "Succeeded, with findings to review",
-        "needs_you" => "Needs you: a step needs your approval, so the run stopped there",
+        "needs_you" => "Needs you: a step needs you (an approval, a sign-in or an environment), so the run stopped there",
         "needs_reapproval" => "Not run: needs re-approval",
         "off" => "Not run: workflows are off",
         "skipped" => "Not run: it was already running",
@@ -1600,6 +1681,9 @@ pub(crate) fn report(record: &Value, workflow: Option<&Workflow>) -> String {
             let result = match st["status"].as_str() {
                 Some("done") => s(&st["summary"]),
                 Some("failed_check") => format!("{} (a check failed)", s(&st["summary"])),
+                Some("needs_you") if s(&st["error"]).starts_with("needs you: sign in again") => {
+                    "needs you: sign in again".into()
+                }
                 Some("needs_you") => "needs your approval".into(),
                 Some(x) => x.replace('_', " "),
                 None => String::new(),

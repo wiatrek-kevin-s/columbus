@@ -766,11 +766,142 @@ pub struct Connection {
     pub x: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub y: Option<String>,
+    /// `arcgis` connections (F-3): the feature or map service
+    /// (`…/FeatureServer`, `…/MapServer`) or one layer in it (`…/<n>`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// `arcgis` connections (F-3): `none` (the default) or
+    /// `{type: oauth, portal, client_id}`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth: Option<ArcgisAuth>,
+    /// `arcgis` connections (F-3): features asked for per page (default
+    /// and maximum: the layer's `maxRecordCount`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page_size: Option<u64>,
+}
+
+/// How an `arcgis` connection signs in (F-3).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ArcgisAuth {
+    /// `none`: a public service.
+    Keyword(String),
+    /// `{type: oauth, portal, client_id}`: PKCE sign-in (D-4).
+    OAuth(ArcgisOAuth),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArcgisOAuth {
+    #[serde(rename = "type")]
+    pub kind: String,
+    /// The portal's https address (`https://www.arcgis.com`).
+    pub portal: String,
+    /// The organization's own OAuth app id (D-12). Not a secret.
+    pub client_id: String,
+}
+
+impl ArcgisAuth {
+    /// The sign-in settings, or None for a public service.
+    pub fn oauth(&self) -> Option<&ArcgisOAuth> {
+        match self {
+            ArcgisAuth::OAuth(o) => Some(o),
+            ArcgisAuth::Keyword(_) => None,
+        }
+    }
 }
 
 /// Connection types read through the files cache (Part 1 of the brief).
 pub fn is_files(kind: &str) -> bool {
     kind.eq_ignore_ascii_case("files")
+}
+
+/// ArcGIS Online/Portal and ArcGIS Server services (Part 4 of the brief).
+pub fn is_arcgis(kind: &str) -> bool {
+    kind.eq_ignore_ascii_case("arcgis")
+}
+
+/// Plain HTTP to 127.0.0.1 is accepted for an `arcgis` URL only in test
+/// builds with `COLUMBUS_FETCH_TEST_LOOPBACK` set, so a local fake server
+/// can stand in for ArcGIS. Release builds never accept it.
+pub fn arcgis_test_loopback() -> bool {
+    cfg!(debug_assertions) && std::env::var_os("COLUMBUS_FETCH_TEST_LOOPBACK").is_some()
+}
+
+/// The host of an `arcgis` URL (`https://host[:port]/…`), for the policy
+/// `hosts` rule, or None when the URL is not one Columbus reaches: not
+/// https (or test-only http to 127.0.0.1), with user info, or with a host
+/// that is not a plain name or address. The gateway parses the URL again
+/// with its HTTP client's parser and refuses any disagreement.
+pub fn arcgis_url_host(url: &str) -> Option<String> {
+    let rest = if let Some(r) = url.strip_prefix("https://") {
+        r
+    } else {
+        let r = url.strip_prefix("http://")?;
+        if !arcgis_test_loopback() {
+            return None;
+        }
+        r
+    };
+    let authority = rest.split(['/', '?', '#']).next()?;
+    if authority.is_empty() || authority.contains(['@', '\\']) {
+        return None;
+    }
+    let host = if let Some(v6) = authority.strip_prefix('[') {
+        let (h, after) = v6.split_once(']')?;
+        if !(after.is_empty() || after.strip_prefix(':').is_some_and(port_ok)) {
+            return None;
+        }
+        h
+    } else {
+        match authority.split_once(':') {
+            Some((h, p)) if port_ok(p) => h,
+            Some(_) => return None,
+            None => authority,
+        }
+    };
+    let ok = !host.is_empty()
+        && host
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | ':'));
+    if !ok {
+        return None;
+    }
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    // Test builds' plain http: to this computer only (`localhost` too, so a
+    // fake portal and a fake service can be two hosts on one machine).
+    if url.starts_with("http://") && host != "127.0.0.1" && host != "localhost" {
+        return None;
+    }
+    Some(host)
+}
+
+fn port_ok(p: &str) -> bool {
+    !p.is_empty()
+        && p.len() <= 5
+        && p.bytes().all(|b| b.is_ascii_digit())
+        && p.parse::<u16>().is_ok()
+}
+
+/// Whether an `arcgis` URL's path names a service or one layer in it:
+/// `…/FeatureServer`, `…/MapServer`, or either followed by `/<n>`.
+pub fn arcgis_path_ok(url: &str) -> bool {
+    let path = url
+        .split(['?', '#'])
+        .next()
+        .unwrap_or("")
+        .trim_end_matches('/');
+    let mut parts = path.rsplit('/');
+    let last = parts.next().unwrap_or("");
+    let service =
+        |s: &str| s.eq_ignore_ascii_case("FeatureServer") || s.eq_ignore_ascii_case("MapServer");
+    if service(last) {
+        return true;
+    }
+    !last.is_empty()
+        && last.len() <= 9
+        && last.bytes().all(|b| b.is_ascii_digit())
+        && parts.next().is_some_and(service)
 }
 
 /// Whether a policy's `connection_types` allows connections of `kind`.
@@ -839,6 +970,93 @@ impl Connection {
                 "{at}: recursive, crs, x and y are settings of files connections only"
             )));
         }
+        if is_arcgis(&c.kind) {
+            c.validate_arcgis(path)?;
+        } else if c.url.is_some() || c.auth.is_some() || c.page_size.is_some() {
+            return Err(LoadError::Invalid(format!(
+                "{at}: url, auth and page_size are settings of arcgis connections only"
+            )));
+        }
+        Ok(())
+    }
+
+    /// F-3: the URL, sign-in and page size of an `arcgis` connection, and
+    /// its row filter, which must parse with the `query_features` where
+    /// parser, because every request carries it rebuilt from that parsed
+    /// form (R-10).
+    fn validate_arcgis(&self, path: &Path) -> Result<(), LoadError> {
+        let at = path.display();
+        let bad = |m: String| Err(LoadError::Invalid(format!("{at}: {m}")));
+        let Some(url) = self.url.as_deref().map(str::trim) else {
+            return bad("an arcgis connection needs a url (a FeatureServer or MapServer, or a layer in one ending /<n>)".into());
+        };
+        if arcgis_url_host(url).is_none() {
+            return bad(format!(
+                "url must be an https address with a plain host name, not {url:?}"
+            ));
+        }
+        if url.contains(['?', '#']) || url.chars().any(|c| c.is_whitespace() || c.is_control()) {
+            return bad(
+                "url must be the service or layer address alone, without ?query or #fragment"
+                    .into(),
+            );
+        }
+        if !arcgis_path_ok(url) {
+            return bad(format!(
+                "url must end in FeatureServer, MapServer or a layer number (…/FeatureServer/3), not {url:?}"
+            ));
+        }
+        if self.path.is_some()
+            || self.dsn.is_some()
+            || self.host.is_some()
+            || self.port.is_some()
+            || self.database.is_some()
+            || self.user.is_some()
+        {
+            return bad("an arcgis connection is set by url; path, dsn, host, port, database and user don't apply".into());
+        }
+        match &self.auth {
+            None => {}
+            Some(ArcgisAuth::Keyword(k)) if k.eq_ignore_ascii_case("none") => {}
+            Some(ArcgisAuth::Keyword(k)) => {
+                return bad(format!(
+                    "auth must be none or {{type: oauth, portal, client_id}}, not {k:?}"
+                ))
+            }
+            Some(ArcgisAuth::OAuth(o)) => {
+                if !o.kind.eq_ignore_ascii_case("oauth") {
+                    return bad(format!("auth type must be oauth, not {:?}", o.kind));
+                }
+                if arcgis_url_host(o.portal.trim()).is_none() || o.portal.contains(['?', '#']) {
+                    return bad(format!(
+                        "auth portal must be an https address such as https://www.arcgis.com, not {:?}",
+                        o.portal
+                    ));
+                }
+                let id = o.client_id.trim();
+                if id.is_empty()
+                    || id.len() > 100
+                    || !id
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+                {
+                    return bad(
+                        "auth client_id must be the OAuth app's client id (letters and digits)"
+                            .into(),
+                    );
+                }
+            }
+        }
+        if self.page_size == Some(0) {
+            return bad("page_size must be at least 1".into());
+        }
+        if let Some(rf) = &self.row_filter {
+            if let Err(e) = crate::sqlcheck::check_where(rf, crate::sqlcheck::SqlDialect::Generic) {
+                return bad(format!(
+                    "the row filter {rf:?} can't be used on an ArcGIS service: {e}"
+                ));
+            }
+        }
         Ok(())
     }
 
@@ -854,7 +1072,12 @@ impl Connection {
             self.database,
             self.user,
             self.sslmode,
-            self.search_path
+            self.search_path,
+            self.url,
+            self.auth
+                .as_ref()
+                .and_then(ArcgisAuth::oauth)
+                .map(|o| &o.portal)
         ])
     }
 
@@ -964,6 +1187,23 @@ impl EffectiveAccess {
             match plain_host(host, sql_server) {
                 Some(name) if org.host_allowed(name) => {}
                 _ => return Err(Denied::Host(host.clone())),
+            }
+        }
+        // An ArcGIS service, and the portal it signs in to, are checked
+        // like hosts before any request (Part 4, R-18).
+        if is_arcgis(&conn.kind) {
+            let url = conn.url.as_deref().unwrap_or("");
+            match arcgis_url_host(url.trim()) {
+                Some(h) if org.host_allowed(&h) => {}
+                Some(h) => return Err(Denied::Host(h)),
+                None => return Err(Denied::Host(url.to_string())),
+            }
+            if let Some(o) = conn.auth.as_ref().and_then(ArcgisAuth::oauth) {
+                match arcgis_url_host(o.portal.trim()) {
+                    Some(h) if org.host_allowed(&h) => {}
+                    Some(h) => return Err(Denied::Host(h)),
+                    None => return Err(Denied::Host(o.portal.clone())),
+                }
             }
         }
         // An Oracle service named by `dsn` is checked like a host: an
@@ -1180,6 +1420,105 @@ expires: 2027-06-30
 "#,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn arcgis_connection_settings_are_checked() {
+        let at = Path::new("c.yaml");
+        let svc = "https://services.example.com/abc/arcgis/rest/services/Roads/FeatureServer";
+        let base = format!("id: roads\ntype: arcgis\nurl: {svc}\ndatasets: {{ allow: [\"*\"] }}\n");
+        let ok = Connection::parse(
+            &format!("{base}page_size: 2000\nrow_filter: \"DISTRICT = 14\"\n"),
+            at,
+        )
+        .unwrap();
+        assert_eq!(ok.page_size, Some(2000));
+        assert!(ok.auth.is_none());
+        let signed = Connection::parse(
+            &format!("{base}auth: {{type: oauth, portal: \"https://www.arcgis.com\", client_id: AbC123}}\n"),
+            at,
+        )
+        .unwrap();
+        assert_eq!(
+            signed
+                .auth
+                .as_ref()
+                .and_then(ArcgisAuth::oauth)
+                .unwrap()
+                .client_id,
+            "AbC123"
+        );
+        assert!(Connection::parse(&format!("{base}auth: none\n"), at).is_ok());
+        assert!(Connection::parse(
+            &format!("id: l\ntype: arcgis\nurl: {svc}/3\ndatasets: {{ allow: [\"*\"] }}\n"),
+            at
+        )
+        .is_ok());
+        for bad in [
+            "id: r\ntype: arcgis\ndatasets: { allow: [\"*\"] }\n".to_string(),
+            base.replace("https://", "http://"),
+            base.replace("/FeatureServer", "/FeatureServer/query"),
+            base.replace("services.example.com", "user@services.example.com"),
+            format!("{base}page_size: 0\n"),
+            format!("{base}auth: basic\n"),
+            format!("{base}row_filter: \"1=1) OR (1=1\"\n"),
+            format!("{base}host: x.example\n"),
+            "id: g\ntype: gpkg\npath: /x.gpkg\nurl: https://x.example/a/FeatureServer\ndatasets: { allow: [\"*\"] }\n".to_string(),
+        ] {
+            assert!(Connection::parse(&bad, at).is_err(), "{bad}");
+        }
+        let example = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../examples/connections/roads-agol.yaml");
+        assert_eq!(Connection::load(&example).unwrap().kind, "arcgis");
+        assert_eq!(
+            arcgis_url_host(svc).as_deref(),
+            Some("services.example.com")
+        );
+        assert_eq!(
+            arcgis_url_host("https://GIS.Example.org:6443/x").as_deref(),
+            Some("gis.example.org")
+        );
+        assert_eq!(
+            arcgis_url_host("https://[::1]:8443/x").as_deref(),
+            Some("::1")
+        );
+        for bad in [
+            "https://a@b/x",
+            "https://ev%69l/x",
+            "https://a:b:c/x",
+            "ftp://a/x",
+            "https:///x",
+        ] {
+            assert!(arcgis_url_host(bad).is_none(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn arcgis_service_and_portal_hosts_must_be_listed() {
+        let conn = Connection::parse(
+            "id: roads\ntype: arcgis\nurl: https://gis.example.org/server/rest/services/Roads/FeatureServer\n\
+             auth: {type: oauth, portal: \"https://portal.example.org/portal\", client_id: abc}\n\
+             datasets: { allow: [\"*\"] }\n",
+            Path::new("c.yaml"),
+        )
+        .unwrap();
+        let mut org = OrgPolicy {
+            connection_types: vec!["arcgis".into()],
+            ..OrgPolicy::default()
+        };
+        let scope = ProjectScope::default();
+        let now = Utc::now();
+        assert_eq!(
+            EffectiveAccess::resolve(&org, &conn, &scope, now).unwrap_err(),
+            Denied::Host("gis.example.org".into())
+        );
+        org.hosts = vec!["gis.example.org".into()];
+        assert_eq!(
+            EffectiveAccess::resolve(&org, &conn, &scope, now).unwrap_err(),
+            Denied::Host("portal.example.org".into())
+        );
+        org.hosts.push("*.example.org".into());
+        assert!(EffectiveAccess::resolve(&org, &conn, &scope, now).is_ok());
     }
 
     #[test]

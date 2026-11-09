@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-settings-environments"
+description = "Enables the settings_environments command without any pre-configured scope."
+commands.allow = ["settings_environments"]
+
+[[permission]]
+identifier = "deny-settings-environments"
+description = "Denies the settings_environments command without any pre-configured scope."
+commands.deny = ["settings_environments"]

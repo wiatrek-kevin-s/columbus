@@ -222,8 +222,8 @@
           "expected": "the first four are refused with no request sent (checked on the fake server's request log); the 429 is retried at most 3 times then gives the R-14 message; the large layer returns 200,000 rows with query.read_limit"
         }
       ],
-      "status": "todo",
-      "evidence": ""
+      "status": "done",
+      "evidence": "Commit 37459a3. crates/gateway/tests/arcgis.rs: arcgis_lists_describes_and_queries_a_public_service (3 datasets Roadways_0, Roadways_1, Inspections; request where exactly '(DISTRICT = 14) AND (LANES > 2)' with f=json, returnM=true, hidden SSN never in outFields or results; M on every workspace row; sql_select -> query.unsupported) and arcgis_refuses_before_any_request_retries_429_and_stops_at_the_read_limit (host off policy, parser-subset, hidden field, '1=1) OR (1=1' refused with the fake's request log unchanged; 429 retried 3 times then R-14 message; 250,000-row layer -> 200,000 rows with query.read_limit). Workspace 338 passed; pytest 221 passed 36 skipped."
     },
     {
       "id": "T-11",
@@ -251,8 +251,8 @@
           "expected": "the query is refused with 'the portal does not vouch for' the host; the fake server's log shows no token"
         }
       ],
-      "status": "todo",
-      "evidence": ""
+      "status": "done",
+      "evidence": "Commit 7c9cf15. crates/gateway/tests/arcgis_signin.rs: sign_in_queries_with_a_bearer_refreshes_once_and_asks_again_when_lapsed (F-3b entry stored with 4 keys; list/describe/query carry the bearer in headers only; expired access token -> exactly one refresh; lapsed refresh -> 'Sign in again: columbus-mcp arcgis signin svc', nothing sent); fake token value found 0 times in tool results, audit, workspaces/provenance and connections; a_service_the_portal_does_not_vouch_for_never_gets_the_token ('the portal does not vouch for', no token in the fake's log); without_a_credential_store_sign_in_is_refused (R-17); the_paste_code_fallback_signs_in_and_is_offered_when_the_browser_does_not_return. A-2 unconfirmed (docs not reachable): loopback default plus urn:ietf:wg:oauth:2.0:oob fallback both implemented. Workspace 348 passed; pytest 221 passed 36 skipped."
     },
     {
       "id": "T-12",
@@ -274,8 +274,8 @@
           "expected": "builds with 0 errors"
         }
       ],
-      "status": "todo",
-      "evidence": ""
+      "status": "done",
+      "evidence": "Commit e544226. app/desktop/e2e/sources.py (run locally under xvfb: 'desktop sources e2e (files, arcgis, sign-in, environments): ok'): files connection added, tested, edited keeping recursive/crs/x/y; public arcgis tested without sign-in; dead port shows the R-14 message; Sign in makes exactly one authorize request to the fake portal (captured), sign-in completes, no token reaches the page; Settings › Environments shows Ready, 'arcpy: yes (experimental); ArcGIS Pro licence: Advanced', Changed and Confirm. app/desktop/src-tauri cargo build 0 errors, clippy clean, cargo test 26 passed. Added to the CI Desktop app job (Linux WebDriver step)."
     },
     {
       "id": "T-13",
@@ -384,8 +384,8 @@
           "expected": "exchanged; not exchanged; step stops with 'needs you: sign in again (columbus-mcp arcgis signin svc)' and the run report shows it"
         }
       ],
-      "status": "todo",
-      "evidence": ""
+      "status": "done",
+      "evidence": "Commit 38a94ab. crates/gateway/tests/workflow_reach.rs: a_workflow_reads_arcgis_and_files_and_delivers_gdb (run via 'columbus-mcp workflow run weekly-reach --scheduled' succeeds; steps on a fake arcgis layer and a files CSV; .gdb files in the export folder read back by pyogrio; steps on connections outside scope refused) and a_weekly_run_keeps_the_arcgis_sign_in_alive (8 days left: no exchange in the fake's grants log; 6 days: exchange_refresh_token, new refresh token stored; expired: step stops 'needs you: sign in again (columbus-mcp arcgis signin svc)', shown in the run report; fake token found 0 times in run records, audit, provenance; F-3b entry still 4 keys). Workspace 352 passed; pytest 221 passed 36 skipped."
     },
     {
       "id": "T-21",

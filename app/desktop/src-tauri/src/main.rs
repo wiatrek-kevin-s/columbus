@@ -45,6 +45,7 @@ use serde::Serialize;
 mod chat;
 mod datagroups;
 mod doc_import;
+mod environments;
 mod projects;
 mod registry;
 mod settings;
@@ -523,6 +524,13 @@ fn main() {
             settings::settings_tool_decline,
             settings::settings_tool_remove,
             settings::settings_tool_files,
+            settings::settings_arcgis_signin,
+            environments::settings_environments,
+            environments::settings_env_add,
+            environments::settings_env_confirm,
+            environments::settings_env_remove,
+            environments::settings_env_approve,
+            environments::settings_env_decline,
             shell::shell_info,
             shell::engine_check,
             shell::prefs_get,

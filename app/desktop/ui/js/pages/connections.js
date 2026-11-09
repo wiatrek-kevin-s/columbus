@@ -8,8 +8,13 @@ import { $, h, el, invoke, store, button, pageHead, tabs, showError, size, when,
 
 const KIND_NAMES = {
   gpkg: "GeoPackage", sqlite: "SQLite", rasters: "Rasters folder", shapefile: "Shapefiles", filegdb: "File geodatabase",
-  postgis: "PostGIS", sqlserver: "SQL Server", oracle: "Oracle",
+  postgis: "PostGIS", sqlserver: "SQL Server", oracle: "Oracle", files: "Folder of files", arcgis: "ArcGIS service",
 };
+
+/** An ArcGIS connection that signs in (auth: oauth), its portal; else null. */
+function oauthPortal(c) {
+  return c.auth && typeof c.auth === "object" && c.auth.portal ? c.auth.portal : null;
+}
 
 let state = null; // settings_state
 let editing = null;
@@ -17,6 +22,7 @@ let afterSave = null;
 
 function where(c) {
   if (c.path) return c.path;
+  if (c.url) return c.url;
   const host = [c.host, c.port].filter(Boolean).join(":");
   return [c.user && `${c.user}@`, host, c.database && `/${c.database}`, c.dsn && ` (${c.dsn})`].filter(Boolean).join("");
 }
@@ -73,7 +79,7 @@ async function databases(body) {
   const error = h("p", { id: "error", class: "error-text", role: "alert", hidden: true });
   const conf = h("div", { class: "notice" }, h("div", { id: "confirm-note" }, confirmNote()));
   const list = h("ul", { id: "connections", class: "list", "aria-live": "polite" });
-  const none = h("div", { id: "no-conn", class: "pad", hidden: true }, h("p", { class: "muted" }, "No connections yet. Add a GeoPackage, a file geodatabase, a folder of shapefiles or rasters, or a database."));
+  const none = h("div", { id: "no-conn", class: "pad", hidden: true }, h("p", { class: "muted" }, "No connections yet. Add a GeoPackage, a file geodatabase, a folder of shapefiles, rasters or other files (CSV, Excel, GeoJSON, KML), an ArcGIS service, or a database."));
   const other = h("p", { id: "other-folders", class: "error-text", hidden: true });
   const foot = h("p", { class: "small muted wrap-any" }, "Stored in ", h("code", { id: "conn-dir" }), ". Passwords are kept in your computer's credential store, never in a file, and never shown again.");
   body.append(notice, error, conf, h("section", { class: "card" }, h("div", { class: "hd" }, h("h2", {}, "Databases and files")), h("div", { class: "bd flush" }, list, none)), other,
@@ -105,14 +111,26 @@ async function databases(body) {
       if (c.row_filter) chips.append(el("span", "chip mono", `Rows: ${c.row_filter}`));
       if (c.has_password) chips.append(el("span", "chip", "Password stored"));
       if (c.expires) chips.append(el("span", "chip", `Expires ${when(c.expires)}`));
+      if (c.recursive) chips.append(el("span", "chip", "With subfolders"));
+      if (c.crs) chips.append(el("span", "chip mono", c.crs));
+      if (c.type === "arcgis") chips.append(el("span", "chip", oauthPortal(c) ? `Signs in at ${oauthPortal(c)}` : "Public (no sign-in)"));
       text.append(chips, el("span", "where", sees(c)));
       if (c.description) text.append(el("span", "where", c.description));
       const status = el("span", "where draft-status");
       status.setAttribute("role", "status");
       text.append(status);
-      const d = button("Draft notes", "sm", () => draftNotes(c.id, d, status), { title: "Write notes about this connection's datasets from the database itself (fields, keys, relationships, codes), for you to fill in" });
-      const b = button("Edit", "sm", () => openEditor(c));
-      li.append(text, h("div", { class: "acts" }, d, b));
+      const acts = h("div", { class: "acts" });
+      // Drafted notes don't apply to ArcGIS services.
+      if (c.type !== "arcgis") {
+        const d = button("Draft notes", "sm", () => draftNotes(c.id, d, status), { title: "Write notes about this connection's datasets from the database itself (fields, keys, relationships, codes), for you to fill in" });
+        acts.append(d);
+      }
+      if (c.type === "arcgis" && oauthPortal(c)) {
+        const s = button("Sign in", "sm", () => signIn(c.id, s, status), { title: `Sign in to ArcGIS at ${oauthPortal(c)} in your browser` });
+        acts.append(s);
+      }
+      acts.append(button("Edit", "sm", () => openEditor(c)));
+      li.append(text, acts);
       list.append(li);
     }
   };
@@ -149,6 +167,25 @@ async function draftNotes(id, btn, status) {
   }
 }
 
+// Sign in to an ArcGIS connection: after the person confirms at the
+// keyboard, Columbus opens the portal's sign-in page in their browser and
+// keeps the sign-in in the credential store; the page never sees it.
+async function signIn(id, btn, status) {
+  btn.disabled = true;
+  btn.textContent = "Waiting for the browser…";
+  status.textContent = "Sign in on the page that opens in your browser, then come back here.";
+  status.classList.remove("error-text");
+  try {
+    status.textContent = await invoke("settings_arcgis_signin", { id });
+  } catch (e) {
+    status.textContent = String(e);
+    status.classList.add("error-text");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Sign in";
+  }
+}
+
 // ---------- The connection editor (one dialog for the whole window) ----------
 
 function field(label, input, opts = {}) {
@@ -160,17 +197,28 @@ function field(label, input, opts = {}) {
 function buildEditor() {
   const inp = (name, attrs = {}) => h("input", { name, autocomplete: "off", ...attrs });
   const kind = h("select", { name: "kind" },
-    ...Object.entries({ gpkg: "GeoPackage file", filegdb: "File geodatabase (.gdb)", shapefile: "Folder of shapefiles", sqlite: "SQLite file", rasters: "Folder of rasters (GeoTIFF)", postgis: "PostgreSQL / PostGIS", sqlserver: "SQL Server", oracle: "Oracle" })
+    ...Object.entries({ gpkg: "GeoPackage file", filegdb: "File geodatabase (.gdb)", shapefile: "Folder of shapefiles", files: "Folder of files (CSV, Excel, GeoJSON, KML…)", sqlite: "SQLite file", rasters: "Folder of rasters (GeoTIFF)", arcgis: "ArcGIS Online, Portal or Server service", postgis: "PostgreSQL / PostGIS", sqlserver: "SQL Server", oracle: "Oracle" })
       .map(([v, t]) => h("option", { value: v }, t)));
   const ssl = h("select", { name: "sslmode" }, h("option", { value: "" }, "Default (prefer)"), ...["disable", "prefer", "require", "verify-full"].map((v) => h("option", { value: v }, v)));
   const mode = h("select", { name: "mode" }, h("option", { value: "read" }, "Read only"), h("option", { value: "read-write" }, "Read and write (needs edits allowed)"));
   const browse = h("button", { type: "button", id: "browse", class: "btn" }, "Browse…");
+  const auth = h("select", { name: "auth" }, h("option", { value: "none" }, "None (a public service)"), h("option", { value: "oauth" }, "Sign in with ArcGIS (OAuth)"));
+  const recursive = h("input", { type: "checkbox", name: "recursive" });
   const form = h("form", { id: "form", method: "dialog", class: "dlg" },
     h("h2", { id: "editor-h" }, "Add connection"),
     h("div", { class: "grid2" },
       field("Name", inp("conn_id", { required: true, maxlength: "40" }), { help: "How your assistant refers to it, e.g. roads or parcels-pg." }),
       field("Type", kind),
-      field("Location", h("span", { class: "pick" }, inp("path"), browse), { wide: true, for: "gpkg sqlite shapefile filegdb rasters" }),
+      field("Location", h("span", { class: "pick" }, inp("path"), browse), { wide: true, for: "gpkg sqlite shapefile filegdb rasters files" }),
+      h("label", { class: "switch-row wide", "data-for": "files" }, recursive, h("span", {}, h("b", {}, "Read subfolders too."), " Files in the folder's subfolders are datasets as well, named by their path.")),
+      field("Coordinate system", inp("crs", { placeholder: "e.g. EPSG:4326" }), { for: "files", help: "For CSV and Excel geometry, and files without one of their own." }),
+      field("X column", inp("x", { placeholder: "e.g. EASTING" }), { for: "files", help: "With Y: the columns holding coordinates." }),
+      field("Y column", inp("y", { placeholder: "e.g. NORTHING" }), { for: "files" }),
+      field("Service address", inp("url", { placeholder: "https://services.arcgis.com/…/FeatureServer" }), { wide: true, for: "arcgis", help: "A FeatureServer or MapServer, or one layer in it (…/FeatureServer/3). Its host must be on your organization's allowed hosts." }),
+      field("Sign-in", auth, { for: "arcgis" }),
+      field("Features per page", inp("page_size", { type: "number", min: "1", placeholder: "the layer's maximum" }), { for: "arcgis" }),
+      field("Portal", inp("portal", { placeholder: "https://www.arcgis.com" }), { for: "arcgis-oauth", help: "Where you sign in: ArcGIS Online or your organization's portal." }),
+      field("Client id", inp("client_id"), { for: "arcgis-oauth", help: "Your organization's own ArcGIS app (your ArcGIS administrator has it). Not a secret." }),
       field("Host", inp("host"), { for: "postgis sqlserver oracle" }),
       field("Port", inp("port", { type: "number", min: "1", max: "65535" }), { for: "postgis sqlserver oracle" }),
       field("Database", inp("database"), { for: "postgis sqlserver" }),
@@ -196,6 +244,7 @@ function buildEditor() {
   const dlg = h("dialog", { id: "editor", "aria-labelledby": "editor-h" }, form);
   document.body.append(dlg);
   form.kind.addEventListener("change", () => setKind(form.kind.value));
+  form.auth.addEventListener("change", () => setKind(form.kind.value));
   browse.addEventListener("click", async () => {
     try {
       const p = await invoke("settings_pick", { kind: form.kind.value });
@@ -210,10 +259,14 @@ function buildEditor() {
 }
 
 function setKind(kind) {
-  for (const label of $("form").querySelectorAll("[data-for]")) label.hidden = !label.dataset.for.split(" ").includes(kind);
-  $("browse").textContent = ["rasters", "shapefile", "filegdb"].includes(kind) ? "Choose folder…" : "Choose file…";
-  // Shapefiles and file geodatabases are read only here.
-  const ro = kind === "shapefile" || kind === "filegdb";
+  const form = $("form");
+  const kinds = [kind];
+  if (kind === "arcgis" && form.auth.value === "oauth") kinds.push("arcgis-oauth");
+  for (const label of form.querySelectorAll("[data-for]")) label.hidden = !label.dataset.for.split(" ").some((k) => kinds.includes(k));
+  $("browse").textContent = ["rasters", "shapefile", "filegdb", "files"].includes(kind) ? "Choose folder…" : "Choose file…";
+  // Shapefiles, file geodatabases, folders of files and ArcGIS services
+  // are read only here.
+  const ro = ["shapefile", "filegdb", "files", "arcgis"].includes(kind);
   const mode = $("form").mode;
   if (ro) mode.value = "read";
   for (const o of mode.options) if (o.value === "read-write") o.disabled = ro;
@@ -245,8 +298,13 @@ export async function openEditor(c, onSaved) {
   form.conn_id.value = v.id || "";
   form.kind.value = v.type || "gpkg";
   form.kind.disabled = !!c;
-  for (const f of ["path", "host", "database", "dsn", "user", "sslmode", "search_path", "row_filter", "description"]) form[f].value = v[f] || "";
+  for (const f of ["path", "host", "database", "dsn", "user", "sslmode", "search_path", "row_filter", "description", "crs", "x", "y", "url"]) form[f].value = v[f] || "";
   form.port.value = v.port || "";
+  form.recursive.checked = !!v.recursive;
+  form.page_size.value = v.page_size || "";
+  form.auth.value = oauthPortal(v) ? "oauth" : "none";
+  form.portal.value = oauthPortal(v) || "";
+  form.client_id.value = (v.auth && v.auth.client_id) || "";
   form.mode.value = v.mode || "read";
   form.allow.value = ((v.datasets && v.datasets.allow) || ["*"]).join(", ");
   form.deny.value = ((v.datasets && v.datasets.deny) || []).join(", ");
@@ -290,6 +348,15 @@ function formValue() {
     deny: list(form.deny.value),
     row_filter: form.row_filter.value,
     description: form.description.value,
+    recursive: form.recursive.checked,
+    crs: form.crs.value,
+    x: form.x.value,
+    y: form.y.value,
+    url: form.url.value,
+    auth: form.auth.value,
+    portal: form.portal.value,
+    client_id: form.client_id.value,
+    page_size: form.page_size.value ? Number(form.page_size.value) : null,
   };
 }
 
@@ -366,7 +433,8 @@ async function datasets(body) {
       result.className = "small muted";
       result.textContent = "Opening…";
       try {
-        const r = await invoke("settings_test_connection", { form: { existing: true, id: c.id, kind: c.type, path: c.path, host: c.host, port: c.port, database: c.database, dsn: c.dsn, user: c.user, sslmode: c.sslmode, search_path: c.search_path, mode: c.mode, allow: c.datasets.allow, deny: c.datasets.deny, row_filter: c.row_filter, description: c.description, password: null } });
+        const r = await invoke("settings_test_connection", { form: { existing: true, id: c.id, kind: c.type, path: c.path, host: c.host, port: c.port, database: c.database, dsn: c.dsn, user: c.user, sslmode: c.sslmode, search_path: c.search_path, mode: c.mode, allow: c.datasets.allow, deny: c.datasets.deny, row_filter: c.row_filter, description: c.description, password: null,
+          recursive: !!c.recursive, crs: c.crs, x: c.x, y: c.y, url: c.url, auth: oauthPortal(c) ? "oauth" : "none", portal: oauthPortal(c), client_id: c.auth && c.auth.client_id, page_size: c.page_size } });
         result.textContent = r.message;
         result.className = r.ok ? "small" : "small error-text";
       } catch (e) {

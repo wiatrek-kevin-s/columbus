@@ -1,0 +1,15 @@
+# An ArcGIS Online, Portal or ArcGIS Server service (arcgis connection).
+# Read-only. url is a FeatureServer or MapServer, or one layer in it ending
+# /<n>; each layer and table is a dataset under its published name (two
+# with the same name become <name>_<layer id>). Organization policy must
+# list "arcgis" in connection_types and the service's host in hosts.
+# auth defaults to none (a public service); page_size defaults to the
+# layer's maxRecordCount. The row filter is parsed when the connection is
+# loaded and every request carries it, rebuilt, in parentheses.
+id: roads-agol
+type: arcgis
+url: https://services.arcgis.com/abc/arcgis/rest/services/Roads/FeatureServer
+description: Public roads layers (ArcGIS Online)
+row_filter: "DISTRICT = 14"
+datasets:
+  allow: ["*"]

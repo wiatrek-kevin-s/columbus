@@ -299,6 +299,10 @@ pub struct ConnectionCard {
     pub status: String,
     /// Whether the engines can query this connection type yet.
     pub engine_ready: bool,
+    /// ArcGIS connections that sign in (`auth: oauth`): whether the person
+    /// has signed in (`columbus-mcp arcgis signin <id>`). Never the token.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signed_in: Option<bool>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -1122,6 +1126,7 @@ impl State {
         live.unsettled_since = None;
         live.stalled = false;
         live.digest = digest;
+        let mut signed_out: Vec<String> = Vec::new();
         let outcome = match read {
             Err(e) => {
                 let why = format!(
@@ -1157,6 +1162,15 @@ impl State {
                         everything || narrowed.contains(&columbus_flow::connection_label(&c.id))
                     })
                     .map(|c| files_cache_path(&self.paths.workspaces, &c.id))
+                    .collect();
+                // A deleted ArcGIS connection loses its sign-in (F-3b).
+                signed_out = live
+                    .settings
+                    .connections
+                    .iter()
+                    .filter(|c| crate::arcgis::is_arcgis(&c.kind))
+                    .filter(|c| !new.connections.iter().any(|n| n.id == c.id))
+                    .map(|c| c.id.clone())
                     .collect();
                 let shrank = limits_shrank(&live.settings.policy, &new.policy);
                 live.policy_required |= new.source.found;
@@ -1203,6 +1217,21 @@ impl State {
             }
         };
         drop(live);
+        for id in signed_out {
+            // Its non-secret record of when the sign-in ends goes too.
+            if let Err(e) = crate::arcgis_auth::forget_state(&self.paths.connections, &id) {
+                tracing::warn!(
+                    "{id} was deleted, but its ArcGIS sign-in record could not be removed: {e}"
+                );
+            }
+            match crate::arcgis_auth::sign_out(&self.secrets, &id) {
+                Ok(true) => tracing::info!("{id} was deleted, so its ArcGIS sign-in was removed"),
+                Ok(false) => {}
+                Err(e) => tracing::warn!(
+                    "{id} was deleted, but its ArcGIS sign-in could not be removed: {e}"
+                ),
+            }
+        }
         self.audit_reload(&outcome);
         Some(outcome)
     }
@@ -1729,7 +1758,13 @@ impl Gateway {
                         Ok(_) => "ok".into(),
                         Err(e) => e.to_string(),
                     },
-                    engine_ready: Self::engine_ready(&c.kind),
+                    engine_ready: Self::engine_ready(&c.kind) || crate::arcgis::is_arcgis(&c.kind),
+                    signed_in: (crate::arcgis::is_arcgis(&c.kind)
+                        && c.auth
+                            .as_ref()
+                            .and_then(columbus_shared::policy::ArcgisAuth::oauth)
+                            .is_some())
+                    .then(|| crate::arcgis_auth::signed_in(&self.state.secrets, &c.id)),
                 }
             })
             .collect()
@@ -2393,7 +2428,7 @@ impl Gateway {
             query_seconds: Some(access.limits.max_seconds()),
             rows_returned_per_call: access.return_rows,
             expires: conn.expires.map(|d| d.to_string()),
-            engine_ready: Self::engine_ready(&conn.kind),
+            engine_ready: Self::engine_ready(&conn.kind) || crate::arcgis::is_arcgis(&conn.kind),
             data_group_datasets: (!self.state.scope.data_groups.is_empty()).then(|| {
                 // Each dataset the groups name on this connection, as it is
                 // read here: whether the connection allows it at all, and
@@ -2438,7 +2473,7 @@ impl Gateway {
             Ok(v) => v,
             Err(e) => return Err(self.deny(&ctx, rec, e)),
         };
-        if !Self::engine_ready(&conn.kind) {
+        if !Self::engine_ready(&conn.kind) && !crate::arcgis::is_arcgis(&conn.kind) {
             return Err(self.deny(
                 &ctx,
                 rec,
@@ -2461,23 +2496,29 @@ impl Gateway {
             return Ok(out(result));
         }
         let timeout = access.limits.max_seconds();
-        let handle = match self.handle(&conn) {
-            Ok(h) => h,
-            Err(e) => return Err(self.deny(&ctx, rec, e)),
+        let reply = if crate::arcgis::is_arcgis(&conn.kind) {
+            // The gateway reads the service itself (Part 4).
+            self.arcgis_list(&access, &conn)
+                .await
+                .map(|d| json!({"datasets": d}))
+        } else {
+            let handle = match self.handle(&conn) {
+                Ok(h) => h,
+                Err(e) => return Err(self.deny(&ctx, rec, e)),
+            };
+            self.state
+                .worker
+                .core(
+                    "list_datasets",
+                    json!({"connection": handle, "timeout_s": timeout, "schemas": Self::listed_schemas(&conn)}),
+                    Duration::from_secs(timeout + 10),
+                )
+                .await
+                .map_err(Self::worker_error)
         };
-        let reply = self
-            .state
-            .worker
-            .core(
-                "list_datasets",
-                json!({"connection": handle, "timeout_s": timeout, "schemas": Self::listed_schemas(&conn)}),
-                Duration::from_secs(timeout + 10),
-            )
-            .await;
         let reply = match reply {
             Ok(v) => v,
-            Err(e) => {
-                let msg = Self::worker_error(e);
+            Err(msg) => {
                 self.audit(
                     &ctx,
                     AuditRecord {
@@ -3045,6 +3086,10 @@ impl Gateway {
             Ok(v) => v,
             Err(e) => return Err(self.deny(&ctx, rec, e)),
         };
+        if crate::arcgis::is_arcgis(&conn.kind) {
+            // R-12: an ArcGIS service takes no SQL.
+            return Err(self.deny(&ctx, rec, crate::arcgis::sql_unsupported(&conn)));
+        }
         let max_rows = access.limits.max_rows();
         let cols = match self.table_columns(&access, &conn).await {
             Ok(c) => c,

@@ -306,7 +306,8 @@ async fn test_connection(
     let settings = s.settings();
     let access = EffectiveAccess::resolve(&settings.policy, &conn, &s.scope, chrono::Utc::now())
         .map_err(|e| fail(format!("Columbus would refuse this connection: {e}")))?;
-    if !crate::server::Gateway::engine_ready(&conn.kind) {
+    let arcgis = crate::arcgis::is_arcgis(&conn.kind);
+    if !crate::server::Gateway::engine_ready(&conn.kind) && !arcgis {
         return Err(fail(format!(
             "Columbus cannot open {} connections yet, so it cannot test this one",
             conn.kind
@@ -317,6 +318,21 @@ async fn test_connection(
         let names = datasets
             .iter()
             .filter_map(|d| d.get("name").and_then(Value::as_str).map(String::from))
+            .collect();
+        (names, total)
+    } else if arcgis {
+        // A public service needs no sign-in; the gateway reads its layer
+        // list itself, under the host rule (Part 4, R-14 messages).
+        let all = crate::server::Gateway::with_state(s.clone())
+            .arcgis_list(&access, &conn)
+            .await
+            .map_err(fail)?;
+        let total = all.len();
+        let names = all
+            .iter()
+            .filter_map(|d| d.get("name").and_then(Value::as_str))
+            .filter(|n| access.dataset_allowed(n))
+            .map(String::from)
             .collect();
         (names, total)
     } else {
