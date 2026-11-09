@@ -27,7 +27,7 @@ from pathlib import Path
 
 # Central Austin: downtown, the university, East Austin, and IH 35 and
 # MoPac through them (lon/lat, WGS 84).
-BBOX = (-97.775, 30.240, -97.690, 30.320)
+BBOX = (-97.790, 30.220, -97.670, 30.340)
 TIGER = "https://www2.census.gov/geo/tiger/TIGER2024/{layer}/tl_2024_48453_{name}.zip"
 FARS = "https://static.nhtsa.gov/nhtsa/downloads/FARS/{year}/National/FARS{year}NationalCSV.zip"
 YEARS = [2020, 2021, 2022, 2023]
@@ -58,7 +58,9 @@ def fars(tmp):
         with zipfile.ZipFile(z) as zf:
             name = next(n for n in zf.namelist() if n.lower().rsplit("/", 1)[-1] == "accident.csv")
             text = io.TextIOWrapper(zf.open(name), encoding="latin-1")
-            for r in csv.DictReader(text):
+            for raw in csv.DictReader(text):
+                # Some years start with a byte-order mark (read as latin-1).
+                r = {k.replace("\ufeff", "").replace("ï»¿", "").strip().upper(): v for k, v in raw.items() if k}
                 if r["STATE"] != "48" or r["COUNTY"] != "453":
                     continue
                 try:
