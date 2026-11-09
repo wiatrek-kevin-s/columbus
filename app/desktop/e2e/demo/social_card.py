@@ -36,7 +36,7 @@ p.foot {{ font-size: 22px; color: #9fc4ea; margin: 40px 0 0; }}
 <div class="text">
   <div class="brand"><img src="{data_url(IMAGES / 'logo.svg', 'image/svg+xml')}" alt=""><h1>Columbus</h1></div>
   <p class="pitch">Let AI work on your organization's GIS data, under your rules, on your computer.</p>
-  <p class="foot">Oracle · SQL Server · file geodatabases · ArcGIS · Excel</p>
+  <p class="foot">Oracle · SQL Server · geodatabases · ArcGIS</p>
 </div>
 <div class="shot"><img src="{data_url(IMAGES / 'hero-light.png', 'image/png')}" alt=""></div>
 </body></html>"""

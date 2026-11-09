@@ -1,151 +1,112 @@
 <p align="center">
-  <img src="docs/images/logo.svg" alt="Columbus" width="96">
+  <img src="docs/images/logo.svg" alt="Columbus logo" width="88">
 </p>
 
 <h1 align="center">Columbus</h1>
 
 <p align="center">
-  <b>A governed GIS workbench for working with AI.</b><br>
-  Your assistant reads, checks and maps your data under your organization's rules, and nothing changes or leaves your computer without you.
+  <b>Let AI work on your organization's GIS data, under your rules, on your computer.</b>
 </p>
 
 <p align="center">
-  <a href="https://github.com/wiatrek-kevin-s/columbus/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/wiatrek-kevin-s/columbus/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://github.com/wiatrek-kevin-s/columbus/actions/workflows/ci.yml"><img alt="CI status" src="https://github.com/wiatrek-kevin-s/columbus/actions/workflows/ci.yml/badge.svg"></a>
   <a href="https://github.com/wiatrek-kevin-s/columbus/releases"><img alt="Latest release" src="https://img.shields.io/github/v/release/wiatrek-kevin-s/columbus?include_prereleases&label=release"></a>
-  <img alt="Platforms" src="https://img.shields.io/badge/platforms-macOS%20%7C%20Windows-blue">
-  <img alt="Built with Rust and Python" src="https://img.shields.io/badge/built%20with-Rust%20%2B%20Python-orange">
+  <img alt="Platforms: macOS, Windows, Linux server" src="https://img.shields.io/badge/platforms-macOS%20%7C%20Windows%20%7C%20Linux%20server-blue">
   <a href="LICENSE"><img alt="License: Apache 2.0" src="https://img.shields.io/badge/license-Apache--2.0-green"></a>
 </p>
 
 <p align="center">
   <a href="https://github.com/wiatrek-kevin-s/columbus/releases/latest"><b>Download</b></a> ·
-  <a href="docs/install-macos.md">Install on a Mac</a> ·
-  <a href="docs/install.md">Install on Windows</a> ·
-  <a href="docs/reference.md">Technical reference</a>
+  <a href="#get-started"><b>Get started</b></a> ·
+  <a href="docs/reference.md"><b>Docs</b></a>
 </p>
 
 <p align="center">
-  <img src="docs/images/chat.png" alt="A chat in the Columbus app: the assistant reads crash and road layers, looks at them on a map, and answers with a table; the map and the layers' checks are beside the chat" width="900"><br>
-  <sub>A chat in the Columbus app. The assistant read two layers, looked at them on a map to check that they line up, and answered. The map, the layers and their checks are beside the chat.</sub>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/hero-dark.png">
+    <img src="docs/images/hero-light.png" width="900" alt="The Columbus app. On the left, a chat: the analyst asks which fatal crashes from 2020 to 2023 happened within 150 feet of IH 35 in central Austin; the assistant reads the crash records and the street centerlines, draws a corridor, keeps the crashes inside it and answers with a table by year. On the right, a street map of central Austin with the IH 35 corridor and the counted crashes highlighted, and each layer marked Checks passed.">
+  </picture>
+  <br><sub>A question about real public data for Austin, Texas, answered in the Columbus app. Every layer is checked, and the map shows what was counted.</sub>
 </p>
 
 > [!WARNING]
-> **Test releases.** Columbus is young software, built mostly by an AI model (see [Disclaimer](#disclaimer)). Try it on data you can afford to have read, and have your organization review it before using it on production or sensitive data.
+> **Columbus is a test release, built mostly by an AI.** Try it on data you can afford to have read, and have your organization review it before using it on production or sensitive data ([disclaimer](#disclaimer)).
 
-## Why Columbus
+## What it does
 
-- **Your AI, your data, your rules.** Use Columbus from Claude desktop or any other AI app that speaks MCP, or from its own chat with your Anthropic API key. Whatever the AI asks for, Columbus decides in its own code (not in a prompt) what it may read and do.
-- **Read-only by default.** Every connection is read-only until your organization's settings allow edits, and even then each change set is shown to you before anything is written.
-- **Nothing leaves or changes without you.** Exports, edits, scripts and downloads wait for your yes. Approvals are bound to the exact request, single-use, and expire.
-- **Every result is checked.** Row counts, CRS and units, geometry validity, row limits and filters come back with every result as checks: passed, to review, or failed. A failed check blocks exports until you decide.
-- **It shows its work.** Every output has a provenance record (inputs, steps, checks), and every call, including refusals, is a line in a hash-chained audit log on your computer.
-- **Local and private.** Columbus runs on your computer. Your data goes to the AI service you chose, and only the rows the rules let it see. Columbus itself sends nothing anywhere: no telemetry, no account.
+- **Reaches all your data.** Oracle and SQL Server geodatabases, file geodatabases and shapefiles, ArcGIS Online and Portal layers, CSV and Excel, GeoPackage, PostGIS and rasters. You add each one once, in the app.
+- **Keeps your rules, in code.** Every connection is read-only unless your organization allows edits. Row filters and hidden fields apply before the AI sees anything. Exports, edits and scripts wait for your yes, unless you approved them ahead of time (a pre-approved folder, a tool you installed). Every step is logged on your computer.
+- **Does real GIS work.** Queries, joins, buffers and overlays, raster analysis, your own Python, and ArcGIS Pro's arcpy (experimental). Every result comes back with checks (row counts, coordinate systems, valid shapes), and jobs you repeat become scheduled workflows.
 
-## A tour
+## See it work
+
+<p align="center">
+  <picture>
+    <source type="image/webp" srcset="docs/images/demo.webp">
+    <img src="docs/images/demo.gif" width="900" alt="A short animation of the Columbus app: the analyst types a question; the assistant reads two layers, which appear on the map; the checks pass and it answers with a table; asked to export, Columbus shows a request with exactly what will be written and where; the analyst allows it once and the export is done.">
+  </picture>
+  <br><sub>Ask, read, map, check. The export waits until you allow it.</sub>
+</p>
+
+## How it works
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/how-it-works-dark.svg">
+    <img src="docs/images/how-it-works-light.svg" width="900" alt="Diagram: your AI app (Columbus's own chat, Claude, Copilot or any app that speaks MCP) asks Columbus. Columbus, on your computer, applies the rules, the approvals, and the checks and log. Then it reads your data (Oracle, SQL Server, file geodatabases, shapefiles, ArcGIS Online and Portal, CSV, Excel, GeoPackage, rasters, PostGIS) or runs your Python (the GIS engine, your environments, ArcGIS Pro's arcpy).">
+  </picture>
+</p>
+
+Your AI app never touches your data directly. It asks Columbus, through MCP (the standard way AI apps call tools), and Columbus decides in its own code what it may read and do. Columbus runs on your computer, with no account and no telemetry. Your data goes only to the AI service you chose, and only the rows your rules allow.
+
+## Get started
+
+1. **Download** the [latest release](https://github.com/wiatrek-kevin-s/columbus/releases/latest): the Columbus app, the Claude extension (`.mcpb`) and the server folder (`.zip`).
+2. **Set up the GIS engine** once, from the server folder: `sh engine/setup-engine.sh` on a Mac, `engine\setup-engine.ps1` on Windows.
+3. **Connect an AI.** Install the extension in Claude desktop, or add your Anthropic API key in the app under **Settings › Models and accounts**.
+4. **Add a connection and ask.** In the app, **Connections › Add connection** (a GeoPackage or a file geodatabase is the quickest start). Then ask, for example: *Check the parcels layer for invalid geometries and show me where they are.*
+
+Step by step: [Windows 10 and 11](docs/install.md) · [Mac](docs/install-macos.md) (Apple Silicon, macOS 15 or later). The app is not code-signed yet, so Windows and macOS warn the first time; the guides say what to do.
+
+## A short tour
 
 <table>
   <tr>
-    <td width="50%"><img src="docs/images/chat.png" alt="Chat with the map beside it"><br><b>Chat</b>: the assistant's steps fold into short lines with check badges; the map and table sit beside it.</td>
-    <td width="50%"><img src="docs/images/chat-map-first.png" alt="Map first layout"><br><b>Map first</b>: one click puts the map in the middle and the chat on the side, for reviewing results.</td>
+    <td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/tour-connections-dark.png"><img src="docs/images/tour-connections-light.png" alt="The Connections page listing an Oracle enterprise geodatabase, a file geodatabase, a folder of crash records, a GeoPackage of streets and an ArcGIS Online layer, each read only, with what the assistant may see in plain words."></picture><br><b>Connections.</b> Each source, and in plain words what the AI may see.</td>
+    <td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/tour-approval-dark.png"><img src="docs/images/tour-approval-light.png" alt="An export request in the chat, showing the layer, the folder and the file it will write, with Allow once and Deny buttons."></picture><br><b>Approvals.</b> An export shows exactly what it will write, and where.</td>
   </tr>
   <tr>
-    <td><img src="docs/images/approval.png" alt="An export waiting for approval in the chat"><br><b>Approvals</b>: an export to a folder that isn't pre-approved waits for you, with exactly what it will write and where.</td>
-    <td><img src="docs/images/home.png" alt="Home page"><br><b>Home</b>: what needs you, from every chat and AI app on this computer: requests, notes in draft, tools and workflows to review.</td>
-  </tr>
-  <tr>
-    <td><img src="docs/images/workflow-review.png" alt="Reviewing a workflow before approving it"><br><b>Workflows</b>: a job your assistant proposed, in plain words and in full, approved once with Touch ID or Windows Hello.</td>
-    <td><img src="docs/images/workflow-run.png" alt="A workflow run's report"><br><b>Workflow runs</b>: each run's report: steps, row counts, checks and what was exported.</td>
-  </tr>
-  <tr>
-    <td><img src="docs/images/tool-review.png" alt="Reviewing a tool before installing it"><br><b>Your own tools</b>: a script your assistant packaged as a tool, read line by line before you install it.</td>
-    <td><img src="docs/images/connections.png" alt="Connections page"><br><b>Connections</b>: your databases and files, and in plain words what the assistant may see in each.</td>
-  </tr>
-  <tr>
-    <td><img src="docs/images/audit.png" alt="Audit log viewer"><br><b>Audit log</b>: every call any assistant made through Columbus, and every decision, with a check of the chain.</td>
-    <td><img src="docs/images/settings.png" alt="Models and accounts settings"><br><b>Settings</b>: the AI for chats (model and thinking level), the server and engine in use, and your organization's switches.</td>
+    <td><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/tour-workflow-run-dark.png"><img src="docs/images/tour-workflow-run-light.png" alt="The Workflows page with a weekly crash check and the report of its last run: steps, row counts, checks and the exported files."></picture><br><b>Workflows.</b> A repeated job, run on a schedule, with a report each time.</td>
+    <td><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/tour-checks-dark.png"><img src="docs/images/tour-checks-light.png" alt="The map in front, with a layer's details open: its checks, the datasets it was made from and its provenance record."></picture><br><b>Checks and provenance.</b> Each result, what it was made from, and how.</td>
   </tr>
 </table>
 
-Every screenshot is taken from the app itself by a script ([`app/desktop/e2e/screenshots.py`](app/desktop/e2e/screenshots.py)), on made-up data around Austin, Texas.
+More pages in the [app tour](docs/app-tour.md). Every picture is taken from the app by a script ([`screenshots.py`](app/desktop/e2e/screenshots.py)) on [public data](docs/images/DATA-CREDITS.md).
 
-## The app, page by page
+## What's in 0.14
 
-The Columbus app is one window with a menu down the side.
+- **Folders of files:** CSV, Excel, GeoJSON, GeoParquet, KML and FlatGeobuf, with the same rules as a GeoPackage.
+- **ArcGIS Online and Portal layers**, public or signed in with your organization's own ArcGIS app. The AI never sees the sign-in.
+- **Your own Python environments** for scripts, sandboxed by default.
+- **arcpy in trusted environments** (*experimental*: not yet checked on a real ArcGIS Pro computer).
+- **File geodatabase and GeoTIFF exports**, and measures (M values) kept end to end for linear referencing.
+- **Web map layers** (imagery and other services) on your map, for display only.
+- **Reviewing results:** open a workflow run in a chat, zoom to a row, measure on the map.
 
-| Page | What it is for |
-| --- | --- |
-| **Home** | What needs you right now: requests waiting for a decision, notes in draft, tools and workflows to review, recent chats. The first time, a short setup checklist (connect an AI, set up the GIS engine, add a connection). |
-| **Chats** | Your conversations in the app, saved and searchable (**Ctrl+K** / **⌘K**), and the sessions other AI apps (Claude desktop) run through Columbus, with what they did and their map. A chat opens with the map and table beside it; choose its model and thinking level below the message box. |
-| **Projects** | A piece of work with its own instructions for the assistant, the connections its chats may use, a default export folder and its project databases. |
-| **Documents** | Notes Columbus drafted from your databases (fields, codes, relationships), which you fill in and **Mark reviewed**, and your organization's context pack, read only. |
-| **Data groups** | Named sets of datasets across connections, each with an optional row filter; attached to a project, its chats see only those rows. |
-| **Skills** | The GIS skills your assistant reads: when to use which tool, and how. Skills are advice; they never grant access. |
-| **Connections** | Add, test and edit GeoPackages, SQLite files, shapefiles, file geodatabases, raster folders, folders of files (CSV, Excel, GeoJSON, GeoParquet, KML, FlatGeobuf), ArcGIS Online and Portal services (with **Sign in**) and databases (PostGIS, Oracle, SQL Server), each with its mode (read-only or read-write), allowed datasets, row filter and limits. Anything that gives the assistant more access asks for Touch ID or Windows Hello. **Draft notes** writes a note about a connection's datasets for you to review. **Map layers** adds imagery and other web services to your map (display only; the assistant never sees them). |
-| **Registry** | The open geospatial registry: open data by place and theme, and GIS tools, searched through Columbus. |
-| **Tools** | Tools your assistant made from its scripts. You read each one, code and all, and install it; installed tools run without asking, in the same sandbox as scripts. |
-| **Workflows** | Jobs that run by themselves on a schedule: proposed by your assistant, approved by you, with **Run now**, **Pause**, and every run's report. Optionally an AI review of the results against your criteria. |
-| **Activity** | The **approvals inbox** across every session, the **audit log** (filter by app, tool and decision; verify the chain), and **exports**. |
-| **Settings** | The AI for chats (API key, model, thinking level), the Columbus server and GIS engine in use, your Python environments, theme, privacy, keyboard, and your organization's settings in plain sentences. |
+Files and upgrade steps: [release notes](https://github.com/wiatrek-kevin-s/columbus/releases) · Everything Columbus does: [capabilities](docs/capabilities.md).
 
-## What it can do
+## Learn more
 
-| Area | Highlights |
-| --- | --- |
-| **Data** | GeoPackage, SQLite, shapefiles, file geodatabases, raster folders, folders of CSV, Excel, GeoJSON, GeoParquet, KML and FlatGeobuf files, ArcGIS Online/Portal layers (public or signed in); PostGIS, Oracle and SQL Server (read-only, or read-write when allowed); datasets allowed by name or pattern; row filters and hidden fields applied in the server; limits on rows and time. |
-| **Analysis** | `query_features`, checked SQL (`sql_select`), vector operations (reproject, buffer, simplify, make valid, clip, dissolve, intersect, attribute and spatial joins), raster operations, verification checks; results are workspace layers passed by handle, never pasted into the chat. |
-| **Looking** | The map and table beside each chat; `map_snapshot` lets the assistant look at its layers as a picture (geometry only, no basemap, nothing downloaded) to spot slivers, gaps and layers that don't line up. |
-| **Big tables** | Raised limits (up to 20 million rows per query, by your organization), results streamed to disk, and project databases (DuckDB) to load several tables into and join with SQL. |
-| **Approvals** | Exports, edits, scripts, downloads and sending data to connected servers wait for you: in your AI app's own prompt, in the Columbus app's chat, or on a local approvals page. Bound to the exact request, single-use, expiring. |
-| **Your tools** | Save a script as a tool (`propose_tool`): checked, test-run in the sandbox, read and installed by you, then reusable by any assistant. |
-| **Workflows** | Save a job as a workflow (`propose_workflow`): reading and checking steps, the connections it may read, a schedule (launchd on macOS, Task Scheduler on Windows), results to an export folder, an optional AI review. Never waits for you: anything that needs approval stops it with "needs you". |
-| **Connected servers** | Other MCP servers (Drive, notes, vendor APIs) behind Columbus, reviewed and pinned by manifest, confined, with data-flow rules on what may be sent where. |
-| **Context** | Your organization's context pack (datasets, domains, LRS, SOPs, delivery specs) and your own notes, searchable by the assistant. |
-| **Audit** | One hash-chained line per call, including refusals; `columbus-mcp audit verify`; the app's viewer. |
-| **Platforms** | macOS 15 or later (Apple Silicon) and Windows 10/11. The server also builds and runs on Linux. |
-
-## Get Columbus
-
-Download from the [latest release](https://github.com/wiatrek-kevin-s/columbus/releases/latest):
-
-- **Mac (Apple Silicon, macOS 15 or later):** the Claude extension (`.mcpb`), the Columbus app (`.dmg`), and, the first time, the server folder (`.zip`) to set up the GIS engine. Follow the [Mac install guide](docs/install-macos.md).
-- **Windows 10 and 11:** the Claude extension (`.mcpb`), the Columbus app (`-setup.exe`, or `.msi` for IT), and, the first time, the server folder (`.zip`). Follow the [Windows install guide](docs/install.md).
-
-The release notes on each release have the exact files and update steps. The app is not code-signed yet, so macOS and Windows warn the first time; the guides say what to do.
-
-## Quick start
-
-1. **Set up the GIS engine** once, from the server folder: `engine/setup-engine.sh` (Mac) or `engine\setup-engine.ps1` (Windows).
-2. **Connect an AI.** Either install the `.mcpb` extension in Claude desktop, or open the Columbus app and add your Anthropic API key under **Settings › Models and accounts**.
-3. **Add a connection** in the app (**Connections › Add connection**): a GeoPackage is the quickest start.
-4. **Ask.** For example:
-   - *Which datasets can I use, and what CRS are they in?*
-   - *Check the parcels layer for invalid or empty geometries and show me where they are.*
-   - *Make what we just did a workflow that runs every weekday at 6.*
-
-From the command line, `columbus-mcp --version` prints the server's version, `columbus-mcp workflow list` lists your workflows, and `columbus-mcp audit verify <file>` checks an audit log. See the [technical reference](docs/reference.md#build-and-run) to build from source.
-
-## How it is built
-
-| Part | Folder | Job |
-| --- | --- | --- |
-| **Gateway** (`columbus-mcp`) | [`crates/gateway`](crates/gateway) | The MCP server: tools, policy, approvals, audit, provenance, the approvals page, the workflow runner |
-| **Shared rules** | [`crates/shared`](crates/shared) | Policy, access, SQL checking, approvals, audit chain, personal tools and workflows on disk |
-| **Broker and flows** | [`crates/broker`](crates/broker), [`crates/flow`](crates/flow) | Connected MCP servers, their manifests, and data-flow rules |
-| **Sandbox** | [`crates/confine`](crates/confine) | Confinement for scripts, tools and connected servers (Seatbelt on macOS, AppContainer and job objects on Windows, Landlock and seccomp on Linux) |
-| **Chat** | [`crates/chat`](crates/chat) | The app's own chat with the Anthropic API |
-| **GIS engine** | [`workers/python`](workers/python) | geopandas, pyogrio, shapely, pyproj, rasterio and DuckDB, as a worker the gateway drives |
-| **Desktop app** | [`app/desktop`](app/desktop) | Tauri 2 (Rust) with a plain HTML/JS interface |
-| **Map page** | [`app/ui`](app/ui) | MapLibre map and table, served by the gateway, shown beside each chat |
-| **Skills** | [`skills`](skills) | GIS skills for assistants, checked against the server's tool names |
-
-The rules live in the gateway; the app adds no rules of its own. The [technical reference](docs/reference.md) has the details: what is enforced and how, confinement levels, connected servers, the context pack, tests and honest limits.
+- [Technical reference](docs/reference.md): every rule, and how it is enforced.
+- [How Columbus is built](docs/architecture.md) and [what it can do](docs/capabilities.md).
+- [Install on Windows](docs/install.md) · [Install on a Mac](docs/install-macos.md) · [Optional manual checks](docs/manual-checks.md).
+- [GIS skills](skills/README.md) for assistants · [example settings](examples).
+- [Security policy](SECURITY.md) · [Contributing](CONTRIBUTING.md).
 
 ## Disclaimer
 
-Columbus is built primarily by **Claude, an AI model made by Anthropic**, working under the direction of its owner, a GIS analyst rather than a software engineer. Its design, code, tests and documentation were written largely by AI, and its security relies on automated tests (on macOS, Windows and Linux) and on independent AI security reviews of each change, **not on a professional human security audit**.
-
-It is offered as test releases, as is, without warranty (see the [license](LICENSE)). Do not rely on it to protect sensitive data, or use it on production systems, until your organization has reviewed it. AI assistants that use Columbus can make mistakes; check their results, which is what Columbus's checks, provenance and approvals are there to help you do.
+Columbus is built mostly by Claude, an AI model made by Anthropic, directed by its owner, a GIS analyst rather than a software engineer. Its security rests on automated tests on macOS, Windows and Linux and on AI reviews of each change, not on a professional human audit. It is offered as test releases, as is, without warranty. Don't rely on it to protect sensitive data, or use it on production systems, until your organization has reviewed it. AI assistants make mistakes: check their results, which is what Columbus's checks, approvals and provenance are for.
 
 ## License
 
-[Apache License 2.0](LICENSE).
+[Apache License 2.0](LICENSE). The sample data in the pictures is public US government data ([credits](docs/images/DATA-CREDITS.md)).
