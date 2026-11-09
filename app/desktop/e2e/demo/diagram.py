@@ -38,7 +38,7 @@ def svg(c):
     # 1. The AI app.
     parts.append(box(10, 95, 200, 140, c["box"], c["line"]))
     parts.append(text(110, 128, "Your AI app", 16, 600, anchor="middle"))
-    parts.append(lines(30, 158, ["Columbus's own chat,", "Claude, Copilot, or any", "app that speaks MCP"]))
+    parts.append(lines(30, 158, ["Columbus's own chat,", "Claude, Copilot, or", "another AI app"]))
     parts.append(arrow(210, 165, 290, 165, "asks", 155))
     # 2. Columbus.
     parts.append(box(290, 20, 310, 290, c["accent_bg"], c["accent"], 14))
@@ -63,7 +63,7 @@ def svg(c):
     parts.append(lines(700, 74, ["Oracle and SQL Server", "File geodatabases, shapefiles", "ArcGIS Online and Portal", "CSV, Excel, GeoPackage", "Rasters, PostGIS"], 12, 19))
     parts.append(box(680, 195, 230, 115, c["box"], c["line"]))
     parts.append(text(700, 223, "Your Python", 16, 600))
-    parts.append(lines(700, 249, ["The GIS engine (GeoPandas,", "GDAL), your environments,", "ArcGIS Pro's arcpy (experimental)"], 12, 19))
+    parts.append(lines(700, 249, ["Columbus's GIS tools, your", "own Python setups, and", "ArcGIS Pro's arcpy (experimental)"], 12, 19))
     parts.append("</svg>")
     return "".join(parts)
 
