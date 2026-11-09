@@ -130,6 +130,18 @@ fn setup() -> Env {
 }
 
 async fn start(root: &Path, py: &str) -> RunningService<RoleClient, ()> {
+    start_with(root, py, &[]).await
+}
+
+async fn start_with(
+    root: &Path,
+    py: &str,
+    extra: &[(&str, &str)],
+) -> RunningService<RoleClient, ()> {
+    let extra: Vec<(String, String)> = extra
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
     let worker = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../workers/python/columbus_worker.py")
         .canonicalize()
@@ -148,6 +160,9 @@ async fn start(root: &Path, py: &str) -> RunningService<RoleClient, ()> {
                 .env("COLUMBUS_LOG", "warn")
                 .env("COLUMBUS_COMPANION", "off")
                 .env("COLUMBUS_APPROVALS_BROWSER", "none");
+            for (k, v) in &extra {
+                cmd.env(k, v);
+            }
         }),
     )
     .unwrap();
@@ -700,4 +715,230 @@ async fn the_old_file_type_in_policy_allows_files_connections() {
     .await);
     c.cancel().await.unwrap();
     assert_eq!(std::fs::read(root.join("policy.yaml")).unwrap(), before);
+}
+
+/// R-101: a file over the size limit is listed under `skipped` with its
+/// size and the fix (R-14), naming it is refused with that reason, and the
+/// rest of the folder works.
+#[tokio::test]
+async fn a_file_over_the_size_limit_is_refused_plainly_and_the_rest_works() {
+    let Some(py) = python() else {
+        eprintln!("skipping: the GIS engine is not installed");
+        return;
+    };
+    let env = setup();
+    let mut big = String::from("ID,STATUS,lon,lat\n");
+    for i in 0..4000 {
+        big.push_str(&format!("{i},A,-97.{:03},30.{:03}\n", i % 1000, i % 997));
+    }
+    std::fs::write(env.root.join("drops/big.csv"), &big).unwrap();
+    // One limit for every format, 50 KB, so a ~100 KB file is over it.
+    let c = start_with(&env.root, &py, &[("COLUMBUS_FILES_MAX_MB", "0.05")]).await;
+
+    let l = ok(&call(&c, "list_datasets", json!({"connection": "drops"})).await);
+    assert_eq!(names(&l), ["roads_v2"], "{l}");
+    let s = l["result"]["skipped"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["file"] == "big.csv")
+        .unwrap_or_else(|| panic!("big.csv not under skipped: {l}"))
+        .clone();
+    let reason = s["reason"].as_str().unwrap();
+    assert!(reason.starts_with("it is "), "{reason}");
+    assert!(
+        reason.contains(" KB, more than the 51 KB Columbus converts from one .csv file; split it into smaller files, or convert it to a GeoPackage"),
+        "{reason}"
+    );
+    let e = err(&call(
+        &c,
+        "query_features",
+        json!({"connection": "drops", "dataset": "big"}),
+    )
+    .await);
+    assert!(e.contains("big.csv is not offered: it is "), "{e}");
+    let r = ok(&call(
+        &c,
+        "query_features",
+        json!({"connection": "drops", "dataset": "roads_v2"}),
+    )
+    .await);
+    assert_eq!(r["result"]["layer"]["summary"]["rows"], 1, "{r}");
+    c.cancel().await.unwrap();
+}
+
+/// R-101, the review's F-1: a CSV of a few hundred MB in a files folder,
+/// with the engine under a memory cap (`ulimit -v`): listing and querying
+/// it work, the engine's peak memory stays far below the file's size, the
+/// folder's other file stays usable; and an engine stopped while
+/// converting gives the plain message (R-14). Linux only (the cap and
+/// /proc); marked ignored for its size and time, and run by CI's Rust
+/// (ubuntu-latest) job with `--ignored`.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+#[ignore]
+async fn large_csv_is_streamed_into_the_cache_under_a_memory_cap() {
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+
+    let Some(py) = python() else {
+        eprintln!("skipping: the GIS engine is not installed");
+        return;
+    };
+    let env = setup();
+    let root = &env.root;
+    std::fs::create_dir_all(root.join("big")).unwrap();
+    let file = root.join("big/crashes.csv");
+    let mut w = std::io::BufWriter::new(std::fs::File::create(&file).unwrap());
+    writeln!(
+        w,
+        "CRASH_ID,STATUS,ROAD,SEVERITY,CRASH_DATE,MILEPOST,lon,lat,NOTE"
+    )
+    .unwrap();
+    let (mut size, mut i) = (0u64, 0u64);
+    while size < 280 << 20 {
+        i += 1;
+        let line = format!(
+            "{i},{},RD{:04},{},2026-{:02}-{:02},{:.1},{:.6},{:.6},note {}\n",
+            if i % 2 == 0 { "A" } else { "R" },
+            i % 977,
+            i % 5,
+            1 + i % 12,
+            1 + i % 28,
+            (i % 10000) as f64 / 10.0,
+            -97.9 + (i % 99991) as f64 / 200000.0,
+            30.1 + (i % 99989) as f64 / 200000.0,
+            i % 31
+        );
+        w.write_all(line.as_bytes()).unwrap();
+        size += line.len() as u64;
+    }
+    w.flush().unwrap();
+    drop(w);
+    std::fs::write(
+        root.join("big/roads.csv"),
+        "ROAD,lon,lat\nR1,-97.7,30.2\nR2,-97.8,30.3\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("connections/bigfiles.yaml"),
+        format!(
+            "id: bigfiles\ntype: files\npath: {}\ndatasets:\n  allow: [\"*\"]\n",
+            q(&root.join("big"))
+        ),
+    )
+    .unwrap();
+    // Room for a slow runner: up to 10 minutes a call.
+    let policy = std::fs::read_to_string(root.join("policy.yaml")).unwrap();
+    std::fs::write(
+        root.join("policy.yaml"),
+        format!("{policy}limits: {{ seconds: 600, allow_raise: true }}\n"),
+    )
+    .unwrap();
+    // The engine under a cap of 2 GB of address space (the old reader
+    // needed about 19 times the file, over 5 GB here); it writes its
+    // process id, so its peak memory can be read.
+    let pid_file = root.join("engine.pid");
+    let wrapper = root.join("engine.sh");
+    std::fs::write(
+        &wrapper,
+        format!(
+            "#!/bin/sh\necho $$ > '{}'\nulimit -v 2097152\nexec '{}' \"$@\"\n",
+            pid_file.display(),
+            py
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let c = start(root, wrapper.to_str().unwrap()).await;
+
+    let t = std::time::Instant::now();
+    let l = ok(&call(&c, "list_datasets", json!({"connection": "bigfiles"})).await);
+    let list_s = t.elapsed().as_secs_f64();
+    assert_eq!(names(&l), ["crashes", "roads"], "{l}");
+    assert!(
+        l["result"]["skipped"]
+            .as_array()
+            .is_none_or(|a| a.is_empty()),
+        "{l}"
+    );
+    // A bbox (the R-tree) and a where on the big dataset.
+    let t = std::time::Instant::now();
+    let r = ok(&call(
+        &c,
+        "query_features",
+        json!({"connection": "bigfiles", "dataset": "crashes",
+               "where": "SEVERITY = 3", "bbox": [-97.8, 30.2, -97.79, 30.21]}),
+    )
+    .await);
+    let query_s = t.elapsed().as_secs_f64();
+    let rows = r["result"]["layer"]["summary"]["rows"].as_u64().unwrap();
+    assert!(rows > 0 && rows < 20_000, "{r}");
+    let d = ok(&call(
+        &c,
+        "describe_dataset",
+        json!({"connection": "bigfiles", "dataset": "crashes"}),
+    )
+    .await);
+    assert_eq!(d["result"]["rows"].as_u64(), Some(i), "{d}");
+    // The other file in the folder.
+    let r = ok(&call(
+        &c,
+        "query_features",
+        json!({"connection": "bigfiles", "dataset": "roads"}),
+    )
+    .await);
+    assert_eq!(r["result"]["layer"]["summary"]["rows"], 2, "{r}");
+    let pid = std::fs::read_to_string(&pid_file)
+        .unwrap()
+        .trim()
+        .to_string();
+    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).unwrap();
+    let hwm_mb = status
+        .lines()
+        .find(|l| l.starts_with("VmHWM:"))
+        .and_then(|l| l.split_whitespace().nth(1))
+        .and_then(|kb| kb.parse::<u64>().ok())
+        .unwrap()
+        / 1024;
+    println!(
+        "LARGE csv_mb={} rows={i} list_s={list_s:.1} query_s={query_s:.1} engine_peak_rss_mb={hwm_mb}",
+        size >> 20
+    );
+    assert!(
+        hwm_mb < 500,
+        "the engine's peak memory was {hwm_mb} MB for a {} MB file",
+        size >> 20
+    );
+
+    // The file changes; while it is converted again, the engine is stopped
+    // (as the system would stop it when out of memory): the message says
+    // the cause and the fix, not "worker closed its output".
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(&file)
+        .unwrap()
+        .write_all(b"0,A,RD0000,1,2026-01-01,0.0,-97.5,30.5,late\n")
+        .unwrap();
+    let kill = async {
+        tokio::time::sleep(std::time::Duration::from_secs(6)).await;
+        let pid = std::fs::read_to_string(&pid_file).unwrap();
+        StdCommand::new("kill")
+            .args(["-9", pid.trim()])
+            .status()
+            .unwrap();
+    };
+    let (r, ()) = tokio::join!(
+        call(&c, "list_datasets", json!({"connection": "bigfiles"})),
+        kill
+    );
+    let e = err(&r);
+    assert!(
+        e.contains("The engine stopped while reading the files connection bigfiles")
+            && e.contains("memory")
+            && e.contains("split them"),
+        "{e}"
+    );
+    assert!(!e.contains("worker closed its output"), "{e}");
+    c.cancel().await.unwrap();
 }

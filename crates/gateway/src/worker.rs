@@ -186,6 +186,9 @@ pub enum WorkerError {
     Timeout(Duration),
     Cancelled,
     Crashed(String),
+    /// The worker stopped while it read a `files` connection: the full
+    /// message, with the likely cause and the fix (R-14, R-101).
+    StoppedOnFiles(String),
 }
 
 impl std::fmt::Display for WorkerError {
@@ -203,6 +206,7 @@ impl std::fmt::Display for WorkerError {
                 f,
                 "engine worker stopped unexpectedly and was restarted: {m}"
             ),
+            WorkerError::StoppedOnFiles(m) => write!(f, "{m}"),
         }
     }
 }
@@ -463,8 +467,63 @@ impl Worker {
         params: Value,
         timeout: Duration,
     ) -> Result<Value, WorkerError> {
+        let files = files_connection(&params);
         let req = json!({"run": format!("c_{}", &uuid::Uuid::new_v4().simple().to_string()[..8]), "tool": tool, "params": params});
-        let r = self.run(req, timeout, &mut |_| {}).await?;
+        let r = match self.run(req, timeout, &mut |_| {}).await {
+            Err(WorkerError::Crashed(_)) if files.is_some() => {
+                return Err(WorkerError::StoppedOnFiles(stopped_on_files(
+                    files.as_deref().unwrap_or_default(),
+                )))
+            }
+            r => r?,
+        };
         Ok(r.get("summary").cloned().unwrap_or(Value::Null))
+    }
+}
+
+/// The id of the `files` connection a core request reads, if it reads one
+/// (its handle says `kind: files` and carries the id).
+fn files_connection(params: &Value) -> Option<String> {
+    let h = params.get("connection")?;
+    columbus_shared::policy::is_files(h.get("kind")?.as_str()?).then(|| {
+        h.get("id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    })
+}
+
+/// R-14 for an engine that died while reading a files connection (R-101):
+/// files are converted into the cache as they are read, so the likely
+/// cause is a file too large for the computer's memory.
+fn stopped_on_files(id: &str) -> String {
+    let which = if id.is_empty() {
+        "a files connection".to_string()
+    } else {
+        format!("the files connection {id}")
+    };
+    format!(
+        "The engine stopped while reading {which}, most likely because a very large file there used up the \
+         computer's memory; it was restarted. Move very large files out of that folder, split them, or convert \
+         them to a GeoPackage and connect that, then try again (list_datasets names any file that is too large)."
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_stop_on_a_files_connection_says_the_cause_and_the_fix() {
+        let p = json!({"connection": {"kind": "files", "id": "drops", "path": "/x"}});
+        assert_eq!(files_connection(&p).as_deref(), Some("drops"));
+        let m = WorkerError::StoppedOnFiles(stopped_on_files("drops")).to_string();
+        assert!(m.contains("files connection drops"), "{m}");
+        assert!(m.contains("memory") && m.contains("split them"), "{m}");
+        assert!(!m.contains("worker closed its output"), "{m}");
+        // Other connections keep the plain restart message.
+        let p = json!({"connection": {"kind": "gpkg", "path": "/x"}});
+        assert_eq!(files_connection(&p), None);
+        assert_eq!(files_connection(&json!({})), None);
     }
 }

@@ -505,5 +505,149 @@ class Freshness(unittest.TestCase):
         self.assertTrue(a["t0"] < b["t1"] and b["t0"] < a["t1"], f"the two queries did not overlap: {outs}")
         self.assertEqual(_meta(self.conn, "crashes")[0], 2, "exactly one rebuild for the two queries")
 
+
+@skip_unless_engine(HAVE_GIS, "needs shapely and pyproj")
+class LargeFiles(unittest.TestCase):
+    """R-101: a file too large for the engine is refused plainly, one whose
+    conversion runs past the call's time is stopped and skipped (and
+    remembered), and the rest of the folder keeps working. The memory test
+    on a few hundred MB is the gateway's (files.rs, run on Linux in CI)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = os.path.join(self.tmp.name, "data")
+        os.makedirs(self.root)
+        self.conn = {"kind": "files", "path": self.root, "cache": os.path.join(self.tmp.name, "c.gpkg")}
+        with open(os.path.join(self.root, "small.csv"), "w", encoding="utf-8", newline="") as fh:
+            fh.write("id,lon,lat\n1,-97.7,30.2\n")
+        with open(os.path.join(self.root, "big.csv"), "w", encoding="utf-8", newline="") as fh:
+            fh.write("id,lon,lat\n" + "".join(f"{i},-97.{i % 1000:03d},30.{i % 997:03d}\n" for i in range(60_000)))
+
+    def tearDown(self):
+        os.environ.pop("COLUMBUS_FILES_MAX_MB", None)
+        self.tmp.cleanup()
+
+    def listed(self, timeout_s=60):
+        r = w.list_datasets({"connection": self.conn, "timeout_s": timeout_s})
+        return sorted(d["name"] for d in r["datasets"]), {s["name"]: s for s in r["skipped"]}
+
+    def test_a_file_over_the_limit_is_skipped_with_its_size_and_the_fix(self):
+        os.environ["COLUMBUS_FILES_MAX_MB"] = "0.5"
+        names, skipped = self.listed()
+        self.assertEqual(names, ["small"])
+        reason = skipped["big"]["reason"]
+        self.assertEqual(skipped["big"]["file"], "big.csv")
+        self.assertIn("it is 1.", reason)  # about 1.2 MB
+        self.assertIn("MB, more than the 512 KB Columbus converts from one .csv file", reason)
+        self.assertIn("split it into smaller files, or convert it to a GeoPackage", reason)
+        self.assertEqual(f.skipped_reason(list(skipped.values()), "BIG"), f"big.csv is not offered: {reason}")
+        _, rows, *_ = w._fetch(self.conn, "SELECT COUNT(*) FROM small", 2, 30)
+        self.assertEqual(rows[0][0], 1)
+
+    def test_the_csv_limit_follows_the_calls_time(self):
+        self.assertEqual(f.max_bytes(".csv", 120), 300 << 20)
+        self.assertEqual(f.max_bytes(".csv", 600), 1500 << 20)
+        self.assertEqual(f.max_bytes(".csv", 1), 256 << 20)
+        self.assertEqual(f.max_bytes(".fgb", 3600), 256 << 20)
+        why = f._too_big("x.csv", ".csv", 1_073_741_904, 120)
+        self.assertTrue(why.startswith("it is 1.0 GB, more than the 300 MB Columbus converts from one .csv file "
+                                       "within one call's 120 s; split it"), why)
+        self.assertIn("raise limits.seconds", why)
+        self.assertIsNone(f._too_big("x.csv", ".csv", 299 << 20, 120))
+
+    def test_a_conversion_past_the_calls_time_is_stopped_skipped_and_remembered(self):
+        import sqlite3
+
+        prepare = f._TextTable._prepare
+        calls = []
+
+        def slow(table, tick):
+            calls.append(table.source.path)
+            if table.source.path.endswith("big.csv") and getattr(self, "slow", True):
+                time.sleep(1.2)
+            return prepare(table, tick)
+
+        f._TextTable._prepare = slow
+        try:
+            names, skipped = self.listed(timeout_s=1)
+            self.assertEqual(names, ["small"])
+            reason = skipped["big"]["reason"]
+            self.assertTrue(reason.startswith("converting it (1."), reason)
+            self.assertIn("takes longer than the 1 s one call may run; split it", reason)
+            self.assertIn("raise limits.seconds", reason)
+            # Nothing of it was kept, and the stop is remembered in the cache.
+            db = sqlite3.connect(self.conn["cache"])
+            self.assertIsNone(db.execute("SELECT 1 FROM sqlite_master WHERE name = 'big'").fetchone())
+            self.assertEqual(db.execute("SELECT seconds FROM columbus_slow").fetchall(), [(1.0,)])
+            db.close()
+            # The next call with the same time skips it at once, without
+            # reading it again; small is still served.
+            calls.clear()
+            t0 = time.monotonic()
+            names, skipped = self.listed(timeout_s=1)
+            self.assertLess(time.monotonic() - t0, 1.0)
+            self.assertEqual((names, calls), (["small"], []))
+            self.assertIn("takes longer than the 1 s", skipped["big"]["reason"])
+            # A call allowed longer tries again, and converts it.
+            self.slow = False
+            names, skipped = self.listed(timeout_s=60)
+            self.assertEqual(names, ["big", "small"])
+            _, rows, *_ = w._fetch(self.conn, "SELECT COUNT(*) FROM big", 2, 30)
+            self.assertEqual(rows[0][0], 60_000)
+        finally:
+            f._TextTable._prepare = prepare
+
+    def test_a_folder_with_a_cached_file_works_when_another_is_too_slow(self):
+        """Time used by one file's conversion doesn't fail the call: the
+        cached files are served, and files not converted yet are skipped
+        with a plain reason (ask again)."""
+        self.assertEqual(self.listed()[0], ["big", "small"])
+        with open(os.path.join(self.root, "more.csv"), "w", encoding="utf-8", newline="") as fh:
+            fh.write("id\n1\n")
+        with open(os.path.join(self.root, "later.csv"), "w", encoding="utf-8", newline="") as fh:
+            fh.write("id\n1\n2\n")
+        prepare = f._TextTable._prepare
+
+        def slow(table, tick):
+            time.sleep(1.2)
+            return prepare(table, tick)
+
+        f._TextTable._prepare = slow
+        try:
+            names, skipped = self.listed(timeout_s=1)
+        finally:
+            f._TextTable._prepare = prepare
+        self.assertEqual(names, ["big", "small"])  # already in the cache
+        self.assertIn("takes longer than the 1 s", skipped["more"]["reason"])
+        self.assertEqual(skipped["later"]["reason"],
+                         "it was not converted: converting the folder's other files used all of this call's 1 s; "
+                         "list the connection again to convert it")
+        self.assertEqual(self.listed()[0], ["big", "later", "more", "small"])
+
+
+@skip_unless_engine(HAVE_FORMATS, "needs the GIS engine (geopandas, pyogrio, pyarrow)")
+class LargeParquet(unittest.TestCase):
+    def test_a_geoparquet_with_too_many_values_is_skipped(self):
+        import geopandas as gpd
+        from shapely.geometry import Point
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = os.path.join(tmp, "data")
+            os.makedirs(root)
+            gpd.GeoDataFrame({"id": list(range(50))}, geometry=[Point(i, i) for i in range(50)],
+                             crs="EPSG:4326").to_parquet(os.path.join(root, "pts.parquet"))
+            conn = {"kind": "files", "path": root, "cache": os.path.join(tmp, "c.gpkg")}
+            cells = f.MAX_PARQUET_CELLS
+            f.MAX_PARQUET_CELLS = 99
+            try:
+                r = w.list_datasets({"connection": conn})
+            finally:
+                f.MAX_PARQUET_CELLS = cells
+            self.assertEqual(r["datasets"], [])
+            reason = r["skipped"][0]["reason"]
+            self.assertIn("holding 50 rows of 2 columns, more than the 99 values Columbus converts", reason)
+            self.assertEqual([d["name"] for d in w.list_datasets({"connection": conn})["datasets"]], ["pts"])
+
+
 if __name__ == "__main__":
     unittest.main()
