@@ -76,22 +76,22 @@ The Columbus app is one window with a menu down the side.
 | --- | --- |
 | **Home** | What needs you right now: requests waiting for a decision, notes in draft, tools and workflows to review, recent chats. The first time, a short setup checklist (connect an AI, set up the GIS engine, add a connection). |
 | **Chats** | Your conversations in the app, saved and searchable (**Ctrl+K** / **⌘K**), and the sessions other AI apps (Claude desktop) run through Columbus, with what they did and their map. A chat opens with the map and table beside it; choose its model and thinking level below the message box. |
-| **Projects** | Coming: group chats, choose which connections and documents each project may use. |
+| **Projects** | A piece of work with its own instructions for the assistant, the connections its chats may use, a default export folder and its project databases. |
 | **Documents** | Notes Columbus drafted from your databases (fields, codes, relationships), which you fill in and **Mark reviewed**, and your organization's context pack, read only. |
-| **Data groups** | Coming: named sets of datasets across connections. |
+| **Data groups** | Named sets of datasets across connections, each with an optional row filter; attached to a project, its chats see only those rows. |
 | **Skills** | The GIS skills your assistant reads: when to use which tool, and how. Skills are advice; they never grant access. |
-| **Connections** | Add, test and edit GeoPackages, SQLite files, raster folders and databases (PostGIS, Oracle, SQL Server), each with its mode (read-only or read-write), allowed datasets, row filter and limits. Anything that gives the assistant more access asks for Touch ID or Windows Hello. **Draft notes** writes a note about a connection's datasets for you to review. |
-| **Registry** | Coming in the app (your assistant can already search it): open data by place and theme, and GIS tools compared across engines. |
+| **Connections** | Add, test and edit GeoPackages, SQLite files, shapefiles, file geodatabases, raster folders, folders of files (CSV, Excel, GeoJSON, GeoParquet, KML, FlatGeobuf), ArcGIS Online and Portal services (with **Sign in**) and databases (PostGIS, Oracle, SQL Server), each with its mode (read-only or read-write), allowed datasets, row filter and limits. Anything that gives the assistant more access asks for Touch ID or Windows Hello. **Draft notes** writes a note about a connection's datasets for you to review. **Map layers** adds imagery and other web services to your map (display only; the assistant never sees them). |
+| **Registry** | The open geospatial registry: open data by place and theme, and GIS tools, searched through Columbus. |
 | **Tools** | Tools your assistant made from its scripts. You read each one, code and all, and install it; installed tools run without asking, in the same sandbox as scripts. |
 | **Workflows** | Jobs that run by themselves on a schedule: proposed by your assistant, approved by you, with **Run now**, **Pause**, and every run's report. Optionally an AI review of the results against your criteria. |
 | **Activity** | The **approvals inbox** across every session, the **audit log** (filter by app, tool and decision; verify the chain), and **exports**. |
-| **Settings** | The AI for chats (API key, model, thinking level), the Columbus server and GIS engine in use, theme, privacy, keyboard, and your organization's settings in plain sentences. |
+| **Settings** | The AI for chats (API key, model, thinking level), the Columbus server and GIS engine in use, your Python environments, theme, privacy, keyboard, and your organization's settings in plain sentences. |
 
 ## What it can do
 
 | Area | Highlights |
 | --- | --- |
-| **Data** | GeoPackage, SQLite, raster folders, CSV; PostGIS, Oracle and SQL Server (read-only, or read-write when allowed); datasets allowed by name or pattern; row filters and hidden fields applied in the server; limits on rows and time. |
+| **Data** | GeoPackage, SQLite, shapefiles, file geodatabases, raster folders, folders of CSV, Excel, GeoJSON, GeoParquet, KML and FlatGeobuf files, ArcGIS Online/Portal layers (public or signed in); PostGIS, Oracle and SQL Server (read-only, or read-write when allowed); datasets allowed by name or pattern; row filters and hidden fields applied in the server; limits on rows and time. |
 | **Analysis** | `query_features`, checked SQL (`sql_select`), vector operations (reproject, buffer, simplify, make valid, clip, dissolve, intersect, attribute and spatial joins), raster operations, verification checks; results are workspace layers passed by handle, never pasted into the chat. |
 | **Looking** | The map and table beside each chat; `map_snapshot` lets the assistant look at its layers as a picture (geometry only, no basemap, nothing downloaded) to spot slivers, gaps and layers that don't line up. |
 | **Big tables** | Raised limits (up to 20 million rows per query, by your organization), results streamed to disk, and project databases (DuckDB) to load several tables into and join with SQL. |
@@ -101,13 +101,13 @@ The Columbus app is one window with a menu down the side.
 | **Connected servers** | Other MCP servers (Drive, notes, vendor APIs) behind Columbus, reviewed and pinned by manifest, confined, with data-flow rules on what may be sent where. |
 | **Context** | Your organization's context pack (datasets, domains, LRS, SOPs, delivery specs) and your own notes, searchable by the assistant. |
 | **Audit** | One hash-chained line per call, including refusals; `columbus-mcp audit verify`; the app's viewer. |
-| **Platforms** | macOS (Apple Silicon) and Windows 10/11. The server also builds and runs on Linux. |
+| **Platforms** | macOS 15 or later (Apple Silicon) and Windows 10/11. The server also builds and runs on Linux. |
 
 ## Get Columbus
 
 Download from the [latest release](https://github.com/wiatrek-kevin-s/columbus/releases/latest):
 
-- **Mac (Apple Silicon):** the Claude extension (`.mcpb`), the Columbus app (`.dmg`), and, the first time, the server folder (`.zip`) to set up the GIS engine. Follow the [Mac install guide](docs/install-macos.md).
+- **Mac (Apple Silicon, macOS 15 or later):** the Claude extension (`.mcpb`), the Columbus app (`.dmg`), and, the first time, the server folder (`.zip`) to set up the GIS engine. Follow the [Mac install guide](docs/install-macos.md).
 - **Windows 10 and 11:** the Claude extension (`.mcpb`), the Columbus app (`-setup.exe`, or `.msi` for IT), and, the first time, the server folder (`.zip`). Follow the [Windows install guide](docs/install.md).
 
 The release notes on each release have the exact files and update steps. The app is not code-signed yet, so macOS and Windows warn the first time; the guides say what to do.

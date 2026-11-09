@@ -2,13 +2,15 @@
 
 Columbus is a governed GIS server for AI agents. It runs on your computer, beside the AI client you already use (Claude desktop, or any MCP client), and enforces what the agent may read, write, run and send.
 
-This build is for Macs with Apple Silicon (M1 and later) on macOS 15 or later (the engine's pinned packages, such as rasterio 1.5, publish Apple Silicon wheels for macOS 15 and later only). The Columbus app (step 5) is optional. For Windows, see [install.md](install.md).
+This build is for Macs with Apple Silicon (M1 and later) on macOS 15 or later (the engine's pinned packages, such as rasterio 1.5, publish Apple Silicon wheels for macOS 15 and later only). The Columbus app (step 5) is optional. These steps are for Columbus 0.14.0. For Windows, see [install.md](install.md).
+
+**Updating from 0.13?** Install the new `.mcpb` and app as in steps 4 and 5, then run the engine setup (step 2) once more: it reinstalls every engine package from the hash-checked lists. The new policy switches (Python environments, session approval for scripts) are off until your organization turns them on, and folder-of-files caches rebuild once by themselves on first use.
 
 ## What works on a Mac
 
-Everything works as on Windows: describing, querying and processing vector and raster data; PostGIS, Oracle, SQL Server, GeoPackage and file connections; verification checks; exports to approved folders; the context pack; the open geospatial registry and its downloads; approvals; the audit log; remote (HTTP) MCP servers.
+Everything works as on Windows: describing, querying and processing vector and raster data; PostGIS, Oracle, SQL Server, GeoPackage, shapefile, file geodatabase, folder-of-files (CSV, Excel, GeoJSON, GeoParquet, KML, FlatGeobuf) and ArcGIS Online/Portal connections; Python environments; verification checks; exports to approved folders; the context pack; the open geospatial registry and its downloads; approvals; the audit log; remote (HTTP) MCP servers.
 
-Engine plugins, `run_python` scripts and local MCP servers run inside the macOS sandbox, which limits what they can read, write and reach (see "Confinement levels" in the README). Before the first one starts, Columbus checks that the sandbox works on this Mac, and refuses them if not; `whoami` says which.
+Engine plugins, `run_python` scripts and local MCP servers run inside the macOS sandbox, which limits what they can read, write and reach (see "Confinement levels" in the [technical reference](reference.md#confinement-levels)). Before the first one starts, Columbus checks that the sandbox works on this Mac, and refuses them if not; `whoami` says which.
 
 ## 1. Download and unpack
 
@@ -35,11 +37,11 @@ conda deactivate 2>/dev/null   # only matters if Anaconda shows (base) in your p
 sh engine/setup-engine.sh
 ```
 
-This creates `engine/venv` with GDAL, PROJ, GeoPandas and rasterio (about 300 MB). At the end it prints the engine's Python path; keep it for step 4.
+This creates `engine/venv` with GDAL, PROJ, GeoPandas and rasterio (about 300 MB). At the end it prints the engine's Python path; keep it for step 4. Every package is pinned by exact version and SHA-256 (`workers/python/requirements-*.txt`) and installed with `--require-hashes`, so a file that differs from the pinned one is refused.
 
 ## 3. Tell Columbus what it may use
 
-**The easy way: the Columbus app.** Install the app (step 5), open it and choose **Connections** in the bar on the left. There you add connections (Browse for a GeoPackage, a file geodatabase (.gdb), a folder of shapefiles or a folder of rasters, or fill in a database's host, login and password, which goes into your Keychain) and set each one to read only or read and write; **Settings › Organization** turns edits and scripts on or off. Anything that gives your assistant more access asks for Touch ID or your Mac password first; your assistant cannot change these settings itself. **Test** checks that Columbus can open a connection before you save it. **Draft notes** writes notes about a connection's tables from the database itself (fields, keys, relationships, codes) so your assistant knows your data; you or your assistant fill in what it means, and you mark each note reviewed under **Documents › My notes**. Changes reach your assistant on its next request; there is no need to restart Claude desktop.
+**The easy way: the Columbus app.** Install the app (step 5), open it and choose **Connections** in the bar on the left. There you add connections (Browse for a GeoPackage, a file geodatabase (.gdb), a folder of shapefiles, a folder of rasters or a **Folder of files** (CSV, Excel `.xlsx`, GeoJSON, GeoParquet, KML, FlatGeobuf); paste the address of an **ArcGIS service**; or fill in a database's host, login and password, which goes into your Keychain) and set each one to read only or read and write; **Settings › Organization** turns edits and scripts on or off. Anything that gives your assistant more access asks for Touch ID or your Mac password first; your assistant cannot change these settings itself. **Test** checks that Columbus can open a connection before you save it. **Draft notes** writes notes about a connection's tables from the database itself (fields, keys, relationships, codes) so your assistant knows your data; you or your assistant fill in what it means, and you mark each note reviewed under **Documents › My notes**. Changes reach your assistant on its next request; there is no need to restart Claude desktop.
 
 **Or by hand,** as below.
 
@@ -52,7 +54,7 @@ cp ~/Columbus/examples/policy.yaml "/Library/Application Support/Columbus/"
 mkdir -p ~/Library/Application\ Support/Columbus/connections
 ```
 
-- `policy.yaml` holds what is allowed at all: connection types, limits, hidden fields, export folders, download hosts. With no file, Columbus allows only local GeoPackage and SQLite files, read-only.
+- `policy.yaml` holds what is allowed at all: connection types, limits, hidden fields, export folders, download hosts. With no file, Columbus allows only local GeoPackage, SQLite, shapefile, file geodatabase and folder-of-files connections, read-only, with no scripts, no edits and no Python environments.
 - `~/Library/Application Support/Columbus/connections/` holds one `.yaml` file per database or folder. See `~/Columbus/examples/connections`. Passwords never go in these files:
 
   ```sh
@@ -60,6 +62,7 @@ mkdir -p ~/Library/Application\ Support/Columbus/connections
   ```
 
   This stores the password in your login Keychain. Each new Columbus version is a new program to macOS, so the first time a new version reads a password, macOS asks whether `columbus-mcp` may use it: choose **Always Allow**.
+- Folders of files use `type: files` and ArcGIS services `type: arcgis`; see `~/Columbus/examples/connections/crash-files.yaml` and `roads-agol.yaml`. Policy must list `files` and `arcgis` in `connection_types`, and an ArcGIS service's host (and its portal's, for signed-in layers) in `hosts`.
 - The context pack, which is optional, goes in `/Library/Application Support/Columbus/context`. See `docs/context-pack.md`.
 - To install the open geospatial registry: `~/Columbus/columbus-mcp registry update`.
 
@@ -99,7 +102,27 @@ The first time, **Home** offers three first steps, each one skippable: connect a
 
 The app can also chat with Claude itself, using an Anthropic API key (billed by Anthropic per use, separate from a Claude subscription; create one at console.anthropic.com). Open **Settings › Models and accounts** (or the first step on **Home**), paste the key and press **Save key**: it goes into your computer's credential store, and the app can never read it back. Then press **New chat**. The chat starts its own Columbus session from the server in `~/Columbus` (change it in Settings if yours is elsewhere; pointing the chat at another program asks you to confirm first), so the same policy, connections and checks apply. Its steps fold into one line per turn (open it to see each step, with **Provenance** for results that made data); the map, table and files of its session are on the right, and **Map first** puts the map in the middle. When something needs your approval, the chat shows the request with **Allow once**, **Allow for this session** and **Decline**. For a Python script, the request shows the code the AI wrote in its own box, apart from what Columbus says about the run: read it before allowing. **New chat** ends the chat and its session; your chats are kept on this computer, listed under **Chats** and found with **Ctrl+K** (⌘K on a Mac), but an ended chat cannot be continued. Closing the app's window ends the chat.
 
-## 6. Skills
+## 6. ArcGIS sign-in (optional)
+
+Public ArcGIS layers need no sign-in. For layers shared only inside your organization, your ArcGIS administrator registers an OAuth app for Columbus once and gives you its **client id** (Columbus ships none; the steps are in [manual-checks.md](manual-checks.md), H-1). Put it in the connection: in the app, **Connections**, the ArcGIS service, **Sign-in: ArcGIS OAuth**, with the **Portal** (for example `https://www.arcgis.com`) and the **Client id**; or in the connection file:
+
+```yaml
+auth: { type: oauth, portal: https://www.arcgis.com, client_id: <your organization's client id> }
+```
+
+Then sign in once: press **Sign in** on the connection in the app (Touch ID or your password asks first), or run `~/Columbus/columbus-mcp arcgis signin <connection id>` in Terminal. Your browser opens ArcGIS's sign-in page and comes back to Columbus. If it doesn't, add `--paste-code` and paste the code ArcGIS shows into Terminal (never into a chat). The sign-in is kept in your Keychain, never in a file, and your assistant never sees it. When it lapses (after about two weeks, as your organization sets), Columbus says "Sign in again: …"; a weekly workflow renews it by itself. `arcgis signout <connection id>` removes it.
+
+## 7. Python environments (optional)
+
+Scripts run in the engine's own Python unless you register another Python, an **environment**: a venv or conda environment of your own, or one Columbus creates for you. Organization policy must turn this on (`environments: { allow: true }`, see `examples/policy.yaml`); it is off by default.
+
+1. Register one, at the keyboard: in the app, **Settings › Environments › Add environment** (Touch ID confirms), or in Terminal: `~/Columbus/columbus-mcp env add geo --python /path/to/venv/bin/python3`. Columbus checks the interpreter and asks you to type the id to confirm. Your assistant can't register or change one.
+2. **Governed** (the default) environments run scripts in the same sandbox as the engine's: no network, extracts of your data only.
+3. **Trusted** environments (**experimental**) run scripts unconfined, as you, every run approved, only where policy says `allow_trusted: true`. arcpy needs Windows and ArcGIS Pro, so on a Mac you won't need one for it.
+4. If you change an environment (a package installed), Columbus stops using it until you confirm it again (**Confirm again**, or `env confirm <id>`). `env list` shows each one and its state.
+5. Your assistant can ask for a new environment with exact package versions (`propose_environment`); you approve it in **Settings › Environments** (or `env approve <id>`), and Columbus creates it with its own pinned uv, wheels only.
+
+## 8. Skills
 
 The `skills` folder holds GIS skills. Copy them where your agent loads skills, for example `~/.claude/skills` for Claude Code.
 

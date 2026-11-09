@@ -2,7 +2,9 @@
 
 Columbus is a governed GIS server for AI agents. It runs on your computer, beside the AI client you already use (Claude desktop, GitHub Copilot in VS Code, or any MCP client), and enforces what the agent may read, write, run and send.
 
-This release is the server alone. The Columbus desktop app (chat, map and approvals in one window) comes later. For a Mac, see [install-macos.md](install-macos.md).
+These steps are for Columbus 0.14.0 on Windows 10 and 11 (64-bit). The server (step 1 to 4) is all you need; the Columbus app (step 5) is optional. For a Mac, see [install-macos.md](install-macos.md).
+
+**Updating from 0.13?** Install the new `.mcpb` and app as in steps 4 and 5, then run the engine setup (step 2) once more: it reinstalls every engine package from the hash-checked lists. The new policy switches (Python environments, session approval for scripts) are off until your organization turns them on, and folder-of-files caches rebuild once by themselves on first use. Nothing else changes in your settings.
 
 ## 1. Unpack
 
@@ -22,13 +24,13 @@ To change a pinned package (for maintainers), edit its `workers/python/requireme
 
 ## 3. Tell Columbus what it may use
 
-**The easy way: the Columbus app.** Install the app (step 5), open it and choose **Connections** in the bar on the left. There you add connections (Browse for a GeoPackage, a file geodatabase (.gdb), a folder of shapefiles or a folder of rasters, or fill in a database's host, login and password, which goes into your Credential Manager) and set each one to read only or read and write; **Settings › Organization** turns edits and scripts on or off. Anything that gives your assistant more access asks for Windows Hello first; your assistant cannot change these settings itself. **Test** checks that Columbus can open a connection before you save it. **Draft notes** writes notes about a connection's tables from the database itself (fields, keys, relationships, codes) so your assistant knows your data; you or your assistant fill in what it means, and you mark each note reviewed under **Documents › My notes**. Changes reach your assistant on its next request; there is no need to restart Claude desktop.
+**The easy way: the Columbus app.** Install the app (step 5), open it and choose **Connections** in the bar on the left. There you add connections (Browse for a GeoPackage, a file geodatabase (.gdb), a folder of shapefiles, a folder of rasters, or a **Folder of files** (CSV, Excel `.xlsx`, GeoJSON, GeoParquet, KML, FlatGeobuf); paste the address of an **ArcGIS service** (ArcGIS Online, Portal or ArcGIS Server); or fill in a database's host, login and password, which goes into your Credential Manager) and set each one to read only or read and write; **Settings › Organization** turns edits and scripts on or off. Anything that gives your assistant more access asks for Windows Hello first; your assistant cannot change these settings itself. **Test** checks that Columbus can open a connection before you save it. **Draft notes** writes notes about a connection's tables from the database itself (fields, keys, relationships, codes) so your assistant knows your data; you or your assistant fill in what it means, and you mark each note reviewed under **Documents › My notes**. Changes reach your assistant on its next request; there is no need to restart Claude desktop.
 
 **Or by hand,** as below.
 
 Columbus reads the organization's settings from `%ProgramData%\Columbus` and your connections from `%APPDATA%\Columbus\connections`. In an organization, IT manages these files. On your own machine you set them up yourself.
 
-- `policy.yaml` holds what is allowed at all: connection types, limits, hidden fields, export folders, download hosts. Start from `examples\policy.yaml`. With no file, Columbus allows only local GeoPackage and SQLite files, read-only, with no scripts and no edits.
+- `policy.yaml` holds what is allowed at all: connection types, limits, hidden fields, export folders, download hosts. Start from `examples\policy.yaml`. With no file, Columbus allows only local GeoPackage, SQLite, shapefile, file geodatabase and folder-of-files connections, read-only, with no scripts, no edits and no Python environments.
 - `%APPDATA%\Columbus\connections\*.yaml` has one file per database or folder. See `examples\connections`. Passwords never go in these files:
 
   ```powershell
@@ -36,6 +38,7 @@ Columbus reads the organization's settings from `%ProgramData%\Columbus` and you
   ```
 
   This stores the password in Windows Credential Manager.
+- Folders of files use `type: files` and ArcGIS services `type: arcgis`; see `examples\connections\crash-files.yaml` and `examples\connections\roads-agol.yaml`. Policy must list `files` and `arcgis` in `connection_types`, and an ArcGIS service's host (and its portal's, for signed-in layers) in `hosts`.
 - `context\` holds your organization's context pack, which is optional. See `docs\context-pack.md` and `examples\context\contoso-county`.
 - To install the open geospatial registry, run `columbus-mcp registry update`.
 
@@ -69,7 +72,35 @@ The first time, **Home** offers three first steps, each one skippable: connect a
 
 The app can also chat with Claude itself, using an Anthropic API key (billed by Anthropic per use, separate from a Claude subscription; create one at console.anthropic.com). Open **Settings › Models and accounts** (or the first step on **Home**), paste the key and press **Save key**: it goes into your computer's credential store, and the app can never read it back. Then press **New chat**. The chat starts its own Columbus session from the server in `C:\\Columbus` (change it in Settings if yours is elsewhere; pointing the chat at another program asks you to confirm first), so the same policy, connections and checks apply. Its steps fold into one line per turn (open it to see each step, with **Provenance** for results that made data); the map, table and files of its session are on the right, and **Map first** puts the map in the middle. When something needs your approval, the chat shows the request with **Allow once**, **Allow for this session** and **Decline**. For a Python script, the request shows the code the AI wrote in its own box, apart from what Columbus says about the run: read it before allowing. **New chat** ends the chat and its session; your chats are kept on this computer, listed under **Chats** and found with **Ctrl+K** (⌘K on a Mac), but an ended chat cannot be continued. Closing the app's window ends the chat.
 
-## 6. Skills
+## 6. ArcGIS sign-in (optional)
+
+Public ArcGIS layers need no sign-in. For layers shared only inside your organization, your ArcGIS administrator registers an OAuth app for Columbus once and gives you its **client id** (Columbus ships none; the steps are in [manual-checks.md](manual-checks.md), H-1). Put it in the connection: in the app, **Connections**, the ArcGIS service, **Sign-in: ArcGIS OAuth**, with the **Portal** (for example `https://www.arcgis.com` or `https://gis.example.org/portal`) and the **Client id**; or in the connection file:
+
+```yaml
+auth: { type: oauth, portal: https://www.arcgis.com, client_id: <your organization's client id> }
+```
+
+Then sign in once: press **Sign in** on the connection in the app (Windows Hello asks first), or run `columbus-mcp arcgis signin <connection id>` in a terminal. Your browser opens ArcGIS's sign-in page; after you sign in, it comes back to Columbus. If it doesn't, run `columbus-mcp arcgis signin <connection id> --paste-code` and paste the code ArcGIS shows into the terminal (never into a chat). The sign-in is kept in Windows Credential Manager, never in a file, and your assistant never sees it. When it lapses (ArcGIS ends sign-ins after about two weeks, as your organization sets), Columbus says "Sign in again: …"; a weekly workflow renews it by itself. `columbus-mcp arcgis signout <connection id>` removes it.
+
+## 7. Python environments (optional)
+
+Scripts run in the engine's own Python unless you register another Python, an **environment**: an ArcGIS Pro clone, a venv of your own, or one Columbus creates for you. Organization policy must turn this on (`environments: { allow: true }`, see `examples\policy.yaml`); it is off by default.
+
+1. Register one, at the keyboard: in the app, **Settings › Environments › Add environment** (Windows Hello confirms), or in a terminal:
+
+   ```powershell
+   columbus-mcp env add pro --python "C:\Users\<you>\AppData\Local\ESRI\conda\envs\arcgispro-py3-clone\python.exe"
+   ```
+
+   Columbus checks the interpreter (Python version, packages, whether arcpy imports and its licence) and asks you to type the id to confirm. Your assistant can't register or change one.
+2. **Governed** (the default) environments run scripts in the same sandbox as the engine's: no network, extracts of your data only. Use them for any library the engine lacks.
+3. **Trusted** environments (**experimental**) run scripts unconfined, as you, every run approved. They need `environments: { allow_trusted: true }` in policy and `--trust trusted` when you register. arcpy is expected to need one (its licence check reads your profile); use one only if your organization accepts that Columbus can't enforce your connection rules inside it. Running arcpy under your Pro licence is your organization's call.
+4. If you change an environment (for example `pip install` into it), Columbus stops using it until you confirm it again: **Settings › Environments › Confirm again**, or `columbus-mcp env confirm <id>`. `columbus-mcp env list` shows each one and its state.
+5. Your assistant can ask for a new environment with exact package versions (`propose_environment`); you approve it in **Settings › Environments** (or `columbus-mcp env approve <id>`), and Columbus creates it with its own pinned uv, wheels only, from `environments.index_hosts`.
+
+`whoami` lists your environments, with arcpy and its licence in plain words ("ArcGIS Pro licence: Advanced", or "not initialized: open ArcGIS Pro and sign in …").
+
+## 8. Skills
 
 The `skills` folder holds GIS skills: CRS choice, joins, QA, spatial SQL, rasters, lidar, imagery, deliverables, SOP conversion and more. Copy them where your agent loads skills, for example `%USERPROFILE%\.claude\skills` for Claude Code.
 
@@ -83,4 +114,5 @@ The `skills` folder holds GIS skills: CRS choice, joins, QA, spatial SQL, raster
 
 - Oracle (`oracle`, `sde-oracle`) and SQL Server (`sqlserver`, `mssql`, `sde-sqlserver`, `azure-sql`) connections read through `engine\setup-engine.ps1`'s database drivers: python-oracledb in thin mode (no Oracle Client) and pyodbc, which also needs Microsoft ODBC Driver 18 for SQL Server installed. SQL Server has no read-only session: Columbus rolls back every query's transaction, but give it a login with SELECT only. Esri `ST_Geometry` columns on Oracle are reported as unsupported geometry, not read.
 - On Windows, confinement level C is not available yet. Servers and plugins run at A or B.
-- No point-cloud processing, no edits to geodatabases, no ArcPy.
+- No point-cloud processing and no edits to geodatabases.
+- arcpy runs only in a trusted Python environment you register (experimental, above); not yet tested on a real ArcGIS Pro machine (see [manual-checks.md](manual-checks.md), H-2). Personal tools and workflows can't use arcpy yet.

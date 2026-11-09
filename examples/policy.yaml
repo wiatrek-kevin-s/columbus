@@ -1,15 +1,19 @@
 # Organization policy: %ProgramData%\Columbus\policy.yaml
 # Writable only by administrators; can be pushed by Intune. Settings narrow
 # what Columbus allows (limits can be raised, within a fixed ceiling, with
-# limits.allow_raise). With no file, the defaults are: local
-# GeoPackage/SQLite only, read-only, no scripts, no edits.
+# limits.allow_raise). With no file, the defaults are: local GeoPackage,
+# SQLite, shapefile, file geodatabase and files connections only,
+# read-only, no scripts, no edits, no Python environments.
 
-# Connection types allowed at all.
+# Connection types allowed at all. files is a folder of CSV, Excel,
+# GeoJSON, GeoParquet, KML and FlatGeobuf files (the old name "file" is read
+# as files; Columbus never rewrites this file); arcgis is an ArcGIS Online,
+# Portal or ArcGIS Server service.
 connection_types: [gpkg, sqlite, shapefile, filegdb, files, oracle, sqlserver, postgis, rasters, arcgis]
 
 # Hosts any connection may reach (wildcards allowed). An arcgis connection's
 # service host (and a signed-in one's portal host) must be listed here.
-hosts: ["*.corp.example", "oraprod.corp.example", "services.arcgis.com"]
+hosts: ["*.corp.example", "oraprod.corp.example", "services.arcgis.com", "www.arcgis.com"]
 
 # Tools: leave empty to allow all built-in tools; deny_tools always wins.
 tools: []
@@ -91,3 +95,39 @@ fetch_hosts: ["tigerweb.geo.census.gov", "hazards.fema.gov", "*.arcgis.com"]
 # ask_each_change: ask the person about every change the assistant makes to
 # their notes. Off: one approval per batch, and "allow for this session".
 notes: { values: true, ask_each_change: false }
+
+# The person's own Python environments (scripts that need libraries the
+# engine lacks, an ArcGIS Pro clone with arcpy). Every switch is off by
+# default; unknown keys here are refused. Environments are registered by the
+# person at the keyboard (columbus-mcp env add, or Settings > Environments),
+# never by the assistant.
+environments:
+  allow: false                # master switch: register, create and use environments
+  allow_trusted: false        # trusted (experimental): scripts run unconfined, as the
+                              # person, every run approved; Columbus can't enforce
+                              # connection rules inside them. arcpy is expected to need it
+  allow_network: false        # governed environments may run at confinement level B (network)
+  index_hosts: [pypi.org, files.pythonhosted.org]   # where Columbus's uv may download
+                              # wheels for environments the person approves (propose_environment)
+
+# Script approvals. session_approval adds "Allow this script for the
+# session" (the same code, any inputs, until the chat or AI app connection
+# ends) for the engine's Python and governed level-A environments only;
+# never for trusted ones. Off by default; unknown keys here are refused.
+scripts:
+  session_approval: false
+
+# Web map layers (imagery, WMS/WMTS, ArcGIS map, image and feature
+# services): display only, drawn through Columbus, never seen by the
+# assistant. Unknown keys here are refused.
+map:
+  allow_web_layers: true      # false: no web layers at all
+  hosts: []                   # empty: each layer's own host, once the person saves it at the
+                              # keyboard; listed: only these hosts, e.g. ["*.arcgis.com", "imagery.example.gov"]
+  sources:                    # layers the organization supplies for everyone (F-13 entries)
+    - id: county-imagery
+      title: County imagery 2025
+      kind: wmts
+      url: https://imagery.example.gov/wmts/1.0.0/WMTSCapabilities.xml
+      layer: ortho2025
+      attribution: Example County GIS
