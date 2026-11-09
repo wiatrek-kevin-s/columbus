@@ -405,8 +405,8 @@
           "expected": "new layer of 2 rows, original still 3; the hidden-field where is refused"
         }
       ],
-      "status": "todo",
-      "evidence": ""
+      "status": "done",
+      "evidence": "Commit d3c084e. app/desktop/e2e/workflows.py: Open in a chat on a finished run opens a chat with tract-export-tracts.gpkg in map and table, report in the system prompt; export to a non-granted folder shows the approval card, Allow once lands it; run folder, workspace and outbox hash unchanged. crates/gateway/tests/workflows.rs a_run_opens_in_a_chat_as_copies_and_the_run_never_changes (copies with labels and provenance; overwrite of the run's export refused; run handle refused; filter ROUTE_NAME <> 'B' -> new 2-row layer, hidden field and subquery refused; run files unchanged; altered output -> refused naming the file). CI run https://github.com/wiatrek-kevin-s/columbus/actions/runs/42626537952 green on 13 jobs. Workspace 358, pytest 225."
     },
     {
       "id": "T-22",
