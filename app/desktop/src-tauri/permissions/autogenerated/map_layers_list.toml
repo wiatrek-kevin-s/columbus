@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-map-layers-list"
+description = "Enables the map_layers_list command without any pre-configured scope."
+commands.allow = ["map_layers_list"]
+
+[[permission]]
+identifier = "deny-map-layers-list"
+description = "Denies the map_layers_list command without any pre-configured scope."
+commands.deny = ["map_layers_list"]

@@ -26,10 +26,13 @@ import time
 from pathlib import Path
 
 import yaml
-from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.support.ui import WebDriverWait
+
+import guard
+from guard import step
+
+WebDriverWait = guard.Wait  # its time-outs name the step that was waiting
 
 REPO = Path(__file__).resolve().parents[3]
 GATEWAY = Path(sys.argv[1]).resolve()
@@ -96,12 +99,7 @@ def columbus(root):
 
 def session(root, confirm):
     env = dict(files(root), COLUMBUS_APP_TEST_CONFIRM=confirm)
-    proc = subprocess.Popen(["tauri-driver"], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    time.sleep(2)
-    opts = webdriver.common.options.ArgOptions()
-    opts.set_capability("tauri:options", {"application": str(APP)})
-    opts.set_capability("browserName", "wry")
-    d = webdriver.Remote("http://127.0.0.1:4444", options=opts)
+    d, proc = guard.driver(env, APP)
     wait = WebDriverWait(d, 30)
     wait.until(lambda drv: drv.execute_script("return !!document.getElementById('page-title')"))
     nav(d, wait, "#/connections", "add")
@@ -129,6 +127,8 @@ def fill(d, name, value):
 
 
 def main():
+    guard.start("desktop settings e2e", minutes=10)
+    step("fixtures")
     OUT.mkdir(exist_ok=True)
     root = Path(tempfile.mkdtemp())
     (root / "connections").mkdir()
@@ -139,17 +139,20 @@ import sys, geopandas as gpd
 from shapely.geometry import LineString
 gpd.GeoDataFrame({"RTE": ["IH0035", "US0183"], "district": [14, 12]}, geometry=[LineString([(0, 0), (1000, 0)]), LineString([(0, 0), (0, 900)])],
     crs="EPSG:3081").to_file(sys.argv[1], layer="routes", driver="GPKG", engine="pyogrio")
-""", str(gpkg)], check=True)
+""", str(gpkg)], check=True, timeout=120)
     broken = root / "broken.gpkg"
     broken.write_bytes(b"not a GeoPackage")
 
     count_hash = propose(root, "personal.count-rows", "Count rows")
     propose(root, "personal.other-tool", "Other tool")
 
+    step("a Columbus session")
     server = columbus(root)
+    step("the app, confirming allowed")
     d, proc, wait = session(root, "allow")
     try:
         # Add a GeoPackage connection; Test before saving.
+        step("connections: Test and save a GeoPackage")
         d.find_element(By.ID, "add").click()
         wait.until(EC.visibility_of_element_located((By.NAME, "conn_id")))
         fill(d, "conn_id", "roads")
@@ -165,6 +168,7 @@ gpd.GeoDataFrame({"RTE": ["IH0035", "US0183"], "district": [14, 12]}, geometry=[
         assert not (root / "connections" / "roads.yaml").exists(), "Test saves nothing"
         fill(d, "deny", "*audit*")
         # A filter on a hidden field would reveal it, row count by row count.
+        step("connections: a filter on a hidden field")
         fill(d, "row_filter", "owner_ssn LIKE '4%'")
         click(d, By.ID, "save")
         wait.until(lambda drv: "a field your organization hides" in drv.find_element(By.ID, "form-error").text)
@@ -173,6 +177,7 @@ gpd.GeoDataFrame({"RTE": ["IH0035", "US0183"], "district": [14, 12]}, geometry=[
         click(d, By.ID, "save")
         wait.until(lambda drv: drv.find_element(By.ID, "restart").is_displayed())
         # The running session picks it up by itself.
+        step("connections: the running session picks it up")
         assert "no need to restart" in d.find_element(By.ID, "restart").text, d.find_element(By.ID, "restart").text
         c = yaml.safe_load((root / "connections" / "roads.yaml").read_text())
         assert c["id"] == "roads" and c["type"] == "gpkg" and c["path"] == str(gpkg), c
@@ -181,6 +186,7 @@ gpd.GeoDataFrame({"RTE": ["IH0035", "US0183"], "district": [14, 12]}, geometry=[
         wait.until(lambda drv: "roads" in drv.execute_script("return document.getElementById('connections').textContent"))
 
         # Draft notes from the database: the running session writes them.
+        step("connections: draft notes")
         d.find_element(By.XPATH, "//ul[@id='connections']//button[normalize-space()='Draft notes']").click()
         try:
             WebDriverWait(d, 60).until(lambda drv: "Drafted" in drv.find_element(By.CSS_SELECTOR, ".draft-status").text)
@@ -194,6 +200,7 @@ gpd.GeoDataFrame({"RTE": ["IH0035", "US0183"], "district": [14, 12]}, geometry=[
         d.save_screenshot(str(OUT / "settings-notes.png"))
 
         # Make it read-write, and turn edits on: the rest of the policy file stays.
+        step("settings: read-write and edits on")
         d.find_element(By.XPATH, "//ul[@id='connections']//button[normalize-space()='Edit']").click()
         wait.until(EC.visibility_of_element_located((By.NAME, "mode")))
         d.execute_script("const s = document.querySelector('[name=mode]'); s.value = 'read-write';")
@@ -209,6 +216,7 @@ gpd.GeoDataFrame({"RTE": ["IH0035", "US0183"], "district": [14, 12]}, geometry=[
         d.save_screenshot(str(OUT / "settings.png"))
 
         # Personal tools: turned on (confirmed) on the Tools page, then a proposal is read and installed.
+        step("tools: turned on, a proposal reviewed and installed")
         nav(d, wait, "#/tools", "allow_personal_tools")
         wait.until(lambda drv: drv.find_element(By.ID, "tools-off").is_displayed())
         d.find_element(By.ID, "allow_personal_tools").click()
@@ -232,6 +240,7 @@ gpd.GeoDataFrame({"RTE": ["IH0035", "US0183"], "district": [14, 12]}, geometry=[
         assert not (root / "tools" / "proposals" / "personal.count-rows").exists()
         wait.until(lambda drv: "In use" in drv.execute_script("return document.getElementById('tools-installed').textContent"))
         # Declining needs no confirmation.
+        step("tools: decline and remove")
         d.find_element(By.XPATH, waiting.format("Other tool", "Decline")).click()
         wait.until(lambda drv: not (root / "tools" / "proposals" / "personal.other-tool").exists())
         d.save_screenshot(str(OUT / "settings-tools.png"))
@@ -251,14 +260,15 @@ gpd.GeoDataFrame({"RTE": ["IH0035", "US0183"], "district": [14, 12]}, geometry=[
             d.save_screenshot(str(OUT / "settings-last.png"))
         except Exception:
             pass
-        d.quit()
-        proc.terminate()
-        proc.wait()
+        step("closing the first app")
+        guard.stop(d, proc)
 
     # The person declines: nothing that widens access is saved.
     propose(root, "personal.third-tool", "Third tool")
+    step("the app again, confirming denied (once the first app has gone)")
     d, proc, wait = session(root, "deny")
     try:
+        step("denied: save a connection, turn scripts on, install a tool")
         d.find_element(By.ID, "add").click()
         wait.until(EC.visibility_of_element_located((By.NAME, "conn_id")))
         fill(d, "conn_id", "roads2")
@@ -291,10 +301,12 @@ gpd.GeoDataFrame({"RTE": ["IH0035", "US0183"], "district": [14, 12]}, geometry=[
         wait.until(lambda drv: "allow_edits: false" in (root / "policy.yaml").read_text())
         print("desktop settings e2e (main window): ok")
     finally:
-        d.quit()
-        proc.terminate()
-        server.stdin.close()
-        server.wait(timeout=30)
+        step("closing the app and Columbus")
+        try:
+            guard.stop(d, proc)
+        finally:
+            server.stdin.close()
+            server.wait(timeout=30)
 
 
 if __name__ == "__main__":

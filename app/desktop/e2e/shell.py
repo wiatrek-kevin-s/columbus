@@ -15,7 +15,6 @@ marks one of the person's notes reviewed; and opens a classic window.
 
 import json
 import os
-import subprocess
 import sys
 import tempfile
 import threading
@@ -23,11 +22,14 @@ import time
 import urllib.request
 from pathlib import Path
 
-from selenium import webdriver
 from selenium.common.exceptions import StaleElementReferenceException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.support.ui import WebDriverWait
+
+import guard
+from guard import step
+
+WebDriverWait = guard.Wait  # its time-outs name the step that was waiting
 
 REPO = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO / "app/ui/e2e"))
@@ -74,6 +76,7 @@ def go(d, wait, href, title):
 
 
 def main():
+    guard.start("desktop shell e2e", minutes=10)
     OUT.mkdir(exist_ok=True)
     root = Path(tempfile.mkdtemp())
     import geopandas as gpd
@@ -104,12 +107,8 @@ def main():
     q = mcp.tool("query_features", {"connection": "tiger", "dataset": "tracts"})
     handle = q["result"]["layer"]["handle"]
 
-    driver_proc = subprocess.Popen(["tauri-driver"], env=files, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    time.sleep(2)
-    opts = webdriver.common.options.ArgOptions()
-    opts.set_capability("tauri:options", {"application": str(APP)})
-    opts.set_capability("browserName", "wry")
-    d = webdriver.Remote("http://127.0.0.1:4444", options=opts)
+    step("the app")
+    d, driver_proc = guard.driver(files, APP)
     exporter = None
     try:
         wait = WebDriverWait(d, 30)
@@ -117,7 +116,7 @@ def main():
         main_window = d.current_window_handle
         d.save_screenshot(str(OUT / "shell-home.png"))
 
-        # The rail reaches every page, and each says what it is.
+        step("The rail reaches every page, and each says what it is")
         for href, title in [("#/chats", "Chats"), ("#/projects", "Projects"), ("#/documents", "Documents"),
                             ("#/datagroups", "Data groups"), ("#/skills", "Skills"), ("#/connections", "Connections"),
                             ("#/registry", "Registry"), ("#/tools", "Tools"), ("#/workflows", "Workflows"),
@@ -135,15 +134,15 @@ def main():
         d.execute_script("location.hash = '#/documents/proposals'")
         wait.until(lambda drv: drv.find_elements(By.ID, "pr-check"))
         wait.until(lambda drv: drv.find_elements(By.ID, "sg-list"))
-        # A part with no backend says it is coming.
+        step("A part with no backend says it is coming")
         go(d, wait, "#/connections", "Connections")
         d.execute_script("location.hash = '#/connections/accounts'")
         wait.until(lambda drv: "Coming" in text(drv, "main"))
-        # The rail's foot: the policy's source, and the workflows.
+        step("The rail's foot: the policy's source, and the workflows")
         foot = text(d, ".rail-foot")
         assert "Workflows" in foot and "Policy" in foot, foot
 
-        # The session another AI app runs, under Chats: its activity and its map.
+        step("The session another AI app runs, under Chats: its activity and its map")
         go(d, wait, "#/chats", "Chats")
         wait.until(lambda drv: "Running in other AI apps" in text(drv, "main"))
         click(d, By.CSS_SELECTOR, f"a[href='#/chats/s/{session}']")
@@ -153,7 +152,7 @@ def main():
         src = frame.get_attribute("src")
         assert src.startswith(f"http://127.0.0.1:{port}/embed#t="), src
         d.switch_to.frame(frame)
-        # The companion page signed in with its view link and shows the layer.
+        step("The companion page signed in with its view link and shows the layer")
         WebDriverWait(d, 40).until(lambda drv: "tracts" in drv.execute_script("return document.body.textContent"))
         framed = d.execute_script("return { tauri: typeof window.__TAURI__, internals: typeof window.__TAURI_INTERNALS__, embedded: !!document.querySelector('.app.embedded') }")
         assert framed["tauri"] == "undefined" and framed["internals"] == "undefined", f"the frame can reach the app: {framed}"
@@ -161,11 +160,11 @@ def main():
         d.switch_to.default_content()
         time.sleep(2)
         d.save_screenshot(str(OUT / "shell-session.png"))
-        # Its files.
+        step("Its files")
         click(d, By.XPATH, "//div[@role='tablist']/button[normalize-space()='Files']")
         wait.until(lambda drv: ".gpkg" in text(drv, ".outpanel"))
 
-        # A request waiting in that session: listed, view only; decided in the browser.
+        step("A request waiting in that session: listed, view only; decided in the browser")
         result = {}
         exporter = threading.Thread(target=lambda: result.update(r=mcp.request(
             "tools/call", {"name": "export_output", "arguments": {"handle": handle, "folder": "outbox", "name": "tracts"}}, 120)))
@@ -175,8 +174,9 @@ def main():
         page = text(d, "#approvals")
         assert "Allow once" not in page and not d.find_elements(By.XPATH, "//*[@id='approvals']//button[normalize-space()='Allow once']")
         d.save_screenshot(str(OUT / "shell-approvals.png"))
-        # The rail counts it.
+        step("The rail counts it")
         wait.until(lambda drv: "1 waiting" in (drv.find_element(By.CSS_SELECTOR, "#rail a[href='#/activity']").get_attribute("aria-label") or ""))
+        step("The session opened its browser page when the request came")
         # The session opened its browser page when the request came (the
         # test's stand-in for the browser is this file); the button asks
         # again, which the session limits to one page every 30 s.
@@ -184,7 +184,7 @@ def main():
         click(d, By.XPATH, "//*[@id='approvals']//button[normalize-space()='Decide in browser']")
         wait.until(lambda drv: "Decide there" in text(drv, "#toast") or "Nothing is waiting" in text(drv, "#toast"))
         assert link.startswith(f"http://127.0.0.1:{port}/#t="), f"the session opened its browser page: {link}"
-        # Decide there, as the person would (decline).
+        step("Decide there, as the person would (decline)")
         token = link.split("#t=")[1]
         own = f"http://127.0.0.1:{port}"
         r = urllib.request.urlopen(urllib.request.Request(f"{own}/api/session", data=json.dumps({"launch": token}).encode(),
@@ -200,7 +200,7 @@ def main():
         assert not (root / "outbox" / "tracts.gpkg").exists()
         WebDriverWait(d, 30).until(lambda drv: "Nothing is waiting" in text(drv, "#approvals"))
 
-        # The audit log: this session's calls, filtered, and its chain checked.
+        step("The audit log: this session's calls, filtered, and its chain checked")
         go(d, wait, "#/activity/audit", "Audit log")
         wait.until(lambda drv: "query_features" in text(drv, "#audit-rows"))
         assert "approval_decision" in text(d, "#audit-rows")
@@ -211,18 +211,19 @@ def main():
         d.save_screenshot(str(OUT / "shell-audit.png"))
         go(d, wait, "#/activity/exports", "Exports")
 
-        # The person's note: read, then marked reviewed (their own file).
+        step("The person's note: read, then marked reviewed (their own file)")
         go(d, wait, "#/documents", "Documents")
         wait.until(lambda drv: "tracts" in text(drv, "#notes-list"))
         click(d, By.CSS_SELECTOR, "#notes-list li")
         wait.until(lambda drv: "NAME: the tract's name" in text(drv, "main"))
+        step("A note changed after the person read it: nothing is marked")
         # Changed after the person read it (as an assistant allowed to edit
         # draft notes could): nothing is marked.
         note.write_text(NOTE.replace("the tract's name", "changed behind your back"))
         click(d, By.XPATH, "//button[normalize-space()='Mark reviewed']")
         wait.until(lambda drv: "changed after you read it" in text(drv, "main"))
         assert "status: draft" in note.read_text()
-        # Read again, then marked: only the status word changes.
+        step("Read again, then marked: only the status word changes")
         click(d, By.CSS_SELECTOR, "#notes-list li")
         wait.until(lambda drv: "changed behind your back" in text(drv, "main"))
         click(d, By.XPATH, "//button[normalize-space()='Mark reviewed']")
@@ -230,12 +231,12 @@ def main():
         want = NOTE.replace("the tract's name", "changed behind your back").replace("status: draft", "status: reviewed")
         assert note.read_text() == want, note.read_text()
 
-        # Ctrl+K opens the search.
+        step("Ctrl+K opens the search")
         d.execute_script("document.dispatchEvent(new KeyboardEvent('keydown', {key: 'k', ctrlKey: true}))")
         wait.until(lambda drv: drv.execute_script("return document.getElementById('palette').open"))
         d.execute_script("document.getElementById('palette').close()")
 
-        # A classic window is still there.
+        step("A classic window is still there")
         click(d, By.CSS_SELECTOR, ".rail-foot .classic")
         click(d, By.XPATH, "//dialog//button[normalize-space()='Session list']")
         wait.until(lambda drv: len(drv.window_handles) > 1)
@@ -248,8 +249,7 @@ def main():
             d.save_screenshot(str(OUT / "shell-last.png"))
         except Exception:
             pass
-        d.quit()
-        driver_proc.terminate()
+        guard.stop(d, driver_proc)
         if exporter:
             exporter.join(5)
         mcp.close()

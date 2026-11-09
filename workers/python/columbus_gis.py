@@ -56,6 +56,7 @@ __all__ = [
     "geometry_checks",
     "decode",
     "bbox_filter",
+    "bbox_in_layer_crs",
     "build_layer",
     "write_layer",
     "read_layer",
@@ -636,19 +637,28 @@ def m_dropped_check(inputs: list, out, what: str) -> dict | None:
                  fix="Keep the measured layer for linear referencing; calibrate measures again on the new shapes if they need them")
 
 
+def bbox_in_layer_crs(bbox: list[float], bbox_crs: CRS | None, layer_crs: CRS | None) -> list[float]:
+    """The box in the layer's own coordinates: the bounds of the box moved
+    from ``bbox_crs`` (None: already the layer's). The gateway pushes this
+    same box into the source's spatial index (T-13), and ``bbox_filter``
+    keeps the rows that meet it, so both work on one box."""
+    if len(bbox) != 4 or bbox[0] > bbox[2] or bbox[1] > bbox[3]:
+        raise GISError("bbox.invalid", "bbox must be [min x, min y, max x, max y]")
+    box = [float(v) for v in bbox]
+    if bbox_crs is not None and layer_crs is None:
+        raise GISError("bbox.crs", "the dataset records no CRS, so a bbox in another CRS cannot be placed on it",
+                       fix="Give the bbox in the dataset's own coordinates and leave out bbox_crs")
+    if bbox_crs is not None and layer_crs is not None and not bbox_crs.equals(layer_crs):
+        box = [float(v) for v in Transformer.from_crs(bbox_crs, layer_crs, always_xy=True).transform_bounds(*box)]
+    return box
+
+
 def bbox_filter(bbox: list[float] | None, bbox_crs: CRS | None, layer_crs: CRS | None):
     """A predicate on Shapely geometries for rows whose bounds meet the
     box. The box is moved into the layer's CRS first."""
     if not bbox:
         return None
-    if len(bbox) != 4 or bbox[0] > bbox[2] or bbox[1] > bbox[3]:
-        raise GISError("bbox.invalid", "bbox must be [min x, min y, max x, max y]")
-    box = list(bbox)
-    if bbox_crs is not None and layer_crs is None:
-        raise GISError("bbox.crs", "the dataset records no CRS, so a bbox in another CRS cannot be placed on it",
-                       fix="Give the bbox in the dataset's own coordinates and leave out bbox_crs")
-    if bbox_crs is not None and layer_crs is not None and not bbox_crs.equals(layer_crs):
-        box = list(Transformer.from_crs(bbox_crs, layer_crs, always_xy=True).transform_bounds(*box))
+    box = bbox_in_layer_crs(bbox, bbox_crs, layer_crs)
     target = shapely.box(*box)
 
     shapely.prepare(target)
@@ -1874,6 +1884,49 @@ def _op_spatial_join(inp, params, checks):
     return out.drop(columns=["index_right"]).reset_index(drop=True)
 
 
+def _op_filter(inp, params, checks):
+    """F-12: the rows a where clause keeps, as a new layer. The gateway has
+    checked the clause (query_features' parser and subset, no hidden field)
+    and re-rendered it; it runs here against the layer's attributes in a
+    private in-memory SQLite table, so it means what it means in a
+    GeoPackage query. Geometries are untouched (M and Z kept)."""
+    import sqlite3
+
+    df = inp["layer"]
+    where = params.get("where")
+    if not isinstance(where, str) or not where.strip():
+        raise GISError("params", "filter needs params.where")
+    attrs = pd.DataFrame(df.drop(columns=df.geometry.name) if isinstance(df, gpd.GeoDataFrame) else df)
+    attrs = attrs.reset_index(drop=True)
+    row = "__columbus_row"
+    while row in attrs.columns:
+        row += "_"
+    # Values SQLite can hold: dates and times as ISO text, anything else odd as text.
+    for c in attrs.columns:
+        if pd.api.types.is_datetime64_any_dtype(attrs[c]):
+            attrs[c] = attrs[c].map(lambda v: None if pd.isna(v) else v.isoformat())
+        elif attrs[c].dtype == object:
+            attrs[c] = attrs[c].map(lambda v: v if v is None or isinstance(v, (str, int, float, bool, bytes)) else str(v))
+    con = sqlite3.connect(":memory:")
+    try:
+        attrs.insert(0, row, range(len(attrs)))
+        attrs.to_sql("layer", con, index=False)
+        try:
+            keep = [r[0] for r in con.execute(f'SELECT "{row}" FROM layer WHERE {where}')]
+        except sqlite3.Error as e:
+            raise GISError("params", f"the where clause could not be applied to this layer: {e}",
+                           fix="Name the layer's own fields (describe it, or look at its summary)") from None
+    finally:
+        con.close()
+    out = df.iloc[sorted(keep)].reset_index(drop=True)
+    checks.append(check("filter.rows", "info", f"Kept {len(out)} of {len(df)} rows where {where}",
+                        detail={"kept": len(out), "of": len(df), "where": where}))
+    if len(out) == 0:
+        checks.append(check("filter.empty", "warn", "The filter kept no rows",
+                            fix="Check the where clause's field names and values"))
+    return out
+
+
 # name: (handler, input names, summary)
 OPS: dict[str, tuple[Any, list[str], str]] = {
     "reproject": (_op_reproject, ["layer"], "params: crs (\"EPSG:…\")"),
@@ -1885,6 +1938,7 @@ OPS: dict[str, tuple[Any, list[str], str]] = {
     "intersect": (_op_intersect, ["a", "b"], "no params"),
     "join": (_op_join, ["left", "right"], "params: left_key, right_key?, how (left|inner), key_as_text?, trim?, ignore_case?, pad?"),
     "spatial_join": (_op_spatial_join, ["left", "right"], "params: predicate, how (left|inner)"),
+    "filter": (_op_filter, ["layer"], "params: where (as query_features)"),
 }
 
 

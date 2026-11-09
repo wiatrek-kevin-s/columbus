@@ -30,6 +30,28 @@ pub(crate) fn run(
     args: &[&str],
     limit: Duration,
 ) -> Result<String, String> {
+    let (ok, text, errs) = run_raw(server, engine, args, limit)?;
+    if !ok {
+        let last = errs
+            .lines()
+            .rev()
+            .find(|l| !l.trim().is_empty())
+            .or_else(|| text.lines().rev().find(|l| !l.trim().is_empty()))
+            .unwrap_or("it stopped with an error");
+        return Err(last.trim().to_string());
+    }
+    Ok(text)
+}
+
+/// Run the server with `args`, wait at most `limit`, and return whether
+/// it succeeded, its standard output (at most 8 MB) and its errors (at
+/// most 64 KB). Err only when it could not start or took too long.
+pub(crate) fn run_raw(
+    server: &std::path::Path,
+    engine: Option<&std::path::Path>,
+    args: &[&str],
+    limit: Duration,
+) -> Result<(bool, String, String), String> {
     let mut cmd = Command::new(server);
     cmd.args(args)
         .stdin(Stdio::null())
@@ -83,16 +105,7 @@ pub(crate) fn run(
     let errs = err_rx
         .recv_timeout(Duration::from_secs(2))
         .unwrap_or_default();
-    if !status.success() {
-        let last = errs
-            .lines()
-            .rev()
-            .find(|l| !l.trim().is_empty())
-            .or_else(|| text.lines().rev().find(|l| !l.trim().is_empty()))
-            .unwrap_or("it stopped with an error");
-        return Err(last.trim().to_string());
-    }
-    Ok(text)
+    Ok((status.success(), text, errs))
 }
 
 /// One read-only call through `columbus-mcp app query` (registry_search,

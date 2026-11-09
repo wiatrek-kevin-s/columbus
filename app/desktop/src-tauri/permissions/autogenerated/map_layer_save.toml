@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-map-layer-save"
+description = "Enables the map_layer_save command without any pre-configured scope."
+commands.allow = ["map_layer_save"]
+
+[[permission]]
+identifier = "deny-map-layer-save"
+description = "Denies the map_layer_save command without any pre-configured scope."
+commands.deny = ["map_layer_save"]

@@ -280,6 +280,17 @@ impl Gateway {
             }
         };
 
+        // R-20: an opened workflow run's own exports are never replaced
+        // from its chat, whatever the overwrite or approval.
+        if let Some(why) = self
+            .state
+            .opened
+            .as_ref()
+            .and_then(|o| o.protects(&folder.id, &args.name))
+        {
+            return Err(self.deny(&ctx, rec, why));
+        }
+
         // R-8: an existing file geodatabase of this name is never replaced
         // or changed, whatever the format, overwrite or approval (its
         // provenance file is its record too).

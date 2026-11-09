@@ -543,6 +543,12 @@ impl ApprovalsPage {
                     .route("/api/layer", get(layer))
                     .route("/api/rows", get(rows))
                     .route("/api/provenance/{id}", get(provenance))
+                    .route("/api/web/sources", get(web_sources))
+                    .route("/api/web/source/{id}", get(web_source))
+                    .route("/api/web/tile/{id}/{z}/{x}/{y}", get(web_tile))
+                    .route("/api/web/features/{id}", get(web_features))
+                    .route("/api/web", axum::routing::any(web_other))
+                    .route("/api/web/{*rest}", axum::routing::any(web_other))
                     .route("/assets/{file}", get(asset))
                     .fallback(not_found)
                     .layer(axum::extract::DefaultBodyLimit::max(4096))
@@ -1250,6 +1256,159 @@ fn companion(s: &Shared) -> Result<&crate::companion::Companion, Box<Response<Bo
     s.companion
         .as_deref()
         .ok_or_else(|| Box::new(status(StatusCode::NOT_FOUND, "no companion data here")))
+}
+
+// ---------- Web map layers (T-24, D-14) ----------
+//
+// The map page's only way to web layers: with its session token (as every
+// call here), naming a saved source's id and a tile or an extent, never an
+// address. See `web_layers`.
+
+/// Host, session and "no addresses" checks for every web-layer request.
+fn web_guard(
+    h: &HeaderMap,
+    s: &Shared,
+    raw_query: Option<&str>,
+) -> Result<crate::web_layers::Env, Box<Response<Body>>> {
+    guard(h, s)?;
+    if let Some(q) = raw_query {
+        let decoded = q
+            .to_ascii_lowercase()
+            .replace("%3a", ":")
+            .replace("%2f", "/");
+        if decoded.contains("://")
+            || decoded.split('&').any(|kv| {
+                matches!(
+                    kv.split('=').next(),
+                    Some("url" | "href" | "src" | "template")
+                )
+            })
+        {
+            return Err(Box::new(status(
+                StatusCode::BAD_REQUEST,
+                crate::web_layers::NO_URLS,
+            )));
+        }
+    }
+    companion(s)?
+        .web_env(false)
+        .map_err(|e| Box::new(status(StatusCode::NOT_FOUND, &e)))
+}
+
+fn web_error(e: crate::web_layers::WebError) -> Response<Body> {
+    status(
+        StatusCode::from_u16(e.status).unwrap_or(StatusCode::BAD_GATEWAY),
+        &e.message,
+    )
+}
+
+/// `GET /api/web/sources`: the web layers the person can turn on.
+async fn web_sources(
+    State(s): State<Arc<Shared>>,
+    h: HeaderMap,
+    axum::extract::RawQuery(q): axum::extract::RawQuery,
+) -> Response<Body> {
+    if let Err(r) = web_guard(&h, &s, q.as_deref()) {
+        return *r;
+    }
+    // Read the settings again: the person may just have added one.
+    match companion(&s).map(|c| c.web_env(true)) {
+        Ok(Ok(env)) => json_response(StatusCode::OK, crate::web_layers::sources(&env)),
+        Ok(Err(e)) => status(StatusCode::NOT_FOUND, &e),
+        Err(r) => *r,
+    }
+}
+
+/// `GET /api/web/source/{id}`: what the map needs to draw one.
+async fn web_source(
+    State(s): State<Arc<Shared>>,
+    Path(id): Path<String>,
+    h: HeaderMap,
+    axum::extract::RawQuery(q): axum::extract::RawQuery,
+) -> Response<Body> {
+    let env = match web_guard(&h, &s, q.as_deref()) {
+        Ok(e) => e,
+        Err(r) => return *r,
+    };
+    match crate::web_layers::info(&env, &id).await {
+        Ok(v) => json_response(StatusCode::OK, v),
+        Err(e) => web_error(e),
+    }
+}
+
+/// `GET /api/web/tile/{id}/{z}/{x}/{y}`: one tile's image.
+async fn web_tile(
+    State(s): State<Arc<Shared>>,
+    Path((id, z, x, y)): Path<(String, String, String, String)>,
+    h: HeaderMap,
+    axum::extract::RawQuery(q): axum::extract::RawQuery,
+) -> Response<Body> {
+    let env = match web_guard(&h, &s, q.as_deref()) {
+        Ok(e) => e,
+        Err(r) => return *r,
+    };
+    let y = y.split('.').next().unwrap_or("");
+    let (Ok(z), Ok(x), Ok(y)) = (z.parse::<u8>(), x.parse::<u32>(), y.parse::<u32>()) else {
+        return status(
+            StatusCode::BAD_REQUEST,
+            "a tile is named by zoom, column and row",
+        );
+    };
+    match crate::web_layers::tile(&env, &id, z, x, y).await {
+        Ok((ct, bytes)) => {
+            let mut r = Response::new(Body::from(bytes));
+            if let Ok(v) = HeaderValue::from_str(&ct) {
+                r.headers_mut().insert(header::CONTENT_TYPE, v);
+            }
+            harden(r, None)
+        }
+        Err(e) => web_error(e),
+    }
+}
+
+#[derive(Deserialize)]
+struct WebFeaturesQuery {
+    bbox: String,
+}
+
+/// `GET /api/web/features/{id}?bbox=w,s,e,n`: the view's features.
+async fn web_features(
+    State(s): State<Arc<Shared>>,
+    Path(id): Path<String>,
+    h: HeaderMap,
+    axum::extract::RawQuery(q): axum::extract::RawQuery,
+) -> Response<Body> {
+    let env = match web_guard(&h, &s, q.as_deref()) {
+        Ok(e) => e,
+        Err(r) => return *r,
+    };
+    let Ok(Query(wq)) = Query::<WebFeaturesQuery>::try_from_uri(
+        &format!("/?{}", q.unwrap_or_default())
+            .parse()
+            .unwrap_or_default(),
+    ) else {
+        return status(
+            StatusCode::BAD_REQUEST,
+            "bbox must be west,south,east,north in degrees",
+        );
+    };
+    let bbox = match crate::web_layers::parse_bbox(&wq.bbox) {
+        Ok(b) => b,
+        Err(e) => return web_error(e),
+    };
+    match crate::web_layers::features(&env, &id, bbox).await {
+        Ok(v) => json_response(StatusCode::OK, v),
+        Err(e) => web_error(e),
+    }
+}
+
+/// Anything else under `/api/web`: a page asking for an address (or a
+/// path that does not exist) is refused.
+async fn web_other(State(s): State<Arc<Shared>>, h: HeaderMap) -> Response<Body> {
+    if let Err(r) = guard(&h, &s) {
+        return *r;
+    }
+    status(StatusCode::BAD_REQUEST, crate::web_layers::NO_URLS)
 }
 
 fn answer(r: Result<serde_json::Value, String>) -> Response<Body> {

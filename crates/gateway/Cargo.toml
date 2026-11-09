@@ -44,6 +44,8 @@ axum = { version = "0.8", default-features = false, features = ["http1", "tokio"
 columbus-chat = { path = "../chat" }
 # Registry downloads; TLS comes from the same features rmcp enables.
 reqwest = { version = "0.13", default-features = false }
+# Web map layers: WMTS and WMS capabilities (T-24).
+roxmltree = "0.21"
 
 [dev-dependencies]
 reqwest = { version = "0.13", default-features = false, features = ["json"] }

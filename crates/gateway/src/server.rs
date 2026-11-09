@@ -315,6 +315,11 @@ pub struct WhoAmI {
     /// default export folder. Absent outside a project.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project: Option<Value>,
+    /// The workflow run this chat was opened from: its layers here (copies,
+    /// with the run's labels, fingerprints and provenance), its exports
+    /// (never replaced from here), and its report. Absent otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub opened_run: Option<Value>,
     pub session: String,
     pub policy: PolicySummary,
     pub connections: Vec<ConnectionCard>,
@@ -340,6 +345,11 @@ pub struct WhoAmI {
     /// `environment`: {id, trust, status, python_version, arcpy, reason}.
     /// Only `ready` ones run. Empty while policy turns environments off.
     pub environments: Vec<Value>,
+    /// Web map layers the person can show on their own map, by title only.
+    /// You cannot see, add, change or turn them on, and they are not
+    /// workspace layers; to analyse an ArcGIS layer, use an arcgis
+    /// connection.
+    pub web_layers: Vec<String>,
     pub labels: Vec<String>,
     pub notes: Vec<String>,
 }
@@ -528,6 +538,9 @@ pub struct State {
     /// The project this session was started for (`COLUMBUS_PROJECT`): its
     /// connections are `scope`'s, and its instructions go to the assistant.
     pub project: Option<columbus_shared::projects::Project>,
+    /// The workflow run this session opened (`COLUMBUS_OPEN_RUN`): its
+    /// layers were copied in, and its exports are never replaced.
+    pub opened: Option<crate::open_run::Opened>,
     pub sandbox: Sandbox,
     pub audit: Arc<AuditLog>,
     pub approvals: Arc<ApprovalStore>,
@@ -780,6 +793,7 @@ impl State {
             }),
             scope: ProjectScope::default(),
             project: None,
+            opened: None,
             sandbox,
             audit,
             approvals,
@@ -1224,7 +1238,7 @@ impl State {
                     "{id} was deleted, but its ArcGIS sign-in record could not be removed: {e}"
                 );
             }
-            match crate::arcgis_auth::sign_out(&self.secrets, &id) {
+            match crate::arcgis_auth::sign_out(&self.secrets, &id, &self.paths) {
                 Ok(true) => tracing::info!("{id} was deleted, so its ArcGIS sign-in was removed"),
                 Ok(false) => {}
                 Err(e) => tracing::warn!(
@@ -2011,6 +2025,7 @@ impl Gateway {
             server: format!("{SERVER_NAME} {}", env!("CARGO_PKG_VERSION")),
             user: self.state.user.clone(),
             client: client_name(&ctx),
+            opened_run: self.state.opened.as_ref().map(|o| o.info.clone()),
             project: self.state.project.as_ref().map(|p| {
                 json!({
                     "id": p.id,
@@ -2093,6 +2108,7 @@ impl Gateway {
             } else {
                 vec![]
             },
+            web_layers: crate::web_layers::titles(&self.state.settings(), &self.state.paths),
             labels: self.labels(),
             notes: {
                 let mut notes = self.state.notes.clone();

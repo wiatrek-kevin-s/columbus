@@ -14,6 +14,8 @@
 //! Needs Python with geopandas, pyogrio, shapely 2.1+ and pyproj; skipped
 //! otherwise.
 
+mod support;
+
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
@@ -29,19 +31,9 @@ use rmcp::{RoleClient, ServiceExt};
 use serde_json::{json, Value};
 
 fn python() -> Option<String> {
-    std::env::var("COLUMBUS_PYTHON")
-        .ok()
-        .into_iter()
-        .chain(["python3".to_string(), "python".to_string()])
-        .find(|p| {
-            Command::new(p)
-                .args([
-                    "-c",
-                    "import geopandas, pyogrio, pyproj, shapely; assert hasattr(shapely, 'has_m')",
-                ])
-                .output()
-                .is_ok_and(|o| o.status.success())
-        })
+    support::python_for(
+        "import geopandas, pyogrio, pyproj, shapely; assert hasattr(shapely, 'has_m')",
+    )
 }
 
 /// Every request the fake answered, as `GET <path>?<query>` (or `POST`).

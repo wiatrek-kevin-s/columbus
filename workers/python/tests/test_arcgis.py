@@ -17,6 +17,8 @@ import warnings
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
+sys.path.insert(0, HERE)
+from engine_required import skip_unless_engine  # noqa: E402
 
 try:
     import geopandas as gpd
@@ -51,7 +53,7 @@ def _route(oid, m0):
             "geometry": {"hasM": True, "paths": [[[-97.7, 30.2 + oid * 1e-4, m0], [-97.69, 30.21 + oid * 1e-4, m0 + 5]]]}}
 
 
-@unittest.skipUnless(HAVE_GIS, "the GIS engine is not installed")
+@skip_unless_engine(HAVE_GIS, "the GIS engine is not installed")
 class EsriJsonLayers(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

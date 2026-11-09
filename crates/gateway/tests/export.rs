@@ -6,6 +6,8 @@
 //! Needs Python with geopandas, pyogrio, shapely and pyproj; skipped
 //! otherwise.
 
+mod support;
+
 use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
 
@@ -16,15 +18,7 @@ use rmcp::{RoleClient, ServiceExt};
 use serde_json::{json, Value};
 
 fn python(import: &str) -> Option<String> {
-    ["python3", "python"]
-        .into_iter()
-        .map(String::from)
-        .find(|p| {
-            StdCommand::new(p)
-                .args(["-c", import])
-                .output()
-                .is_ok_and(|o| o.status.success())
-        })
+    support::python_for(import)
 }
 
 /// Ten roads around Austin in EPSG:3081 (eight in district 14), a county

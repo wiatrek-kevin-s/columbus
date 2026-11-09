@@ -12,6 +12,8 @@
 //! Fake tokens contain `zq7k`; no audit line, provenance file, workspace
 //! file or tool result may.
 
+mod support;
+
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -41,19 +43,9 @@ fn example(name: &str) -> PathBuf {
 }
 
 fn python() -> Option<String> {
-    std::env::var("COLUMBUS_PYTHON")
-        .ok()
-        .into_iter()
-        .chain(["python3".to_string(), "python".to_string()])
-        .find(|p| {
-            Command::new(p)
-                .args([
-                    "-c",
-                    "import geopandas, pyogrio, pyproj, shapely; assert hasattr(shapely, 'has_m')",
-                ])
-                .output()
-                .is_ok_and(|o| o.status.success())
-        })
+    support::python_for(
+        "import geopandas, pyogrio, pyproj, shapely; assert hasattr(shapely, 'has_m')",
+    )
 }
 
 /// The fake portal, and its port.

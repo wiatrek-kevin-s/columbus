@@ -4,6 +4,8 @@
 //! never do). Paging, redirects refused, private addresses refused, and
 //! hosts not pre-approved need a person.
 
+mod support;
+
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
@@ -19,15 +21,7 @@ use rmcp::{RoleClient, ServiceExt};
 use serde_json::{json, Value};
 
 fn python() -> Option<String> {
-    ["python3", "python"]
-        .into_iter()
-        .map(String::from)
-        .find(|p| {
-            Command::new(p)
-                .args(["-c", "import geopandas, shapely, pyproj"])
-                .output()
-                .is_ok_and(|o| o.status.success())
-        })
+    support::python_for("import geopandas, shapely, pyproj")
 }
 
 fn feature(i: u32) -> Value {

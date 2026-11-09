@@ -189,9 +189,38 @@ def _sqlite_list(conn: dict[str, Any], timeout_s: float) -> list[dict[str, Any]]
                 # one out of queries.
                 for r in db.execute(f"PRAGMA table_xinfo({quoted})")
             ]
+        if has_gpkg:
+            _gpkg_spatial_index(db, tables)
         return list(tables.values())
     finally:
         db.close()
+
+
+def _gpkg_spatial_index(db: sqlite3.Connection, tables: dict[str, dict[str, Any]]) -> None:
+    """``spatial_index`` on each GeoPackage feature table: whether its R-tree
+    (``rtree_<table>_<column>``, GeoPackage's RTree Spatial Index extension)
+    can serve a bbox. The gateway then matches the R-tree's ids to the
+    table's row id, which in a GeoPackage is its integer primary key (T-13).
+    A view, a table without one integer primary key, a column named like
+    the row id, or an SQLite built without the R-tree module: no."""
+    names = {r[0].lower() for r in db.execute("SELECT name FROM sqlite_master WHERE name LIKE 'rtree\\_%' ESCAPE '\\'")}
+    for entry in tables.values():
+        gcol = entry.get("geometry_column")
+        if not gcol:
+            continue
+        ok = False
+        rtree = f"rtree_{entry['name']}_{gcol}"
+        fields = entry.get("fields") or []
+        pks = [f for f in fields if f.get("pk")]
+        if (entry.get("type") == "table" and rtree.lower() in names and len(pks) == 1
+                and str(pks[0].get("type") or "").upper() == "INTEGER"
+                and not any(str(f["name"]).lower() in ("rowid", "oid", "_rowid_") for f in fields)):
+            try:
+                db.execute('SELECT "id", "minx", "maxx", "miny", "maxy" FROM "' + rtree.replace('"', '""') + '" LIMIT 0').fetchall()
+                ok = True
+            except sqlite3.Error:
+                ok = False  # no R-tree module in this SQLite, or not an R-tree
+        entry["spatial_index"] = ok
 
 
 def _cell(value: Any) -> Any:
@@ -1095,6 +1124,28 @@ def _ora_list(conn: dict[str, Any], timeout_s: float, schemas=None, only: str | 
                     entry["geometry_type"] = _SDO_GTYPES.get(str(gtype).upper(), "GEOMETRY")
         except oracledb.DatabaseError:
             pass
+        # A usable spatial index on the geometry column: SDO_FILTER needs
+        # one (without it Oracle raises an error), so the gateway pushes a
+        # bbox into it only when this says so (T-13).
+        try:
+            xw = where.replace("owner", "x.table_owner").replace("%s", "x.table_name")
+            cur.execute(
+                "SELECT x.table_owner, x.table_name, c.column_name FROM all_indexes x "
+                "JOIN all_ind_columns c ON c.index_owner = x.owner AND c.index_name = x.index_name "
+                "WHERE x.ityp_owner = 'MDSYS' AND x.ityp_name IN ('SPATIAL_INDEX', 'SPATIAL_INDEX_V2') "
+                "AND x.status = 'VALID' AND NVL(x.domidx_status, 'VALID') = 'VALID' "
+                f"AND NVL(x.domidx_opstatus, 'VALID') = 'VALID' AND {xw}",
+                binds,
+            )
+            for owner, table, col in cur.fetchall():
+                entry = tables.get(f"{owner}.{table}")
+                if entry is not None and entry.get("geometry_column") == str(col or "").strip('"'):
+                    entry["spatial_index"] = True
+        except oracledb.DatabaseError:
+            pass
+        for entry in tables.values():
+            if entry.get("geometry_column"):
+                entry.setdefault("spatial_index", False)
         if only:
             # Describing one dataset with no type on its spatial index: take
             # it from one row (only SDO_GTYPE is read: its last digit is the
@@ -1341,7 +1392,7 @@ def _ms_list(conn: dict[str, Any], timeout_s: float, schemas=None, only: str | N
                 continue
             entry.setdefault("fields", []).append({"name": col, "type": typ, "not_null": nullable == "NO"})
             if str(typ).lower() in ("geometry", "geography") and "geometry_column" not in entry:
-                entry.update(geometry_column=col, geometry_type=str(typ).upper())
+                entry.update(geometry_column=col, geometry_type=str(typ).upper(), spatial_type=str(typ).lower())
         try:
             cur.execute(
                 "SELECT s.name, o.name, SUM(p.rows) FROM sys.objects o JOIN sys.schemas s ON s.schema_id = o.schema_id "
@@ -1914,6 +1965,28 @@ def query_layer(params: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def bbox_to_dataset(params: dict[str, Any]) -> dict[str, Any]:
+    """A query_features bbox in the dataset's own coordinates (``crs_spec``),
+    moved from ``bbox_crs`` exactly as query_layer moves it: the gateway
+    writes this box into the source's spatial-index condition (T-13)."""
+    g = _gis()
+    bbox = params.get("bbox")
+    if (not isinstance(bbox, list) or len(bbox) != 4
+            or any(isinstance(v, bool) or not isinstance(v, (int, float)) for v in bbox)):
+        raise WorkerError(INVALID_PARAMS, "bbox must be [min x, min y, max x, max y]")
+    layer_crs = g.crs_from_spec(params.get("crs_spec"))
+    bbox_crs = layer_crs
+    if params.get("bbox_crs"):
+        bbox_crs = g.crs_from_spec({"code": params.get("bbox_crs")})
+        if bbox_crs is None:
+            raise WorkerError(INVALID_PARAMS, 'bbox_crs must be an EPSG code such as "EPSG:4326"')
+    try:
+        box = g.bbox_in_layer_crs(bbox, bbox_crs, layer_crs)
+    except g.GISError as e:
+        raise _refused(e) from None
+    return {"bbox": box, "geographic": bool(layer_crs is not None and layer_crs.is_geographic)}
+
+
 def vector_op(params: dict[str, Any]) -> dict[str, Any]:
     g = _gis()
     inputs = params.get("inputs")
@@ -2314,6 +2387,7 @@ for _name, _fn in (
     ("extract", extract),
     ("describe_dataset", describe_dataset),
     ("query_layer", query_layer),
+    ("bbox_to_dataset", bbox_to_dataset),
     ("vector_op", vector_op),
     ("verify_layer", verify_layer),
     ("read_rows", read_rows),

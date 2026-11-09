@@ -12,6 +12,8 @@ import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
+sys.path.insert(0, HERE)
+from engine_required import skip_unless_engine  # noqa: E402
 
 try:
     import geopandas as gpd
@@ -48,7 +50,7 @@ def make_fixture(folder: str) -> str:
     return path
 
 
-@unittest.skipUnless(HAVE_GIS, "GIS engine not installed")
+@skip_unless_engine(HAVE_GIS, "GIS engine not installed")
 class CrsTests(unittest.TestCase):
     def test_facts(self):
         f = g.crs_facts(g.crs_from_spec({"org": "EPSG", "org_id": 3081}))
@@ -105,7 +107,7 @@ class CrsTests(unittest.TestCase):
         self.assertIn("geometry.mixed_types", ids)
 
 
-@unittest.skipUnless(HAVE_GIS, "GIS engine not installed")
+@skip_unless_engine(HAVE_GIS, "GIS engine not installed")
 class WorkerGisTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -153,6 +155,50 @@ class WorkerGisTests(unittest.TestCase):
             self.query(bbox=[1, 1, 0, 0])
         with self.assertRaises(w.WorkerError):
             self.query(bbox=[0, 0, 1, 1], bbox_crs="+proj=longlat")
+
+    def test_bbox_to_dataset_moves_the_box_as_query_layer_does(self):
+        # T-13: the gateway pushes this box into the R-tree; query_layer
+        # keeps the rows meeting the same box.
+        box = [-97.805, 30.19, -97.775, 30.31]
+        r = w.bbox_to_dataset({"bbox": box, "bbox_crs": "EPSG:4326", "crs_spec": {"code": "EPSG:3081"}})
+        self.assertEqual(r["bbox"], g.bbox_in_layer_crs(box, g.crs_from_spec({"code": "EPSG:4326"}),
+                                                         g.crs_from_spec({"code": "EPSG:3081"})))
+        self.assertFalse(r["geographic"])
+        self.assertGreater(r["bbox"][0], 1_000_000)
+        # Same CRS, or none given: the box as it is.
+        same = w.bbox_to_dataset({"bbox": [1, 2, 3, 4], "crs_spec": {"code": "EPSG:4326"}})
+        self.assertEqual(same, {"bbox": [1.0, 2.0, 3.0, 4.0], "geographic": True})
+        for bad in ({"bbox": [1, 1, 0, 0]}, {"bbox": [0, 0, 1]}, {"bbox": [0, 0, 1, 1], "bbox_crs": "+proj=longlat"},
+                    {"bbox": [0, 0, 1, 1], "bbox_crs": "EPSG:4326"}):
+            with self.assertRaises(w.WorkerError):
+                w.bbox_to_dataset(bad)
+
+    def test_rtree_is_reported_and_serves_the_box(self):
+        # GDAL writes the R-tree; the listing says the gateway may use it.
+        d = w.describe_dataset({"connection": self.conn, "dataset": "roads"})
+        self.assertIs(d["spatial_index"], True)
+        box = w.bbox_to_dataset({"bbox": [-97.805, 30.19, -97.775, 30.31], "bbox_crs": "EPSG:4326",
+                                 "crs_spec": {"code": "EPSG:3081"}})["bbox"]
+        sql = ("SELECT * FROM (SELECT * FROM roads columbus_filtered WHERE (district = 14) AND "
+               "(columbus_filtered.rowid IN (SELECT \"id\" FROM \"rtree_roads_geom\" WHERE \"minx\" <= {2} AND "
+               "\"maxx\" >= {0} AND \"miny\" <= {3} AND \"maxy\" >= {1})) LIMIT -1 OFFSET 0) AS roads").format(*box)
+        pushed = self.query(sql=sql, bbox=[-97.805, 30.19, -97.775, 30.31], bbox_crs="EPSG:4326")
+        plain = self.query(bbox=[-97.805, 30.19, -97.775, 30.31], bbox_crs="EPSG:4326")
+        i = pushed["columns"].index("route_id")
+        self.assertEqual(sorted(r[i] for r in pushed["rows"]), sorted(r[i] for r in plain["rows"]))
+        self.assertEqual(pushed["rows_read"], 3)
+        db = sqlite3.connect(self.path)
+        plan = " ".join(r[-1] for r in db.execute("EXPLAIN QUERY PLAN " + sql))
+        db.close()
+        self.assertIn("rtree_roads_geom VIRTUAL TABLE INDEX", plan)
+        # Without the R-tree: not reported.
+        db = sqlite3.connect(self.path)
+        for (n,) in db.execute("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'rtree_roads_geom%'").fetchall():
+            db.execute(f'DROP TRIGGER "{n}"')
+        db.execute("DROP TABLE rtree_roads_geom")
+        db.commit()
+        db.close()
+        self.assertIs(w.describe_dataset({"connection": self.conn, "dataset": "roads"})["spatial_index"], False)
 
     def layer(self, sql, stem):
         return self.query(sql=sql, output_stem=os.path.join(self.tmp.name, "ws", "results", stem))["output_path"]
@@ -321,6 +367,27 @@ class WorkerGisTests(unittest.TestCase):
         with self.assertRaises(w.WorkerError) as cm:
             self.op("buffer", {"layer": merc}, {"distance": 100, "unit": "m"})
         self.assertIn("Web Mercator", cm.exception.message)
+
+    def test_filter_keeps_the_selected_rows_in_a_new_layer(self):
+        routes = gpd.GeoDataFrame(
+            {"ROUTE_NAME": ["A", "B", "C"], "LEN": [1.5, 2.0, None]},
+            geometry=[LineString([(0, 0, 0), (1, 0, 5)]), LineString([(0, 1, 0), (1, 1, 5)]), LineString([(0, 2, 0), (1, 2, 5)])],
+            crs="EPSG:3081",
+        )
+        p = g.write_layer(routes, os.path.join(self.tmp.name, "ws", "routes"))
+        before = open(p, "rb").read()
+        f = self.op("filter", {"layer": p}, {"where": "ROUTE_NAME <> 'B'"}, "f")
+        self.assertEqual(f["summary"]["rows"], 2)
+        self.assertNotEqual(f["output_path"], p)
+        kept = g.read_layer(f["output_path"])
+        self.assertEqual(list(kept["ROUTE_NAME"]), ["A", "C"])
+        self.assertEqual(open(p, "rb").read(), before, "the input is untouched")
+        self.assertEqual(self.op("filter", {"layer": p}, {"where": "LEN IS NULL"}, "n")["summary"]["rows"], 1)
+        none = self.op("filter", {"layer": p}, {"where": "ROUTE_NAME = 'Z'"}, "z")
+        self.assertIn("filter.empty", [c["id"] for c in none["checks"]])
+        with self.assertRaises(w.WorkerError) as cm:
+            self.op("filter", {"layer": p}, {"where": "NOPE = 1"}, "x")
+        self.assertIn("could not be applied", cm.exception.message)
 
     def test_bbox_meets_the_geometry_not_its_envelope(self):
         diag = gpd.GeoDataFrame({"a": [1]}, geometry=[LineString([(0, 0), (10, 10)])], crs="EPSG:3081")

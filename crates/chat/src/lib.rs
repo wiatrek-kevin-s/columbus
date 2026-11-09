@@ -357,6 +357,37 @@ fn project_text(p: &Value) -> Option<String> {
     Some(t)
 }
 
+/// What the system prompt says about a workflow run this chat was opened
+/// from (REQ-27): its layers, already on the person's map and in the
+/// table, and its report, so the person can review the run with the
+/// assistant.
+fn run_text(r: &Value) -> Option<String> {
+    let wf = r["workflow"].as_str()?;
+    let run = r["run"].as_str().unwrap_or("");
+    let name = r["name"].as_str().unwrap_or(wf);
+    let mut t = format!(
+        "\n\nThis chat was opened from a run of the person's workflow \"{name}\" ({wf}, run {run}) to review its results. \
+These layers are already on the person's map and in the table, as copies of what the run made (the run itself, its files and its exports are never changed; \
+filters, edits and exports here make new outputs):"
+    );
+    for l in r["layers"].as_array().into_iter().flatten() {
+        t.push_str(&format!(
+            "\n- step {}: {} ({} rows)",
+            l["step"].as_str().unwrap_or(""),
+            l["handle"].as_str().unwrap_or(""),
+            l["rows"]
+                .as_u64()
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "?".into())
+        ));
+    }
+    if let Some(rep) = r["report"].as_str().filter(|s| !s.trim().is_empty()) {
+        t.push_str("\n\nThe run's report (written by Columbus):\n\n");
+        t.push_str(rep);
+    }
+    Some(t)
+}
+
 const SYSTEM: &str = "You are the GIS assistant inside the Columbus app, working for a GIS analyst. \
 Your only tools are a Columbus session's: they read and process the analyst's data under their \
 organization's rules, and the server enforces those rules, not you. Start a new conversation by \
@@ -423,6 +454,9 @@ impl Chat {
         let session = who["result"]["session"].as_str().map(String::from);
         let mut system = SYSTEM.to_string();
         if let Some(text) = project_text(&who["result"]["project"]) {
+            system.push_str(&text);
+        }
+        if let Some(text) = run_text(&who["result"]["opened_run"]) {
             system.push_str(&text);
         }
         if let Some(skill) = skill_text(&cfg.server) {
@@ -1140,6 +1174,22 @@ mod tests {
         .unwrap();
         assert!(
             !t.contains("only these connections") && !t.contains("instructions"),
+            "{t}"
+        );
+    }
+
+    #[test]
+    fn an_opened_run_and_its_report_are_told_to_the_assistant() {
+        assert!(run_text(&Value::Null).is_none());
+        let t = run_text(&json!({"workflow": "row-widths", "run": "2026-11-06T06-00-00-000-1a2b", "name": "ROW widths",
+            "layers": [{"step": "fixed", "handle": "ws://s/results/row-widths-fixed.gpkg", "rows": 12}],
+            "report": "# ROW widths\n\nSucceeded."}))
+        .unwrap();
+        assert!(
+            t.contains("\"ROW widths\"")
+                && t.contains("ws://s/results/row-widths-fixed.gpkg (12 rows)")
+                && t.contains("never changed")
+                && t.contains("# ROW widths\n\nSucceeded."),
             "{t}"
         );
     }

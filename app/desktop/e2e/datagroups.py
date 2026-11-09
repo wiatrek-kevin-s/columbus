@@ -12,13 +12,15 @@ import os
 import subprocess
 import sys
 import tempfile
-import time
 from pathlib import Path
 
-from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.support.ui import WebDriverWait
+
+import guard
+from guard import step
+
+WebDriverWait = guard.Wait  # its time-outs name the step that was waiting
 
 REPO = Path(__file__).resolve().parents[3]
 GATEWAY = Path(sys.argv[1]).resolve()
@@ -38,6 +40,7 @@ def click(d, how, what):
 
 
 def main():
+    guard.start("desktop data groups e2e", minutes=10)
     OUT.mkdir(exist_ok=True)
     root = Path(tempfile.mkdtemp())
     (root / "connections").mkdir()
@@ -54,12 +57,8 @@ def main():
                COLUMBUS_WORKER=str(REPO / "workers/python/columbus_worker.py"), COLUMBUS_PYTHON=sys.executable,
                COLUMBUS_APPROVALS_BROWSER="none", COLUMBUS_LOG="warn",
                XDG_CONFIG_HOME=str(root / "config"), XDG_DATA_HOME=str(root / "data"))
-    proc = subprocess.Popen(["tauri-driver"], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    time.sleep(2)
-    opts = webdriver.common.options.ArgOptions()
-    opts.set_capability("tauri:options", {"application": str(APP)})
-    opts.set_capability("browserName", "wry")
-    d = webdriver.Remote("http://127.0.0.1:4444", options=opts)
+    step("the app")
+    d, proc = guard.driver(env, APP)
     wait = WebDriverWait(d, 30)
     try:
         wait.until(lambda drv: drv.execute_script("return !!document.getElementById('page-title')"))
@@ -78,14 +77,14 @@ def main():
         saved = f.read_text()
         assert "dataset: tracts" in saved and "STATEFP = '48'" in saved and "dataset: counties" in saved, saved
 
-        # A filter Columbus wouldn't run is refused, with the reason.
+        step("A filter Columbus wouldn't run is refused, with the reason")
         box = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, "#dg-rows tr:nth-child(2) .dg-filter")))
         box.send_keys("1=1; DROP TABLE x")
         click(d, By.ID, "dg-save")
         wait.until(lambda drv: "not one Columbus runs" in text(drv, "dg-error"))
         assert "DROP" not in f.read_text()
 
-        # A project attaches it.
+        step("A project attaches it")
         d.execute_script("location.hash = '#/projects/new'")
         wait.until(EC.visibility_of_element_located((By.ID, "pj-name"))).send_keys("Tract work")
         click(d, By.ID, "pj-g-texas-tracts")
@@ -94,7 +93,7 @@ def main():
         p = (root / "projects" / "tract-work" / "project.yaml").read_text()
         assert "data_groups:" in p and "- texas-tracts" in p, p
 
-        # The list says which project uses it; deleting removes its file.
+        step("The list says which project uses it; deleting removes its file")
         d.execute_script("location.hash = '#/datagroups'")
         wait.until(lambda drv: "used by Tract work" in text(drv, "dg-list"))
         d.save_screenshot(str(OUT / "datagroups-list.png"))
@@ -108,8 +107,7 @@ def main():
         d.save_screenshot(str(OUT / "datagroups-failed.png"))
         raise
     finally:
-        d.quit()
-        proc.terminate()
+        guard.stop(d, proc)
         subprocess.run(["pkill", "-f", str(APP)], check=False)
 
 

@@ -6,6 +6,8 @@
 -- the tests use to show the engine keeps every query's effects from being
 -- kept even when the login could write.
 SET NOCOUNT ON;
+-- sqlcmd starts with QUOTED_IDENTIFIER OFF; spatial indexes need it on.
+SET QUOTED_IDENTIFIER ON;
 IF DB_ID('gis') IS NULL CREATE DATABASE gis;
 GO
 USE gis;
@@ -40,6 +42,11 @@ SELECT i,
        geometry::STGeomFromText(CONCAT('LINESTRING(', 1000000 + i * 10, ' 7000000, ',
                                        1000000 + i * 10 + 5, ' 7000010)'), 3081)
 FROM n;
+
+-- The spatial index a bbox query uses (T-13, REQ-19).
+CREATE SPATIAL INDEX roads_geom_sx ON roads.roads (geom)
+  USING GEOMETRY_AUTO_GRID
+  WITH (BOUNDING_BOX = (xmin = 990000, ymin = 6990000, xmax = 1020000, ymax = 7010000));
 
 CREATE TABLE roads.places (id INT PRIMARY KEY, district INT NOT NULL, name NVARCHAR(40), loc geography);
 INSERT INTO roads.places VALUES

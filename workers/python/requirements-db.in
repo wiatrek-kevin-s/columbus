@@ -1,0 +1,18 @@
+# Database drivers for the Python worker, beside requirements-gis.txt. Each
+# is needed only for its own connection type; the worker reports a clear
+# error for a connection whose driver is missing.
+#
+# - psycopg: PostgreSQL / PostGIS (postgis).
+# - oracledb: Oracle (oracle, sde-oracle), in thin mode: pure Python, no
+#   Oracle Instant Client.
+# - pyodbc: SQL Server (sqlserver, mssql, sde-sqlserver, azure-sql). Also
+#   needs Microsoft ODBC Driver 18 for SQL Server installed on the machine
+#   (Windows: the msodbcsql18 installer; Linux: the msodbcsql18 package).
+#
+# This is the source: requirements-db.txt is generated from it (exact
+# versions and SHA-256 hashes, resolved together with requirements-gis.txt
+# so the two install side by side). Edit this file, then run
+#   python packaging/engine/compile-requirements.py
+psycopg[binary]>=3.2,<4
+oracledb>=2.0
+pyodbc>=5.1,<6

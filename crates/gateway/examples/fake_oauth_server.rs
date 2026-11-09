@@ -33,6 +33,27 @@
 //!
 //! Its ArcGIS tokens look like `FAKE-arcgis-access-zq7k-<n>` and
 //! `FAKE-arcgis-refresh-zq7k-<n>`, so a test can search for them.
+//! `POST /test/issue` mints a pair without the browser dance (for tests
+//! that store a sign-in directly).
+//!
+//! And it serves fake web map services for web layers (T-24, T-25), under
+//! `/web/`, one of each kind; every image is a 1×1 PNG:
+//!
+//! * `/web/xyz/{z}/{x}/{y}.png`: XYZ tiles;
+//! * `/web/wmts/own/WMTSCapabilities.xml` (tiles on the host asked) and
+//!   `/web/wmts/cdn/WMTSCapabilities.xml` (tiles on `cdn.fake.test`), layer
+//!   `ortho` in a GoogleMapsCompatible set; tiles at
+//!   `/web/wmts/tile/{set}/{matrix}/{row}/{col}.png`;
+//! * `/web/wms`: WMS 1.3.0 GetCapabilities (layer `parcels`, EPSG:3857) and
+//!   GetMap;
+//! * `/web/arcgis/rest/services/Imagery/MapServer`: a cached (tiled)
+//!   MapServer in Web Mercator; `Dynamic/MapServer` (export only, layers 0
+//!   and 1); `Elevation/ImageServer` (exportImage); `Parcels/FeatureServer`
+//!   (layer 0: `FAKE_WEB_FEATURES` points, default 30, with fields
+//!   `OBJECTID`, `OWNER`, `OWNER_SSN`; `maxRecordCount` 2000; f=geojson,
+//!   paging and counts); `SecureMap/MapServer`: Imagery's twin that answers
+//!   only with a valid token;
+//! * `/web/redirect/…`: a 302 to the XYZ tiles.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -526,6 +547,280 @@ fn service_answer(rest: &str, q: &HashMap<String, String>) -> Response {
     }
 }
 
+/// A sign-in pair, as if the person had signed in.
+async fn test_issue(State(s): State<Shared>) -> Json<Value> {
+    let mut a = s.lock().unwrap();
+    let access = next(&mut a, "FAKE-arcgis-access-zq7k");
+    let refresh = next(&mut a, "FAKE-arcgis-refresh-zq7k");
+    a.arcgis_access.push(access.clone());
+    a.arcgis_refresh.push(refresh.clone());
+    Json(json!({"access_token": access, "refresh_token": refresh}))
+}
+
+// ---------- Fake web map services (T-24) ----------
+
+/// A 1×1 PNG.
+const PNG: &[u8] = &[
+    137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0,
+    0, 0, 31, 21, 196, 137, 0, 0, 0, 13, 73, 68, 65, 84, 120, 156, 99, 80, 72, 88, 208, 0, 0, 3,
+    101, 1, 161, 23, 222, 22, 204, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
+];
+
+fn png() -> Response {
+    ([(header::CONTENT_TYPE, "image/png")], PNG).into_response()
+}
+
+fn xml(body: String) -> Response {
+    ([(header::CONTENT_TYPE, "application/xml")], body).into_response()
+}
+
+fn host_of(headers: &HeaderMap) -> String {
+    headers
+        .get(header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("127.0.0.1")
+        .to_string()
+}
+
+async fn web_xyz() -> Response {
+    png()
+}
+
+async fn web_wmts_caps(
+    State(s): State<Shared>,
+    headers: HeaderMap,
+    axum::extract::Path(variant): axum::extract::Path<String>,
+) -> Response {
+    let port = s.lock().unwrap().port;
+    let host = if variant == "cdn" {
+        format!("cdn.fake.test:{port}")
+    } else {
+        host_of(&headers)
+    };
+    let mut matrices = String::new();
+    for z in 0..=18u32 {
+        let scale = 559_082_264.028_717_2 / f64::from(1u32 << z);
+        let n = 1u32 << z;
+        matrices.push_str(&format!(
+            "<TileMatrix><ows:Identifier>{z}</ows:Identifier><ScaleDenominator>{scale}</ScaleDenominator>\
+             <TopLeftCorner>-20037508.3427892 20037508.3427892</TopLeftCorner><TileWidth>256</TileWidth>\
+             <TileHeight>256</TileHeight><MatrixWidth>{n}</MatrixWidth><MatrixHeight>{n}</MatrixHeight></TileMatrix>"
+        ));
+    }
+    xml(format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<Capabilities xmlns="http://www.opengis.net/wmts/1.0" xmlns:ows="http://www.opengis.net/ows/1.1" version="1.0.0">
+<ows:ServiceIdentification><ows:Title>Fake WMTS</ows:Title></ows:ServiceIdentification>
+<Contents>
+<Layer><ows:Title>Orthophoto (fake)</ows:Title><ows:Identifier>ortho</ows:Identifier>
+<ows:WGS84BoundingBox><ows:LowerCorner>-98.0 30.0</ows:LowerCorner><ows:UpperCorner>-97.0 31.0</ows:UpperCorner></ows:WGS84BoundingBox>
+<Style isDefault="true"><ows:Identifier>default</ows:Identifier></Style><Format>image/png</Format>
+<TileMatrixSetLink><TileMatrixSet>GoogleMapsCompatible</TileMatrixSet></TileMatrixSetLink>
+<ResourceURL format="image/png" resourceType="tile" template="http://{host}/web/wmts/tile/{{TileMatrixSet}}/{{TileMatrix}}/{{TileRow}}/{{TileCol}}.png"/>
+</Layer>
+<TileMatrixSet><ows:Identifier>GoogleMapsCompatible</ows:Identifier><ows:SupportedCRS>urn:ogc:def:crs:EPSG::3857</ows:SupportedCRS>
+<WellKnownScaleSet>urn:ogc:def:wkss:OGC:1.0:GoogleMapsCompatible</WellKnownScaleSet>{matrices}</TileMatrixSet>
+</Contents></Capabilities>"#
+    ))
+}
+
+async fn web_wmts_tile() -> Response {
+    png()
+}
+
+async fn web_wms(headers: HeaderMap, RawQuery(q): RawQuery) -> Response {
+    let q: HashMap<String, String> = parse_pairs(&q.unwrap_or_default())
+        .into_iter()
+        .map(|(k, v)| (k.to_ascii_uppercase(), v))
+        .collect();
+    match q.get("REQUEST").map(String::as_str) {
+        Some("GetCapabilities") => {
+            let host = host_of(&headers);
+            xml(format!(
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<WMS_Capabilities version="1.3.0" xmlns="http://www.opengis.net/wms" xmlns:xlink="http://www.w3.org/1999/xlink">
+<Service><Name>WMS</Name><Title>Fake WMS</Title></Service>
+<Capability><Request>
+<GetCapabilities><Format>text/xml</Format><DCPType><HTTP><Get><OnlineResource xlink:href="http://{host}/web/wms?"/></Get></HTTP></DCPType></GetCapabilities>
+<GetMap><Format>image/png</Format><Format>image/jpeg</Format><DCPType><HTTP><Get><OnlineResource xlink:href="http://{host}/web/wms?"/></Get></HTTP></DCPType></GetMap>
+</Request>
+<Layer><Title>Fake county</Title><CRS>EPSG:4326</CRS>
+<Layer queryable="1"><Name>parcels</Name><Title>Parcels (fake)</Title><CRS>EPSG:3857</CRS>
+<EX_GeographicBoundingBox><westBoundLongitude>-98.0</westBoundLongitude><eastBoundLongitude>-97.0</eastBoundLongitude><southBoundLatitude>30.0</southBoundLatitude><northBoundLatitude>31.0</northBoundLatitude></EX_GeographicBoundingBox>
+</Layer>
+<Layer><Name>lambert</Name><Title>Not in Web Mercator</Title><CRS>EPSG:3081</CRS></Layer>
+</Layer>
+</Capability></WMS_Capabilities>"#
+            ))
+        }
+        Some("GetMap") if q.get("LAYERS").map(String::as_str) == Some("parcels") => png(),
+        _ => (
+            [(header::CONTENT_TYPE, "application/vnd.ogc.se_xml")],
+            "<ServiceExceptionReport><ServiceException>bad request</ServiceException></ServiceExceptionReport>",
+        )
+            .into_response(),
+    }
+}
+
+/// Web Mercator tiling for the fake cached services.
+fn tile_info() -> Value {
+    let lods: Vec<Value> = (0..=19u32)
+        .map(|z| {
+            let scale = 591_657_527.591_555 / f64::from(1u32 << z);
+            json!({"level": z, "resolution": 156_543.033_928_041 / f64::from(1u32 << z), "scale": scale})
+        })
+        .collect();
+    json!({
+        "rows": 256, "cols": 256, "dpi": 96, "format": "PNG32",
+        "origin": {"x": -20037508.342787, "y": 20037508.342787},
+        "spatialReference": {"wkid": 102100, "latestWkid": 3857},
+        "lods": lods,
+    })
+}
+
+fn mercator_extent() -> Value {
+    json!({"xmin": -10_909_310.0, "ymin": 3_503_549.0, "xmax": -10_797_990.0, "ymax": 3_632_749.0,
+           "spatialReference": {"wkid": 102100, "latestWkid": 3857}})
+}
+
+/// The fake parcels: `FAKE_WEB_FEATURES` points on a grid.
+fn parcels() -> Vec<(u64, f64, f64)> {
+    let n: u64 = std::env::var("FAKE_WEB_FEATURES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(30);
+    let side = ((n as f64).sqrt().ceil() as u64).max(1);
+    (0..n)
+        .map(|i| {
+            let (r, c) = (i / side, i % side);
+            (
+                i + 1,
+                -97.8 + 0.2 * (c as f64 + 0.5) / side as f64,
+                30.2 + 0.2 * (r as f64 + 0.5) / side as f64,
+            )
+        })
+        .collect()
+}
+
+fn web_arcgis_answer(rest: &str, q: &HashMap<String, String>) -> Response {
+    let rest = rest.trim_end_matches('/');
+    let parts: Vec<&str> = rest.split('/').collect();
+    match parts.as_slice() {
+        ["Imagery" | "SecureMap", "MapServer"] => Json(json!({
+            "currentVersion": 11.1, "serviceDescription": "Fake imagery", "mapName": "Imagery",
+            "layers": [{"id": 0, "name": "Imagery"}], "singleFusedMapCache": true,
+            "tileInfo": tile_info(), "fullExtent": mercator_extent(),
+            "spatialReference": {"wkid": 102100, "latestWkid": 3857},
+        }))
+        .into_response(),
+        ["Imagery" | "SecureMap", "MapServer", "tile", _, _, _] => png(),
+        ["Dynamic", "MapServer"] => Json(json!({
+            "currentVersion": 11.1, "mapName": "Dynamic", "singleFusedMapCache": false,
+            "layers": [{"id": 0, "name": "Roads"}, {"id": 1, "name": "Signs"}],
+            "fullExtent": {"xmin": -97.8, "ymin": 30.2, "xmax": -97.6, "ymax": 30.4,
+                           "spatialReference": {"wkid": 4326}},
+        }))
+        .into_response(),
+        ["Dynamic", "MapServer", "export"] | ["Elevation", "ImageServer", "exportImage"] => {
+            if q.get("f").map(String::as_str) == Some("image") && q.contains_key("bbox") {
+                png()
+            } else {
+                Json(json!({"error": {"code": 400, "message": "bbox and f=image needed"}}))
+                    .into_response()
+            }
+        }
+        ["Elevation", "ImageServer"] => Json(json!({
+            "currentVersion": 11.1, "name": "Elevation", "serviceDataType": "esriImageServiceDataTypeElevation",
+            "extent": mercator_extent(),
+        }))
+        .into_response(),
+        ["Parcels", "FeatureServer"] => {
+            Json(json!({"layers": [{"id": 0, "name": "Parcels"}], "tables": []})).into_response()
+        }
+        ["Parcels", "FeatureServer", "0"] => Json(json!({
+            "id": 0, "name": "Parcels", "type": "Feature Layer", "geometryType": "esriGeometryPoint",
+            "objectIdField": "OBJECTID", "maxRecordCount": 2000,
+            "advancedQueryCapabilities": {"supportsPagination": true},
+            "extent": {"xmin": -97.8, "ymin": 30.2, "xmax": -97.6, "ymax": 30.4,
+                       "spatialReference": {"wkid": 4326, "latestWkid": 4326}},
+            "fields": [
+                {"name": "OBJECTID", "type": "esriFieldTypeOID"},
+                {"name": "OWNER", "type": "esriFieldTypeString"},
+                {"name": "OWNER_SSN", "type": "esriFieldTypeString"}
+            ],
+        }))
+        .into_response(),
+        ["Parcels", "FeatureServer", "0", "query"] => {
+            let env: Vec<f64> = q
+                .get("geometry")
+                .map(|g| g.split(',').filter_map(|v| v.parse().ok()).collect())
+                .unwrap_or_default();
+            let inside = |x: f64, y: f64| {
+                env.len() != 4 || (x >= env[0] && x <= env[2] && y >= env[1] && y <= env[3])
+            };
+            let all: Vec<(u64, f64, f64)> =
+                parcels().into_iter().filter(|(_, x, y)| inside(*x, *y)).collect();
+            if q.get("returnCountOnly").map(String::as_str) == Some("true") {
+                return Json(json!({"count": all.len()})).into_response();
+            }
+            let offset: usize = q.get("resultOffset").and_then(|v| v.parse().ok()).unwrap_or(0);
+            let count: usize = q
+                .get("resultRecordCount")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(2000)
+                .min(2000);
+            let wanted: Vec<String> = q
+                .get("outFields")
+                .map(|f| f.split(',').map(String::from).collect())
+                .unwrap_or_default();
+            let keep = |k: &str| wanted.iter().any(|w| w == "*" || w == k);
+            let page: Vec<Value> = all
+                .iter()
+                .skip(offset)
+                .take(count)
+                .map(|(oid, x, y)| {
+                    let mut props = serde_json::Map::new();
+                    for (k, v) in [
+                        ("OBJECTID", json!(oid)),
+                        ("OWNER", json!(format!("Owner {oid}"))),
+                        ("OWNER_SSN", json!(format!("900-00-{oid:04}"))),
+                    ] {
+                        if keep(k) {
+                            props.insert(k.into(), v);
+                        }
+                    }
+                    json!({"type": "Feature", "id": oid, "properties": props,
+                           "geometry": {"type": "Point", "coordinates": [x, y]}})
+                })
+                .collect();
+            let more = offset + page.len() < all.len();
+            Json(json!({"type": "FeatureCollection", "features": page,
+                        "properties": {"exceededTransferLimit": more}}))
+            .into_response()
+        }
+        _ => Json(json!({"error": {"code": 400, "message": "Invalid URL"}})).into_response(),
+    }
+}
+
+async fn web_arcgis(
+    State(s): State<Shared>,
+    headers: HeaderMap,
+    axum::extract::Path(rest): axum::extract::Path<String>,
+    RawQuery(q): RawQuery,
+) -> Response {
+    let q = parse_pairs(&q.unwrap_or_default());
+    if rest.starts_with("SecureMap/") || rest == "SecureMap" {
+        if let Some(r) = arcgis_check(&s, &headers, &q) {
+            return r;
+        }
+    }
+    web_arcgis_answer(&rest, &q)
+}
+
+async fn web_redirect(axum::extract::Path(rest): axum::extract::Path<String>) -> Response {
+    Redirect::temporary(&format!("/web/xyz/{rest}")).into_response()
+}
+
 async fn test_log(State(s): State<Shared>) -> Json<Value> {
     Json(json!(s.lock().unwrap().log.clone()))
 }
@@ -611,6 +906,16 @@ async fn main() {
             "/arcgis/rest/services/Public/FeatureServer/{*rest}",
             get(public_service).post(public_service),
         )
+        .route("/web/xyz/{z}/{x}/{y}", get(web_xyz))
+        .route(
+            "/web/wmts/{variant}/WMTSCapabilities.xml",
+            get(web_wmts_caps),
+        )
+        .route("/web/wmts/tile/{set}/{m}/{r}/{c}", get(web_wmts_tile))
+        .route("/web/wms", get(web_wms))
+        .route("/web/arcgis/rest/services/{*rest}", get(web_arcgis))
+        .route("/web/redirect/{*rest}", get(web_redirect))
+        .route("/test/issue", post(test_issue))
         .route("/test/log", get(test_log))
         .route("/test/grants", get(test_grants))
         .route("/test/expire-access", post(test_expire_access))

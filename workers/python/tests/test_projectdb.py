@@ -14,6 +14,8 @@ import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
+sys.path.insert(0, HERE)
+from engine_required import skip_unless_engine, skip_engine  # noqa: E402
 
 try:
     import duckdb  # noqa: F401
@@ -31,7 +33,7 @@ except ImportError:  # pragma: no cover
 import columbus_worker as w  # noqa: E402
 
 
-@unittest.skipUnless(HAVE, "DuckDB or the GIS engine not installed")
+@skip_unless_engine(HAVE, "DuckDB or the GIS engine not installed")
 class ProjectDbTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -195,7 +197,7 @@ class ProjectDbTests(unittest.TestCase):
     def test_spatial_functions_when_installed(self):
         self.load()
         if pdb.spatial_extension() is None:
-            self.skipTest("the spatial extension is not installed")
+            skip_engine(self, "the spatial extension is not installed")
         q = pdb.query({"path": self.db, "sql": "SELECT count(*) AS n FROM parcels WHERE ST_Intersects(geom, ST_MakeEnvelope(3100000, 10069999, 3100009, 10070001))",
                        "max_rows": 10, "return_rows": 5, "output_stem": os.path.join(self.ws, "results", "s")})
         self.assertEqual(q["rows"], [[10]])
@@ -552,7 +554,7 @@ class ProjectDbTests(unittest.TestCase):
         self.assertNotIn("1100", aou["message"])
         self.assertEqual(aou["detail"]["extent"][0], 1100.5)
         if pdb.spatial_extension() is None:
-            self.skipTest("the spatial extension is not installed")
+            skip_engine(self, "the spatial extension is not installed")
         pdb.execute({"path": self.db, "sql": "CREATE TABLE o (id BIGINT, owner VARCHAR, val DOUBLE); "
                      "INSERT INTO o VALUES (1, 'Alice', 100.5), (2, 'Bob', 200), (3, 'Carol', 300)"})
         r = self.q("SELECT ST_Point(val + 1000, ascii(owner[1]) + 1000) AS g FROM o WHERE id = 1", return_rows=0, crs="EPSG:4326")

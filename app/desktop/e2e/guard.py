@@ -1,0 +1,200 @@
+"""Shared guards for the main window's WebDriver scripts (Linux).
+
+- `start(name, minutes)`: an overall time limit. When it runs out the script
+  says which step it reached, kills everything it started (tauri-driver,
+  WebKitWebDriver, the app, the fake servers, Columbus) and exits non-zero.
+  Any other failure also names the last step, and whatever is still running
+  is stopped when the script ends.
+- `step(what)`: prints `step: <what>` so a CI log shows where a run stopped.
+- `Wait`: a WebDriverWait whose time-out names the step that was waiting.
+- `driver(env, app)` / `stop(d, proc)`: tauri-driver and one app session.
+  The app is single-instance (tauri-plugin-single-instance holds a D-Bus
+  name): a launch while an earlier app is still closing hands itself to that
+  app and exits, and WebKitWebDriver then waits for a browser that never
+  comes. So a session starts only once the earlier app has let go of the
+  name, and every WebDriver command has a time limit.
+"""
+
+import atexit
+import json
+import os
+import signal
+import socket
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+
+from selenium import webdriver
+from selenium.webdriver.common.options import ArgOptions
+from selenium.webdriver.remote.client_config import ClientConfig
+from selenium.webdriver.support.ui import WebDriverWait
+
+_CONF = Path(__file__).resolve().parents[1] / "src-tauri" / "tauri.conf.json"
+BUS_NAME = json.loads(_CONF.read_text())["identifier"] + ".SingleInstance"
+DRIVER_PORT, NATIVE_PORT = 4444, 4445
+# One WebDriver command (not a wait): starting a session launches the app.
+COMMAND_LIMIT = 120
+
+_name = "e2e"
+_last = "starting"
+_lock = threading.Lock()
+
+
+def step(what):
+    global _last
+    with _lock:
+        _last = what
+    print(f"step: {what}", flush=True)
+
+
+def last():
+    with _lock:
+        return _last
+
+
+def start(name, minutes=10):
+    """The whole script's time limit."""
+    global _name
+    _name = name
+    limit = minutes * 60
+
+    def expired():
+        sys.stderr.write(f"{_name}: TIMED OUT after {minutes} minutes; last step reached: {last()}. "
+                         "Stopping the app, the driver and the servers.\n")
+        sys.stderr.flush()
+        kill_all()
+        os._exit(124)
+
+    t = threading.Timer(limit, expired)
+    t.daemon = True
+    t.start()
+
+    hook = sys.excepthook
+
+    def failed(kind, value, tb):
+        hook(kind, value, tb)
+        sys.stderr.write(f"{_name}: FAILED at step: {last()}\n")
+        sys.stderr.flush()
+
+    sys.excepthook = failed
+    atexit.register(kill_all)
+
+
+def _children():
+    """Every process below this one, deepest last."""
+    kids = {}
+    for p in Path("/proc").iterdir():
+        if not p.name.isdigit():
+            continue
+        try:
+            stat = (p / "stat").read_text()
+            ppid = int(stat.rsplit(")", 1)[1].split()[1])
+        except (OSError, ValueError, IndexError):
+            continue
+        kids.setdefault(ppid, []).append(int(p.name))
+    out, todo = [], [os.getpid()]
+    while todo:
+        for c in kids.get(todo.pop(), []):
+            out.append(c)
+            todo.append(c)
+    return out
+
+
+def _app_pid():
+    """The process holding the app's single-instance name, if any."""
+    try:
+        r = subprocess.run(["dbus-send", "--session", "--print-reply", "--dest=org.freedesktop.DBus",
+                            "/org/freedesktop/DBus", "org.freedesktop.DBus.GetConnectionUnixProcessID",
+                            f"string:{BUS_NAME}"], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if r.returncode != 0:
+        return None
+    try:
+        return int(r.stdout.split()[-1])
+    except (ValueError, IndexError):
+        return None
+
+
+def kill_all():
+    """Stop everything this script started, and the app if it is still up."""
+    pids = _children()
+    app = _app_pid()
+    if app and app not in pids:
+        pids.append(app)
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+
+
+class Wait(WebDriverWait):
+    """WebDriverWait whose time-out says which step was waiting."""
+
+    def until(self, method, message=""):
+        return super().until(method, message or f"step '{last()}' waited {self._timeout}s in vain")
+
+    def until_not(self, method, message=""):
+        return super().until_not(method, message or f"step '{last()}' waited {self._timeout}s in vain")
+
+
+def app_running():
+    """Whether an app instance holds the single-instance name on this bus."""
+    try:
+        r = subprocess.run(["dbus-send", "--session", "--print-reply", "--dest=org.freedesktop.DBus",
+                            "/org/freedesktop/DBus", "org.freedesktop.DBus.NameHasOwner", f"string:{BUS_NAME}"],
+                           capture_output=True, text=True, timeout=10)
+    except FileNotFoundError:
+        # No dbus-send: fall back to the process name (cut to 15 letters).
+        return subprocess.run(["pgrep", "-x", "columbus-deskto"], capture_output=True).returncode == 0
+    except subprocess.TimeoutExpired:
+        return True
+    return "boolean true" in r.stdout
+
+
+def _listening(port):
+    try:
+        socket.create_connection(("127.0.0.1", port), timeout=1).close()
+        return True
+    except OSError:
+        return False
+
+
+def _until(cond, seconds, what):
+    end = time.monotonic() + seconds
+    while not cond():
+        if time.monotonic() > end:
+            raise SystemExit(f"{_name}: step '{last()}': {what} (waited {seconds}s)")
+        time.sleep(0.1)
+
+
+def driver(env, app):
+    """tauri-driver and a session on a fresh app; returns (driver, proc)."""
+    _until(lambda: not app_running(), 30, "the app from the previous session is still running")
+    _until(lambda: not _listening(DRIVER_PORT) and not _listening(NATIVE_PORT), 30,
+           f"ports {DRIVER_PORT} and {NATIVE_PORT} are still in use")
+    proc = subprocess.Popen(["tauri-driver"], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    _until(lambda: proc.poll() is None and _listening(DRIVER_PORT) and _listening(NATIVE_PORT), 30,
+           "tauri-driver and WebKitWebDriver did not start listening")
+    opts = ArgOptions()
+    opts.set_capability("tauri:options", {"application": str(app)})
+    opts.set_capability("browserName", "wry")
+    url = f"http://127.0.0.1:{DRIVER_PORT}"
+    d = webdriver.Remote(url, options=opts, client_config=ClientConfig(url, timeout=COMMAND_LIMIT))
+    return d, proc
+
+
+def stop(d, proc):
+    """End the session and the driver (bounded)."""
+    try:
+        d.quit()
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=10)

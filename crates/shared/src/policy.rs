@@ -367,6 +367,10 @@ pub struct OrgPolicy {
     /// Scripts' approval options (F-7).
     #[serde(default)]
     pub scripts: ScriptsPolicy,
+    /// Web map layers (F-14): whether the person may add them, the hosts
+    /// they may reach, and sources the organization supplies.
+    #[serde(default)]
+    pub map: crate::map_sources::MapPolicy,
 }
 
 /// Registered Python environments that scripts may run in (F-7). Every
@@ -670,6 +674,7 @@ impl Default for OrgPolicy {
             notes: NotesPolicy::default(),
             environments: EnvironmentsPolicy::default(),
             scripts: ScriptsPolicy::default(),
+            map: crate::map_sources::MapPolicy::default(),
         }
     }
 }

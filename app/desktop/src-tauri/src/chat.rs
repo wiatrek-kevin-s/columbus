@@ -746,6 +746,13 @@ impl Ui for WindowUi {
     }
 }
 
+/// A workflow run whose results a new chat opens (REQ-27).
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct OpenRun {
+    pub workflow: String,
+    pub run: String,
+}
+
 #[derive(Serialize)]
 pub struct Started {
     session: Option<String>,
@@ -762,6 +769,7 @@ pub async fn chat_start(
     model: Option<String>,
     effort: Option<String>,
     project: Option<String>,
+    run: Option<OpenRun>,
 ) -> Result<Started, String> {
     let mut slot = st.chat.lock().await;
     if slot.is_some() {
@@ -790,6 +798,22 @@ pub async fn chat_start(
         tauri::async_runtime::spawn_blocking(move || columbus_shared::projects::load(&id))
             .await
             .map_err(|e| e.to_string())??;
+    }
+    // A chat opened from a workflow run's report (REQ-27): the run is
+    // checked here first (finished, its layers unchanged on disk), so a
+    // refusal names the file; the server checks again and copies them.
+    if let Some(r) = run.clone() {
+        tauri::async_runtime::spawn_blocking(move || {
+            columbus_shared::workflows::open_check(
+                &columbus_shared::workflows::workflows_dir(),
+                None,
+                &r.workflow,
+                &r.run,
+            )
+            .map(|_| ())
+        })
+        .await
+        .map_err(|e| e.to_string())??;
     }
     let s2 = s.clone();
     let srv = tauri::async_runtime::spawn_blocking(move || server(&s2))
@@ -822,6 +846,13 @@ pub async fn chat_start(
         "COLUMBUS_PROJECT".into(),
         project.clone().unwrap_or_default(),
     ));
+    // Likewise always set: a chat opens a run only when asked to.
+    env.push((
+        "COLUMBUS_OPEN_RUN".into(),
+        run.as_ref()
+            .map(|r| format!("{}/{}", r.workflow, r.run))
+            .unwrap_or_default(),
+    ));
     let cfg = Config {
         server_env: env,
         server: srv,
@@ -843,6 +874,7 @@ pub async fn chat_start(
         &model,
         &effort,
         project.as_deref(),
+        run.as_ref(),
     );
     let started = Started {
         session,
@@ -1049,6 +1081,7 @@ fn new_transcript(
     model: &str,
     effort: &str,
     project: Option<&str>,
+    run: Option<&OpenRun>,
 ) -> Option<String> {
     let dir = chats_dir(app)?;
     std::fs::create_dir_all(&dir).ok()?;
@@ -1061,7 +1094,7 @@ fn new_transcript(
     *st.transcript.lock().expect("transcript") = Some(path);
     record(
         app,
-        &serde_json::json!({"kind": "meta", "id": id, "session": session, "model": model, "effort": effort, "project": project}),
+        &serde_json::json!({"kind": "meta", "id": id, "session": session, "model": model, "effort": effort, "project": project, "run": run}),
     );
     Some(id)
 }

@@ -11,6 +11,7 @@ import zipfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 sys.path.insert(0, HERE)
+from engine_required import skip_engine  # noqa: E402
 
 import columbus_docs as d  # noqa: E402
 import columbus_worker as w  # noqa: E402
@@ -109,7 +110,7 @@ class DocsTests(unittest.TestCase):
         try:
             from pypdf import PdfWriter
         except ImportError:
-            self.skipTest("pypdf not installed")
+            skip_engine(self, "pypdf not installed")
         wr = PdfWriter()
         wr.add_blank_page(200, 200)
         wr.add_metadata({"/Title": "Blank"})

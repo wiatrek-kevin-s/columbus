@@ -15,6 +15,8 @@ import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
+sys.path.insert(0, HERE)
+from engine_required import skip_unless_engine  # noqa: E402
 
 try:
     import geopandas as gpd
@@ -111,7 +113,7 @@ class CsvStreamingTests(unittest.TestCase):
         self.assertFalse(os.path.exists(out))
 
 
-@unittest.skipUnless(HAVE_GIS, "GIS engine not installed")
+@skip_unless_engine(HAVE_GIS, "GIS engine not installed")
 class LayerStreamingTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

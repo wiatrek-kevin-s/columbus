@@ -295,8 +295,8 @@
           "expected": "same rows as before the change; all CI database jobs pass"
         }
       ],
-      "status": "todo",
-      "evidence": ""
+      "status": "done",
+      "evidence": "Commits b7ece5c, c1a8cab, b807b84. postgis.rs postgis_bbox_uses_the_spatial_index (EXPLAIN of the exact executed SQL with enable_seqscan=off names roadway_inventory_geom_gist; rows equal the unpushed query for an EPSG:3081 and a lon/lat box); oracle_bbox_uses_the_spatial_index (SDO_FILTER, native/4326/3857 boxes exact; unindexed table not pushed, correct rows); sql_server_bbox_uses_the_spatial_index (Filter(), exact; geography not pushed, correct); GeoPackage EXPLAIN QUERY PLAN shows rtree_roads_geom, same rows without an R-tree; files cache R-tree. All database jobs green in CI run https://github.com/wiatrek-kevin-s/columbus/actions/runs/42555648758 (Desktop app Linux re-run once after a hang in sources.py, then green). Workspace 356 passed."
     },
     {
       "id": "T-14",
@@ -312,8 +312,8 @@
           "expected": "engine start under 20 s and warm query_features on 100,000 rows under 4 s; measured values printed and recorded in the progress log"
         }
       ],
-      "status": "todo",
-      "evidence": ""
+      "status": "done",
+      "evidence": "Commit f8c1d88. crates/gateway/tests/benchmark.rs engine_start_and_a_warm_query_on_100k_rows_are_fast, CI step 'Benchmark (Linux)' in run https://github.com/wiatrek-kevin-s/columbus/actions/runs/42557772645: BENCH engine_start_s=0.48 first_query_s=1.71 warm_query_s=1.61 rows=100000 (targets 10 s / 2 s, limits 20 s / 4 s). Local: 0.79 / 1.77 / 1.64."
     },
     {
       "id": "T-15",
@@ -341,8 +341,8 @@
           "expected": "pip refuses with a hash mismatch"
         }
       ],
-      "status": "todo",
-      "evidence": ""
+      "status": "done",
+      "evidence": "Commit 1c974f1. CI run https://github.com/wiatrek-kevin-s/columbus/actions/runs/42614233624 green on 13 jobs: gis, db, projectdb and uv files install with --require-hashes everywhere; CI extras pinned in requirements-ci.txt; COLUMBUS_TEST_REQUIRE_ENGINE=1 in every engine job, 0 'skipping: the GIS engine' lines. gis.rs with COLUMBUS_TEST_REQUIRE_ENGINE=1 and no engine fails naming the variable. Tampered hash in a scratch copy: pip refuses with 'DO NOT MATCH THE HASHES'. .github/dependabot.yml present; A-4 not confirmed for uv-compiled hash files, fallback .github/workflows/engine-requirements.yml (weekly regenerate + PR). Workspace 356 passed, pytest 224."
     },
     {
       "id": "T-19",
@@ -405,8 +405,8 @@
           "expected": "new layer of 2 rows, original still 3; the hidden-field where is refused"
         }
       ],
-      "status": "todo",
-      "evidence": ""
+      "status": "done",
+      "evidence": "Commit d3c084e. app/desktop/e2e/workflows.py: Open in a chat on a finished run opens a chat with tract-export-tracts.gpkg in map and table, report in the system prompt; export to a non-granted folder shows the approval card, Allow once lands it; run folder, workspace and outbox hash unchanged. crates/gateway/tests/workflows.rs a_run_opens_in_a_chat_as_copies_and_the_run_never_changes (copies with labels and provenance; overwrite of the run's export refused; run handle refused; filter ROUTE_NAME <> 'B' -> new 2-row layer, hidden field and subquery refused; run files unchanged; altered output -> refused naming the file). CI run https://github.com/wiatrek-kevin-s/columbus/actions/runs/42626537952 green on 13 jobs. Workspace 358, pytest 225."
     },
     {
       "id": "T-22",
@@ -422,8 +422,8 @@
           "expected": "map fits route 2; view unchanged with the toggle off; measure shows 328 ft (within 1%)"
         }
       ],
-      "status": "todo",
-      "evidence": ""
+      "status": "done",
+      "evidence": "Commit e35e63b. app/ui/e2e/map.py (real Chromium, real session; CI Companion window job): click row 2 of a 3-route layer -> route 2 fitted and centred, routes 1 and 3 out of view; toggle off, click row 3 -> view exactly unchanged; measure a 100 m line -> '328 ft (99.9 m)' within 1%. CI run https://github.com/wiatrek-kevin-s/columbus/actions/runs/42630389678 green on 13 jobs. Workspace 358, pytest 225."
     },
     {
       "id": "T-24",
@@ -447,8 +447,8 @@
           "expected": "that source's cache folder is gone in each case"
         }
       ],
-      "status": "todo",
-      "evidence": ""
+      "status": "done",
+      "evidence": "Commit ca47383. crates/gateway/tests/web_layers.rs web_layers_go_through_the_gateway_only: XYZ, WMTS, WMS, MapServer (cached, dynamic), ImageServer, FeatureServer served through the proxy; disallowed host, unlisted WMTS tile host, redirect, tokenless/wrong token, raw URL refused with nothing fetched; secured MapServer token seen only by the vouched host, unvouched host gets none; no token in any page response; no MCP tool touches web layers, whoami lists titles only, list_outputs/map_snapshot mention none; caches dropped on remove and sign-out. CI run https://github.com/wiatrek-kevin-s/columbus/actions/runs/42637569401 green on 13 jobs. Workspace 369."
     },
     {
       "id": "T-25",
@@ -477,8 +477,8 @@
           "expected": "the layer is listed after restart and offered in both chats; Test reports it reachable; edit and remove take effect in both chats"
         }
       ],
-      "status": "todo",
-      "evidence": ""
+      "status": "done",
+      "evidence": "Commit c038f8f. app/ui/e2e/weblayers.py (Playwright, Companion window job): each of six fake kinds saved (map.hosts empty, confirm path), turned on, draws through the gateway; privacy notice once per chat; opacity/order/basemap applied and kept after reload; 12,000 features -> 'Showing 5,000 of 12,000 features. Zoom in to see all'; unreachable service shows the R-14 message, map keeps working; page reaches only its own origin plus tiles.openfreemap.org, direct requests blocked. app/desktop/e2e/weblayers.py (WebDriver): Connections › Map layers save (deny -> nothing saved), restart, both chats offer them, Test, Edit, Remove. CI run https://github.com/wiatrek-kevin-s/columbus/actions/runs/42646478559 green on 13 jobs. Workspace 369, pytest 225, app 27."
     },
     {
       "id": "T-23",

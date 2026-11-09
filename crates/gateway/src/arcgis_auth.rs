@@ -243,8 +243,14 @@ pub(crate) fn signed_in(store: &SecretStore, id: &str) -> bool {
 
 /// Forget a connection's sign-in; whether there was one. This is the
 /// sign-out signal (the CLI's `arcgis signout`, and deleting the
-/// connection, F-3b).
-pub(crate) fn sign_out(store: &SecretStore, id: &str) -> Result<bool, String> {
+/// connection, F-3b): the tile caches of web layers secured by it go too
+/// (T-24), whether or not a sign-in was stored.
+pub(crate) fn sign_out(
+    store: &SecretStore,
+    id: &str,
+    paths: &crate::config::Paths,
+) -> Result<bool, String> {
+    crate::web_layers::drop_secured(paths, id);
     if !store.keeps_tokens() {
         return Ok(false);
     }
@@ -992,8 +998,9 @@ pub async fn signin_cli(id: &str, flags: &[&str]) -> anyhow::Result<()> {
 pub fn signout_cli(id: &str) -> anyhow::Result<()> {
     let store = SecretStore::from_env();
     usable_store(&store).map_err(|e| anyhow!("{e}."))?;
-    let _ = forget_state(&crate::config::Paths::from_env().connections, id);
-    if sign_out(&store, id).map_err(|e| anyhow!(e))? {
+    let paths = crate::config::Paths::from_env();
+    let _ = forget_state(&paths.connections, id);
+    if sign_out(&store, id, &paths).map_err(|e| anyhow!(e))? {
         println!(
             "Signed out of ArcGIS for {id}: its sign-in was removed from the credential store."
         );

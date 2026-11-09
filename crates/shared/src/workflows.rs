@@ -16,7 +16,9 @@
 //!       workflow.yaml   proposal.json
 //!   runs/
 //!     morning-check/2026-11-06T06-00-00-000-1a2b/
-//!       run.json   report.md
+//!       run.json   report.md      (run.json's `outputs`: each layer the
+//!                                   run made, with its SHA-256, so the run
+//!                                   can be opened in a chat: open_check)
 //!   locks/
 //!     morning-check.lock          one run at a time
 //! ```
@@ -1456,6 +1458,191 @@ pub fn prune_runs(root: &Path, id: &str, keep: usize, workspaces: Option<&Path>)
         }
         let _ = std::fs::remove_dir_all(p);
     }
+}
+
+/// A layer (or file) a run made, as `run.json` records it under `outputs`
+/// (REQ-27): where it is in the run's workspace and its fingerprint.
+#[derive(Debug, Clone)]
+pub struct RunOutput {
+    pub step: String,
+    /// The file in the run's workspace (checked: inside it, a plain file).
+    pub path: PathBuf,
+    /// Its path relative to the run's workspace, forward slashes.
+    pub file: String,
+    pub sha256: String,
+    /// Its provenance record in the run's workspace, if it has one, with
+    /// that record's own fingerprint: (id, path, record).
+    pub provenance: Option<(String, PathBuf, Value)>,
+    /// The rest of the entry as the run recorded it (rows, made_by, source,
+    /// labels, truncated, inherited).
+    pub entry: Value,
+}
+
+/// A finished run, checked for opening in a chat (REQ-27, R-20).
+#[derive(Debug, Clone)]
+pub struct OpenRun {
+    pub workflow: String,
+    pub run: String,
+    pub record: Value,
+    pub report: String,
+    /// The connections the workflow read (its scope when it ran).
+    pub scope: Vec<String>,
+    pub outputs: Vec<RunOutput>,
+    /// The exports the run delivered: (export folder id, name).
+    pub exports: Vec<(String, String)>,
+}
+
+/// A relative path of plain parts (no `..`, no root, no drive), with
+/// forward slashes.
+fn plain_relative(rel: &str) -> Option<PathBuf> {
+    if rel.is_empty() || rel.contains('\\') || rel.contains(':') {
+        return None;
+    }
+    let mut out = PathBuf::new();
+    for part in rel.split('/') {
+        if part.is_empty() || part == "." || part == ".." {
+            return None;
+        }
+        out.push(part);
+    }
+    Some(out)
+}
+
+/// Check a run before it is opened in a chat: it has finished, it recorded
+/// its outputs, and every output (and its provenance record) is still
+/// byte-for-byte what the run wrote. Err names the file that changed.
+/// `workspaces`, when given, is the root the run's workspace must sit
+/// directly in. Reads only: nothing of the run is changed.
+pub fn open_check(
+    root: &Path,
+    workspaces: Option<&Path>,
+    id: &str,
+    run: &str,
+) -> Result<OpenRun, String> {
+    if !id_ok(id) || !run_id_ok(run) || !is_dir(&runs_dir(root, id).join(run)) {
+        return Err(format!("no run {run} of workflow {id}"));
+    }
+    let (record, report) = read_run(root, id, run)?;
+    let status = record["status"].as_str().unwrap_or("running");
+    if status == "running" || record.get("finished").is_none() {
+        return Err(format!(
+            "run {run} of {id} has not finished; open it once it has"
+        ));
+    }
+    let entries = record["outputs"].as_array().cloned().unwrap_or_default();
+    if entries.is_empty() {
+        return Err(if record.get("outputs").is_none() {
+            format!("run {run} of {id} did not record its layers' fingerprints (it was made by an older Columbus), so it can't be opened; run the workflow again")
+        } else {
+            format!("run {run} of {id} made no layers to open")
+        });
+    }
+    let ws = record["workspace"]
+        .as_str()
+        .map(PathBuf::from)
+        .ok_or_else(|| format!("run {run} of {id} has no workspace"))?;
+    let ws_real = std::fs::symlink_metadata(&ws)
+        .ok()
+        .filter(|m| m.is_dir())
+        .and_then(|_| ws.canonicalize().ok())
+        .ok_or_else(|| {
+            format!(
+                "the run's files ({}) are gone, so it can't be opened",
+                ws.display()
+            )
+        })?;
+    if let Some(w) = workspaces {
+        let w = w
+            .canonicalize()
+            .map_err(|e| format!("{}: {e}", w.display()))?;
+        if ws_real.parent() != Some(w.as_path()) {
+            return Err(format!(
+                "the run's workspace {} is not in Columbus's workspaces folder",
+                ws.display()
+            ));
+        }
+    }
+    let changed = |p: &Path, step: &str| {
+        format!(
+            "the run's output {} (step {step}) changed on disk since the run, so the run can't be opened; run the workflow again",
+            p.display()
+        )
+    };
+    // A plain file inside the run's workspace with exactly this content.
+    let checked = |rel: &str, want: &str, step: &str| -> Result<PathBuf, String> {
+        let r = plain_relative(rel)
+            .ok_or_else(|| format!("the run recorded an odd file name {rel:?}"))?;
+        let p = ws_real.join(r);
+        let plain = std::fs::symlink_metadata(&p).is_ok_and(|m| m.is_file());
+        let inside = p.canonicalize().is_ok_and(|c| c.starts_with(&ws_real));
+        if !plain || !inside {
+            return Err(changed(&p, step));
+        }
+        match crate::canon::sha256_file(&p) {
+            Ok((h, _)) if h == want => Ok(p),
+            _ => Err(changed(&p, step)),
+        }
+    };
+    let mut outputs = Vec::new();
+    for e in &entries {
+        let step = e["step"].as_str().unwrap_or("").to_string();
+        let (Some(file), Some(sha)) = (e["file"].as_str(), e["sha256"].as_str()) else {
+            return Err(format!(
+                "the run's record of step {step}'s output is incomplete"
+            ));
+        };
+        let path = checked(file, sha, &step)?;
+        let provenance = match (e["provenance"].as_str(), e["provenance_sha256"].as_str()) {
+            (Some(pid), Some(psha)) => {
+                let rel = format!("provenance/{pid}.prov.json");
+                let pp = checked(&rel, psha, &step)?;
+                let rec = read_plain(&pp, 4 * 1024 * 1024)
+                    .ok()
+                    .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+                    .unwrap_or(Value::Null);
+                Some((pid.to_string(), pp, rec))
+            }
+            _ => None,
+        };
+        outputs.push(RunOutput {
+            step,
+            path,
+            file: file.to_string(),
+            sha256: sha.to_string(),
+            provenance,
+            entry: e.clone(),
+        });
+    }
+    let scope = record["scope"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(Value::as_str)
+                .map(String::from)
+                .collect()
+        })
+        .unwrap_or_default();
+    let exports = record["deliveries"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|d| d["status"] == "done")
+        .filter_map(|d| {
+            Some((
+                d["folder"].as_str()?.to_string(),
+                d["name"].as_str()?.to_string(),
+            ))
+        })
+        .collect();
+    Ok(OpenRun {
+        workflow: id.to_string(),
+        run: run.to_string(),
+        record,
+        report,
+        scope,
+        outputs,
+        exports,
+    })
 }
 
 /// One run at a time per workflow: the operating system's lock on

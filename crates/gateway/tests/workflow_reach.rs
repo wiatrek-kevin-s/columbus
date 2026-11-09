@@ -15,6 +15,8 @@
 //! Needs the GIS engine (Python with geopandas, pyogrio, shapely 2.1+ and
 //! pyproj); skipped otherwise.
 
+mod support;
+
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -29,19 +31,9 @@ use serde_json::{json, Value};
 const MARK: &str = "zq7k";
 
 fn python() -> Option<String> {
-    std::env::var("COLUMBUS_PYTHON")
-        .ok()
-        .into_iter()
-        .chain(["python3".to_string(), "python".to_string()])
-        .find(|p| {
-            Command::new(p)
-                .args([
-                    "-c",
-                    "import geopandas, pyogrio, pyproj, shapely; assert hasattr(shapely, 'has_m')",
-                ])
-                .output()
-                .is_ok_and(|o| o.status.success())
-        })
+    support::python_for(
+        "import geopandas, pyogrio, pyproj, shapely; assert hasattr(shapely, 'has_m')",
+    )
 }
 
 fn example(name: &str) -> PathBuf {

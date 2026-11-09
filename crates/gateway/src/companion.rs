@@ -34,7 +34,7 @@ impl Companion {
         }
     }
 
-    fn st(&self) -> Result<Arc<State>, String> {
+    pub(crate) fn st(&self) -> Result<Arc<State>, String> {
         self.state
             .upgrade()
             .ok_or_else(|| "the session has ended".to_string())
@@ -111,6 +111,21 @@ impl Companion {
             Ok(s) => crate::notes::draft_from_app(s, connection).await,
             Err(e) => json!({"ok": false, "message": e}),
         }
+    }
+
+    /// What the map page's web-layer requests need (T-24): the settings in
+    /// force, the credential store, the saved sources and the tile cache.
+    /// `refresh`: read the settings files again first.
+    pub(crate) fn web_env(&self, refresh: bool) -> Result<crate::web_layers::Env, String> {
+        let s = self.st()?;
+        if refresh {
+            s.refresh();
+        }
+        Ok(crate::web_layers::Env::new(
+            s.settings(),
+            s.secrets.clone(),
+            &s.paths,
+        ))
     }
 
     /// Whether organization policy lets the person turn on the basemap.

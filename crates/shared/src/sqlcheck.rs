@@ -603,6 +603,35 @@ pub struct CheckedQuery {
     pub dialect: SqlDialect,
     /// Fields the policy hides that were left out of the tables read.
     pub hidden: Vec<String>,
+    /// Whether a bounding box was put inside the filtered table, where the
+    /// source's spatial index applies ([`check_select_bbox`]).
+    pub bbox_pushed: bool,
+}
+
+/// The spatial index a bounding box can use on one dataset, as the
+/// gateway's reading of the catalog found it.
+#[derive(Debug, Clone, PartialEq)]
+pub enum BboxIndex {
+    /// PostGIS: `geom && ST_MakeEnvelope(..., srid)`, the column's own SRID.
+    PostGis { srid: i64 },
+    /// GeoPackage: the table's R-tree (`rtree_<table>_<column>`), matched on
+    /// the row id, which is the feature table's integer primary key.
+    GpkgRtree { rtree: String },
+    /// Oracle Spatial: `SDO_FILTER` with an optimized rectangle in the
+    /// layer's SRID (`None`: the layer has none).
+    Oracle { srid: Option<i64> },
+    /// SQL Server `geometry`: `geom.Filter(...) = 1` in the column's SRID.
+    MsSql { srid: i64 },
+}
+
+/// A bounding box to put beside the row filter, inside the filtered table.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BboxPushdown {
+    /// The dataset's geometry column, as the catalog names it.
+    pub geometry_column: String,
+    /// [min x, min y, max x, max y] in the dataset's own CRS.
+    pub bbox: [f64; 4],
+    pub index: BboxIndex,
 }
 
 fn parse_expr(text: &str, dialect: SqlDialect) -> Result<Expr, Denied> {
@@ -638,7 +667,14 @@ const FILTER_KEYWORDS: &[&str] = &["SYSDATE", "USER", "UID"];
 
 /// Names the server gives its own parts of a query: free SQL may not use
 /// them anywhere, so no name the caller writes can stand in for them.
-const RESERVED_NAMES: &[&str] = &[FILTER_ALIAS, "columbus_q"];
+const RESERVED_NAMES: &[&str] = &[FILTER_ALIAS, "columbus_q", BBOX_MARKER];
+
+/// Stands in for the bounding-box condition inside the filtered table while
+/// the query is checked and written out; replaced by the condition itself
+/// at the end (it is built here from numbers and catalog names, never from
+/// the caller's text, and SQL Server's `geometry::` constructor does not
+/// read back through the parser).
+const BBOX_MARKER: &str = "columbus_bbox";
 
 fn filter_keyword(i: &Ident, dialect: SqlDialect) -> bool {
     i.quote_style.is_none()
@@ -1451,6 +1487,8 @@ struct ApplyFilters<'a> {
     catalog: &'a Catalog,
     hidden: Vec<String>,
     error: Option<Denied>,
+    /// Put the bounding-box marker inside each filtered table.
+    bbox: bool,
 }
 
 /// Name a function the way it must run: Oracle Spatial in MDSYS (Oracle
@@ -1573,7 +1611,7 @@ impl VisitorMut for ApplyFilters<'_> {
                 .collect::<Vec<_>>()
                 .join(", ");
         }
-        if filters.is_empty() && select == "*" {
+        if filters.is_empty() && select == "*" && !self.bbox {
             if let Some(r) = rel {
                 // Nothing to filter: just read it by its exact name.
                 *name = ObjectName::from(
@@ -1637,8 +1675,14 @@ impl VisitorMut for ApplyFilters<'_> {
             barrier(self.dialect)
         };
         let mut inner_sql = format!("SELECT {before}{select} FROM {source} {FILTER_ALIAS}");
-        if !checked.is_empty() {
-            inner_sql.push_str(&format!(" WHERE {}", checked.join(" AND ")));
+        // The bounding box sits beside the row filter, inside the filtered
+        // table, so the source's spatial index can serve it.
+        let mut conditions = checked;
+        if self.bbox {
+            conditions.push(BBOX_MARKER.to_string());
+        }
+        if !conditions.is_empty() {
+            inner_sql.push_str(&format!(" WHERE {}", conditions.join(" AND ")));
         }
         inner_sql.push_str(after);
         let d = self.dialect.parser_dialect();
@@ -1689,7 +1733,7 @@ pub fn check_select(
     max_rows: u64,
     catalog: &Catalog,
 ) -> Result<CheckedQuery, Denied> {
-    check_select_limited(sql, access, max_rows, true, catalog)
+    check_select_limited(sql, access, max_rows, true, catalog, false)
 }
 
 /// As [`check_select`], but without the SQL row limit, for queries whose
@@ -1702,7 +1746,99 @@ pub fn check_select_unlimited(
     max_rows: u64,
     catalog: &Catalog,
 ) -> Result<CheckedQuery, Denied> {
-    check_select_limited(sql, access, max_rows, false, catalog)
+    check_select_limited(sql, access, max_rows, false, catalog, false)
+}
+
+/// As [`check_select_unlimited`], with a bounding box put inside the
+/// filtered table of the one dataset the query reads, beside its row
+/// filter, in the form the source's spatial index serves (`&&` on PostGIS,
+/// the R-tree on GeoPackage, `SDO_FILTER` on Oracle, `Filter()` on SQL
+/// Server). The condition only narrows by envelope: the worker still keeps
+/// exactly the rows whose geometry meets the box, so the rows are the same
+/// as without it. Where it cannot be placed (several tables, a function the
+/// catalog lacks), the query is checked without it (`bbox_pushed` false).
+pub fn check_select_bbox(
+    sql: &str,
+    access: &EffectiveAccess,
+    max_rows: u64,
+    catalog: &Catalog,
+    bbox: &BboxPushdown,
+) -> Result<CheckedQuery, Denied> {
+    let dialect = SqlDialect::for_connection_type(&access.kind);
+    if let Some(condition) = bbox_condition(bbox, dialect, catalog) {
+        if let Ok(mut q) = check_select_limited(sql, access, max_rows, false, catalog, true) {
+            // Exactly one marker, the one put in above (the caller cannot
+            // write the name), and one table read.
+            if q.sql.matches(BBOX_MARKER).count() == 1 && q.tables.len() == 1 {
+                let pushed = q.sql.replacen(BBOX_MARKER, &condition, 1);
+                // Where the parser reads the condition back as written, it
+                // must: one more check that nothing in it became SQL.
+                if dialect == SqlDialect::MsSql || reads_back(&pushed, dialect).is_ok() {
+                    q.sql = pushed;
+                    q.bbox_pushed = true;
+                    return Ok(q);
+                }
+            }
+        }
+    }
+    check_select_limited(sql, access, max_rows, false, catalog, false)
+}
+
+/// A number as SQL: finite values only, written in full (Rust never uses
+/// exponents for `f64` display).
+fn sql_number(v: f64) -> Option<String> {
+    v.is_finite().then(|| {
+        let s = format!("{v}");
+        if s == "-0" {
+            "0".into()
+        } else {
+            s
+        }
+    })
+}
+
+/// The bounding-box condition on [`FILTER_ALIAS`], or None when it cannot
+/// be written for this source.
+fn bbox_condition(b: &BboxPushdown, dialect: SqlDialect, catalog: &Catalog) -> Option<String> {
+    let [x0, y0, x1, y1] = b.bbox;
+    if !(x0 <= x1 && y0 <= y1) {
+        return None;
+    }
+    let (x0, y0, x1, y1) = (
+        sql_number(x0)?,
+        sql_number(y0)?,
+        sql_number(x1)?,
+        sql_number(y1)?,
+    );
+    let geom = format!(
+        "{FILTER_ALIAS}.{}",
+        quote_ident(&b.geometry_column, dialect)
+    );
+    match (&b.index, dialect) {
+        (BboxIndex::PostGis { srid }, SqlDialect::Postgres) if *srid > 0 => {
+            // ST_MakeEnvelope called by the PostGIS extension's own schema,
+            // as every PostGIS function is.
+            let schema = catalog.extension_functions.get("ST_MAKEENVELOPE")?;
+            Some(format!(
+                "({geom} && {}.st_makeenvelope({x0}, {y0}, {x1}, {y1}, {srid}))",
+                quote_ident(schema, dialect)
+            ))
+        }
+        (BboxIndex::GpkgRtree { rtree }, SqlDialect::Sqlite) => Some(format!(
+            "({FILTER_ALIAS}.rowid IN (SELECT \"id\" FROM {} WHERE \"minx\" <= {x1} AND \"maxx\" >= {x0} AND \"miny\" <= {y1} AND \"maxy\" >= {y0}))",
+            quote_ident(rtree, dialect)
+        )),
+        (BboxIndex::Oracle { srid }, SqlDialect::Oracle) => {
+            let srid = srid.map_or("NULL".to_string(), |s| s.to_string());
+            Some(format!(
+                "(MDSYS.SDO_FILTER({geom}, MDSYS.SDO_GEOMETRY(2003, {srid}, NULL, MDSYS.SDO_ELEM_INFO_ARRAY(1, 1003, 3), MDSYS.SDO_ORDINATE_ARRAY({x0}, {y0}, {x1}, {y1}))) = 'TRUE')"
+            ))
+        }
+        (BboxIndex::MsSql { srid }, SqlDialect::MsSql) => Some(format!(
+            "({geom}.Filter(geometry::STGeomFromText('POLYGON (({x0} {y0}, {x1} {y0}, {x1} {y1}, {x0} {y1}, {x0} {y0}))', {srid})) = 1)"
+        )),
+        _ => None,
+    }
 }
 
 /// The checked query must read back as itself. The SQL that runs is the
@@ -1782,6 +1918,7 @@ fn check_select_limited(
     max_rows: u64,
     limit: bool,
     catalog: &Catalog,
+    bbox: bool,
 ) -> Result<CheckedQuery, Denied> {
     let dialect = SqlDialect::for_connection_type(&access.kind);
     refuse_reserved_names(sql, dialect)?;
@@ -1795,6 +1932,7 @@ fn check_select_limited(
         catalog,
         hidden: Vec::new(),
         error: None,
+        bbox,
     };
     let _ = query.visit(&mut apply);
     if let Some(e) = apply.error {
@@ -1815,6 +1953,7 @@ fn check_select_limited(
         max_rows,
         dialect,
         hidden: apply.hidden,
+        bbox_pushed: false,
     })
 }
 
@@ -2874,6 +3013,173 @@ datasets:
             assert!(r.is_err(), "{kind}: {:?}", r.map(|q| q.sql));
         }
         assert!(check_where("CAST(x AS geometry('1) OR 1=1 --'))", SqlDialect::Postgres).is_err());
+    }
+
+    /// T-13 (REQ-19): the bbox goes inside the filtered table, beside the
+    /// row filter, in each source's index form; hidden fields stay out.
+    #[test]
+    fn bbox_is_pushed_beside_the_row_filter() {
+        let mut catalog = cat();
+        catalog
+            .extension_functions
+            .insert("ST_MAKEENVELOPE".into(), "public".into());
+        let sql = "SELECT \"fid\", \"route_id\", \"geom\" FROM roads.roadway_inventory";
+        let b = |index| BboxPushdown {
+            geometry_column: "geom".into(),
+            bbox: [1000100.5, 6999990.0, 1000300.0, 7000020.0],
+            index,
+        };
+        // PostGIS: && with ST_MakeEnvelope from the extension's schema, in
+        // the derived table, before the barrier.
+        let q = check_select_bbox(
+            sql,
+            &hiding("postgis"),
+            100,
+            &catalog,
+            &b(BboxIndex::PostGis { srid: 3081 }),
+        )
+        .unwrap();
+        assert!(q.bbox_pushed, "{}", q.sql);
+        assert!(
+            q.sql.contains("WHERE (columbus_filtered.DISTRICT_NBR = 14) AND (columbus_filtered.\"geom\" && \"public\".st_makeenvelope(1000100.5, 6999990, 1000300, 7000020, 3081)) OFFSET 0)"),
+            "{}",
+            q.sql
+        );
+        assert!(
+            !q.sql.contains("owner_name") && !q.sql.contains("emp_ssn"),
+            "{}",
+            q.sql
+        );
+        assert!(!q.sql.contains("LIMIT"), "unlimited: {}", q.sql);
+        // Without ST_MakeEnvelope in the catalog: not pushed, same checks.
+        let q = check_select_bbox(
+            sql,
+            &hiding("postgis"),
+            100,
+            &cat(),
+            &b(BboxIndex::PostGis { srid: 3081 }),
+        )
+        .unwrap();
+        assert!(!q.bbox_pushed);
+        assert!(!q.sql.contains(BBOX_MARKER), "{}", q.sql);
+        // No row filter and no hidden fields: still wrapped, no barrier.
+        let q = check_select_bbox(
+            sql,
+            &access("postgis", None),
+            100,
+            &catalog,
+            &b(BboxIndex::PostGis { srid: 3081 }),
+        )
+        .unwrap();
+        assert!(q.bbox_pushed);
+        assert!(!q.sql.contains("OFFSET"), "{}", q.sql);
+        assert!(
+            q.sql.contains("WHERE (columbus_filtered.\"geom\" &&"),
+            "{}",
+            q.sql
+        );
+
+        // GeoPackage: the R-tree, by row id.
+        let q = check_select_bbox(
+            sql,
+            &hiding("gpkg"),
+            100,
+            &catalog,
+            &b(BboxIndex::GpkgRtree {
+                rtree: "rtree_roadway_inventory_geom".into(),
+            }),
+        )
+        .unwrap();
+        assert!(q.bbox_pushed);
+        assert!(q.sql.contains("(columbus_filtered.DISTRICT_NBR = 14) AND (columbus_filtered.rowid IN (SELECT \"id\" FROM \"rtree_roadway_inventory_geom\" WHERE \"minx\" <= 1000300 AND \"maxx\" >= 1000100.5 AND \"miny\" <= 7000020 AND \"maxy\" >= 6999990)) LIMIT -1 OFFSET 0"), "{}", q.sql);
+
+        // Oracle: SDO_FILTER with an optimized rectangle, before ROWNUM.
+        let ora = Catalog {
+            resolve: true,
+            relations: vec![Relation {
+                parts: vec!["ROADS".into(), "ROADWAY_INVENTORY".into()],
+                columns: ["FID", "ROUTE_ID", "DISTRICT_NBR", "OWNER_NAME", "GEOM"]
+                    .map(String::from)
+                    .to_vec(),
+            }],
+            extension_functions: Default::default(),
+            text_dates: Default::default(),
+            skipped: Default::default(),
+        };
+        let mut ob = b(BboxIndex::Oracle { srid: Some(4326) });
+        ob.geometry_column = "GEOM".into();
+        let q = check_select_bbox(
+            "SELECT fid, route_id, geom FROM roads.roadway_inventory",
+            &hiding("oracle"),
+            100,
+            &ora,
+            &ob,
+        )
+        .unwrap();
+        assert!(q.bbox_pushed, "{}", q.sql);
+        assert!(!q.sql.contains("OWNER_NAME"), "{}", q.sql);
+        assert!(q.sql.contains("AND (MDSYS.SDO_FILTER(columbus_filtered.\"GEOM\", MDSYS.SDO_GEOMETRY(2003, 4326, NULL, MDSYS.SDO_ELEM_INFO_ARRAY(1, 1003, 3), MDSYS.SDO_ORDINATE_ARRAY(1000100.5, 6999990, 1000300, 7000020))) = 'TRUE') AND ROWNUM > 0"), "{}", q.sql);
+
+        // SQL Server: Filter() in the column's SRID, inside the TOP table.
+        let q = check_select_bbox(
+            sql,
+            &hiding("sqlserver"),
+            100,
+            &catalog,
+            &b(BboxIndex::MsSql { srid: 3081 }),
+        )
+        .unwrap();
+        assert!(q.bbox_pushed);
+        assert!(q.sql.contains("WHERE (columbus_filtered.DISTRICT_NBR = 14) AND (columbus_filtered.[geom].Filter(geometry::STGeomFromText('POLYGON ((1000100.5 6999990, 1000300 6999990, 1000300 7000020, 1000100.5 7000020, 1000100.5 6999990))', 3081)) = 1)"), "{}", q.sql);
+        assert!(
+            q.sql.contains("SELECT TOP (9223372036854775807)"),
+            "{}",
+            q.sql
+        );
+
+        // A form that does not fit the dialect is not pushed.
+        let q = check_select_bbox(
+            sql,
+            &hiding("sqlserver"),
+            100,
+            &catalog,
+            &b(BboxIndex::PostGis { srid: 3081 }),
+        )
+        .unwrap();
+        assert!(!q.bbox_pushed);
+        // A non-finite or inverted box is not pushed either.
+        let mut bad = b(BboxIndex::PostGis { srid: 3081 });
+        bad.bbox = [2.0, 0.0, 1.0, 1.0];
+        assert!(
+            !check_select_bbox(sql, &hiding("postgis"), 100, &catalog, &bad)
+                .unwrap()
+                .bbox_pushed
+        );
+        bad.bbox = [0.0, 0.0, f64::INFINITY, 1.0];
+        assert!(
+            !check_select_bbox(sql, &hiding("postgis"), 100, &catalog, &bad)
+                .unwrap()
+                .bbox_pushed
+        );
+        // Refusals still apply: a hidden field is refused with or without.
+        let e = check_select_bbox(
+            "SELECT owner_name FROM roads.roadway_inventory",
+            &hiding("postgis"),
+            100,
+            &catalog,
+            &b(BboxIndex::PostGis { srid: 3081 }),
+        )
+        .unwrap_err();
+        assert!(e.to_string().contains("hidden"), "{e}");
+        // The marker's name is the server's own: free SQL cannot use it.
+        let e = check_select(
+            "SELECT columbus_bbox FROM roads.roadway_inventory",
+            &hiding("postgis"),
+            100,
+            &catalog,
+        )
+        .unwrap_err();
+        assert!(e.to_string().contains("Columbus uses"), "{e}");
     }
 }
 

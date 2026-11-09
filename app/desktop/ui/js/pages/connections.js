@@ -5,6 +5,7 @@
 // code (Touch ID, the account password or Windows Hello); nothing here can
 // skip that.
 import { $, h, el, invoke, store, button, pageHead, tabs, showError, size, when, plural, emptyState, coming, toast } from "../core.js";
+import * as maplayers from "./maplayers.js";
 
 const KIND_NAMES = {
   gpkg: "GeoPackage", sqlite: "SQLite", rasters: "Rasters folder", shapefile: "Shapefiles", filegdb: "File geodatabase",
@@ -53,16 +54,20 @@ export async function render(main, rest) {
   const tab = rest[0] || "databases";
   const page = h("div", { class: "page" });
   main.append(page);
-  const add = button("Add connection", "primary", () => openEditor(null), { id: "add" });
+  const add = tab === "maplayers"
+    ? button("Add web layer", "primary", () => maplayers.openWebLayerEditor(null), { id: "add-web-layer" })
+    : button("Add connection", "primary", () => openEditor(null), { id: "add" });
   page.append(pageHead("Connections", "Databases and files your assistant may use through Columbus, and what each lets it see.", [add]));
   page.append(tabs([
     ["databases", "Databases and files", "#/connections/databases"],
     ["datasets", "Datasets", "#/connections/datasets"],
     ["projectdbs", "Project databases", "#/connections/projectdbs"],
+    ["maplayers", "Map layers", "#/connections/maplayers"],
     ["accounts", "Accounts and services", "#/connections/accounts"],
   ], tab, "Connections"));
   const body = h("div", { class: "pad stack" });
   page.append(h("div", { class: "scroll" }, body));
+  if (tab === "maplayers") return maplayers.render(body);
   if (tab === "datasets") return datasets(body);
   if (tab === "projectdbs") return projectDbs(body);
   if (tab === "accounts") {

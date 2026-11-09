@@ -27,20 +27,25 @@ real one.
 
 import json
 import os
+import queue
 import shutil
 import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.request
 from pathlib import Path
 
 import yaml
-from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.support.ui import WebDriverWait
+
+import guard
+from guard import step
+
+WebDriverWait = guard.Wait  # its time-outs name the step that was waiting
 
 REPO = Path(__file__).resolve().parents[3]
 GATEWAY = Path(sys.argv[1]).resolve()
@@ -104,19 +109,19 @@ def columbus(root):
 
 def fake_portal():
     proc = subprocess.Popen([str(FAKE)], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
-    line = proc.stdout.readline().strip()
+    first = queue.Queue()
+    threading.Thread(target=lambda: first.put(proc.stdout.readline()), daemon=True).start()
+    try:
+        line = first.get(timeout=30).strip()
+    except queue.Empty:
+        raise SystemExit("the fake portal did not say where it listens within 30 s")
     assert line.startswith("listening "), line
     return proc, line.split(" ", 1)[1]
 
 
 def session(root, confirm):
     env = dict(files(root), COLUMBUS_APP_TEST_CONFIRM=confirm)
-    proc = subprocess.Popen(["tauri-driver"], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    time.sleep(2)
-    opts = webdriver.common.options.ArgOptions()
-    opts.set_capability("tauri:options", {"application": str(APP)})
-    opts.set_capability("browserName", "wry")
-    d = webdriver.Remote("http://127.0.0.1:4444", options=opts)
+    d, proc = guard.driver(env, APP)
     wait = WebDriverWait(d, 60)
     wait.until(lambda drv: drv.execute_script("return !!document.getElementById('page-title')"))
     nav(d, wait, "#/connections", "add")
@@ -194,10 +199,10 @@ def env_text(d, env_id):
 
 def make_venv(root):
     venv = root / "venv"
-    subprocess.run([sys.executable, "-m", "venv", "--without-pip", str(venv)], check=True)
+    subprocess.run([sys.executable, "-m", "venv", "--without-pip", str(venv)], check=True, timeout=120)
     py = venv / "bin" / "python"
     purelib = subprocess.run([str(py), "-c", "import sysconfig; print(sysconfig.get_paths()['purelib'])"],
-                             check=True, capture_output=True, text=True).stdout.strip()
+                             check=True, capture_output=True, text=True, timeout=60).stdout.strip()
     shutil.copytree(STUB, Path(purelib) / "arcpy")
     return py
 
@@ -212,6 +217,8 @@ def propose(root, env_id):
 
 
 def main():
+    guard.start("desktop sources e2e", minutes=10)
+    step("fixtures: folders, the stand-in browser, a venv with a stub arcpy")
     OUT.mkdir(exist_ok=True)
     root = Path(tempfile.mkdtemp())
     for sub in ["connections", "bin", "secrets", "environments", "envs"]:
@@ -227,12 +234,15 @@ def main():
     xdg.chmod(0o755)
     python = make_venv(root)
 
+    step("the fake portal and a Columbus session")
     portal, base = fake_portal()
     dead = free_port()
     server = columbus(root)
+    step("the app, confirming allowed")
     d, proc, wait = session(root, "allow")
     try:
         # ---- A folder of files: Test, save, edit again (F-2 fields kept). ----
+        step("files: Test and save")
         new_connection(d, wait, "files", "drops")
         assert d.find_element(By.NAME, "recursive").is_displayed()
         assert not d.find_element(By.NAME, "url").is_displayed()
@@ -253,6 +263,7 @@ def main():
         wait.until(lambda drv: "drops" in text(drv, "connections"))
         assert "With subfolders" in text(d, "connections")
         # Editing keeps recursive, crs, x and y (T-2's loose end).
+        step("files: edit again")
         row_button(d, "drops", "Edit").click()
         wait.until(EC.visibility_of_element_located((By.NAME, "crs")))
         assert d.execute_script("return document.querySelector('[name=recursive]').checked")
@@ -265,6 +276,7 @@ def main():
         assert c["recursive"] is True and c["crs"] == "EPSG:3081" and (c["x"], c["y"]) == ("EASTING", "NORTHING"), c
 
         # ---- A public ArcGIS service: Test needs no sign-in. ----
+        step("arcgis: a public service")
         public = f"{base}/arcgis/rest/services/Public/FeatureServer"
         new_connection(d, wait, "arcgis", "assets")
         assert d.find_element(By.NAME, "url").is_displayed()
@@ -280,6 +292,7 @@ def main():
         assert not d.find_elements(By.XPATH, "//ul[@id='connections']/li[.//b[normalize-space()='assets']]//button[normalize-space()='Sign in']")
 
         # ---- A service that does not answer: the plain R-14 message. ----
+        step("arcgis: a service that does not answer")
         new_connection(d, wait, "arcgis", "gone")
         fill(d, "url", f"http://127.0.0.1:{dead}/arcgis/rest/services/Gone/FeatureServer")
         got = test_says(d, wait, "ArcGIS service at 127.0.0.1", "Check the address or your network, then Test again.")
@@ -288,6 +301,7 @@ def main():
         click(d, By.ID, "cancel")
 
         # ---- A service that signs in: Sign in opens the portal's page. ----
+        step("arcgis: a service that signs in, saved")
         secure = f"{base}/arcgis/rest/services/Secure/FeatureServer"
         new_connection(d, wait, "arcgis", "secure")
         fill(d, "url", secure)
@@ -303,6 +317,7 @@ def main():
         assert c["auth"] == {"type": "oauth", "portal": base, "client_id": "FakeClientId123"} and c["page_size"] == 500, c
         wait.until(lambda drv: "Signs in at" in text(drv, "connections"))
         assert authorize_requests(base) == []
+        step("arcgis: Sign in, through the stand-in browser")
         btn = row_button(d, "secure", "Sign in")
         d.execute_script("arguments[0].scrollIntoView({block: 'center'})", btn)
         btn.click()
@@ -324,12 +339,14 @@ def main():
         assert (root / "secrets" / "COLUMBUS_SECRET_ARCGIS_SECURE").exists(), list((root / "secrets").iterdir())
         assert MARK not in d.page_source
         # Signed in, the service tests.
+        step("arcgis: the signed-in service tests")
         row_button(d, "secure", "Edit").click()
         wait.until(EC.visibility_of_element_located((By.NAME, "portal")))
         test_says(d, wait, "Opened", "Assets")
         click(d, By.ID, "cancel")
 
         # ---- Settings › Environments: register, status and arcpy line. ----
+        step("environments: register the stub-arcpy venv")
         nav(d, wait, "#/settings/environments", "env-add")
         wait.until(lambda drv: drv.find_element(By.ID, "no-env").is_displayed())
         click(d, By.ID, "env-add")
@@ -352,6 +369,7 @@ def main():
         assert reg["created_by"] == "person", reg
         d.save_screenshot(str(OUT / "sources-environments.png"))
         # Edited by hand: changed, until confirmed again.
+        step("environments: edited by hand, confirmed again")
         f = root / "environments" / "stub-pro.yaml"
         f.write_text(f.read_text().replace("probed_at: ", "probed_at: '2020-01-01T00:00:00+00:00' # was ", 1))
         nav(d, wait, "#/settings/org", "allow_edits")
@@ -363,6 +381,7 @@ def main():
         wait.until(lambda drv: "Ready" in env_text(drv, "stub-pro"))
         assert "Confirmed stub-pro" in d.find_element(By.ID, "env-notice").text
         # Another, removed again: its interpreter folder stays (the person registered it).
+        step("environments: add one and remove it")
         click(d, By.ID, "env-add")
         wait.until(EC.visibility_of_element_located((By.NAME, "env_id")))
         fill(d, "env_id", "spare")
@@ -374,6 +393,7 @@ def main():
         wait.until(lambda drv: "Removed spare" in drv.find_element(By.ID, "env-notice").text)
         assert python.exists()
         # A proposal from the assistant, declined (no confirmation needed).
+        step("environments: decline a proposal")
         propose(root, "words")
         nav(d, wait, "#/settings/org", "allow_edits")
         nav(d, wait, "#/settings/environments", "env-add")
@@ -387,14 +407,15 @@ def main():
             d.save_screenshot(str(OUT / "sources-last.png"))
         except Exception:
             pass
-        d.quit()
-        proc.terminate()
-        proc.wait()
+        step("closing the first app")
+        guard.stop(d, proc)
 
     # ---- The person declines: nothing is registered, approved or signed in. ----
     propose(root, "words2")
+    step("the app again, confirming denied (once the first app has gone)")
     d, proc, wait = session(root, "deny")
     try:
+        step("denied: Sign in")
         before = len(authorize_requests(base))
         btn = row_button(d, "secure", "Sign in")
         d.execute_script("arguments[0].scrollIntoView({block: 'center'})", btn)
@@ -402,6 +423,7 @@ def main():
         status = "//ul[@id='connections']/li[.//b[normalize-space()='secure']]//span[contains(@class, 'draft-status')]"
         wait.until(lambda drv: "not confirmed" in drv.find_element(By.XPATH, status).text)
         assert len(authorize_requests(base)) == before, "no sign-in page without confirmation"
+        step("denied: save a connection")
         new_connection(d, wait, "arcgis", "assets2")
         fill(d, "url", f"{base}/arcgis/rest/services/Public/FeatureServer")
         click(d, By.ID, "save")
@@ -409,6 +431,7 @@ def main():
         assert "not confirmed" in d.find_element(By.ID, "form-error").text
         assert not (root / "connections" / "assets2.yaml").exists()
         click(d, By.ID, "cancel")
+        step("denied: register an environment, approve a proposal")
         nav(d, wait, "#/settings/environments", "env-add")
         wait.until(lambda drv: "words2" in text(drv, "env-proposals"))
         click(d, By.ID, "env-add")
@@ -427,11 +450,14 @@ def main():
         assert not (root / "envs" / "words2").exists()
         print("desktop sources e2e (files, arcgis, sign-in, environments): ok")
     finally:
-        d.quit()
-        proc.terminate()
-        server.stdin.close()
-        server.wait(timeout=30)
-        portal.terminate()
+        step("closing the app, Columbus and the fake portal")
+        try:
+            guard.stop(d, proc)
+        finally:
+            server.stdin.close()
+            server.wait(timeout=30)
+            portal.terminate()
+            portal.wait(timeout=30)
 
 
 if __name__ == "__main__":
