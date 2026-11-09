@@ -35,6 +35,7 @@
 //! columbus-mcp env proposals         environments the assistant asked for (propose_environment)
 //! columbus-mcp env approve ID        create a proposed one with Columbus's uv (confirmed on the terminal)
 //! columbus-mcp env decline ID        delete a proposal
+//! columbus-mcp workflow open ID RUN   serve MCP with a finished run's layers copied in (REQ-27)
 //! columbus-mcp --version
 //! ```
 
@@ -56,6 +57,7 @@ mod gis_tools;
 mod note_suggestions;
 mod notes;
 mod notes_check;
+mod open_run;
 mod org_tools_cli;
 mod personal_tools;
 mod plugin_run;
@@ -98,7 +100,7 @@ async fn main() -> Result<()> {
         .collect::<Vec<_>>()
         .as_slice()
     {
-        [] | ["serve"] => serve().await,
+        [] | ["serve"] => serve(None).await,
         ["audit", "verify", file] => {
             match columbus_shared::audit::verify(std::path::Path::new(file)) {
                 Ok(n) => {
@@ -119,6 +121,8 @@ async fn main() -> Result<()> {
         ["workflow", "run", id, "--scheduled", "--python", py] => {
             std::process::exit(workflows::run_cli_with(id, true, Some(py)).await?)
         }
+        // A run's results in a session of their own, for an AI app (REQ-27).
+        ["workflow", "open", id, run] => serve(Some(format!("{id}/{run}"))).await,
         ["workflow", "validate", file] => workflows::validate_cli(std::path::Path::new(file)),
         ["workflow", "list"] => {
             workflows::list_cli();
@@ -172,7 +176,7 @@ async fn main() -> Result<()> {
             Ok(())
         }
         _ => bail!(
-            "usage: columbus-mcp [serve] | audit verify FILE | secret set|delete ID | servers list|review|approve|signin|signout ID | arcgis signin ID [--paste-code]|signout ID | registry update [--from DIR|URL]|query JSON | plugins list|approve ID | tools list|show|install|decline|remove ID|org-install FILE|org-remove ID|org-list | env add ID --python PATH [--trust governed|trusted]|confirm|remove|approve|decline ID|list|proposals | workflow run ID [--scheduled]|validate FILE|list | --version"
+            "usage: columbus-mcp [serve] | audit verify FILE | secret set|delete ID | servers list|review|approve|signin|signout ID | arcgis signin ID [--paste-code]|signout ID | registry update [--from DIR|URL]|query JSON | plugins list|approve ID | tools list|show|install|decline|remove ID|org-install FILE|org-remove ID|org-list | env add ID --python PATH [--trust governed|trusted]|confirm|remove|approve|decline ID|list|proposals | workflow run ID [--scheduled]|open ID RUN|validate FILE|list | --version"
         ),
     }
 }
@@ -219,7 +223,9 @@ pub(crate) fn apply_project(state: &mut server::State, id: &str) -> Result<(), S
     Ok(())
 }
 
-async fn serve() -> Result<()> {
+/// `open`: a workflow run whose results the session starts with
+/// (`workflow open`), else `COLUMBUS_OPEN_RUN` (empty: none).
+async fn serve(open: Option<String>) -> Result<()> {
     // Other processes of the same user (a confined server or script among
     // them) must not read this one's memory or environment through /proc.
     #[cfg(target_os = "linux")]
@@ -233,6 +239,14 @@ async fn serve() -> Result<()> {
         .filter(|v| !v.is_empty())
     {
         apply_project(&mut state, &id).map_err(anyhow::Error::msg)?;
+    }
+    if let Some(v) = open.or_else(|| {
+        std::env::var("COLUMBUS_OPEN_RUN")
+            .ok()
+            .filter(|v| !v.is_empty())
+    }) {
+        let (id, run) = open_run::parse(&v).map_err(anyhow::Error::msg)?;
+        open_run::open(&mut state, id, run).map_err(anyhow::Error::msg)?;
     }
     tracing::info!(session = %state.session, workspace = %state.sandbox.root().display(), "starting");
     let gateway = server::Gateway::new(state);

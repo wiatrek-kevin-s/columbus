@@ -250,6 +250,14 @@ export async function render(main, rest) {
       markdown(m, r.report || "(no report)");
       box.append(m);
       if (rec.workspace) box.append(h("p", { class: "small muted wrap-any" }, "This run's files: ", h("code", {}, String(rec.workspace))));
+      // REQ-27: review the run's results with the assistant, on the map.
+      const layers = Array.isArray(rec.outputs) ? rec.outputs.length : 0;
+      if (layers && rec.finished) {
+        box.append(h("div", { class: "row wrap" },
+          button("Open in a chat", "primary", () => { location.hash = `#/chats/run/${encodeURIComponent(wid)}/${encodeURIComponent(rid)}/${encodeURIComponent(name)}`; },
+            { id: "wf-open-chat", title: "A new chat with this run's layers on its map and in its table, and its report for your assistant. The run itself is not changed." }),
+          h("span", { class: "small muted" }, `${layers} layer${layers === 1 ? "" : "s"}: review them with your assistant, then export what you approve.`)));
+      }
     } catch (e) { box.append(el("p", "error-text", String(e))); }
   }
 

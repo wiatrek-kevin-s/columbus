@@ -655,3 +655,243 @@ fn the_runner_reads_only_its_scope() {
     .unwrap();
     assert!(w.scope.connections.is_empty());
 }
+
+/// Every file under these folders, with its SHA-256.
+fn hashes(dirs: &[PathBuf]) -> std::collections::BTreeMap<PathBuf, String> {
+    fn walk(d: &Path, out: &mut std::collections::BTreeMap<PathBuf, String>) {
+        for e in std::fs::read_dir(d).unwrap().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                walk(&p, out);
+            } else {
+                let (h, _) = columbus_shared::canon::sha256_file(&p).unwrap();
+                out.insert(p, h);
+            }
+        }
+    }
+    let mut out = std::collections::BTreeMap::new();
+    for d in dirs {
+        walk(d, &mut out);
+    }
+    out
+}
+
+async fn start_with(env: &Env, extra: &[(&str, String)]) -> RunningService<RoleClient, ()> {
+    let mut vars = env.vars();
+    vars.extend(extra.iter().map(|(k, v)| (k.to_string(), v.clone())));
+    let cmd =
+        tokio::process::Command::new(env!("CARGO_BIN_EXE_columbus-mcp")).configure(move |cmd| {
+            for (k, v) in &vars {
+                cmd.env(k, v);
+            }
+        });
+    ().serve(TokioChildProcess::new(cmd).unwrap())
+        .await
+        .unwrap()
+}
+
+const ROUTES: &str = "id: route-check\nname: Route check\npurpose: Check the routes every Friday.\nschedule: { days: [fri], at: \"06:00\" }\nscope: { connections: [routes], run_minutes: 5 }\nsteps:\n  - id: routes\n    tool: query_features\n    args: { connection: routes, dataset: routes }\n  - id: projected\n    tool: vector_op\n    args: { op: reproject, inputs: { layer: \"${routes}\" }, params: { crs: \"EPSG:3081\" } }\noutputs:\n  folder: { export: outbox, steps: [routes] }\n";
+
+/// REQ-27, R-20, REQ-29: a finished run with two layers opens in a chat as
+/// copies, with the run's labels, fingerprints, provenance and report; the
+/// chat can filter them (a new layer each time), but can't read the run's
+/// own files or replace its exports; and the run's folder, workspace and
+/// exports are byte-for-byte unchanged afterwards. A run whose output
+/// changed on disk refuses to open, naming the file.
+#[tokio::test]
+async fn a_run_opens_in_a_chat_as_copies_and_the_run_never_changes() {
+    let Some(py) = python() else {
+        eprintln!("skipped: no Python with geopandas");
+        return;
+    };
+    let env = setup(&py);
+    env.policy("allow_workflows: true\nhide_fields: [OWNER]\n");
+    let gpkg = env.root.join("routes.gpkg");
+    let script = r#"
+import sys
+import geopandas as gpd
+from shapely.geometry import LineString
+gpd.GeoDataFrame({"ROUTE_NAME": ["A", "B", "C"], "OWNER": ["x", "y", "z"]},
+    geometry=[LineString([(-97.74, 30.27), (-97.73, 30.28)]), LineString([(-97.70, 30.30), (-97.69, 30.31)]),
+              LineString([(-97.80, 30.20), (-97.79, 30.21)])],
+    crs="EPSG:4326").to_file(sys.argv[1], layer="routes", driver="GPKG", engine="pyogrio")
+"#;
+    assert!(StdCommand::new(&py)
+        .arg("-c")
+        .arg(script)
+        .arg(&gpkg)
+        .status()
+        .unwrap()
+        .success());
+    std::fs::write(
+        env.root.join("connections").join("routes.yaml"),
+        format!(
+            "id: routes\ntype: gpkg\npath: {}\ndatasets:\n  allow: [\"routes\"]\n",
+            serde_json::to_string(&gpkg.display().to_string()).unwrap()
+        ),
+    )
+    .unwrap();
+    let c = start(&env).await;
+    let r = call(&c, "propose_workflow", json!({"workflow": ROUTES})).await;
+    assert_ne!(r.is_error, Some(true), "{:?}", r.content);
+    c.cancel().await.unwrap();
+    approve(&env, "route-check");
+    let (code, rec, _) = run(&env, "route-check");
+    assert_eq!(code, 0, "{rec}");
+    let run_id = rec["run"].as_str().unwrap().to_string();
+    let outputs = rec["outputs"].as_array().unwrap();
+    assert_eq!(outputs.len(), 2, "both layers are fingerprinted: {rec}");
+    assert!(outputs
+        .iter()
+        .all(|o| o["sha256"].as_str().unwrap().len() == 64));
+    let delivered = rec["deliveries"][0]["name"].as_str().unwrap().to_string();
+
+    // The run's files: its folder, its workspace and its exports.
+    let run_files = vec![
+        wf::runs_dir(&env.workflows(), "route-check").join(&run_id),
+        PathBuf::from(rec["workspace"].as_str().unwrap()),
+        env.root.join("outbox"),
+    ];
+    let before = hashes(&run_files);
+    assert!(before.len() >= 6, "{before:?}");
+
+    let open = [("COLUMBUS_OPEN_RUN", format!("route-check/{run_id}"))];
+    let c = start_with(&env, &open).await;
+    let who = call(&c, "whoami", json!({}))
+        .await
+        .structured_content
+        .unwrap();
+    let opened = &who["result"]["opened_run"];
+    assert_eq!(opened["workflow"], "route-check", "{who}");
+    assert!(
+        opened["report"].as_str().unwrap().contains("# Route check"),
+        "{opened}"
+    );
+    let layers = opened["layers"].as_array().unwrap();
+    assert_eq!(layers.len(), 2, "{opened}");
+    let ws = PathBuf::from(who["result"]["workspace"].as_str().unwrap());
+    for (l, o) in layers.iter().zip(outputs) {
+        assert_eq!(l["labels"], json!(["connection:routes"]), "{l}");
+        assert_eq!(
+            l["sha256"], o["sha256"],
+            "the copy is the run's file, byte for byte"
+        );
+        let prov: Value = serde_json::from_str(
+            &std::fs::read_to_string(
+                ws.join("provenance")
+                    .join(format!("{}.prov.json", l["provenance"].as_str().unwrap())),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(prov["run_provenance"]["id"], o["provenance"], "{prov}");
+        assert_eq!(prov["inputs"][0]["run"], json!(run_id), "{prov}");
+    }
+    let routes = layers.iter().find(|l| l["step"] == "routes").unwrap()["handle"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Read-only: the run's own export is never replaced, overwrite or not.
+    let e = err(&call(
+        &c,
+        "export_output",
+        json!({"handle": routes, "folder": "outbox", "name": delivered, "overwrite": true}),
+    )
+    .await);
+    assert!(e.contains("never changed"), "{e}");
+    // ... and the run's own files can't be named from here.
+    let theirs = rec["results"]["routes"].as_str().unwrap();
+    let e = err(
+        &call(
+            &c,
+            "vector_op",
+            json!({"op": "filter", "inputs": {"layer": theirs}, "params": {"where": "ROUTE_NAME <> 'B'"}}),
+        )
+        .await,
+    );
+    assert!(e.contains("another session"), "{e}");
+
+    // REQ-29: filter makes a new layer; the original keeps its 3 routes.
+    let f = call(
+        &c,
+        "vector_op",
+        json!({"op": "filter", "inputs": {"layer": routes}, "params": {"where": "ROUTE_NAME <> 'B'"}}),
+    )
+    .await;
+    assert_ne!(f.is_error, Some(true), "{:?}", f.content);
+    let f = f.structured_content.unwrap();
+    assert_eq!(f["result"]["layer"]["summary"]["rows"], 2, "{f}");
+    let filtered = f["result"]["layer"]["handle"].as_str().unwrap().to_string();
+    assert_ne!(filtered, routes);
+    assert!(
+        f["checks"].to_string().contains("connection:routes"),
+        "the run's labels carry over: {f}"
+    );
+    let all = call(
+        &c,
+        "vector_op",
+        json!({"op": "filter", "inputs": {"layer": routes}, "params": {"where": "ROUTE_NAME IS NOT NULL"}}),
+    )
+    .await
+    .structured_content
+    .unwrap();
+    assert_eq!(all["result"]["layer"]["summary"]["rows"], 3, "{all}");
+    // A hidden field, or SQL outside the where subset, is refused.
+    let e = err(&call(
+        &c,
+        "vector_op",
+        json!({"op": "filter", "inputs": {"layer": routes}, "params": {"where": "OWNER = 'x'"}}),
+    )
+    .await);
+    assert!(e.contains("hidden"), "{e}");
+    let e = err(
+        &call(
+            &c,
+            "vector_op",
+            json!({"op": "filter", "inputs": {"layer": routes}, "params": {"where": "ROUTE_NAME IN (SELECT 1)"}}),
+        )
+        .await,
+    );
+    assert!(e.contains("filter refused"), "{e}");
+    // An export from the chat is a new file, and asks as usual (review is
+    // not a granted folder).
+    let x = call(
+        &c,
+        "export_output",
+        json!({"handle": filtered, "folder": "review", "name": "approved-routes"}),
+    )
+    .await;
+    let xs = format!("{:?} {:?}", x.content, x.structured_content);
+    assert!(xs.contains("approval"), "{xs}");
+    assert!(!env
+        .root
+        .join("review")
+        .join("approved-routes.gpkg")
+        .exists());
+    c.cancel().await.unwrap();
+
+    // R-20: nothing of the run changed.
+    assert_eq!(hashes(&run_files), before, "the run's files are unchanged");
+
+    // A run whose output changed on disk refuses to open, naming the file.
+    let changed = PathBuf::from(rec["workspace"].as_str().unwrap())
+        .join(outputs[1]["file"].as_str().unwrap());
+    let mut bytes = std::fs::read(&changed).unwrap();
+    bytes.push(0);
+    std::fs::write(&changed, bytes).unwrap();
+    let e = wf::open_check(&env.workflows(), None, "route-check", &run_id).unwrap_err();
+    assert!(e.contains(&changed.display().to_string()), "{e}");
+    let out = StdCommand::new(env!("CARGO_BIN_EXE_columbus-mcp"))
+        .args(["workflow", "open", "route-check", &run_id])
+        .envs(env.vars())
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success());
+    assert!(
+        stderr.contains("changed on disk") && stderr.contains(&changed.display().to_string()),
+        "{stderr}"
+    );
+}

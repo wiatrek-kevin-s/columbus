@@ -13,6 +13,8 @@ const MODEL_NOTE = "The chat sends your messages and the results it reads to the
 const live = {
   // The project this chat works in (null: Unfiled). Set before it starts.
   project: null,
+  // A workflow run whose results this chat opened ({workflow, run, name}), or null.
+  run: null,
   started: false,
   busy: false,
   chatId: null,
@@ -793,7 +795,7 @@ async function start() {
   if (live.started) return true;
   $("status").textContent = "Starting a Columbus session…";
   try {
-    const s = await invoke("chat_start", { ...(live.pick || {}), project: live.project });
+    const s = await invoke("chat_start", { ...(live.pick || {}), project: live.project, run: live.run ? { workflow: live.run.workflow, run: live.run.run } : null });
     live.started = true;
     live.session = s.session || null;
     live.chatId = s.chat || null;
@@ -828,6 +830,8 @@ function drawSub() {
   if (!sub) return;
   sub.replaceChildren("In the Columbus app · ",
     live.project ? h("a", { href: `#/projects/${encodeURIComponent(live.project)}` }, projectName(live.project)) : "Unfiled");
+  // A chat opened from a workflow run says which, with a way back to its report.
+  if (live.run) sub.append(" · opened from ", h("a", { id: "chat-run", href: `#/workflows/${encodeURIComponent(live.run.workflow)}/${encodeURIComponent(live.run.run)}` }, `${live.run.name || live.run.workflow} run`));
   // What the assistant is following, in plain sight.
   const box = $("chat-project");
   if (!box) return;
@@ -840,9 +844,10 @@ function drawSub() {
   }
 }
 
-async function newChat(project = null) {
+async function newChat(project = null, run = null) {
   const was = live.chatId;
   live.project = project || null;
+  live.run = run || null;
   await invoke("chat_end");
   live.started = false;
   live.busy = false;
@@ -963,6 +968,25 @@ export async function render(main, rest) {
       const pre = raw ? JSON.parse(raw) : null;
       if (pre && typeof pre.text === "string" && Date.now() - Number(pre.at) < 60000) { $("text").value = pre.text; $("text").focus(); }
     } catch { /* none */ }
+    return r;
+  }
+  // "run/<workflow>/<run>": a new chat with that run's results (REQ-27):
+  // its layers on the map and in the table, its report in the assistant's
+  // context. The session starts at once, so they show before any message.
+  if (kind === "run" && id && rest[2]) {
+    const run = { workflow: id, run: rest[2], name: rest[3] || id };
+    history.replaceState(null, "", "#/chats/new");
+    const r = await showLive(main);
+    await newChat(null, run);
+    live.log.querySelector(".chat-empty")?.remove();
+    live.log.append(h("div", { class: "notice", id: "chat-run-note" }, h("div", {},
+      `Opened the results of ${run.name}'s run. Its layers are on the map and in the table, and your assistant has its report. `,
+      "They are copies: the run itself, its files and its exports stay as they are. Ask, for example: ",
+      h("i", {}, "check these three areas"), " or ", h("i", {}, "remove route X, then export the rest"), ".")));
+    if (await start()) {
+      $("chat-title").textContent = `Review: ${run.name}`;
+      $("chat-title").dataset.set = "1";
+    }
     return r;
   }
   if (kind === "new" || (kind === "c" && id && id === live.chatId)) return showLive(main);

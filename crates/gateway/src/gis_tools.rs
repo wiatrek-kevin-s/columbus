@@ -80,10 +80,10 @@ pub struct QueryArgs {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct VectorOpArgs {
     /// One of: reproject, buffer, simplify, make_valid, clip, dissolve,
-    /// intersect, join, spatial_join.
+    /// intersect, join, spatial_join, filter.
     pub op: String,
-    /// Input layers by role. reproject, buffer, simplify, make_valid and
-    /// dissolve take `layer`; clip takes `layer` and `mask`; intersect takes
+    /// Input layers by role. reproject, buffer, simplify, make_valid,
+    /// dissolve and filter take `layer`; clip takes `layer` and `mask`; intersect takes
     /// `a` and `b`; join and spatial_join take `left` and `right`. Each is a
     /// workspace handle (ws://…) from an earlier result, or a dataset as
     /// "<connection>:<dataset>" or {"connection", "dataset", "where"}.
@@ -92,7 +92,9 @@ pub struct VectorOpArgs {
     /// dissolve?}. simplify: {tolerance, unit}. dissolve: {by?}. join:
     /// {left_key, right_key?, how: left|inner, key_as_text?, trim?,
     /// ignore_case?, pad? (zero-fill width)}. spatial_join: {predicate:
-    /// intersects|within|contains|touches|crosses|overlaps, how}.
+    /// intersects|within|contains|touches|crosses|overlaps, how}. filter:
+    /// {where} (as query_features' where; the result is a new layer of the
+    /// rows it keeps, the input unchanged).
     #[serde(default)]
     pub params: serde_json::Map<String, Value>,
 }
@@ -1052,6 +1054,31 @@ impl Gateway {
         })
     }
 
+    /// filter's where clause, checked and re-rendered as SQLite runs it
+    /// (the engine applies it to the layer in an in-memory SQLite table).
+    fn filter_where(&self, params: &serde_json::Map<String, Value>) -> Result<String, String> {
+        if let Some(k) = params.keys().find(|k| k.as_str() != "where") {
+            return Err(format!("filter takes params {{where}} only, not {k:?}"));
+        }
+        let w = params
+            .get("where")
+            .and_then(Value::as_str)
+            .filter(|w| !w.trim().is_empty())
+            .ok_or("filter needs params.where, e.g. \"ROUTE_NAME <> 'B'\"")?;
+        let names = columbus_shared::sqlcheck::where_names(w, SqlDialect::Sqlite)
+            .map_err(|e| format!("filter refused: {e}"))?;
+        let hidden = columbus_shared::policy::DatasetRules {
+            allow: self.state.policy().hide_fields.clone(),
+            deny: vec![],
+        };
+        if let Some(h) = names.iter().find(|n| hidden.permits(n).unwrap_or(true)) {
+            return Err(format!(
+                "filter refused: {h} is hidden by organization policy, so it can't be read, filtered or sorted"
+            ));
+        }
+        check_where(w, SqlDialect::Sqlite).map_err(|e| format!("filter refused: {e}"))
+    }
+
     pub(crate) fn provenance(&self, ctx: &RequestContext<RoleServer>, p: Prov<'_>) {
         let record = json!({
             "id": p.id,
@@ -1354,7 +1381,7 @@ impl Gateway {
     }
 
     #[tool(
-        description = "Process layers inside the workspace: reproject, buffer, simplify, make_valid, clip, dissolve, intersect, join (attribute) or spatial_join. Inputs are handles from earlier results or governed datasets. Distances need an explicit unit and are refused in a geographic CRS (degrees): reproject first. Inputs in different CRSs are aligned to the first. Saves the result as a new layer and returns its handle. Checks report join match rates and row explosions, invalid geometry, CRS problems and implausible extents. No approval needed: nothing leaves the workspace.",
+        description = "Process layers inside the workspace: reproject, buffer, simplify, make_valid, clip, dissolve, intersect, join (attribute), spatial_join, or filter (keep the rows a where clause selects, as query_features' where: e.g. remove a route with ROUTE_NAME <> 'B'). Inputs are handles from earlier results or governed datasets. Distances need an explicit unit and are refused in a geographic CRS (degrees): reproject first. Inputs in different CRSs are aligned to the first. Saves the result as a new layer and returns its handle. Checks report join match rates and row explosions, invalid geometry, CRS problems and implausible extents. No approval needed: nothing leaves the workspace.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -1373,6 +1400,19 @@ impl Gateway {
         }
         let prov = new_prov_id();
         let started = Local::now();
+        let mut args = args;
+        // F-12, REQ-29: filter keeps the rows a where clause selects, with
+        // the same parser (and subset) as query_features. Refused before
+        // anything is read: a where outside that subset, or one naming a
+        // field organization policy hides.
+        if args.op == "filter" {
+            match self.filter_where(&args.params) {
+                Ok(w) => {
+                    args.params.insert("where".into(), json!(w));
+                }
+                Err(e) => return Err(self.deny(&ctx, rec, e)),
+            }
+        }
         let mut paths = serde_json::Map::new();
         let mut inputs = Vec::new();
         let mut files = Vec::new();

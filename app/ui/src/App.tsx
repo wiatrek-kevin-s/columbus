@@ -209,7 +209,9 @@ export function App() {
     }
     if (fresh.length) {
       const newest = fresh[0];
-      setOnMap((m) => [...new Set([...m, newest.handle])]);
+      // A workflow run opened in this chat: all of its layers draw at once.
+      const fromRun = fresh.filter((o) => (o.made_by || "").startsWith("workflow ")).map((o) => o.handle);
+      setOnMap((m) => [...new Set([...m, ...fromRun, newest.handle])]);
       setActive(newest.handle);
       setFitTo(newest.handle);
     }

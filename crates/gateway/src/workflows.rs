@@ -762,6 +762,8 @@ pub async fn run_cli_with(id: &str, scheduled: bool, python: Option<&str>) -> an
     };
     record["session"] = json!(state.session);
     record["workspace"] = json!(state.sandbox.root().display().to_string());
+    // What an opened run's chat may read (REQ-27).
+    record["scope"] = json!(workflow.scope.connections);
     let state = std::sync::Arc::new(state);
     // Whatever blocks, the run ends: at its time limit and two minutes, it
     // records that it stopped there and exits (its lock goes with it).
@@ -837,6 +839,9 @@ pub async fn run_cli_with(id: &str, scheduled: bool, python: Option<&str>) -> an
     };
     let _ = client.cancel().await;
     server.abort();
+    // Each layer the run made, fingerprinted, so it can be opened in a
+    // chat exactly as the run left it (REQ-27).
+    crate::open_run::record_outputs(&state, &mut record);
     let code = finish(&mut record, &status, None);
     // Emailed once the run's ending is known; how that went is in the
     // record, and never changes how the run ended.

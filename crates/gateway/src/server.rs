@@ -315,6 +315,11 @@ pub struct WhoAmI {
     /// default export folder. Absent outside a project.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project: Option<Value>,
+    /// The workflow run this chat was opened from: its layers here (copies,
+    /// with the run's labels, fingerprints and provenance), its exports
+    /// (never replaced from here), and its report. Absent otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub opened_run: Option<Value>,
     pub session: String,
     pub policy: PolicySummary,
     pub connections: Vec<ConnectionCard>,
@@ -528,6 +533,9 @@ pub struct State {
     /// The project this session was started for (`COLUMBUS_PROJECT`): its
     /// connections are `scope`'s, and its instructions go to the assistant.
     pub project: Option<columbus_shared::projects::Project>,
+    /// The workflow run this session opened (`COLUMBUS_OPEN_RUN`): its
+    /// layers were copied in, and its exports are never replaced.
+    pub opened: Option<crate::open_run::Opened>,
     pub sandbox: Sandbox,
     pub audit: Arc<AuditLog>,
     pub approvals: Arc<ApprovalStore>,
@@ -780,6 +788,7 @@ impl State {
             }),
             scope: ProjectScope::default(),
             project: None,
+            opened: None,
             sandbox,
             audit,
             approvals,
@@ -2011,6 +2020,7 @@ impl Gateway {
             server: format!("{SERVER_NAME} {}", env!("CARGO_PKG_VERSION")),
             user: self.state.user.clone(),
             client: client_name(&ctx),
+            opened_run: self.state.opened.as_ref().map(|o| o.info.clone()),
             project: self.state.project.as_ref().map(|p| {
                 json!({
                     "id": p.id,

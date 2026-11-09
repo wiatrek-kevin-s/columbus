@@ -368,6 +368,27 @@ class WorkerGisTests(unittest.TestCase):
             self.op("buffer", {"layer": merc}, {"distance": 100, "unit": "m"})
         self.assertIn("Web Mercator", cm.exception.message)
 
+    def test_filter_keeps_the_selected_rows_in_a_new_layer(self):
+        routes = gpd.GeoDataFrame(
+            {"ROUTE_NAME": ["A", "B", "C"], "LEN": [1.5, 2.0, None]},
+            geometry=[LineString([(0, 0, 0), (1, 0, 5)]), LineString([(0, 1, 0), (1, 1, 5)]), LineString([(0, 2, 0), (1, 2, 5)])],
+            crs="EPSG:3081",
+        )
+        p = g.write_layer(routes, os.path.join(self.tmp.name, "ws", "routes"))
+        before = open(p, "rb").read()
+        f = self.op("filter", {"layer": p}, {"where": "ROUTE_NAME <> 'B'"}, "f")
+        self.assertEqual(f["summary"]["rows"], 2)
+        self.assertNotEqual(f["output_path"], p)
+        kept = g.read_layer(f["output_path"])
+        self.assertEqual(list(kept["ROUTE_NAME"]), ["A", "C"])
+        self.assertEqual(open(p, "rb").read(), before, "the input is untouched")
+        self.assertEqual(self.op("filter", {"layer": p}, {"where": "LEN IS NULL"}, "n")["summary"]["rows"], 1)
+        none = self.op("filter", {"layer": p}, {"where": "ROUTE_NAME = 'Z'"}, "z")
+        self.assertIn("filter.empty", [c["id"] for c in none["checks"]])
+        with self.assertRaises(w.WorkerError) as cm:
+            self.op("filter", {"layer": p}, {"where": "NOPE = 1"}, "x")
+        self.assertIn("could not be applied", cm.exception.message)
+
     def test_bbox_meets_the_geometry_not_its_envelope(self):
         diag = gpd.GeoDataFrame({"a": [1]}, geometry=[LineString([(0, 0), (10, 10)])], crs="EPSG:3081")
         path = os.path.join(self.tmp.name, "diag.gpkg")

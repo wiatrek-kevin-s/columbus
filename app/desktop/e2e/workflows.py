@@ -4,7 +4,12 @@ A workflow an assistant proposed (filed as propose_workflow files it) is
 read in plain words and in full, approved (a debug build stands in for
 Touch ID / Windows Hello with COLUMBUS_APP_TEST_CONFIRM), run with Run now
 by the real server, and its report read; its result is exported to the
-granted folder. Another proposal is declined, and with the person
+granted folder. From the run's report, Open in a chat starts a chat with
+the run's layer on its map and in its table and the report in the
+assistant's context; a stand-in AI service then exports that layer to a
+folder that isn't granted, which asks for the person's approval as usual,
+and the run's own files stay byte-for-byte as they were (REQ-27, R-20).
+Another proposal is declined, and with the person
 declining to confirm nothing is approved. Linux has no scheduler yet, so
 the page says so and Run now is the way to run one.
 
@@ -12,12 +17,16 @@ the page says so and Run now is the way to run one.
         target/debug/columbus-mcp app/desktop/src-tauri/target/debug/columbus-desktop
 """
 
+import hashlib
 import json
 import os
+import re
+import threading
 import subprocess
 import sys
 import tempfile
 import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from selenium.webdriver.common.by import By
@@ -50,6 +59,48 @@ outputs:
 """
 
 
+SEEN = []
+
+
+class Stand(BaseHTTPRequestHandler):
+    """A stand-in for the AI service: the chat opened from the run exports
+    the run's layer (named in its system prompt) to the review folder."""
+
+    def log_message(self, *a):
+        pass
+
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        SEEN.append(body)
+        last = body["messages"][-1]
+        replied = isinstance(last["content"], list) and any(c.get("type") == "tool_result" for c in last["content"])
+        if not replied:
+            system = "".join(b["text"] for b in body["system"])
+            handle = re.search(r"ws://\S+/results/tract-export-tracts\.gpkg", system).group(0)
+            nxt = {"content": [{"type": "text", "text": "I'll export the reviewed tracts."},
+                               {"type": "tool_use", "id": "x1", "name": "export_output",
+                                "input": {"handle": handle, "folder": "review", "name": "reviewed-tracts"}}],
+                   "stop_reason": "tool_use"}
+        else:
+            nxt = {"content": [{"type": "text", "text": "Exported the reviewed tracts."}], "stop_reason": "end_turn"}
+        data = json.dumps(nxt).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+
+def tree_hashes(*dirs):
+    """Every file under these folders, with its SHA-256."""
+    out = {}
+    for d in dirs:
+        for p in sorted(Path(d).rglob("*")):
+            if p.is_file():
+                out[str(p)] = hashlib.sha256(p.read_bytes()).hexdigest()
+    return out
+
+
 def propose(root, text):
     """A proposal as propose_workflow files it."""
     wid = text.split("\n", 1)[0].split(": ", 1)[1]
@@ -59,12 +110,18 @@ def propose(root, text):
     (d / "proposal.json").write_text(json.dumps({"id": wid, "proposed": "2026-11-06T08:00:00-06:00"}))
 
 
+STAND_PORT = [0]
+
+
 def env_for(root, confirm):
     return dict(os.environ,
+                COLUMBUS_APP_API_KEY="sk-ant-test-0123456789abcdef",
+                COLUMBUS_APP_API_BASE=f"http://127.0.0.1:{STAND_PORT[0]}",
+                COLUMBUS_UI_DIR=str(REPO / "app/ui/dist"),
                 COLUMBUS_POLICY=str(root / "policy.yaml"), COLUMBUS_CONNECTIONS=str(root / "connections"),
                 COLUMBUS_WORKSPACES=str(root / "ws"), COLUMBUS_AUDIT_DIR=str(root / "audit"),
                 COLUMBUS_LIVE_DIR=str(root / "live"), COLUMBUS_TOOLS=str(root / "tools"),
-                COLUMBUS_SERVER=str(GATEWAY), COLUMBUS_COMPANION="off",
+                COLUMBUS_SERVER=str(GATEWAY),
                 COLUMBUS_WORKER=str(REPO / "workers/python/columbus_worker.py"), COLUMBUS_PYTHON=sys.executable,
                 COLUMBUS_APPROVALS_BROWSER="none", COLUMBUS_LOG="warn",
                 XDG_CONFIG_HOME=str(root / "config"), XDG_DATA_HOME=str(root / "data"),
@@ -101,13 +158,17 @@ def main():
 
     gpd.GeoDataFrame({"NAME": ["A", "B"]}, geometry=[box(-97.8, 30.2, -97.7, 30.3), box(-97.7, 30.2, -97.6, 30.3)], crs="EPSG:4326") \
         .to_file(root / "t.gpkg", layer="tracts", driver="GPKG", engine="pyogrio")
-    for d in ["connections", "outbox"]:
+    for d in ["connections", "outbox", "review"]:
         (root / d).mkdir()
     (root / "connections/tiger.yaml").write_text(
         f"id: tiger\ntype: gpkg\npath: {json.dumps(str(root / 't.gpkg'))}\ndatasets:\n  allow: [\"*\"]\n")
     (root / "policy.yaml").write_text(
         "connection_types: [gpkg]\nallow_workflows: true\n"
-        f"exports:\n  - {{ id: outbox, path: {json.dumps(str(root / 'outbox'))}, granted: true }}\n")
+        f"exports:\n  - {{ id: outbox, path: {json.dumps(str(root / 'outbox'))}, granted: true }}\n"
+        f"  - {{ id: review, path: {json.dumps(str(root / 'review'))} }}\n")
+    stand = ThreadingHTTPServer(("127.0.0.1", 0), Stand)
+    threading.Thread(target=stand.serve_forever, daemon=True).start()
+    STAND_PORT[0] = stand.server_port
     propose(root, WORKFLOW)
     propose(root, WORKFLOW.replace("id: tract-export", "id: tract-copy").replace("name: Tract export", "name: Tract copy"))
 
@@ -162,6 +223,59 @@ def main():
         assert "exported to the outbox folder" in report, report
         assert any(p.name.startswith("tract-export-tracts-") for p in (root / "outbox").iterdir()), list((root / "outbox").iterdir())
         d.save_screenshot(str(OUT / "workflows-run.png"))
+
+        step("Open in a chat: the run's layer on the chat's map and table, its report for the assistant")
+        run_id = d.execute_script("return decodeURIComponent(location.hash.split('/').pop())")
+        rec = json.loads((root / "workflows" / "runs" / "tract-export" / run_id / "run.json").read_text())
+        run_files = [root / "workflows" / "runs" / "tract-export" / run_id, Path(rec["workspace"]), root / "outbox"]
+        before = tree_hashes(*run_files)
+        click(d, By.ID, "wf-open-chat")
+        WebDriverWait(d, 30).until(EC.presence_of_element_located((By.ID, "chat-run-note")))
+        try:
+            frame = WebDriverWait(d, 90).until(EC.presence_of_element_located((By.CSS_SELECTOR, "#chatview .outpanel iframe")))
+        except Exception:
+            d.save_screenshot(str(OUT / "workflows-open-failed.png"))
+            raise SystemExit("the chat did not open with the run: " + d.execute_script(
+                "return (document.getElementById('log')||{}).textContent + ' | ' + ((document.querySelector('#chatview .outpanel')||{}).textContent || '')"))
+        assert "Tract export run" in text(d, "chat-sub"), text(d, "chat-sub")
+        d.switch_to.frame(frame)
+        try:
+            # On the map: drawn (the layer's own colour swatch is checked on);
+            # in the table: its rows.
+            WebDriverWait(d, 60).until(lambda drv: "tract-export-tracts.gpkg" in drv.execute_script("return document.body.textContent"))
+            WebDriverWait(d, 60).until(lambda drv: drv.execute_script(
+                "const t = document.querySelector('section.table'); return !!t && t.textContent.includes('NAME') && t.textContent.includes('B')"))
+            on_map = d.execute_script("return [...document.querySelectorAll('aside.outputs input[type=checkbox]')].filter(c => c.checked).length")
+            assert on_map >= 1, "the run's layer is on the map"
+        finally:
+            d.switch_to.default_content()
+        d.save_screenshot(str(OUT / "workflows-open-in-chat.png"))
+
+        step("The export from that chat asks for approval as usual; allowed, it lands")
+        box = d.find_element(By.ID, "text")
+        # Focus back in the chat's own page (it was in the map's frame).
+        box.click()
+        box.send_keys("These look right. Export them for review.")
+        WebDriverWait(d, 10).until(lambda drv: drv.find_element(By.ID, "send").is_enabled())
+        d.find_element(By.ID, "send").click()
+        try:
+            card = WebDriverWait(d, 90).until(EC.presence_of_element_located((By.CSS_SELECTOR, ".ask")))
+        except Exception:
+            d.save_screenshot(str(OUT / "workflows-chat-export-failed.png"))
+            raise SystemExit("no approval was asked: " + d.execute_script("return document.getElementById('log').textContent"))
+        assert "review" in card.text, card.text
+        allow = card.find_element(By.XPATH, ".//button[normalize-space()='Allow once']")
+        WebDriverWait(d, 5).until(lambda drv: allow.is_enabled())
+        allow.click()
+        WebDriverWait(d, 60).until(lambda drv: "Exported the reviewed tracts." in drv.find_element(By.ID, "log").text)
+        assert (root / "review" / "reviewed-tracts.gpkg").exists(), "the export from the chat happened"
+        system = "".join(b["text"] for b in SEEN[0]["system"])
+        assert "# Tract export" in system and "tract-export-tracts.gpkg" in system, "the report is in context"
+        assert tree_hashes(*run_files) == before, "the run's files are unchanged"
+        d.save_screenshot(str(OUT / "workflows-chat-export.png"))
+        d.execute_script(f"location.hash = '#/workflows/tract-export/{run_id}'")
+        WebDriverWait(d, 30).until(lambda drv: drv.find_elements(By.ID, "wf-report") and "Succeeded" in text(drv, "wf-report"))
+
         step("The report is its own page; the workflow's page lists the run")
         click(d, By.ID, "wf-back")
         wait.until(lambda drv: drv.find_elements(By.XPATH, "//ul[@id='wf-run-list']/li"))
@@ -185,6 +299,7 @@ def main():
         print("desktop workflows e2e: ok")
     finally:
         guard.stop(d, proc)
+        stand.shutdown()
 
 
 if __name__ == "__main__":
