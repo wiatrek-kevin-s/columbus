@@ -868,7 +868,9 @@ pub fn arcgis_url_host(url: &str) -> Option<String> {
         return None;
     }
     let host = host.trim_end_matches('.').to_ascii_lowercase();
-    if url.starts_with("http://") && host != "127.0.0.1" {
+    // Test builds' plain http: to this computer only (`localhost` too, so a
+    // fake portal and a fake service can be two hosts on one machine).
+    if url.starts_with("http://") && host != "127.0.0.1" && host != "localhost" {
         return None;
     }
     Some(host)

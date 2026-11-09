@@ -299,6 +299,10 @@ pub struct ConnectionCard {
     pub status: String,
     /// Whether the engines can query this connection type yet.
     pub engine_ready: bool,
+    /// ArcGIS connections that sign in (`auth: oauth`): whether the person
+    /// has signed in (`columbus-mcp arcgis signin <id>`). Never the token.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signed_in: Option<bool>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -1122,6 +1126,7 @@ impl State {
         live.unsettled_since = None;
         live.stalled = false;
         live.digest = digest;
+        let mut signed_out: Vec<String> = Vec::new();
         let outcome = match read {
             Err(e) => {
                 let why = format!(
@@ -1157,6 +1162,15 @@ impl State {
                         everything || narrowed.contains(&columbus_flow::connection_label(&c.id))
                     })
                     .map(|c| files_cache_path(&self.paths.workspaces, &c.id))
+                    .collect();
+                // A deleted ArcGIS connection loses its sign-in (F-3b).
+                signed_out = live
+                    .settings
+                    .connections
+                    .iter()
+                    .filter(|c| crate::arcgis::is_arcgis(&c.kind))
+                    .filter(|c| !new.connections.iter().any(|n| n.id == c.id))
+                    .map(|c| c.id.clone())
                     .collect();
                 let shrank = limits_shrank(&live.settings.policy, &new.policy);
                 live.policy_required |= new.source.found;
@@ -1203,6 +1217,15 @@ impl State {
             }
         };
         drop(live);
+        for id in signed_out {
+            match crate::arcgis_auth::sign_out(&self.secrets, &id) {
+                Ok(true) => tracing::info!("{id} was deleted, so its ArcGIS sign-in was removed"),
+                Ok(false) => {}
+                Err(e) => tracing::warn!(
+                    "{id} was deleted, but its ArcGIS sign-in could not be removed: {e}"
+                ),
+            }
+        }
         self.audit_reload(&outcome);
         Some(outcome)
     }
@@ -1730,6 +1753,12 @@ impl Gateway {
                         Err(e) => e.to_string(),
                     },
                     engine_ready: Self::engine_ready(&c.kind) || crate::arcgis::is_arcgis(&c.kind),
+                    signed_in: (crate::arcgis::is_arcgis(&c.kind)
+                        && c.auth
+                            .as_ref()
+                            .and_then(columbus_shared::policy::ArcgisAuth::oauth)
+                            .is_some())
+                    .then(|| crate::arcgis_auth::signed_in(&self.state.secrets, &c.id)),
                 }
             })
             .collect()

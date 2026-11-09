@@ -17,7 +17,9 @@
 //! left on unnoticed. Platforms without a native store (Linux, for now) use
 //! only this mode. Entries Columbus writes itself (OAuth
 //! tokens for remote servers) need `COLUMBUS_DEV_SECRETS_DIR` in this mode:
-//! they are kept there as plain files, for tests only.
+//! they are kept there as plain files, for tests only. ArcGIS sign-ins
+//! (`arcgis:<id>`, F-3b) use that folder only in debug builds; a release
+//! build without the OS store refuses them (R-17).
 
 use anyhow::{anyhow, Result};
 
@@ -87,6 +89,19 @@ impl SecretStore {
 
     pub fn is_dev(&self) -> bool {
         matches!(self, SecretStore::DevEnv(_))
+    }
+
+    /// Whether ArcGIS sign-ins can be kept here (R-17): the operating
+    /// system's store; or, in debug builds only, the development store
+    /// with a folder (for tests). Release builds never write tokens to
+    /// files.
+    pub fn keeps_tokens(&self) -> bool {
+        match self {
+            #[cfg(any(windows, target_os = "macos"))]
+            SecretStore::Native(_) => true,
+            SecretStore::DevEnv(Some(_)) => cfg!(debug_assertions),
+            _ => false,
+        }
     }
 
     fn env_name(id: &str) -> String {

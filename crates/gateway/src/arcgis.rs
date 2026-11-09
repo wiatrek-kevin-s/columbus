@@ -15,23 +15,25 @@
 //!   hidden fields are refused in `where`, `order_by` and counts.
 //! - `sql_select` is refused with `query.unsupported` (R-12).
 //!
-//! Sign-in (T-11) plugs in at `Gateway::arcgis_bearer` (where a token
-//! comes from) and `ArcgisHttp::vouched` (which hosts may receive it,
-//! R-18). Until then a bearer is never sent.
+//! Sign-in (T-11, `arcgis_auth`): `Gateway::arcgis_bearer` reads the
+//! connection's stored sign-in (`arcgis:<connection id>`, F-3b), refreshing
+//! an expired access token once, and `ArcgisHttp::vouched` holds the hosts
+//! the portal vouches for (R-18). A token goes only to those hosts, as a
+//! header; any other host gets the request without it, and a refusal if it
+//! needs one.
 
 use std::collections::HashMap;
-use std::net::{IpAddr, SocketAddr};
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use columbus_shared::policy::{
-    arcgis_url_host, ArcgisAuth, Connection, EffectiveAccess, OrgPolicy,
-};
+use columbus_shared::policy::{arcgis_url_host, Connection, EffectiveAccess, OrgPolicy};
 use columbus_shared::sqlcheck::{rebuild_arcgis_where, where_names, SqlDialect};
 use reqwest::Url;
 use serde_json::{json, Value};
 
+use crate::arcgis_auth::same_host;
 use crate::arcgis_pager::{self, Envelope, HttpReply, HttpRequest, LayerQuery, Stop, Transport};
 use crate::gis_tools::{file_stem, QueryArgs};
 use crate::server::Gateway;
@@ -86,13 +88,6 @@ fn url_host(u: &Url) -> Option<String> {
         .trim_end_matches('.')
         .to_ascii_lowercase();
     (!h.is_empty()).then_some(h)
-}
-
-fn same_host(a: &str, b: &str) -> bool {
-    match (a.parse::<IpAddr>(), b.parse::<IpAddr>()) {
-        (Ok(x), Ok(y)) => x == y,
-        _ => a.eq_ignore_ascii_case(b),
-    }
 }
 
 /// Parse and check a connection's `url` (F-3) with the HTTP client's own
@@ -165,8 +160,11 @@ pub(crate) struct ArcgisHttp {
     port: u16,
     client: reqwest::Client,
     /// Hosts the portal vouches for, which may receive a bearer token
-    /// (R-18). Empty until sign-in lands (T-11), so no token is ever sent.
+    /// (R-18). Empty for a public service.
     vouched: Vec<String>,
+    /// The signed-in connection's access token, for every request of this
+    /// call (catalog, counts and pages). Never logged.
+    pub(crate) token: Option<String>,
 }
 
 impl ArcgisHttp {
@@ -212,6 +210,7 @@ impl ArcgisHttp {
             port,
             client,
             vouched: Vec::new(),
+            token: None,
         })
     }
 
@@ -235,12 +234,11 @@ impl Transport for ArcgisHttp {
                 "Columbus asks only {host} for this connection's data; another address was refused"
             ));
         }
-        // R-18: a token goes only to hosts the portal vouches for.
-        if req.bearer.is_some() && !self.vouched.iter().any(|h| same_host(h, &host)) {
-            return Err(format!(
-                "the portal does not vouch for {host}, so Columbus will not send it your sign-in"
-            ));
-        }
+        // R-18: a token goes only to hosts the portal vouches for. Any
+        // other host gets the request without it, and a refusal if it
+        // turns out to need one.
+        let withheld = req.bearer.is_some() && !self.vouched.iter().any(|h| same_host(h, &host));
+        let bearer = if withheld { None } else { req.bearer.as_ref() };
         let mut b = match &req.form {
             Some(form) => self
                 .client
@@ -249,7 +247,7 @@ impl Transport for ArcgisHttp {
                 .body(form.clone()),
             None => self.client.get(req.url.clone()),
         };
-        if let Some(t) = &req.bearer {
+        if let Some(t) = bearer {
             b = b
                 .bearer_auth(t)
                 .header("X-Esri-Authorization", format!("Bearer {t}"));
@@ -291,12 +289,35 @@ impl Transport for ArcgisHttp {
             }
             body.extend_from_slice(&chunk);
         }
+        if withheld && needs_sign_in(status, &body) {
+            return Err(not_vouched(&host));
+        }
         Ok(HttpReply {
             status,
             retry_after,
             body,
         })
     }
+}
+
+/// R-18's refusal.
+pub(crate) fn not_vouched(host: &str) -> String {
+    format!(
+        "the portal does not vouch for {host}, so Columbus will not send it your sign-in, and {host} needs one. Fix: use the service through the portal's own host or a server the portal lists as federated, or ask your ArcGIS administrator to federate {host} with the portal"
+    )
+}
+
+/// Whether an answer says the request needed a sign-in (HTTP 401 or 403,
+/// or ArcGIS's code 498 or 499 in the JSON).
+fn needs_sign_in(status: u16, body: &[u8]) -> bool {
+    if status == 401 || status == 403 {
+        return true;
+    }
+    body.len() < 64 * 1024
+        && serde_json::from_slice::<Value>(body)
+            .ok()
+            .and_then(|v| v.pointer("/error/code").and_then(Value::as_i64))
+            .is_some_and(|c| matches!(c, 401 | 403 | 498 | 499))
 }
 
 /// One layer or table of a service.
@@ -473,10 +494,11 @@ fn layer_of(v: &Value, table: bool) -> Option<(u64, String, bool, Value)> {
 
 /// Every layer and table of the service (or the one layer its URL names).
 pub(crate) async fn catalog(t: &mut ArcgisHttp, svc: &Service) -> Result<Vec<Layer>, String> {
+    let token = t.token.clone();
     let get = |u: Url| HttpRequest {
         url: u,
         form: None,
-        bearer: None,
+        bearer: token.clone(),
     };
     let mut raw = Vec::new();
     if let Some(id) = svc.layer {
@@ -520,12 +542,13 @@ pub(crate) async fn count(
         .append_pair("where", where_clause)
         .append_pair("returnCountOnly", "true")
         .append_pair("f", "json");
+    let bearer = t.token.clone();
     let (_, v) = arcgis_pager::send_json(
         t,
         &HttpRequest {
             url: u,
             form: None,
-            bearer: None,
+            bearer,
         },
     )
     .await?;
@@ -623,24 +646,29 @@ pub(crate) struct ArcgisRead {
 }
 
 impl Gateway {
-    /// Where a bearer token for `conn` comes from: none for public services.
-    /// Sign-in (T-11) fills this in from the credential store
-    /// (`arcgis:<connection id>`, F-3b).
-    pub(crate) fn arcgis_bearer(&self, conn: &Connection) -> Result<Option<String>, String> {
-        match conn.auth.as_ref().and_then(ArcgisAuth::oauth) {
-            None => Ok(None),
-            Some(_) => Err(format!(
-                "{} is a signed-in ArcGIS connection (auth: oauth), and signing in is not available in this build yet. Use the service without sign-in (auth: none) if it is public",
-                conn.id
-            )),
-        }
+    /// The bearer token for `conn` and the portal it is for: none for a
+    /// public service (`auth: none`). Read from the credential store
+    /// (`arcgis:<connection id>`, F-3b); an expired access token is
+    /// refreshed once without asking; a lapsed sign-in gives "Sign in
+    /// again: columbus-mcp arcgis signin <id>".
+    pub(crate) async fn arcgis_bearer(
+        &self,
+        conn: &Connection,
+    ) -> Result<Option<(String, crate::arcgis_auth::Portal)>, String> {
+        crate::arcgis_auth::bearer(&self.state.secrets, conn, &self.state.policy()).await
     }
 
-    /// Check the connection and open its transport, before any request.
+    /// Check the connection and open its transport, before any request:
+    /// with the token, and the hosts the portal vouches for, when the
+    /// connection signs in.
     async fn arcgis_open(&self, conn: &Connection) -> Result<(Service, ArcgisHttp), String> {
         let svc = service(conn, &self.state.policy())?;
-        self.arcgis_bearer(conn)?;
-        let http = ArcgisHttp::connect(&svc).await?;
+        let auth = self.arcgis_bearer(conn).await?;
+        let mut http = ArcgisHttp::connect(&svc).await?;
+        if let Some((token, portal)) = auth {
+            http.vouched = crate::arcgis_auth::vouched(&portal, &token, &svc.host).await;
+            http.token = Some(token);
+        }
         Ok((svc, http))
     }
 
@@ -882,7 +910,7 @@ impl Gateway {
             read_limit: max_rows,
             page_size: page_size.min(max_rows),
             max_pages: MAX_PAGES,
-            bearer: self.arcgis_bearer(conn)?,
+            bearer: http.token.clone(),
         };
 
         // The pages, trimmed to the fields asked for, in a folder of the

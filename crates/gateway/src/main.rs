@@ -11,6 +11,8 @@
 //! columbus-mcp servers approve ID [--accept-flags]   pin the reviewed tool definitions
 //! columbus-mcp servers signin ID    sign in to a remote server in the browser (OAuth)
 //! columbus-mcp servers signout ID   remove its tokens
+//! columbus-mcp arcgis signin ID [--paste-code]   sign in to an ArcGIS connection (PKCE)
+//! columbus-mcp arcgis signout ID    remove its sign-in from the credential store
 //! columbus-mcp registry update [--from DIR|URL]   install the registry index (checked)
 //! columbus-mcp app query JSON                     one read-only call for an app page (registry query is the same)
 //! columbus-mcp share import JSON                  file a shared .columbus file's tools and workflow as proposals
@@ -39,6 +41,7 @@
 mod approval_flow;
 mod approvals_page;
 mod arcgis;
+mod arcgis_auth;
 mod arcgis_pager;
 mod companion;
 mod config;
@@ -141,6 +144,8 @@ async fn main() -> Result<()> {
         ["servers", "approve", id] => review_cli::approve(id, false).await,
         ["servers", "approve", id, "--accept-flags"] => review_cli::approve(id, true).await,
         ["servers", "signin", id] => review_cli::signin(id).await,
+        ["arcgis", "signin", id, flags @ ..] => arcgis_auth::signin_cli(id, flags).await,
+        ["arcgis", "signout", id] => arcgis_auth::signout_cli(id),
         ["registry", "update"] => registry_tools::update(None).await,
         ["share", "import", request] => share_cli::import(request).await,
         ["notes", "import", request] => doc_import_cli::import(request).await,
@@ -167,7 +172,7 @@ async fn main() -> Result<()> {
             Ok(())
         }
         _ => bail!(
-            "usage: columbus-mcp [serve] | audit verify FILE | secret set|delete ID | servers list|review|approve|signin|signout ID | registry update [--from DIR|URL]|query JSON | plugins list|approve ID | tools list|show|install|decline|remove ID|org-install FILE|org-remove ID|org-list | env add ID --python PATH [--trust governed|trusted]|confirm|remove|approve|decline ID|list|proposals | workflow run ID [--scheduled]|validate FILE|list | --version"
+            "usage: columbus-mcp [serve] | audit verify FILE | secret set|delete ID | servers list|review|approve|signin|signout ID | arcgis signin ID [--paste-code]|signout ID | registry update [--from DIR|URL]|query JSON | plugins list|approve ID | tools list|show|install|decline|remove ID|org-install FILE|org-remove ID|org-list | env add ID --python PATH [--trust governed|trusted]|confirm|remove|approve|decline ID|list|proposals | workflow run ID [--scheduled]|validate FILE|list | --version"
         ),
     }
 }

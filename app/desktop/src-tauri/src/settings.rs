@@ -1120,6 +1120,11 @@ pub async fn settings_delete_connection(id: String, forget_password: bool) -> Re
             .ok_or_else(|| format!("there is no connection {id:?}"))?;
         let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
         std::fs::remove_file(&file).map_err(|e| format!("{}: {e}", file.display()))?;
+        // An ArcGIS connection's sign-in goes with it (F-3b), whatever
+        // forget_password says.
+        if let Ok(e) = secret_entry(&format!("arcgis:{id}")) {
+            let _ = e.delete_credential();
+        }
         // A connected server's key of the same name stays.
         if forget_password && !manifest_credentials().contains(&id.to_lowercase()) {
             if let Ok(e) = secret_entry(&id) {

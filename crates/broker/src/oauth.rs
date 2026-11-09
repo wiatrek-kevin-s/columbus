@@ -176,7 +176,7 @@ pub async fn sign_in(
         .map_err(|e| format!("starting sign-in: {e}"))?;
     open(&auth_url)?;
 
-    let callback = tokio::time::timeout(CALLBACK_WAIT, wait_for_callback(&listener))
+    let callback = tokio::time::timeout(CALLBACK_WAIT, receive_redirect(&listener, "/callback"))
         .await
         .map_err(|_| "no sign-in within 5 minutes".to_string())??;
     state
@@ -205,17 +205,25 @@ pub async fn sign_in(
     Ok(SignedIn { scopes: granted })
 }
 
-/// Accept one request on the listener and return its path and query
-/// (`/callback?code=…&state=…`), answering the browser with a page that
-/// says it can be closed. Other paths get a 404 and are ignored.
-async fn wait_for_callback(listener: &tokio::net::TcpListener) -> Result<String, String> {
+/// Accept the browser's redirect on the listener and return its path and
+/// query (`/callback?code=…&state=…`), answering the browser with a page
+/// that says it can be closed. Only a request for exactly `path` with a
+/// query counts; other paths (a favicon, say) get a 404 and are ignored.
+/// The first request for `path` ends the wait either way, so the listener
+/// takes one redirect only. Checking `state` is the caller's.
+pub async fn receive_redirect(
+    listener: &tokio::net::TcpListener,
+    path: &str,
+) -> Result<String, String> {
     loop {
         let (mut sock, _) = listener.accept().await.map_err(|e| e.to_string())?;
         let mut buf = vec![0u8; 8192];
-        let n = tokio::time::timeout(Duration::from_secs(10), sock.read(&mut buf))
-            .await
-            .map_err(|_| "the browser sent nothing".to_string())?
-            .map_err(|e| e.to_string())?;
+        let n = match tokio::time::timeout(Duration::from_secs(10), sock.read(&mut buf)).await {
+            Ok(Ok(n)) => n,
+            // A connection that sends nothing (a browser's spare one) is
+            // not the redirect.
+            _ => continue,
+        };
         let head = String::from_utf8_lossy(&buf[..n]);
         let target = head
             .lines()
@@ -224,7 +232,10 @@ async fn wait_for_callback(listener: &tokio::net::TcpListener) -> Result<String,
             .and_then(|l| l.split_whitespace().next())
             .unwrap_or("")
             .to_string();
-        if !target.starts_with("/callback?") {
+        let ours = target
+            .split_once('?')
+            .is_some_and(|(p, q)| p == path && !q.is_empty());
+        if !ours {
             let _ = sock
                 .write_all(
                     b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
