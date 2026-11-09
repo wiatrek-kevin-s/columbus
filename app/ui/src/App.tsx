@@ -101,6 +101,27 @@ export function App() {
   const [active, setActive] = useState<string | null>(null);
   const [fitTo, setFitTo] = useState<string | null>(null);
   const [selected, setSelected] = useState<{ handle: string; feature: number } | null>(null);
+  const [zoomTo, setZoomTo] = useState<{ handle: string; feature: number; n: number } | null>(null);
+  // Zoom to selection: on unless turned off, remembered per chat (this
+  // window's session).
+  const [zoomToSelection, setZoomToSelectionState] = useState(true);
+  const zoomKey = overview ? `columbus.zoomToSelection.${overview.session}` : null;
+  useEffect(() => {
+    if (!zoomKey) return;
+    try {
+      setZoomToSelectionState(localStorage.getItem(zoomKey) !== "off");
+    } catch {
+      /* not remembered: stays on */
+    }
+  }, [zoomKey]);
+  const setZoomToSelection = (on: boolean) => {
+    setZoomToSelectionState(on);
+    try {
+      if (zoomKey) localStorage.setItem(zoomKey, on ? "on" : "off");
+    } catch {
+      /* the choice is not remembered */
+    }
+  };
   const [basemap, setBasemapState] = useState(() => {
     try {
       return localStorage.getItem("columbus.basemap") === "on";
@@ -389,14 +410,6 @@ export function App() {
         </aside>
 
         <main className="work">
-          {FRAMED && overview?.basemap_allowed && (
-            <div className="embed-bar">
-              <label className="switch" title="Street basemap from OpenFreeMap. When on, the area in view is sent to that site to fetch map tiles.">
-                <input type="checkbox" checked={basemap} onChange={(e) => setBasemap(e.target.checked)} />
-                Basemap
-              </label>
-            </div>
-          )}
           {pending.length > 0 && !FRAMED && (
             <section className="approvals" aria-live="assertive" aria-label="Requests waiting for your decision">
               {!canDecide && (
@@ -425,6 +438,17 @@ export function App() {
             basemap={basemap && !!overview?.basemap_allowed}
             fitTo={fitTo}
             selected={selected}
+            zoomTo={zoomTo}
+            zoomToSelection={zoomToSelection}
+            onZoomToSelection={setZoomToSelection}
+            tools={
+              FRAMED && overview?.basemap_allowed ? (
+                <label className="switch" title="Street basemap from OpenFreeMap. When on, the area in view is sent to that site to fetch map tiles.">
+                  <input type="checkbox" checked={basemap} onChange={(e) => setBasemap(e.target.checked)} />
+                  Basemap
+                </label>
+              ) : undefined
+            }
             onBasemapFailed={() => {
               setBasemap(false);
               setNotice("The basemap could not be loaded (offline, or blocked by your network). Your layers still show.");
@@ -439,7 +463,11 @@ export function App() {
               output={activeCard}
               version={version}
               selected={selected && selected.handle === active ? selected.feature : null}
-              onSelect={(f) => active && setSelected({ handle: active, feature: f })}
+              onSelect={(f) => {
+                if (!active) return;
+                setSelected({ handle: active, feature: f });
+                if (zoomToSelection) setZoomTo({ handle: active, feature: f, n: Date.now() });
+              }}
             />
           </section>
         </main>

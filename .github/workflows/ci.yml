@@ -112,6 +112,7 @@ jobs:
         run: |
           python app/ui/e2e/companion.py target/debug/columbus-mcp
           python app/ui/e2e/edits.py target/debug/columbus-mcp
+          python app/ui/e2e/map.py target/debug/columbus-mcp
       - uses: actions/upload-artifact@v4
         if: always()
         with:

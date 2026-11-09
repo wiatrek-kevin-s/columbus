@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import * as maplibregl from "maplibre-gl";
 import type { ExpressionSpecification, GeoJSONSource, StyleSpecification } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
@@ -8,6 +8,7 @@ import workerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?url";
 
 maplibregl.setWorkerUrl(workerUrl);
 import type { FeatureCollection } from "./api";
+import { formatLength, lineMetres } from "./measure";
 
 export interface MapLayer {
   handle: string;
@@ -37,13 +38,40 @@ const id = (handle: string) => {
   return v;
 };
 
-/** The session's layers on a MapLibre map, with identify on click and the
- * table's selected row highlighted. */
+type LngLat = [number, number];
+
+// Every [longitude, latitude] pair in a GeoJSON geometry.
+function eachPosition(g: GeoJSON.Geometry | null | undefined, out: LngLat[]): LngLat[] {
+  if (!g) return out;
+  if (g.type === "GeometryCollection") {
+    for (const x of g.geometries) eachPosition(x, out);
+    return out;
+  }
+  const walk = (c: unknown): void => {
+    if (Array.isArray(c) && typeof c[0] === "number") out.push([c[0] as number, c[1] as number]);
+    else if (Array.isArray(c)) c.forEach(walk);
+  };
+  walk(g.coordinates);
+  return out;
+}
+
+const MEASURE = "measure";
+const EMPTY: GeoJSON.FeatureCollection = { type: "FeatureCollection", features: [] };
+
+/** The session's layers on a MapLibre map, with identify on click, the
+ * table's selected row highlighted (and zoomed to, when asked), and a
+ * geodesic measure tool. */
 export function MapView(props: {
   layers: MapLayer[];
   basemap: boolean;
   fitTo: string | null;
   selected: { handle: string; feature: number } | null;
+  /** A table row to zoom to; `n` changes for each click. */
+  zoomTo: { handle: string; feature: number; n: number } | null;
+  zoomToSelection: boolean;
+  onZoomToSelection: (on: boolean) => void;
+  /** Controls the page puts first in the map's bar. */
+  tools?: ReactNode;
   onIdentify: (handle: string, feature: number) => void;
   onBasemapFailed: () => void;
 }) {
@@ -60,6 +88,16 @@ export function MapView(props: {
   onBasemapFailed.current = props.onBasemapFailed;
   const onIdentify = useRef(props.onIdentify);
   onIdentify.current = props.onIdentify;
+  // Measure: one line at a time. While measuring, clicks add points
+  // instead of identifying; a double-click finishes the line, the next
+  // click starts a new one, and Escape clears it.
+  const [measuring, setMeasuring] = useState(false);
+  const [points, setPoints] = useState<LngLat[]>([]);
+  const [finished, setFinished] = useState(false);
+  const measuringRef = useRef(false);
+  measuringRef.current = measuring;
+  const finishedRef = useRef(false);
+  finishedRef.current = finished;
 
   // One map; its style changes with the basemap switch.
   useEffect(() => {
@@ -76,6 +114,34 @@ export function MapView(props: {
     m.on("style.load", () => {
       styled.current = true;
       setReady((n) => n + 1);
+    });
+    // Where the map is looking, for the window's own tests.
+    m.on("moveend", () => {
+      const b = m.getBounds();
+      if (box.current) box.current.dataset.view = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()].join(",");
+    });
+    m.on("click", (e: maplibregl.MapMouseEvent) => {
+      if (!measuringRef.current) return;
+      const p: LngLat = [e.lngLat.lng, e.lngLat.lat];
+      if (finishedRef.current) {
+        setFinished(false);
+        setPoints([p]);
+        return;
+      }
+      setPoints((ps) => {
+        // The two clicks of a double-click land on the last point: skip them.
+        const last = ps[ps.length - 1];
+        if (last) {
+          const a = m.project(last);
+          if (Math.hypot(a.x - e.point.x, a.y - e.point.y) < 4) return ps;
+        }
+        return [...ps, p];
+      });
+    });
+    m.on("dblclick", (e: maplibregl.MapMouseEvent) => {
+      if (!measuringRef.current) return;
+      e.preventDefault();
+      setFinished(true);
     });
     m.on("error", (e: maplibregl.ErrorEvent) => {
       // Offline, or the basemap host blocked: carry on with a plain
@@ -162,11 +228,16 @@ export function MapView(props: {
         if (bound.current.has(sid + suffix)) continue;
         bound.current.add(sid + suffix);
         m.on("click", sid + suffix, (e: maplibregl.MapLayerMouseEvent) => {
+          if (measuringRef.current) return;
           const f = e.features?.[0];
           if (f && typeof f.id === "number") onIdentify.current(l.handle, f.id);
         });
-        m.on("mouseenter", sid + suffix, () => (m.getCanvas().style.cursor = "pointer"));
-        m.on("mouseleave", sid + suffix, () => (m.getCanvas().style.cursor = ""));
+        m.on("mouseenter", sid + suffix, () => {
+          if (!measuringRef.current) m.getCanvas().style.cursor = "pointer";
+        });
+        m.on("mouseleave", sid + suffix, () => {
+          if (!measuringRef.current) m.getCanvas().style.cursor = "";
+        });
       }
     }
     // How many of the session's layers the map holds, for the window's own
@@ -212,5 +283,133 @@ export function MapView(props: {
     }
   }, [props.selected, ready, props.layers]);
 
-  return <div className="map" ref={box} role="region" aria-label="Map of the session's layers" />;
+  // Zoom to the table's selected row (REQ-28), once per click. A row the
+  // map does not hold (its layer off the map or cut off at its limit) or
+  // without geometry leaves the view as it is.
+  const zoomed = useRef<number | null>(null);
+  useEffect(() => {
+    const m = map.current;
+    const z = props.zoomTo;
+    if (!m || !z || zoomed.current === z.n) return;
+    zoomed.current = z.n;
+    const l = props.layers.find((x) => x.handle === z.handle);
+    if (!l) return;
+    const f = l.data.features.find((x) => x.id === z.feature);
+    const pts = eachPosition(f?.geometry, []);
+    if (!pts.length) return;
+    let [w, s, e, n] = [pts[0][0], pts[0][1], pts[0][0], pts[0][1]];
+    for (const [x, y] of pts) {
+      w = Math.min(w, x);
+      s = Math.min(s, y);
+      e = Math.max(e, x);
+      n = Math.max(n, y);
+    }
+    m.fitBounds(
+      [
+        [w, s],
+        [e, n],
+      ],
+      { padding: 60, maxZoom: 18, duration: 500 },
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [props.zoomTo]);
+
+  // The measured line, drawn over the session's layers.
+  useEffect(() => {
+    const m = map.current;
+    if (!m || !styled.current) return;
+    const data: GeoJSON.FeatureCollection = points.length
+      ? {
+          type: "FeatureCollection",
+          features: [
+            ...(points.length > 1
+              ? [{ type: "Feature" as const, properties: {}, geometry: { type: "LineString" as const, coordinates: points } }]
+              : []),
+            ...points.map((p) => ({ type: "Feature" as const, properties: {}, geometry: { type: "Point" as const, coordinates: p } })),
+          ],
+        }
+      : EMPTY;
+    const src = m.getSource(MEASURE) as GeoJSONSource | undefined;
+    if (src) src.setData(data);
+    else {
+      m.addSource(MEASURE, { type: "geojson", data });
+      m.addLayer({
+        id: `${MEASURE}-line`,
+        source: MEASURE,
+        type: "line",
+        filter: ["==", ["geometry-type"], "LineString"],
+        paint: { "line-color": "#17324d", "line-width": 2.5, "line-dasharray": [2, 1.5] },
+      });
+      m.addLayer({
+        id: `${MEASURE}-point`,
+        source: MEASURE,
+        type: "circle",
+        filter: ["==", ["geometry-type"], "Point"],
+        paint: { "circle-color": "#ffffff", "circle-radius": 4, "circle-stroke-color": "#17324d", "circle-stroke-width": 2 },
+      });
+    }
+    // Keep it on top of layers added since.
+    m.moveLayer(`${MEASURE}-line`);
+    m.moveLayer(`${MEASURE}-point`);
+  }, [points, ready, props.layers]);
+
+  // Measuring: a crosshair, no double-click zoom, and Escape clears.
+  useEffect(() => {
+    const m = map.current;
+    if (!m) return;
+    if (measuring) {
+      m.doubleClickZoom.disable();
+      m.getCanvas().style.cursor = "crosshair";
+    } else {
+      m.doubleClickZoom.enable();
+      m.getCanvas().style.cursor = "";
+    }
+    if (!measuring && !points.length) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      setMeasuring(false);
+      setPoints([]);
+      setFinished(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [measuring, points.length]);
+
+  const toggleMeasure = () => {
+    setMeasuring(!measuring);
+    setPoints([]);
+    setFinished(false);
+  };
+  const length = points.length > 1 ? formatLength(lineMetres(points)) : null;
+
+  return (
+    <div className="map-wrap">
+      <div className="map" ref={box} role="region" aria-label="Map of the session's layers" />
+      <div className="map-bar">
+        {props.tools}
+        <label className="switch" title="Clicking a row in the table zooms the map to that feature">
+          <input
+            type="checkbox"
+            checked={props.zoomToSelection}
+            onChange={(e) => props.onZoomToSelection(e.target.checked)}
+          />
+          Zoom to selection
+        </label>
+        <button type="button" aria-pressed={measuring} onClick={toggleMeasure}>
+          Measure
+        </button>
+        {(measuring || length) && (
+          <span className="measure-result" role="status">
+            {length ? (
+              <>
+                <strong>{length.feet}</strong> ({length.metres})
+              </>
+            ) : (
+              <span className="muted">Click points on the map; double-click to finish; Esc clears.</span>
+            )}
+          </span>
+        )}
+      </div>
+    </div>
+  );
 }
