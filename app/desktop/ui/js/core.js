@@ -41,6 +41,41 @@ export function button(label, cls, onclick, attrs = {}) {
   return b;
 }
 
+// Same elements, attributes and child counts, whatever the text says.
+function sameShape(a, b) {
+  if (a.nodeType !== b.nodeType || a.nodeName !== b.nodeName) return false;
+  if (a.nodeType === Node.ELEMENT_NODE) {
+    if (a.attributes.length !== b.attributes.length) return false;
+    for (const at of a.attributes) if (b.getAttribute(at.name) !== at.value) return false;
+  }
+  if (a.childNodes.length !== b.childNodes.length) return false;
+  for (let i = 0; i < a.childNodes.length; i += 1) if (!sameShape(a.childNodes[i], b.childNodes[i])) return false;
+  return true;
+}
+
+function copyText(a, b) {
+  if (a.nodeType === Node.TEXT_NODE) {
+    if (a.data !== b.data) a.data = b.data;
+    return;
+  }
+  for (let i = 0; i < a.childNodes.length; i += 1) copyText(a.childNodes[i], b.childNodes[i]);
+}
+
+/** Show `kids` in `box`. A poll that changed only words (a count down, "used
+ * 2 min ago") changes those words in place, so the buttons the person is
+ * pointing at stay where they are; anything else is drawn afresh. Controls
+ * whose action differs must differ in an attribute (data-*, href). */
+export function redraw(box, ...kids) {
+  const fresh = h("div", {}, ...kids);
+  if (box.childNodes.length === fresh.childNodes.length
+    && [...box.childNodes].every((n, i) => sameShape(n, fresh.childNodes[i]))) {
+    [...box.childNodes].forEach((n, i) => copyText(n, fresh.childNodes[i]));
+    return false;
+  }
+  box.replaceChildren(...fresh.childNodes);
+  return true;
+}
+
 // The app's own icons (fixed paths, design's rail set).
 const ICONS = {
   home: '<path d="M3 10.5 10 4l7 6.5V17H12.5v-4h-5v4H3z"/>',
