@@ -274,8 +274,8 @@
           "expected": "builds with 0 errors"
         }
       ],
-      "status": "todo",
-      "evidence": ""
+      "status": "done",
+      "evidence": "Commit e544226. app/desktop/e2e/sources.py (run locally under xvfb: 'desktop sources e2e (files, arcgis, sign-in, environments): ok'): files connection added, tested, edited keeping recursive/crs/x/y; public arcgis tested without sign-in; dead port shows the R-14 message; Sign in makes exactly one authorize request to the fake portal (captured), sign-in completes, no token reaches the page; Settings › Environments shows Ready, 'arcpy: yes (experimental); ArcGIS Pro licence: Advanced', Changed and Confirm. app/desktop/src-tauri cargo build 0 errors, clippy clean, cargo test 26 passed. Added to the CI Desktop app job (Linux WebDriver step)."
     },
     {
       "id": "T-13",
