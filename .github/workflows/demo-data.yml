@@ -1,0 +1,129 @@
+name: README pictures
+
+# Run by hand (Actions › README pictures › Run workflow). Builds the
+# README's sample data from public US government data, and retakes the
+# README's pictures from the real app with the street basemap on (the
+# runners can reach the internet; a developer's machine may not).
+on:
+  workflow_dispatch:
+    inputs:
+      what:
+        description: "data: rebuild the sample data; pictures: retake the pictures; render: screenshots of the README as GitHub shows it"
+        type: choice
+        options: [pictures, data, render]
+        default: pictures
+
+permissions:
+  contents: read
+
+jobs:
+  sample-data:
+    name: Sample data (public extract)
+    if: inputs.what == 'data'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --require-hashes -r workers/python/requirements-gis.txt
+      - run: python app/desktop/e2e/demo/fetch_austin.py --out demo-out/austin.gpkg
+      # Also in the log, for a reviewer who can read logs but not download
+      # artifacts: base64 of a .tar.gz between the two marker lines.
+      - name: The extract, in the log
+        run: |
+          echo "=====BEGIN demo-data====="
+          tar czf - -C demo-out austin.gpkg | base64 -w 200
+          echo "=====END demo-data====="
+      - uses: actions/upload-artifact@v4
+        with:
+          name: demo-data
+          path: demo-out/
+
+  readme-pictures:
+    name: README pictures
+    if: inputs.what == 'pictures'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: app/ui/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            app/desktop/src-tauri
+      - name: Linux build libraries, the WebDriver and ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libsoup-3.0-dev libayatana-appindicator3-dev librsvg2-dev xvfb ffmpeg fonts-inter || \
+            sudo apt-get install -y libwebkit2gtk-4.1-dev libsoup-3.0-dev libayatana-appindicator3-dev librsvg2-dev xvfb ffmpeg
+          sudo apt-get install -y webkitgtk-webdriver || sudo apt-get install -y webkit2gtk-driver
+      - run: python -m pip install --require-hashes -r workers/python/requirements-gis.txt
+      - run: python -m pip install --require-hashes -r workers/python/requirements-ci.txt
+      - name: Build the map page, the server and the app
+        run: |
+          ( cd app/ui && npm ci && npm run build )
+          cargo build -p columbus-mcp --locked
+          ( cd app/desktop/src-tauri && cargo build --locked )
+          cargo install tauri-driver --locked
+      - name: Take the pictures (light and dark) and the animation's frames
+        run: |
+          # A home folder with a plain name, so no temporary path shows.
+          sudo mkdir -p /home/analyst && sudo chown "$USER" /home/analyst
+          dbus-run-session -- xvfb-run -a -s "-screen 0 1920x1200x24" python app/desktop/e2e/screenshots.py \
+            target/debug/columbus-mcp app/desktop/src-tauri/target/debug/columbus-desktop --root /home/analyst
+      - name: The animation
+        run: sh app/desktop/e2e/demo/animate.sh
+      - name: The pictures, in the log
+        run: |
+          echo "=====BEGIN readme-pictures====="
+          tar czf - docs/images | base64 -w 200
+          echo "=====END readme-pictures====="
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: readme-pictures
+          path: |
+            docs/images/
+            app/desktop/e2e/out/frames/
+
+  readme-render:
+    name: README as GitHub shows it
+    if: inputs.what == 'render'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --require-hashes -r workers/python/requirements-ci.txt
+      - run: python -m playwright install --with-deps chromium
+      - name: GitHub's Markdown CSS
+        run: |
+          mkdir -p /tmp/css && cd /tmp/css
+          npm pack github-markdown-css@5.9.0 --silent
+          tar xzf github-markdown-css-5.9.0.tgz
+      - name: Render and screenshot (1280 and 390 wide, light and dark)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python .github/scripts/render_readme.py /tmp/css/package render-out
+      - name: The screenshots, in the log
+        run: |
+          echo "=====BEGIN readme-render====="
+          tar czf - render-out/*.png | base64 -w 200
+          echo "=====END readme-render====="
+      - uses: actions/upload-artifact@v4
+        with:
+          name: readme-render
+          path: render-out/

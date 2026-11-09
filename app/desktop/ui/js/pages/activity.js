@@ -2,7 +2,7 @@
 // only: requests from other AI apps are decided in that app or on the
 // browser page the session opens), the audit log (read only, with the
 // chain check) and the exports it records.
-import { h, el, invoke, store, button, pageHead, timeLeft, when, ago, plural, clientName, monthName, emptyState, toast, size } from "../core.js";
+import { h, el, invoke, store, button, redraw, pageHead, timeLeft, when, ago, plural, clientName, monthName, emptyState, toast, size } from "../core.js";
 import { openBrowser, waitingCount, describe, otherInbox } from "./chats.js";
 
 export async function render(main, rest) {
@@ -21,13 +21,15 @@ function approvals(page) {
     [button("Refresh", "", () => store.refresh && store.refresh.inbox())]));
   const body = h("div", { class: "pad stack", id: "approvals" });
   page.append(h("div", { class: "scroll" }, body));
+  // Drawn on every poll; only what changed is redrawn (core.js redraw), so
+  // a poll never swaps a button out from under the person's click.
   const draw = () => {
-    body.replaceChildren(h("div", { class: "notice" }, h("div", {},
+    const out = [h("div", { class: "notice" }, h("div", {},
       "Requests from this app's own chat are answered in the chat. Requests from other AI apps are decided in that app's own prompt, or on the browser page Columbus opens: ",
-      h("b", {}, "Decide in browser"), " opens it for that session. This app only shows them; deciding them here comes after a security review.")));
+      h("b", {}, "Decide in browser"), " opens it for that session. This app only shows them; deciding them here comes after a security review."))];
     const own = waitingCount();
     if (own) {
-      body.append(h("section", { class: "group" }, h("div", { class: "hd" }, h("span", { class: "dot run" }), h("h3", {}, "Your chat in this app"), h("span", { class: "badge info" }, plural(own, "request")),
+      out.push(h("section", { class: "group" }, h("div", { class: "hd" }, h("span", { class: "dot run" }), h("h3", {}, "Your chat in this app"), h("span", { class: "badge info" }, plural(own, "request")),
         h("a", { class: "btn sm primary right", href: "#/chats/new" }, "Answer in the chat"))));
     }
     // The app's own chat's requests are answered in the chat (above).
@@ -43,7 +45,7 @@ function approvals(page) {
       g.append(h("div", { class: "hd" }, h("h3", {}, `${who} session`), h("span", { class: "muted small" }, `started ${when(s.started)}${s.last_used ? ` · used ${ago(s.last_used)}` : ""}`),
         pending.length ? h("span", { class: "badge warn" }, plural(pending.length, "request")) : null,
         h("span", { class: "right row" }, h("a", { class: "btn sm", href: `#/chats/s/${encodeURIComponent(s.session)}` }, "Open session"),
-          pending.length ? button("Decide in browser", "sm primary", () => openBrowser(s.session)) : null)));
+          pending.length ? button("Decide in browser", "sm primary", () => openBrowser(s.session), { "data-session": s.session }) : null)));
       if (s.error) g.append(h("p", { class: "pad small error-text" }, s.error));
       const byKind = new Map();
       for (const a of pending) {
@@ -61,12 +63,13 @@ function approvals(page) {
         }
         g.append(ul);
       }
-      body.append(g);
+      out.push(g);
     }
     if (!total && !own) {
-      body.append(emptyState("Nothing is waiting", "Requests appear here as your assistants make them. Each one expires after 10 minutes if no one decides; your assistant is then told."));
+      out.push(emptyState("Nothing is waiting", "Requests appear here as your assistants make them. Each one expires after 10 minutes if no one decides; your assistant is then told."));
     }
-    body.append(h("p", { class: "small muted" }, "Approvals are bound to the exact request, are used once, and expire after 10 minutes; your assistant never approves its own request."));
+    out.push(h("p", { class: "small muted" }, "Approvals are bound to the exact request, are used once, and expire after 10 minutes; your assistant never approves its own request."));
+    redraw(body, out);
   };
   draw();
   if (store.refresh) store.refresh.inbox();

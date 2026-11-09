@@ -61,6 +61,9 @@ Every tool returns `{result, checks, provenance}`.
 | `intersect` | `a`, `b` | none |
 | `join` | `left`, `right` | `left_key`, `right_key?` (defaults to `left_key`), `how` (`left` or `inner`, default `left`) |
 | `spatial_join` | `left`, `right` | `predicate` (`intersects`, `within`, `contains`, `touches`, `crosses`, `overlaps`; default `intersects`), `how` (`left` or `inner`) |
+| `filter` | `layer` | `where` (the `query_features` where subset: comparisons, AND/OR/NOT, IN, LIKE, BETWEEN, IS NULL, simple functions; no hidden fields). Keeps the rows it selects as a new layer; the input stays; no approval. Checks `filter.rows`, `filter.empty` |
+
+`reproject`, `clip`, `join`, `spatial_join`, `dissolve`, `intersect`, `make_valid` and `filter` keep M (measure) and Z values; `buffer` and `simplify` drop M with `geometry.m_dropped`.
 
 `raster_op` operations, inputs and params (`workers/python/columbus_raster.py`, `OPS`):
 

@@ -1,0 +1,26 @@
+# A folder of files (files connection, F-2). Read-only. Each supported file
+# in the folder is a dataset: .csv, .xlsx (one dataset per sheet,
+# <file>/<sheet>), .geojson (and .json holding GeoJSON), .parquet or
+# .geoparquet, .kml (one per folder, <file>/<folder>) and .fgb. A dataset is
+# named by its path in the folder with forward slashes and the extension
+# removed; any other ".", "\" or ":" becomes "_" (crashes.2026.csv is
+# crashes_2026). Office lock files (~$*), hidden files, .xls workbooks
+# ("save as .xlsx") and unreadable files are listed under "skipped" in
+# list_datasets, with the reason. Files are converted on first use into a
+# cache GeoPackage, rebuilt only when a file's content changes.
+# Organization policy must list "files" in connection_types (it's in the
+# defaults; the old name "file" is read as "files").
+id: crash-files
+type: files
+path: C:\GIS\drops\crashes      # a folder, or one supported file
+recursive: true                 # also read subfolders (default false)
+crs: EPSG:2277                  # CRS of CSV/Excel geometry (and of files without one)
+x: EASTING                      # the coordinate columns, both or neither;
+y: NORTHING                     # lon/lat, x/y and WKT "geometry" columns are found by themselves
+description: Crash extracts dropped by the safety office
+datasets:
+  allow: ["*"]
+  deny: ["*/archive/*"]
+row_filter: "SEVERITY <> 'R'"
+limits: { rows: 200000, seconds: 120 }
+expires: 2027-06-30

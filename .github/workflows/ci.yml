@@ -78,6 +78,19 @@ jobs:
       - name: Skills library
         run: python skills/check_skills.py
 
+  docs-links:
+    name: Docs links
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # Every relative link, image and #section in the Markdown files; and
+      # the outside links on the front page (README, SECURITY, CONTRIBUTING).
+      - run: python .github/scripts/check_links.py --external
+
   companion:
     name: Companion window
     runs-on: ubuntu-latest
@@ -312,6 +325,14 @@ jobs:
       - name: Gateway end to end against Oracle
         if: success() || failure()
         run: cargo test -p columbus-mcp --test oracle --locked -- --nocapture
+      # The owner's weekly ROW job end to end (T-23, REQ-30): Oracle routes
+      # and events, a fake ArcGIS service, two personal tools, a scheduled
+      # run, opened in a chat, filtered and exported to a file geodatabase.
+      - name: The ROW job end to end against Oracle
+        if: success() || failure()
+        run: |
+          cargo build -p columbus-mcp --example fake_oauth_server --locked
+          cargo test -p columbus-mcp --test row_job --locked -- --nocapture
 
   mssql:
     name: SQL Server engine

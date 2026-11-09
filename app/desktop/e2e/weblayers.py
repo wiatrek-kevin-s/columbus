@@ -28,7 +28,6 @@ COLUMBUS_WEB_TEST_HOSTS. The chat's AI is a local stand-in.
 import json
 import os
 import queue
-import signal
 import subprocess
 import sys
 import tempfile
@@ -110,22 +109,6 @@ def columbus(env, root):
             return proc, new[0].stem
         time.sleep(0.05)
     raise SystemExit("the Columbus session did not announce itself")
-
-
-def close_app(d, proc):
-    """End the session and wait for the app to let go of its single-instance
-    name; one that lingers past 45 s (seen on slow machines) is stopped, so
-    the next launch is a fresh app on the same files (a restart)."""
-    guard.stop(d, proc)
-    end = time.monotonic() + 45
-    while guard.app_running() and time.monotonic() < end:
-        time.sleep(0.2)
-    pid = guard._app_pid()
-    if pid:
-        try:
-            os.kill(pid, signal.SIGKILL)
-        except OSError:
-            pass
 
 
 def nav(d, wait, where, ready):
@@ -278,7 +261,7 @@ def main():
             assert not list(saved.glob("*.yaml")) if saved.exists() else True, "nothing is saved"
             d.save_screenshot(str(OUT / "weblayers-declined.png"))
         finally:
-            close_app(d, proc)
+            guard.stop(d, proc)  # the app has gone: the next launch is a restart
 
         step("allowed: one service of each kind, pasted on Connections › Map layers")
         d, proc = guard.driver(dict(env, COLUMBUS_APP_TEST_CONFIRM="allow"), APP)
@@ -332,7 +315,7 @@ def main():
             in_map(d, wait, turn_on)
             d.save_screenshot(str(OUT / "weblayers-map.png"))
         finally:
-            close_app(d, proc)
+            guard.stop(d, proc)  # the app has gone: the next launch is a restart
 
         step("after a restart: listed, and offered in two different chats")
         other, other_session = columbus(env, root)
@@ -388,7 +371,7 @@ def main():
             in_map(d, wait, lambda drv: wait_rows(drv, wait, want))
             d.save_screenshot(str(OUT / "weblayers-removed.png"))
         finally:
-            close_app(d, proc)
+            guard.stop(d, proc)  # the app has gone: the next launch is a restart
         print("desktop web layers e2e: ok")
     finally:
         for p in procs:

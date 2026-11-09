@@ -4,8 +4,8 @@ Kit version 1.1 · as of 2026-11-08, session S1 not started
 
 ## Where things stand
 
-- **Session:** S6 finishing (PR #6 open) · **Task:** T-23 next
-- **Next step:** merge PR #6 when CI is green, then S7 (T-23, then T-16 with CR-2) on `rework/s7-docs`
+- **Session:** S7 finishing (PR #7 open) · **Task:** final review next
+- **Next step:** merge PR #7 when CI is green, then the final review (fresh subagent, docs/final-review.md), R-101+ fixes, re-check, then T-17
 - **Waiting on the owner:** nothing
 - **Homework received:** setup round answered ("skip" on Dependabot alerts); H-1 and H-2 are optional, after release
 
@@ -71,13 +71,20 @@ Kit version 1.1 · as of 2026-11-08, session S1 not started
 | 2026-11-09 | Zoom to selection is on by default and remembered per session; Measure is geodesic (WGS 84), shown in feet then metres | AF-20 | Decided |
 | 2026-11-09 | Web layers: capability hosts approved at save live in `map-sources/.hosts.json` (F-13 unchanged); org-supplied sources fail closed; only 256 px Web Mercator layers offered; tile cache 500 MB; tile requests are not audited; `whoami` lists titles only; new dependency roxmltree 0.21.2 (MIT OR Apache-2.0) | D-14 and the security baseline | Decided |
 | 2026-11-09 | Web layer settings are remembered per chat (session); a source's `rev` (12 hex of its fingerprint, never the address) lets the map redraw after an Edit | REQ-33 | Decided |
+| 2026-11-09 | T-23 also runs the ROW job on a GeoPackage on all three systems; the Oracle version fails rather than skips if it can't confine; the workflow has no export folder (the only export is the approved one from the chat) | Success measure 7; the non-Oracle parts are testable everywhere | Decided |
+| 2026-11-09 | App e2e "previous app still running" root-caused: the harness stopped tauri-driver before WebKitWebDriver ended the app; `guard.stop()` now waits for the app, then ends it with logged SIGTERM/SIGKILL if needed | Not a product bug: closing the window exits in 0.02-0.04 s | Decided |
+| 2026-11-09 | Activity › Approvals no longer rebuilds its buttons on every poll (`core.js` `redraw()` updates words in place), with an e2e check that a button survives a poll | A product bug: a person's click could land on a replaced button (found as a shell.py flake) | Decided |
+| 2026-11-09 | README pictures use US government data (Census TIGER/Line 2024, NHTSA FARS 2020-2023), credited in `docs/images/DATA-CREDITS.md`; City of Austin and TxDOT data not used | Their licences could not be confirmed | Decided |
+| 2026-11-09 | README pictures and render checks run in CI (`.github/workflows/demo-data.yml`); results come back through the job log because artifact downloads are blocked here | The shell can't reach the basemap or github.com | Decided |
+| 2026-11-09 | The GitHub sidebar (description, website, topics), the social preview card and private vulnerability reporting are left to the owner | The proxy refuses those settings; the owner will do them after the release | Asked (owner: after the release) |
+| 2026-11-09 | Release notes live in `packaging/release-notes.md`; `THIRD-PARTY-NOTICES.md` ships in both zips; the app's four "coming" panels stay (screens out of scope) and the reference says they have no backend | D-2 | Decided |
 | 2026-11-08 | Python baseline is 149 passed, not the audit's 115 | `main` moved past the audit commit 8b6bf173 before the kit upload; more tests and no failures, so no action | Decided |
 
 ## Change requests
 
 | ID | Date | What and why | Options | Recommendation | Status |
 |---|---|---|---|---|---|
-| CR-2 | 2026-11-08 | Professional README and GitHub front page: real-data pictures, demo animation, how-it-works diagram, shorter README, SECURITY/CONTRIBUTING, sidebar. Plan: https://claude.ai/artifact/PM8rt1U5CoxQ2KMdyZoQLz | Do it in T-16 | Do it in T-16 | Approved by the owner |
+| CR-2 | 2026-11-08 | Professional README and GitHub front page: real-data pictures, demo animation, how-it-works diagram, shorter README, SECURITY/CONTRIBUTING, sidebar. Plan: https://claude.ai/artifact/PM8rt1U5CoxQ2KMdyZoQLz | Do it in T-16 | Do it in T-16 | Done in T-16 (README 107 lines; fresh-reviewer 10-second test passed) |
 | CR-3 | 2026-11-08 | Documentation site (Zensical on GitHub Pages leaning; own domain optional) | Later round | Later | Waiting: name, domain, versioning need a Blueprint round; not in 0.14 |
 | CR-1 | 2026-11-08 | Let a personal tool in an environment import that environment's other packages (today the tool lint allows only its fixed module list, so whitebox or arcpy can't be used from a tool; `run_python` scripts can use them) | Keep the list; allow any package installed in the governed environment; allow a per-organization list | Keep the list this round (no rule loosens); decide in Blueprint | Sent to Blueprint (blocks no task) |
 
@@ -86,6 +93,14 @@ Status: raised, approved, declined, or Sent to Blueprint (touches a one-way door
 ## Handoff notes
 
 Newest first, written as you go. Mark each claim verified (checked this session) or unverified.
+
+### Session S7 → final review (2026-11-09)
+
+- **Done:** S6 merged (PR #6, 5543dd9). S7: T-23 and T-16 (with CR-2) on `rework/s7-docs`, PR #7; also two root-caused test problems (harness stop order; approvals page re-render, a product fix). CI run 42685605864 green on 15 jobs.
+- **Every task T-1 to T-25 except T-18 is done.** None blocked. CR-1 (tool lint list in environments) is Sent to Blueprint and listed in the release notes; CR-3 (docs site) is for later.
+- **Owner's to-do after the release:** sidebar values, social preview card (`docs/images/social-card.png`), private vulnerability reporting; optional H-1 and H-2 (docs/manual-checks.md); start the UI-review project.
+- **For the final review:** relaunching the app within ~2 s of closing it hands off to the closing instance; a stray "null" on the Tools page; the README release badge updates on release.
+- **Next:** merge PR #7, final review, T-17.
 
 ### Session S6 → S7 (2026-11-09)
 
@@ -147,6 +162,10 @@ Newest first, written as you go. Mark each claim verified (checked this session)
 - 2026-11-09 T-22 done: e35e63b; run 42630389678 green; 100 m line shows 328 ft.
 - 2026-11-09 T-24 done: ca47383; run 42637569401 green.
 - 2026-11-09 T-25 done: c038f8f; run 42646478559 green.
+- 2026-11-09 PR #6 merged (5543dd9) after CI run 42649289887 green.
+- 2026-11-09 T-23 done: 7ea37ee; row_job_end_to_end_on_oracle ran in the Oracle job; run 42651014882 green (attempt 2; attempt 1 hit the app-exit wait, since root-caused in 45c6238).
+- 2026-11-09 shell.py stale element root-caused (approvals page rebuilt buttons every poll): fixed in c198acd; run 42673657061 green; merged into S7.
+- 2026-11-09 T-16 done: 4d0ad47 and 641fde0..364de06; run 42685605864 green on 15 jobs; README 10-second test passed (7/10, then a polish round).
 
 ### Kit → Session S1 (2026-11-08)
 
