@@ -23,7 +23,7 @@ permissions:
 jobs:
   data:
     name: Sample data (public extract)
-    if: inputs.what == 'data' || contains(github.event.head_commit.message, '[demo-data]')
+    if: github.event.inputs.what == 'data' || contains(github.event.head_commit.message, '[demo-data]')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -40,7 +40,7 @@ jobs:
 
   pictures:
     name: README pictures
-    if: inputs.what == 'pictures' || contains(github.event.head_commit.message, '[pictures]')
+    if: github.event.inputs.what == 'pictures' || contains(github.event.head_commit.message, '[pictures]')
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
