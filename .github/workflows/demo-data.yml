@@ -23,8 +23,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - run: python -m pip install --require-hashes -r workers/python/requirements-gis.txt
@@ -36,7 +36,7 @@ jobs:
           echo "=====BEGIN demo-data====="
           tar czf - -C demo-out austin.gpkg | base64 -w 200
           echo "=====END demo-data====="
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: demo-data
           path: demo-out/
@@ -47,11 +47,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
@@ -89,7 +89,7 @@ jobs:
           echo "=====BEGIN readme-pictures====="
           tar czf - docs/images | base64 -w 200
           echo "=====END readme-pictures====="
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: readme-pictures
@@ -103,8 +103,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - run: python -m pip install --require-hashes -r workers/python/requirements-ci.txt
@@ -123,7 +123,7 @@ jobs:
           echo "=====BEGIN readme-render====="
           tar czf - render-out/*.png | base64 -w 200
           echo "=====END readme-render====="
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: readme-render
           path: render-out/
