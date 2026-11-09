@@ -584,6 +584,40 @@
       ],
       "status": "todo",
       "evidence": ""
+    },
+    {
+      "id": "R-101",
+      "title": "Final review F-1: large CSV/XLSX in a files folder must not crash the engine (stream the conversion; refuse oversized files plainly)",
+      "session": "S8",
+      "depends_on": [
+        "T-3"
+      ],
+      "done_by": "claude",
+      "acceptance": [
+        {
+          "how": "Claude runs a test with a large CSV (hundreds of MB) in a files folder under a memory cap, plus list_datasets and query_features on that folder",
+          "expected": "the engine stays up; memory stays bounded (well under the file size times a small factor); other files in the folder stay usable; a file over the limit is refused with a plain R-14 message naming the file, its size and the fix"
+        }
+      ],
+      "status": "todo",
+      "evidence": ""
+    },
+    {
+      "id": "R-102",
+      "title": "Final review F-2 (cheap parts): clear known advisories before release (pillow cap, rmcp and rusqlite updates) and exercise the engine-requirements workflow once",
+      "session": "S8",
+      "depends_on": [
+        "T-15"
+      ],
+      "done_by": "claude",
+      "acceptance": [
+        {
+          "how": "Claude reruns pip-audit on the pinned engine files and cargo audit on both lockfiles after the updates, with CI green",
+          "expected": "no known advisories in the pinned engine requirements; RUSTSEC-2026-0462 and RUSTSEC-2026-0459 gone; the Engine requirements workflow has run once"
+        }
+      ],
+      "status": "todo",
+      "evidence": ""
     }
   ]
 }
