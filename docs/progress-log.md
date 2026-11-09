@@ -4,8 +4,8 @@ Kit version 1.1 · as of 2026-11-08, session S1 not started
 
 ## Where things stand
 
-- **Session:** S7 finishing (PR #7 open) · **Task:** final review next
-- **Next step:** merge PR #7 when CI is green, then the final review (fresh subagent, docs/final-review.md), R-101+ fixes, re-check, then T-17
+- **Session:** S8 (release) · **Task:** T-17
+- **Next step:** merge the review-fix PR, run CI on main, dispatch the Release workflow with tag v0.14.0 (T-17), then the owner's message
 - **Waiting on the owner:** nothing
 - **Homework received:** setup round answered ("skip" on Dependabot alerts); H-1 and H-2 are optional, after release
 
@@ -78,6 +78,8 @@ Kit version 1.1 · as of 2026-11-08, session S1 not started
 | 2026-11-09 | README pictures and render checks run in CI (`.github/workflows/demo-data.yml`); results come back through the job log because artifact downloads are blocked here | The shell can't reach the basemap or github.com | Decided |
 | 2026-11-09 | The GitHub sidebar (description, website, topics), the social preview card and private vulnerability reporting are left to the owner | The proxy refuses those settings; the owner will do them after the release | Asked (owner: after the release) |
 | 2026-11-09 | Release notes live in `packaging/release-notes.md`; `THIRD-PARTY-NOTICES.md` ships in both zips; the app's four "coming" panels stay (screens out of scope) and the reference says they have no backend | D-2 | Decided |
+| 2026-11-09 | Large files in a `files` folder are streamed into the cache in two passes (types from every value, as before); per-file limits: CSV 256 MB or 2.5 MB per allowed second (300 MB at 120 s), Excel 64 MB, GeoJSON/KML/FGB 256 MB, GeoParquet 256 MB and 10 M values; an over-limit or timed-out file is skipped with a plain reason and remembered until it changes | Final review F-1 (R-101): memory bounded (~310 MB) whatever the file size; the time limit, not memory, now decides | Decided |
+| 2026-11-09 | Dependabot PRs #9, #13 (rmcp) and #11 (rusqlite) are left for the owner to merge | The session's safety check refuses merging pull requests the session didn't write; both advisories predate the rework | Decided (owner merges) |
 | 2026-11-08 | Python baseline is 149 passed, not the audit's 115 | `main` moved past the audit commit 8b6bf173 before the kit upload; more tests and no failures, so no action | Decided |
 
 ## Change requests
@@ -94,9 +96,16 @@ Status: raised, approved, declined, or Sent to Blueprint (touches a one-way door
 
 Newest first, written as you go. Mark each claim verified (checked this session) or unverified.
 
+### Final review and release (2026-11-09)
+
+- **Final review** (fresh subagent, docs/final-review.md; full notes kept by the lead): every acceptance check T-1–T-16, T-19–T-25 passes on re-run; 375 Rust / 225 Python tests, no engine skips; security negative tests all held. Findings: **F-1 Fix now** (large CSV OOM-killed the engine) → R-101; **F-2** (advisories, 30) → R-102 cheap parts; F-3 = CR-1 (20, Sent to Blueprint); accepted under 20: F-4 no required checks on main (Release has its own CI gate), F-5 A-2 unconfirmed / no paste-code field in the app, F-6 backslash in rebuilt where (theoretical), F-7 relaunch hand-off, F-8 Tools page "null", F-9 record slips (PR #16 named #7, fixed here; badge; two old workflow registrations), F-10 folder-wide row_filter fails files without the column (safely), raw GDAL text for a broken GeoJSON.
+- **Re-check** (second fresh subagent): F-1 FIXED (400 MB and 1 GB skipped plainly at defaults, 6.6 M rows convert with limits.seconds 600 at 312 MB peak, no partial data), F-2 Pillow part FIXED. New, accepted: N-1 (12) a 250–300 MB CSV is near the 120 s limit on a slow laptop and stays skipped until it changes; N-2 (2) a >4,300-digit integer cell gives Python's own message.
+- **R-101 done; R-102 blocked** only on the owner merging Dependabot #9, #13, #11.
+- **Next:** release v0.14.0.
+
 ### Session S7 → final review (2026-11-09)
 
-- **Done:** S6 merged (PR #6, 5543dd9). S7: T-23 and T-16 (with CR-2) on `rework/s7-docs`, PR #7; also two root-caused test problems (harness stop order; approvals page re-render, a product fix). CI run 42685605864 green on 15 jobs.
+- **Done:** S6 merged (PR #6, 5543dd9). S7: T-23 and T-16 (with CR-2) on `rework/s7-docs`, PR #16; also two root-caused test problems (harness stop order; approvals page re-render, a product fix). CI run 42685605864 green on 15 jobs.
 - **Every task T-1 to T-25 except T-18 is done.** None blocked. CR-1 (tool lint list in environments) is Sent to Blueprint and listed in the release notes; CR-3 (docs site) is for later.
 - **Owner's to-do after the release:** sidebar values, social preview card (`docs/images/social-card.png`), private vulnerability reporting; optional H-1 and H-2 (docs/manual-checks.md); start the UI-review project.
 - **For the final review:** relaunching the app within ~2 s of closing it hands off to the closing instance; a stray "null" on the Tools page; the README release badge updates on release.
@@ -165,6 +174,7 @@ Newest first, written as you go. Mark each claim verified (checked this session)
 - 2026-11-09 PR #6 merged (5543dd9) after CI run 42649289887 green.
 - 2026-11-09 T-23 done: 7ea37ee; row_job_end_to_end_on_oracle ran in the Oracle job; run 42651014882 green (attempt 2; attempt 1 hit the app-exit wait, since root-caused in 45c6238).
 - 2026-11-09 shell.py stale element root-caused (approvals page rebuilt buttons every poll): fixed in c198acd; run 42673657061 green; merged into S7.
+- 2026-11-09 Final review done (F-1 Fix now). R-101 done: fb20570, run 42705526192 green on 14 jobs; R-102: e393259 Pillow 13, pip-audit clean; Dependabot merges left to the owner. Re-check confirmed both.
 - 2026-11-09 T-16 done: 4d0ad47 and 641fde0..364de06; run 42685605864 green on 15 jobs; README 10-second test passed (7/10, then a polish round).
 
 ### Kit → Session S1 (2026-11-08)

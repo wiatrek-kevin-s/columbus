@@ -1375,6 +1375,8 @@ pub(crate) fn connection_handle(
     let mut h = json!({"kind": conn.kind});
     let m = h.as_object_mut().expect("object");
     if columbus_shared::policy::is_files(&conn.kind) {
+        // Named in the message if the engine stops while reading it (R-101).
+        m.insert("id".into(), json!(conn.id));
         m.insert(
             "cache".into(),
             json!(files_cache_path(workspaces, &conn.id).display().to_string()),

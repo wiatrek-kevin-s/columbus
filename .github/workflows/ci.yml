@@ -54,6 +54,13 @@ jobs:
       - name: Benchmark (Linux)
         if: runner.os == 'Linux' && (success() || failure())
         run: cargo test -p columbus-mcp --test benchmark --locked -- --ignored --nocapture
+      # R-101: a 280 MB CSV in a files folder, the engine under a 2 GB
+      # address-space cap: listed, queried and described, peak memory under
+      # 500 MB ("LARGE ... engine_peak_rss_mb=..."), and a stopped engine
+      # reported plainly.
+      - name: Large files (Linux)
+        if: runner.os == 'Linux' && (success() || failure())
+        run: cargo test -p columbus-mcp --test files --locked -- --ignored --nocapture large_csv
 
   python-worker:
     name: Python worker

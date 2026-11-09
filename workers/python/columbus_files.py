@@ -31,9 +31,11 @@ that can't be read is left out and listed under ``skipped`` with the cause
 
 from __future__ import annotations
 
+import codecs
 import csv
 import hashlib
 import io
+import itertools
 import json
 import math
 import os
@@ -76,8 +78,10 @@ SKIP_RESERVED = "its name is reserved by GeoPackage; rename the file"
 SKIP_NOT_GEOJSON = "a .json file that isn't GeoJSON (no FeatureCollection, Feature or geometry), so not data Columbus reads"
 SKIP_EMPTY_SHEET = "an empty sheet"
 
-# The cache's own table of where each dataset came from.
+# The cache's own table of where each dataset came from, and of files whose
+# conversion ran past a call's time (R-101).
 META = "columbus_sources"
+SLOW = "columbus_slow"
 _RESERVED = ("gpkg_", "sqlite_", "rtree_")
 
 WKT_NAMES = ("geometry", "wkt", "the_geom", "shape")
@@ -114,6 +118,103 @@ class Table:
         self.checks = checks
         self.has_z = has_z
         self.crs_wkt = crs_wkt
+        # None: work it out from the blobs as they are written.
+        self.has_m: bool | None = None
+
+    def prepare(self, tick: Callable[[], None]) -> None:
+        """Read what the table needs to know before it is written (types,
+        geometry type, CRS, extent). A table read whole knows already."""
+
+    def batches(self, size: int, tick: Callable[[], None]):
+        """(rows, geometry blobs or None) in batches of ``size`` rows."""
+        for at in range(0, len(self.rows), size):
+            tick()
+            yield self.rows[at:at + size], None if self.geoms is None else self.geoms[at:at + size]
+
+
+# R-101: rows written to the cache per batch, and how often a long read
+# checks the call's time.
+BATCH = 50_000
+
+# R-101: the largest file of each format Columbus converts. CSV and Excel
+# are streamed into the cache in batches, so memory stays flat whatever
+# their size; their limit keeps a conversion inside one call's time. For
+# CSV that is 300 MB at the default 120 s (a conservative 2.5 MB a second:
+# a 300 MB file of points converts in about 90 s on a slow two-core
+# machine), and more where the connection allows longer calls
+# (limits.seconds). GeoJSON, KML and FlatGeobuf are read whole by GDAL
+# (about 6 to 8 times their size in memory), and GeoParquet whole by
+# geopandas, whose memory follows its rows and columns (about 150 bytes a
+# value) rather than its compressed size; their limits keep the engine
+# within about 2 GB. A larger file is listed under ``skipped`` with its
+# size and the fix, and the rest of the folder works. A file under its
+# limit whose conversion still runs past the call's time is stopped and
+# skipped the same way (``_TooSlow``). COLUMBUS_FILES_MAX_MB sets one size
+# limit for every format instead (for tests and administrators).
+MAX_BYTES = {
+    ".csv": 256 << 20,
+    ".xlsx": 64 << 20,
+    ".geojson": 256 << 20,
+    ".json": 256 << 20,
+    ".kml": 256 << 20,
+    ".fgb": 256 << 20,
+    ".parquet": 256 << 20,
+    ".geoparquet": 256 << 20,
+}
+CSV_BYTES_PER_SECOND = 5 << 19  # 2.5 MB
+MAX_PARQUET_CELLS = 10_000_000
+
+
+def max_bytes(ext: str, timeout_s: float = 0) -> int:
+    env = os.environ.get("COLUMBUS_FILES_MAX_MB", "").strip()
+    if env:
+        try:
+            return max(0, int(float(env) * (1 << 20)))
+        except ValueError:
+            pass
+    limit = MAX_BYTES.get(ext, 256 << 20)
+    if ext == ".csv":
+        limit = max(limit, int(timeout_s * CSV_BYTES_PER_SECOND))
+    return limit
+
+
+def size_text(n: int) -> str:
+    """1.2 GB, 340 MB, 12 KB: sizes as an analyst reads them."""
+    for unit, scale in (("GB", 1 << 30), ("MB", 1 << 20), ("KB", 1 << 10)):
+        if n >= scale:
+            v = n / scale
+            return f"{v:.1f} {unit}" if v < 10 else f"{v:.0f} {unit}"
+    return f"{n} bytes"
+
+
+_FIX_BIG = "split it into smaller files, or convert it to a GeoPackage and connect that (a GeoPackage is read directly, at any size)"
+_RAISE = "; an administrator can also raise limits.seconds"
+
+
+def _too_big(path: str, ext: str, size: int, timeout_s: float) -> str | None:
+    """Why a file is too large to convert (R-14: the cause and the fix), or
+    None."""
+    limit = max_bytes(ext, timeout_s)
+    by_time = ext == ".csv" and not os.environ.get("COLUMBUS_FILES_MAX_MB", "").strip()
+    if size > limit:
+        within = f" within one call's {timeout_s:g} s" if by_time and timeout_s else ""
+        return (f"it is {size_text(size)}, more than the {size_text(limit)} Columbus converts from one {ext} file{within}; "
+                f"{_FIX_BIG}{_RAISE if by_time else ''}")
+    if ext in (".parquet", ".geoparquet") and not os.environ.get("COLUMBUS_FILES_MAX_MB", "").strip():
+        try:
+            import pyarrow.parquet as pq
+
+            meta = pq.read_metadata(path)
+        except Exception:  # noqa: BLE001 - a broken file is reported when it is read
+            return None
+        if meta.num_rows * max(1, meta.num_columns) > MAX_PARQUET_CELLS:
+            return (f"it is {size_text(size)} holding {meta.num_rows:,} rows of {meta.num_columns} columns, more than the "
+                    f"{MAX_PARQUET_CELLS:,} values Columbus converts from one GeoParquet file; {_FIX_BIG}")
+    return None
+
+
+class _TooSlow(Exception):
+    """A conversion that ran past the call's time limit."""
 
 
 def _check(id: str, severity: str, message: str, detail: Any = None, fix: str | None = None) -> dict[str, Any]:
@@ -250,7 +351,7 @@ def _layers(path: str, ext: str) -> list[tuple[str, bool]]:
     return out
 
 
-def scan(conn: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def scan(conn: dict[str, Any], timeout_s: float = 0) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """The datasets a connection offers and the files it skips, each with
     its would-be dataset ``name``, its ``file`` (relative, forward slashes)
     and, for skipped ones, the ``reason``."""
@@ -266,7 +367,7 @@ def scan(conn: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any
 
     def offer(parts: list[str], ext: str, full: str, layer: str | None) -> None:
         name = dataset_name(parts, ext, layer)
-        if name.lower().startswith(_RESERVED) or name.lower() == META:
+        if name.lower().startswith(_RESERVED) or name.lower() in (META, SLOW):
             skip(parts, ext, SKIP_RESERVED, layer)
             return
         found.append({"name": name, "file": "/".join(parts), "path": full, "ext": ext, "layer": layer})
@@ -304,6 +405,9 @@ def scan(conn: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any
                 skip(parts, ext, REFUSED[ext])
             elif ext == ".json" and not _quiet(lambda: is_geojson(full), True):
                 skip(parts, ext, SKIP_NOT_GEOJSON)
+            elif big := _too_big(full, ext, _quiet(lambda: os.stat(full).st_size, 0), timeout_s):
+                # R-101: refused before anything reads it.
+                skip(parts, ext, big)
             elif ext in LAYERED:
                 try:
                     layers = _layers(full, ext)
@@ -372,6 +476,20 @@ _DATETIME = re.compile(r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+
 _INT64 = 2**63 - 1
 
 
+def _all_lines(pattern: re.Pattern) -> re.Pattern:
+    """Lines separated by newlines, every one matching ``pattern``."""
+    body = pattern.pattern.lstrip("^").rstrip("$")
+    return re.compile(f"(?:{body})(?:\\n(?:{body}))*")
+
+
+# The same tests as above over many values at once (one per line).
+_ANY_TEXT = re.compile(r"^[+-]?0\d|^[+-]?\d{1,3}(,\d{3})+(\.\d*)?$", re.M)
+_ALL_INTEGER = _all_lines(_INTEGER)
+_ALL_REAL = _all_lines(_REAL)
+_ALL_DATE = _all_lines(_DATE)
+_ALL_DATETIME = _all_lines(_DATETIME)
+
+
 def _is_date(v: str) -> bool:
     try:
         date.fromisoformat(v)
@@ -388,25 +506,74 @@ def _is_datetime(v: str) -> bool:
         return False
 
 
+class _Typer:
+    """R-4 for one column, a batch of values at a time, so a file is typed
+    without holding its cells: TEXT if any value has a leading zero before
+    another digit or a thousands separator; else INTEGER if every value is a
+    whole number, REAL if every value is a number, DATE or DATETIME if every
+    value is ISO 8601; else TEXT. Empty cells don't count (they are null).
+    Each test is an "any" or an "every" over all the values, so batches give
+    the same answer as the whole column."""
+
+    __slots__ = ("seen", "text", "can_int", "can_real", "can_date", "can_dt")
+
+    def __init__(self) -> None:
+        self.seen = self.text = False
+        self.can_int = self.can_real = self.can_date = self.can_dt = True
+
+    def done(self) -> bool:
+        """Nothing more can change the answer (it is TEXT)."""
+        return self.text or not (self.can_int or self.can_real or self.can_date or self.can_dt)
+
+    def add(self, values) -> None:
+        if self.done():
+            return
+        vals = {v.strip() for v in values if v is not None}
+        vals.discard("")
+        if not vals:
+            return
+        self.seen = True
+        if any("\n" in v or "\r" in v for v in vals):
+            # A value over more than one line: no number or date has one, so
+            # the column is TEXT (unless a value has a leading zero, which is
+            # TEXT too).
+            self.can_int = self.can_real = self.can_date = self.can_dt = False
+            return
+        # Each test on all the values at once, one per line, so the regular
+        # expressions run over one string (the same tests, much faster).
+        joined = "\n".join(vals)
+        if _ANY_TEXT.search(joined):
+            self.text = True
+            return
+        if self.can_int and not (_ALL_INTEGER.fullmatch(joined)
+                                 and all(abs(int(v)) <= _INT64 for v in vals if len(v) > 18)):
+            self.can_int = False
+        if self.can_real and not _ALL_REAL.fullmatch(joined):
+            self.can_real = False
+        if self.can_date and not (_ALL_DATE.fullmatch(joined) and all(_is_date(v) for v in vals)):
+            self.can_date = False
+        if self.can_dt and not (_ALL_DATETIME.fullmatch(joined) and all(_is_datetime(v) for v in vals)):
+            self.can_dt = False
+
+    def type(self) -> str:
+        if not self.seen or self.text:
+            return "TEXT"
+        if self.can_int:
+            return "INTEGER"
+        if self.can_real:
+            return "REAL"
+        if self.can_date:
+            return "DATE"
+        if self.can_dt:
+            return "DATETIME"
+        return "TEXT"
+
+
 def column_type(values: list[str | None]) -> str:
-    """R-4: TEXT if any value has a leading zero before another digit or a
-    thousands separator; else INTEGER if every value is a whole number, REAL
-    if every value is a number, DATE or DATETIME if every value is ISO 8601;
-    else TEXT. Empty cells don't count (they are null)."""
-    vals = [v.strip() for v in values if v is not None and v.strip() != ""]
-    if not vals:
-        return "TEXT"
-    if any(_LEADING_ZERO.match(v) or _THOUSANDS.match(v) for v in vals):
-        return "TEXT"
-    if all(_INTEGER.match(v) and abs(int(v)) <= _INT64 for v in vals):
-        return "INTEGER"
-    if all(_REAL.match(v) for v in vals):
-        return "REAL"
-    if all(_DATE.match(v) and _is_date(v) for v in vals):
-        return "DATE"
-    if all(_DATETIME.match(v) and _is_datetime(v) for v in vals):
-        return "DATETIME"
-    return "TEXT"
+    """R-4 for a whole column (see ``_Typer``)."""
+    t = _Typer()
+    t.add(values)
+    return t.type()
 
 
 def _convert(v: str | None, t: str) -> Any:
@@ -448,17 +615,6 @@ def unique_headers(raw: list[str], what: str = "Headers") -> tuple[list[str], li
     return out, checks
 
 
-def _decode(raw: bytes) -> tuple[str, list[dict[str, Any]]]:
-    """R-5: UTF-8 (a BOM is dropped), else Windows-1252 with a warning."""
-    try:
-        return raw.decode("utf-8-sig"), []
-    except UnicodeDecodeError:
-        return raw.decode("cp1252", errors="replace"), [_check(
-            "file.encoding", "warn", "The file isn't UTF-8; it was read as Windows-1252",
-            detail={"encoding": "cp1252"},
-            fix="If letters look wrong, save the file as CSV UTF-8 and query it again")]
-
-
 def _point_blob(x: float, y: float, srs_id: int) -> bytes:
     """A GeoPackage point: header without an envelope, then little-endian WKB."""
     return b"GP\x00\x01" + struct.pack("<i", srs_id) + struct.pack("<BIdd", 1, 1, x, y)
@@ -475,6 +631,16 @@ _TYPE_NAMES = {0: "POINT", 1: "LINESTRING", 3: "POLYGON", 4: "MULTIPOINT", 5: "M
                6: "MULTIPOLYGON", 7: "GEOMETRYCOLLECTION"}
 
 
+def _blobs(shapes, srs_id: int) -> list[bytes | None]:
+    """GeoPackage blobs for shapely geometries (None for no geometry)."""
+    import shapely
+
+    # Dimension 4: each geometry keeps its own Z and M (a 2D one stays 2D).
+    wkbs = shapely.to_wkb(shapes, byte_order=1, output_dimension=4, flavor="iso")
+    bounds = shapely.bounds(shapes)
+    return [None if s is None else _geom_blob(b, bd, srs_id) for s, b, bd in zip(shapes, wkbs, bounds)]
+
+
 def _shapes_to_blobs(shapes, srs_id: int):
     """(GeoPackage blobs, geometry type name, extent, has Z) for shapely
     geometries (None for no geometry). The blobs are written with srs id
@@ -483,10 +649,7 @@ def _shapes_to_blobs(shapes, srs_id: int):
 
     real = [s for s in shapes if s is not None and not s.is_empty]
     has_z = bool(real) and bool(shapely.has_z(real).any())
-    # Dimension 4: each geometry keeps its own Z and M (a 2D one stays 2D).
-    wkbs = shapely.to_wkb(shapes, byte_order=1, output_dimension=4, flavor="iso")
-    bounds = shapely.bounds(shapes)
-    geoms = [None if s is None else _geom_blob(b, bd, srs_id) for s, b, bd in zip(shapes, wkbs, bounds)]
+    geoms = _blobs(shapes, srs_id)
     kinds = {int(shapely.get_type_id(s)) for s in real}
     geom_type = _TYPE_NAMES.get(kinds.pop(), "GEOMETRY") if len(kinds) == 1 else "GEOMETRY"
     extent = [float(v) for v in shapely.total_bounds(real)] if real else None
@@ -519,120 +682,305 @@ def _find_col(columns: list[str], want: str) -> int | None:
     return next((i for i, c in enumerate(columns) if c.lower() == want.lower()), None)
 
 
-def read_csv(path: str, conn: dict[str, Any], _layer: str | None = None) -> Table:
+def _convert_column(values: list[Any], t: str) -> list[Any]:
+    """``_convert`` for a column of cells at once."""
+    if t == "INTEGER":
+        return [None if v is None or not (s := v.strip()) else int(s) for v in values]
+    if t == "REAL":
+        return [None if v is None or not (s := v.strip()) else float(s) for v in values]
+    if t in ("DATE", "DATETIME"):
+        return [None if v is None or not (s := v.strip()) else s for v in values]
+    return [None if v is None or not v.strip() else v for v in values]
+
+
+def _csv_encoding(path: str) -> tuple[str, str, list[dict[str, Any]]]:
+    """R-5 without holding the file: (encoding, errors, checks). UTF-8 if
+    every byte decodes as UTF-8 (a BOM is dropped), else Windows-1252 with
+    a warning."""
+    dec = codecs.getincrementaldecoder("utf-8")()
     with open(path, "rb") as f:
-        text, checks = _decode(f.read())
-    reader = csv.reader(io.StringIO(text, newline=""))
-    try:
         try:
-            header = next(reader)
-        except StopIteration:
-            header = []
-        width = len(header)
-        rows: list[list[str | None]] = []
-        long_rows = 0
-        for r in reader:
-            if not r:
-                continue
-            if len(r) > width:
-                long_rows += 1
-            rows.append((r + [""] * width)[:width])
-    except csv.Error as e:
-        raise Unreadable(f"it is not a readable CSV file: {e}") from None
-    if long_rows:
-        checks.append(_check("csv.extra_cells", "warn",
-                             f"{long_rows} rows have more cells than the header; the extra cells were left out",
-                             fix="Check the file for unquoted commas"))
-    return tabular(header, rows, checks, conn)
+            for block in iter(lambda: f.read(1 << 20), b""):
+                dec.decode(block)
+            dec.decode(b"", final=True)
+        except UnicodeDecodeError:
+            return "cp1252", "replace", [_check(
+                "file.encoding", "warn", "The file isn't UTF-8; it was read as Windows-1252",
+                detail={"encoding": "cp1252"},
+                fix="If letters look wrong, save the file as CSV UTF-8 and query it again")]
+    return "utf-8", "strict", []
 
 
-def tabular(header: list[str], rows: list[list[str | None]], checks: list[dict[str, Any]],
-            conn: dict[str, Any], what: str = "Headers") -> Table:
-    """A table of text cells (CSV, or a sheet's cells as text): headers
-    (R-6c), geometry (R-1 to R-3) and typing (R-4)."""
-    columns, more = unique_headers(header, what)
-    checks = checks + more
-    width = len(columns)
-    srs_conn = _epsg(conn)
-    wkt_i = next((i for n in WKT_NAMES if (i := _find_col(columns, n)) is not None), None)
-    pair: tuple[int, int] | None = None
-    if conn.get("x") and conn.get("y"):
-        xi, yi = _find_col(columns, str(conn["x"])), _find_col(columns, str(conn["y"]))
-        if xi is None or yi is None:
-            checks.append(_check("csv.xy_missing", "warn",
-                                 f"The connection names coordinate columns {conn['x']} and {conn['y']}, but this file has no such columns",
-                                 detail={"columns": [conn["x"], conn["y"]]}))
-        else:
-            pair = (xi, yi)
-    else:
-        for xn, yn in PAIR_NAMES:
-            xi, yi = _find_col(columns, xn), _find_col(columns, yn)
-            if xi is not None and yi is not None:
-                pair = (xi, yi)
-                break
+class _CsvSource:
+    """A CSV file's rows, read from the file each time they are asked for:
+    the header is the first row; blank rows are left out; each row is cut or
+    padded with "" to the header's width."""
 
-    geoms: list[bytes | None] | None = None
-    geom_type = srs_id = extent = None
-    has_z = False
-    if wkt_i is not None:
-        import shapely
+    def __init__(self, path: str):
+        self.path = path
+        self.long_rows = 0
+        self.checks: list[dict[str, Any]] = []
 
-        if pair is not None:
-            # R-3: WKT wins.
-            ignored = [columns[pair[0]], columns[pair[1]]]
-            checks.append(_check("csv.geometry_source", "info",
-                                 f"Geometry is read from the WKT column {columns[wkt_i]}; the coordinate columns {', '.join(ignored)} are kept as fields only",
-                                 detail={"columns": [columns[wkt_i]] + ignored}))
-        texts = [(r[wkt_i] or "").strip() or None for r in rows]
-        shapes = shapely.from_wkt(texts, on_invalid="ignore")
-        bad = sum(1 for t, s in zip(texts, shapes) if t is not None and s is None)
-        if bad:
-            checks.append(_check("csv.bad_wkt", "warn", f"{bad} rows have geometry text that isn't valid WKT; their geometry is empty",
-                                 detail={"columns": [columns[wkt_i]], "rows": bad}))
-        srs_id = srs_conn if srs_conn is not None else -1
-        if srs_conn is None:
-            checks.append(_no_crs("The WKT geometry"))
-        geoms, geom_type, extent, has_z = _shapes_to_blobs(list(shapes), srs_id)
-        drop = {wkt_i}
-    elif pair is not None:
-        xi, yi = pair
-        coords = []
-        for r in rows:
+    def _open(self):
+        raw = open(self.path, "rb")
+        try:
+            if self.encoding == "utf-8" and raw.read(3) != b"\xef\xbb\xbf":
+                raw.seek(0)  # a BOM is dropped (R-5); without one, read from the start
+            return io.TextIOWrapper(raw, encoding=self.encoding, errors=self.errors, newline="")
+        except BaseException:
+            raw.close()
+            raise
+
+    def open(self, tick: Callable[[], None]) -> list[str]:
+        self.encoding, self.errors, self.checks = _csv_encoding(self.path)
+        with self._open() as fh:
             try:
-                x, y = float((r[xi] or "").strip()), float((r[yi] or "").strip())
-                coords.append((x, y) if math.isfinite(x) and math.isfinite(y) else None)
-            except ValueError:
-                coords.append(None)
-        valid = [c for c in coords if c is not None]
-        if srs_conn is not None:
-            srs_id = srs_conn
-        elif valid and all(abs(x) <= 180 and abs(y) <= 90 for x, y in valid):
-            srs_id = 4326
-        else:
-            srs_id = -1
-            checks.append(_no_crs(f"The points in {columns[xi]}/{columns[yi]}"))
-        geoms = [None if c is None else _point_blob(c[0], c[1], srs_id) for c in coords]
-        geom_type = "POINT"
-        if valid:
-            extent = [min(x for x, _ in valid), min(y for _, y in valid),
-                      max(x for x, _ in valid), max(y for _, y in valid)]
-        missing = len(coords) - len(valid)
-        if missing:
-            checks.append(_check("csv.no_coordinates", "warn",
-                                 f"{missing} rows have no usable coordinates in {columns[xi]}/{columns[yi]}; their geometry is empty",
-                                 detail={"columns": [columns[xi], columns[yi]], "rows": missing}))
-        drop = set()
-    else:
-        checks.append(_check("crs.present", "info",
-                             "No geometry: the file has no WKT column (geometry, wkt, the_geom, shape) and no coordinate pair (lon/lat, longitude/latitude, x/y, point_x/point_y), so it is a table",
-                             fix="If it has coordinates under other names, set x and y on the connection"))
-        drop = set()
+                return next(csv.reader(fh), [])
+            except csv.Error as e:
+                raise Unreadable(f"it is not a readable CSV file: {e}") from None
 
-    keep = [i for i in range(width) if i not in drop]
-    out_cols = [columns[i] for i in keep]
-    types = [column_type([r[i] for r in rows]) for i in keep]
-    out_rows = [[_convert(r[i], t) for i, t in zip(keep, types)] for r in rows]
-    return Table(out_cols, types, out_rows, geoms, geom_type, srs_id, extent, checks, has_z=has_z)
+    def rows(self, width: int, first: bool, size: int, tick: Callable[[], None]):
+        """The rows after the header, in lists of up to ``size``."""
+        long_rows = 0
+        pad = [""] * width
+        with self._open() as fh:
+            reader = csv.reader(fh)
+            try:
+                next(reader, None)
+                while chunk := list(itertools.islice(reader, size)):
+                    tick()
+                    if not width or any(len(r) != width for r in chunk):
+                        long_rows += sum(1 for r in chunk if len(r) > width)
+                        chunk = [r if len(r) == width else (r + pad)[:width] for r in chunk if r]
+                    if chunk:
+                        yield chunk
+            except csv.Error as e:
+                raise Unreadable(f"it is not a readable CSV file: {e}") from None
+        if first:
+            self.long_rows = long_rows
+
+    def final_checks(self) -> list[dict[str, Any]]:
+        checks = list(self.checks)
+        if self.long_rows:
+            checks.append(_check("csv.extra_cells", "warn",
+                                 f"{self.long_rows} rows have more cells than the header; the extra cells were left out",
+                                 fix="Check the file for unquoted commas"))
+        return checks
+
+
+def read_csv(path: str, conn: dict[str, Any], _layer: str | None = None) -> Table:
+    """R-1 to R-6c. The file is read when the table is written, twice (types
+    first, then the rows), a batch at a time (R-101)."""
+    return _TextTable(_CsvSource(path), conn, "Headers")
+
+
+def _batched(it, size: int, tick: Callable[[], None]):
+    batch: list[Any] = []
+    for item in it:
+        batch.append(item)
+        if len(batch) >= size:
+            tick()
+            yield batch
+            batch = []
+    if batch:
+        tick()
+        yield batch
+
+
+def _guarded(gen):
+    """A file's rows, with whatever a library raises while reading them
+    said as the file being unreadable (as ``_read`` does)."""
+    it = iter(gen)
+    while True:
+        try:
+            item = next(it)
+        except StopIteration:
+            return
+        except (Unreadable, _TooSlow, w.WorkerError, MemoryError):
+            raise
+        except Exception as e:  # noqa: BLE001 - whatever a library raises, the file is unreadable
+            raise Unreadable(_cause(e)) from None
+        yield item
+
+
+class _TextTable(Table):
+    """A table of text cells (CSV, or a sheet's cells as text): headers
+    (R-6c), geometry (R-1 to R-3) and typing (R-4), read from its source in
+    two passes of ``BATCH`` rows, so memory stays flat whatever the file's
+    size (R-101): the first decides the types, geometry type, CRS and
+    extent; the second writes the rows."""
+
+    def __init__(self, source, conn: dict[str, Any], what: str):
+        super().__init__([], [], [], None, None, None, None, [])
+        self.source = source
+        self.conn = conn
+        self.what = what
+
+    def prepare(self, tick: Callable[[], None]) -> None:
+        try:
+            self._prepare(tick)
+        except (Unreadable, _TooSlow, w.WorkerError, MemoryError):
+            raise
+        except Exception as e:  # noqa: BLE001 - whatever a library raises, the file is unreadable
+            raise Unreadable(_cause(e)) from None
+
+    def _prepare(self, tick: Callable[[], None]) -> None:
+        conn = self.conn
+        header = self.source.open(tick)
+        columns, header_checks = unique_headers(header, self.what)
+        geo_checks: list[dict[str, Any]] = []
+        width = self.width = len(columns)
+        srs_conn = _epsg(conn)
+        wkt_i = next((i for n in WKT_NAMES if (i := _find_col(columns, n)) is not None), None)
+        pair: tuple[int, int] | None = None
+        if conn.get("x") and conn.get("y"):
+            xi, yi = _find_col(columns, str(conn["x"])), _find_col(columns, str(conn["y"]))
+            if xi is None or yi is None:
+                geo_checks.append(_check("csv.xy_missing", "warn",
+                                         f"The connection names coordinate columns {conn['x']} and {conn['y']}, but this file has no such columns",
+                                         detail={"columns": [conn["x"], conn["y"]]}))
+            else:
+                pair = (xi, yi)
+        else:
+            for xn, yn in PAIR_NAMES:
+                xi, yi = _find_col(columns, xn), _find_col(columns, yn)
+                if xi is not None and yi is not None:
+                    pair = (xi, yi)
+                    break
+        self.wkt_i = wkt_i
+        self.pair = pair if wkt_i is None else None
+        self.keep = [i for i in range(width) if i != wkt_i]
+        typers = [_Typer() for _ in self.keep]
+
+        # The first pass: types, and what the geometry is.
+        bad = missing = valid = 0
+        kinds: set[int] = set()
+        has_z = False
+        boxes: list[Any] = []
+        lonlat = True
+        x0 = y0 = math.inf
+        x1 = y1 = -math.inf
+        if wkt_i is not None:
+            import numpy as np
+            import shapely
+        for batch in _guarded(self.source.rows(width, True, BATCH, tick)):
+            cols = list(zip(*batch))
+            for j, i in enumerate(self.keep):
+                if not typers[j].done():
+                    typers[j].add(cols[i])
+            if wkt_i is not None:
+                texts = [(v or "").strip() or None for v in cols[wkt_i]]
+                shapes = shapely.from_wkt(texts, on_invalid="ignore")
+                given = np.array([t is not None for t in texts], dtype=bool)
+                absent = shapely.is_missing(shapes)
+                bad += int(np.count_nonzero(given & absent))
+                real = shapes[~absent & ~shapely.is_empty(shapes)]
+                if len(real):
+                    kinds.update(int(k) for k in np.unique(shapely.get_type_id(real)))
+                    has_z = has_z or bool(shapely.has_z(real).any())
+                    boxes.append(shapely.total_bounds(real))
+            elif self.pair is not None:
+                xi, yi = self.pair
+                for xs, ys in zip(cols[xi], cols[yi]):
+                    try:
+                        x, y = float((xs or "").strip()), float((ys or "").strip())
+                    except ValueError:
+                        missing += 1
+                        continue
+                    if not (math.isfinite(x) and math.isfinite(y)):
+                        missing += 1
+                        continue
+                    valid += 1
+                    if lonlat and not (abs(x) <= 180 and abs(y) <= 90):
+                        lonlat = False
+                    if x < x0:
+                        x0 = x
+                    if x > x1:
+                        x1 = x
+                    if y < y0:
+                        y0 = y
+                    if y > y1:
+                        y1 = y
+
+        if wkt_i is not None:
+            if pair is not None:
+                # R-3: WKT wins.
+                ignored = [columns[pair[0]], columns[pair[1]]]
+                geo_checks.append(_check("csv.geometry_source", "info",
+                                         f"Geometry is read from the WKT column {columns[wkt_i]}; the coordinate columns {', '.join(ignored)} are kept as fields only",
+                                         detail={"columns": [columns[wkt_i]] + ignored}))
+            if bad:
+                geo_checks.append(_check("csv.bad_wkt", "warn", f"{bad} rows have geometry text that isn't valid WKT; their geometry is empty",
+                                         detail={"columns": [columns[wkt_i]], "rows": bad}))
+            self.srs_id = srs_conn if srs_conn is not None else -1
+            if srs_conn is None:
+                geo_checks.append(_no_crs("The WKT geometry"))
+            self.geom_type = _TYPE_NAMES.get(kinds.pop(), "GEOMETRY") if len(kinds) == 1 else "GEOMETRY"
+            self.has_z = has_z
+            if boxes:
+                import warnings
+
+                b = np.array(boxes, dtype=float)
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", RuntimeWarning)  # an all-NaN column stays NaN
+                    self.extent = [float(np.nanmin(b[:, 0])), float(np.nanmin(b[:, 1])),
+                                   float(np.nanmax(b[:, 2])), float(np.nanmax(b[:, 3]))]
+            self.geoms = []  # geometry: the blobs come with each batch
+        elif self.pair is not None:
+            xi, yi = self.pair
+            if srs_conn is not None:
+                self.srs_id = srs_conn
+            elif valid and lonlat:
+                self.srs_id = 4326
+            else:
+                self.srs_id = -1
+                geo_checks.append(_no_crs(f"The points in {columns[xi]}/{columns[yi]}"))
+            self.geom_type = "POINT"
+            self.has_m = False
+            if valid:
+                self.extent = [x0, y0, x1, y1]
+            if missing:
+                geo_checks.append(_check("csv.no_coordinates", "warn",
+                                         f"{missing} rows have no usable coordinates in {columns[xi]}/{columns[yi]}; their geometry is empty",
+                                         detail={"columns": [columns[xi], columns[yi]], "rows": missing}))
+            self.geoms = []
+        else:
+            geo_checks.append(_check("crs.present", "info",
+                                     "No geometry: the file has no WKT column (geometry, wkt, the_geom, shape) and no coordinate pair (lon/lat, longitude/latitude, x/y, point_x/point_y), so it is a table",
+                                     fix="If it has coordinates under other names, set x and y on the connection"))
+        self.columns = [columns[i] for i in self.keep]
+        self.types = [t.type() for t in typers]
+        self.checks = self.source.final_checks() + header_checks + geo_checks
+
+    def batches(self, size: int, tick: Callable[[], None]):
+        """The second pass: the rows, converted, with their geometry."""
+        if self.wkt_i is not None:
+            import shapely
+        for batch in _guarded(self.source.rows(self.width, False, size, tick)):
+            cells = list(zip(*batch))
+            try:
+                cols = [_convert_column(cells[i], t) for i, t in zip(self.keep, self.types)]
+            except (ValueError, OverflowError):
+                # The first pass typed it: the file changed in between.
+                raise Unreadable("it changed while it was being read; query it again") from None
+            rows = list(zip(*cols)) if cols else [() for _ in batch]
+            if self.wkt_i is not None:
+                texts = [(v or "").strip() or None for v in cells[self.wkt_i]]
+                geoms = _blobs(shapely.from_wkt(texts, on_invalid="ignore"), self.srs_id)
+            elif self.pair is not None:
+                xi, yi = self.pair
+                srs_id = self.srs_id
+                geoms = []
+                for xs, ys in zip(cells[xi], cells[yi]):
+                    try:
+                        x, y = float((xs or "").strip()), float((ys or "").strip())
+                    except ValueError:
+                        geoms.append(None)
+                        continue
+                    geoms.append(_point_blob(x, y, srs_id) if math.isfinite(x) and math.isfinite(y) else None)
+            else:
+                geoms = None
+            yield rows, geoms
 
 
 READERS[".csv"] = read_csv
@@ -801,14 +1149,26 @@ def _text(el) -> str:
     return "".join(out)
 
 
-def _col_index(ref: str | None, fallback: int) -> int:
-    m = _CELL.match(ref or "")
-    if not m:
-        return fallback
-    n = 0
-    for ch in m.group(1):
-        n = n * 26 + ord(ch) - 64
-    return n - 1
+class _Tags(dict):
+    """Element tags without their namespace, worked out once per tag."""
+
+    def __missing__(self, tag: str) -> str:
+        self[tag] = name = _local(tag)
+        return name
+
+
+class _Columns(dict):
+    """Column letters (A, B, ..., XFD) to 0-based indexes, worked out once."""
+
+    def __missing__(self, letters: str) -> int:
+        n = 0
+        for ch in letters:
+            n = n * 26 + ord(ch) - 64
+        self[letters] = n - 1
+        return n - 1
+
+
+_COLUMNS = _Columns()
 
 
 class _Serial:
@@ -825,97 +1185,151 @@ class _Serial:
 def read_xlsx(path: str, conn: dict[str, Any], layer: str | None) -> Table:
     """R-6: one sheet; the first row with a value is the header, formulas
     give their saved values; R-6b: date-formatted cells become ISO dates and
-    General serial numbers stay numbers; then as CSV (R-1 to R-4, R-6c)."""
+    General serial numbers stay numbers; then as CSV (R-1 to R-4, R-6c).
+    The sheet is read when the table is written, a row at a time (R-101)."""
     _sniff(path, ".xlsx")
-    with _Workbook(path) as book:
-        return _read_sheet(book, path, conn, layer)
+    return _TextTable(_SheetSource(path, layer), conn, "Column headers")
 
 
-def _read_sheet(book: "_Workbook", path: str, conn: dict[str, Any], layer: str | None) -> Table:
-    part = next((p for n, p, _ in book.sheets() if n == layer), None)
-    if part is None:
-        raise Unreadable(f"it has no sheet {layer!r}")
-    sst, styles = book.shared(), book.styles()
-    rows: list[dict[int, Any]] = []
-    unsaved = errors = 0
-    with book.zip.open(part) as f:
-        for _ev, el in ET.iterparse(f, events=("end",)):
-            if _local(el.tag) != "row":
-                continue
-            cells: dict[int, Any] = {}
-            for i, c in enumerate(x for x in el if _local(x.tag) == "c"):
-                col = _col_index(c.get("r"), len(cells) and max(cells) + 1 or i)
-                t = c.get("t") or "n"
-                v = next((x.text for x in c if _local(x.tag) == "v"), None)
-                has_formula = any(_local(x.tag) == "f" for x in c)
-                if t == "inlineStr":
-                    is_ = next((x for x in c if _local(x.tag) == "is"), None)
-                    val: Any = _text(is_) if is_ is not None else None
-                elif v is None:
-                    if has_formula:
-                        unsaved += 1
-                    continue
-                elif t == "s":
-                    try:
-                        val = sst[int(v)]
-                    except (ValueError, IndexError):
-                        val = None
-                elif t in ("str", "d"):
-                    val = v
-                elif t == "b":
-                    val = "TRUE" if v.strip() in ("1", "true") else "FALSE"
-                elif t == "e":
-                    errors += 1
-                    continue
+class _SheetSource:
+    """A sheet's rows with a value, as text, read from the workbook each
+    time they are asked for (the workbook is open only while it is read:
+    Windows locks an open file). The first read finds the width and which
+    date columns have a time of day."""
+
+    def __init__(self, path: str, layer: str | None):
+        self.path = path
+        self.layer = layer
+        self.unsaved = self.errors = 0
+
+    def _cells(self):
+        """Each row with a value: {column index: str or _Serial}."""
+        with _Workbook(self.path) as book:
+            part = next((p for n, p, _ in book.sheets() if n == self.layer), None)
+            if part is None:
+                raise Unreadable(f"it has no sheet {self.layer!r}")
+            self.date1904 = book.date1904
+            sst, styles = book.shared(), book.styles()
+            unsaved = errors = 0
+            tags = _Tags()
+            with book.zip.open(part) as f:
+                # A read row is cleared; its empty element stays in the
+                # sheet's tree, a few dozen bytes for each of at most
+                # 1,048,576 rows (Excel's limit).
+                for _ev, el in ET.iterparse(f, events=("end",)):
+                    if tags[el.tag] != "row":
+                        continue
+                    cells: dict[int, Any] = {}
+                    i = -1
+                    for c in el:
+                        if tags[c.tag] != "c":
+                            continue
+                        i += 1
+                        m = _CELL.match(c.get("r") or "")
+                        col = (_COLUMNS[m.group(1)] if m else max(cells) + 1 if cells else i)
+                        t = c.get("t") or "n"
+                        v = is_ = None
+                        has_v = has_formula = False
+                        for x in c:
+                            n = tags[x.tag]
+                            if n == "v":
+                                if not has_v:
+                                    v, has_v = x.text, True
+                            elif n == "f":
+                                has_formula = True
+                            elif n == "is" and is_ is None:
+                                is_ = x
+                        if t == "inlineStr":
+                            val: Any = _text(is_) if is_ is not None else None
+                        elif v is None:
+                            if has_formula:
+                                unsaved += 1
+                            continue
+                        elif t == "s":
+                            try:
+                                val = sst[int(v)]
+                            except (ValueError, IndexError):
+                                val = None
+                        elif t in ("str", "d"):
+                            val = v
+                        elif t == "b":
+                            val = "TRUE" if v.strip() in ("1", "true") else "FALSE"
+                        elif t == "e":
+                            errors += 1
+                            continue
+                        else:
+                            try:
+                                s = int(c.get("s") or 0)
+                            except ValueError:
+                                s = 0
+                            kind = styles[s] if 0 <= s < len(styles) else None
+                            val = v.strip()
+                            if kind and _REAL.match(val):
+                                val = _Serial(float(val), kind)
+                        if val is None or (isinstance(val, str) and val == ""):
+                            continue
+                        cells[col] = val
+                    el.clear()
+                    if cells:
+                        yield cells
+            self.unsaved, self.errors = unsaved, errors
+
+    def open(self, tick: Callable[[], None]) -> list[str]:
+        width = -1
+        with_time: set[int] = set()
+        first: dict[int, Any] | None = None
+        n = 0
+        for cells in self._cells():
+            if first is None:
+                first = cells
+            width = max(width, max(cells))
+            for col, v in cells.items():
+                if isinstance(v, _Serial) and v.kind == "date" and v.value != int(v.value):
+                    with_time.add(col)
+            n += 1
+            if n % BATCH == 0:
+                tick()
+        if first is None:
+            raise Unreadable(f"the sheet {self.layer!r} is empty")
+        self.width = width + 1
+        self.with_time = with_time
+        self.base = datetime(1904, 1, 1) if self.date1904 else datetime(1899, 12, 30)
+        return ["" if v is None else str(v) for v in self._row(first)]
+
+    def _row(self, cells: dict[int, Any]) -> list[Any]:
+        out = []
+        for col in range(self.width):
+            v = cells.get(col)
+            if isinstance(v, _Serial):
+                try:
+                    when = self.base + timedelta(seconds=round(v.value * 86400))
+                except OverflowError:
+                    v = repr(v.value)
                 else:
-                    try:
-                        s = int(c.get("s") or 0)
-                    except ValueError:
-                        s = 0
-                    kind = styles[s] if 0 <= s < len(styles) else None
-                    val = v.strip()
-                    if kind and _REAL.match(val):
-                        val = _Serial(float(val), kind)
-                if val is None or (isinstance(val, str) and val == ""):
-                    continue
-                cells[col] = val
-            el.clear()
-            if cells:
-                rows.append(cells)
-    if not rows:
-        raise Unreadable(f"the sheet {layer!r} is empty")
-    width = max(max(r) for r in rows) + 1
-    grid = [[r.get(i) for i in range(width)] for r in rows]
-    base = datetime(1904, 1, 1) if book.date1904 else datetime(1899, 12, 30)
-    for col in range(width):
-        serials = [r[col] for r in grid if isinstance(r[col], _Serial)]
-        if not serials:
-            continue
-        with_time = any(s.kind == "date" and s.value != int(s.value) for s in serials)
-        for r in grid:
-            s = r[col]
-            if not isinstance(s, _Serial):
-                continue
-            try:
-                when = base + timedelta(seconds=round(s.value * 86400))
-            except OverflowError:
-                r[col] = repr(s.value)
-                continue
-            if s.kind == "time":
-                r[col] = when.strftime("%H:%M:%S")
-            elif with_time:
-                r[col] = when.strftime("%Y-%m-%dT%H:%M:%S")
-            else:
-                r[col] = when.date().isoformat()
-    header = ["" if v is None else str(v) for v in grid[0]]
-    checks: list[dict[str, Any]] = []
-    if unsaved:
-        checks.append(_check("xlsx.formulas", "warn",
-                             f"{unsaved} formula cells have no saved value (the workbook was never recalculated in Excel); they are empty",
-                             fix="Open the workbook in Excel, save it, and query it again"))
-    if errors:
-        checks.append(_check("xlsx.errors", "warn", f"{errors} cells hold an Excel error (such as #DIV/0! or #N/A); they are empty"))
-    return tabular(header, grid[1:], checks, conn, what="Column headers")
+                    if v.kind == "time":
+                        v = when.strftime("%H:%M:%S")
+                    elif col in self.with_time:
+                        v = when.strftime("%Y-%m-%dT%H:%M:%S")
+                    else:
+                        v = when.date().isoformat()
+            out.append(v)
+        return out
+
+    def rows(self, width: int, first: bool, size: int, tick: Callable[[], None]):
+        """The rows after the header, in lists of up to ``size``."""
+        cells = self._cells()
+        next(cells, None)  # the header
+        yield from _batched((self._row(c) for c in cells), size, tick)
+
+    def final_checks(self) -> list[dict[str, Any]]:
+        checks: list[dict[str, Any]] = []
+        if self.unsaved:
+            checks.append(_check("xlsx.formulas", "warn",
+                                 f"{self.unsaved} formula cells have no saved value (the workbook was never recalculated in Excel); they are empty",
+                                 fix="Open the workbook in Excel, save it, and query it again"))
+        if self.errors:
+            checks.append(_check("xlsx.errors", "warn", f"{self.errors} cells hold an Excel error (such as #DIV/0! or #N/A); they are empty"))
+        return checks
 
 
 READERS[".xlsx"] = read_xlsx
@@ -1096,6 +1510,9 @@ def _open_cache(conn: dict[str, Any], timeout_s: float) -> sqlite3.Connection:
     except sqlite3.Error as e:
         raise w.WorkerError(w.ENGINE_ERROR, f"cannot open the cache {path}: {e}") from None
     try:
+        # A larger page cache (64 MB, a fixed bound) for writing big tables
+        # and their R-trees in one transaction.
+        db.execute("PRAGMA cache_size = -65536")
         have = [r[1] for r in db.execute(f"PRAGMA table_info({META})")]
         if db.execute("PRAGMA application_id").fetchone()[0] != 0x47504B47 or have != _META_COLUMNS:
             db.execute("BEGIN IMMEDIATE")
@@ -1226,21 +1643,24 @@ def _read(d: dict[str, Any], conn: dict[str, Any]) -> Table:
         raise Unreadable(_cause(e)) from None
 
 
-def _build(db: sqlite3.Connection, d: dict[str, Any], t: Table, stamp: tuple[str, int, int], sha: str) -> None:
-    """Write the table, in the caller's transaction."""
+def _build(db: sqlite3.Connection, d: dict[str, Any], t: Table, stamp: tuple[str, int, int], sha: str,
+           tick: Callable[[], None] = lambda: None) -> None:
+    """Write the table, in the caller's transaction, ``BATCH`` rows at a
+    time (R-101)."""
     name = d["name"]
+    t.prepare(tick)
     old = db.execute(f"SELECT builds FROM {META} WHERE dataset = ?", (name,)).fetchone()
     _drop(db, name)
     taken = {c.lower() for c in t.columns}
     fid = next(n for n in ("fid", "fid_", "columbus_fid") if n not in taken)
     gcol = None
     srs_id = t.srs_id
-    geoms = t.geoms
-    if geoms is not None:
+    custom = False
+    if t.geoms is not None:
         gcol = next(n for n in ("geometry", "geom", "geometry_") if n not in taken)
         if t.crs_wkt is not None:
             srs_id = _custom_srs(db, t.crs_wkt)
-            geoms = [None if g is None else g[:4] + struct.pack("<i", srs_id) + g[8:] for g in geoms]
+            custom = True
         elif srs_id not in (-1, 0):
             _srs(db, srs_id)
     cols = [f"{_q(fid)} INTEGER PRIMARY KEY AUTOINCREMENT"] + [f"{_q(c)} {ty}" for c, ty in zip(t.columns, t.types)]
@@ -1248,21 +1668,42 @@ def _build(db: sqlite3.Connection, d: dict[str, Any], t: Table, stamp: tuple[str
         cols.append(f"{_q(gcol)} {t.geom_type or 'GEOMETRY'}")
     db.execute(f"CREATE TABLE {_q(name)} ({', '.join(cols)})")
     names = [_q(c) for c in t.columns] + ([_q(gcol)] if gcol else [])
-    if names:
-        insert = f"INSERT INTO {_q(name)} ({', '.join(names)}) VALUES ({', '.join('?' for _ in names)})"
+    # Keys are given (1, 2, ... as AUTOINCREMENT gives a new table), so each
+    # row's R-tree entry is written with it, in the same pass.
+    insert = f"INSERT INTO {_q(name)} ({', '.join([_q(fid)] + names)}) VALUES ({', '.join('?' for _ in range(len(names) + 1))})"
+    rtree = _rtree(db, name, gcol) if gcol else None
+    # M is looked for in the blobs unless the table knows (CSV points have none).
+    look_for_m = t.has_m is None
+    has_m = bool(t.has_m)
+    first = 1
+    for rows, geoms in t.batches(BATCH, tick):
+        if not names:
+            continue
         if gcol:
-            db.executemany(insert, (r + [g] for r, g in zip(t.rows, geoms)))
+            if custom:
+                geoms = [None if g is None else g[:4] + struct.pack("<i", srs_id) + g[8:] for g in geoms]
+            if look_for_m and not has_m:
+                has_m = any(_blob_has_m(g) for g in geoms)
+            db.executemany(insert, ((i, *r, g) for i, r, g in zip(itertools.count(first), rows, geoms)))
+            if rtree:
+                db.executemany(rtree, ((i, *env) for i, g in zip(itertools.count(first), geoms)
+                                       if (env := _blob_envelope(g)) is not None))
         else:
-            db.executemany(insert, t.rows)
+            db.executemany(insert, ((i, *r) for i, r in zip(itertools.count(first), rows)))
+        first += len(rows)
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
     ext = t.extent or [None] * 4
     if gcol:
         db.execute("INSERT INTO gpkg_contents VALUES (?,?,?,?,?,?,?,?,?,?)",
                    (name, "features", name, "", now, *ext, srs_id))
-        has_m = any(_blob_has_m(g) for g in geoms)
         db.execute("INSERT INTO gpkg_geometry_columns VALUES (?,?,?,?,?,?)",
                    (name, gcol, t.geom_type or "GEOMETRY", srs_id, 1 if t.has_z else 0, 1 if has_m else 0))
-        _rtree(db, name, fid, gcol)
+        if rtree:
+            db.execute("CREATE TABLE IF NOT EXISTS gpkg_extensions (table_name TEXT, column_name TEXT, extension_name TEXT NOT NULL, "
+                       "definition TEXT NOT NULL, scope TEXT NOT NULL, "
+                       "CONSTRAINT ge_tce UNIQUE (table_name, column_name, extension_name))")
+            db.execute("INSERT OR REPLACE INTO gpkg_extensions VALUES (?,?,?,?,?)",
+                       (name, gcol, "gpkg_rtree_index", "http://www.geopackage.org/spec120/#extension_rtree", "write-only"))
     else:
         db.execute("INSERT INTO gpkg_contents VALUES (?,?,?,?,?,NULL,NULL,NULL,NULL,NULL)", (name, "attributes", name, "", now))
     db.execute(f"INSERT INTO {META} VALUES (?,?,?,?,?,?,?,?,?,?)",
@@ -1277,6 +1718,12 @@ def _blob_envelope(blob: bytes | None) -> tuple[float, float, float, float] | No
         return None
     flags = blob[3]
     endian = "<" if flags & 0x01 else ">"
+    if not (flags >> 1) & 0x07 and len(blob) == 29 and blob[8] == 1 and blob[9:13] == b"\x01\x00\x00\x00":
+        # A 2D point in little-endian WKB (every CSV point): read directly.
+        x, y = struct.unpack_from("<2d", blob, 13)
+        if math.isnan(x) or math.isnan(y):
+            return None
+        return x, x, y, y
     if (flags >> 1) & 0x07:
         minx, maxx, miny, maxy = struct.unpack_from(endian + "4d", blob, 8)
     else:
@@ -1291,25 +1738,20 @@ def _blob_envelope(blob: bytes | None) -> tuple[float, float, float, float] | No
     return minx, maxx, miny, maxy
 
 
-def _rtree(db: sqlite3.Connection, name: str, fid: str, gcol: str) -> None:
+def _rtree(db: sqlite3.Connection, name: str, gcol: str) -> str | None:
     """The table's R-tree (GeoPackage's RTree Spatial Index extension), so
-    a bbox query reads only the rows whose envelope meets the box (T-13).
-    The cache is written only here, whole, so the R-tree needs none of the
-    extension's triggers. An SQLite without the R-tree module goes
-    without: queries then read every row, as before."""
+    a bbox query reads only the rows whose envelope meets the box (T-13):
+    made empty here, and the INSERT for its entries returned, which the
+    build runs for each batch of rows. The cache is written only by the
+    build, whole, so the R-tree needs none of the extension's triggers. An
+    SQLite without the R-tree module goes without (None): queries then
+    read every row, as before."""
     rtree = f"rtree_{name}_{gcol}"
     try:
         db.execute(f"CREATE VIRTUAL TABLE {_q(rtree)} USING rtree(id, minx, maxx, miny, maxy)")
     except sqlite3.OperationalError:
-        return
-    boxes = [(i, *env) for i, blob in db.execute(f"SELECT {_q(fid)}, {_q(gcol)} FROM {_q(name)}")
-             if (env := _blob_envelope(blob)) is not None]
-    db.executemany(f"INSERT INTO {_q(rtree)} VALUES (?,?,?,?,?)", boxes)
-    db.execute("CREATE TABLE IF NOT EXISTS gpkg_extensions (table_name TEXT, column_name TEXT, extension_name TEXT NOT NULL, "
-               "definition TEXT NOT NULL, scope TEXT NOT NULL, "
-               "CONSTRAINT ge_tce UNIQUE (table_name, column_name, extension_name))")
-    db.execute("INSERT OR REPLACE INTO gpkg_extensions VALUES (?,?,?,?,?)",
-               (name, gcol, "gpkg_rtree_index", "http://www.geopackage.org/spec120/#extension_rtree", "write-only"))
+        return None
+    return f"INSERT INTO {_q(rtree)} VALUES (?,?,?,?,?)"
 
 
 def _tx(db: sqlite3.Connection, fn) -> Any:
@@ -1323,24 +1765,67 @@ def _tx(db: sqlite3.Connection, fn) -> Any:
         raise
 
 
+def _slow_get(db: sqlite3.Connection, stamp: tuple[str, int, int]) -> float | None:
+    """R-101: the time limit this version of the file's conversion ran past
+    before, if it did. It is skipped at once while the limit is no longer,
+    rather than tried again on every call."""
+    try:
+        row = db.execute(f"SELECT seconds FROM {SLOW} WHERE source = ? AND size = ? AND mtime_ns = ?", stamp).fetchone()
+    except sqlite3.OperationalError:
+        return None  # a cache from before R-101
+    return None if row is None else float(row[0])
+
+
+def _slow_put(db: sqlite3.Connection, stamp: tuple[str, int, int], seconds: float) -> None:
+    def put() -> None:
+        db.execute(f"CREATE TABLE IF NOT EXISTS {SLOW} (source TEXT PRIMARY KEY, size INTEGER NOT NULL, "
+                   "mtime_ns INTEGER NOT NULL, seconds REAL NOT NULL)")
+        db.execute(f"INSERT OR REPLACE INTO {SLOW} VALUES (?,?,?,?)", (*stamp, seconds))
+
+    _tx(db, put)
+
+
+def _slow_reason(size: int, timeout_s: float) -> str:
+    return (f"converting it ({size_text(size)}) takes longer than the {timeout_s:g} s one call may run; "
+            f"{_FIX_BIG}{_RAISE}")
+
+
 def sync(conn: dict[str, Any], timeout_s: float) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Bring the cache up to date with the folder: build what is missing or
-    stale, drop what has gone or can't be read. (datasets, skipped)."""
-    datasets, skipped = scan(conn)
+    stale, drop what has gone or can't be read. (datasets, skipped).
+
+    Smaller files are built first, and a build that runs past the call's
+    time is stopped and its file skipped, so one huge file can't hold up
+    the rest of the folder (R-101)."""
+    datasets, skipped = scan(conn, timeout_s)
     deadline = time.monotonic() + timeout_s
     db = _open_cache(conn, timeout_s)
     hashes: dict[str, str] = {}
     failed: dict[str, str] = {}
+
+    def tick() -> None:
+        if time.monotonic() > deadline:
+            raise _TooSlow()
+
+    def size(d: dict[str, Any]) -> int:
+        return _quiet(lambda: os.stat(d["path"]).st_size, 0)
+
     try:
-        for d in datasets:
-            if time.monotonic() > deadline:
-                raise w.WorkerError(w.TIMEOUT, f"converting the files took more than {timeout_s:g} s")
+        for d in sorted(datasets, key=size):
             try:
                 stamp = _stamp(d)
             except OSError:
-                failed[d["name"]] = "it disappeared while being read"
+                failed[d["name"]] = "it could not be read (it disappeared while being read)"
                 continue
             if _state(db, d, stamp, None) == "fresh":
+                continue
+            slow = _slow_get(db, stamp)
+            if slow is not None and slow >= timeout_s:
+                failed[d["name"]] = _slow_reason(stamp[1], slow)
+                continue
+            if time.monotonic() > deadline:
+                failed[d["name"]] = ("it was not converted: converting the folder's other files used all of this call's "
+                                     f"{timeout_s:g} s; list the connection again to convert it")
                 continue
 
             def bring_up_to_date(d=d, stamp=stamp):
@@ -1352,12 +1837,15 @@ def sync(conn: dict[str, Any], timeout_s: float) -> tuple[list[dict[str, Any]], 
                 elif state == "stale":
                     if d["path"] not in hashes:
                         hashes[d["path"]] = sha256_file(d["path"])
-                    _build(db, d, _read(d, conn), stamp, hashes[d["path"]])
+                    _build(db, d, _read(d, conn), stamp, hashes[d["path"]], tick)
 
             try:
                 _tx(db, bring_up_to_date)
             except (Unreadable, OSError) as e:
-                failed[d["name"]] = _cause(e)
+                failed[d["name"]] = f"it could not be read ({_cause(e)})"
+            except _TooSlow:
+                _slow_put(db, stamp, timeout_s)
+                failed[d["name"]] = _slow_reason(stamp[1], timeout_s)
         current = {d["name"] for d in datasets if d["name"] not in failed}
         gone = [r[0] for r in db.execute(f"SELECT dataset FROM {META}") if r[0] not in current]
         if gone:
@@ -1368,7 +1856,7 @@ def sync(conn: dict[str, Any], timeout_s: float) -> tuple[list[dict[str, Any]], 
     out = []
     for d in datasets:
         if d["name"] in failed:
-            skipped.append({"name": d["name"], "file": d["file"], "reason": f"it could not be read ({failed[d['name']]})"})
+            skipped.append({"name": d["name"], "file": d["file"], "reason": failed[d["name"]]})
             continue
         d["checks"] = notes.get(d["name"], [])
         out.append(d)
