@@ -8,9 +8,9 @@ on:
   workflow_dispatch:
     inputs:
       what:
-        description: "data: rebuild the sample data; pictures: retake the pictures"
+        description: "data: rebuild the sample data; pictures: retake the pictures; render: screenshots of the README as GitHub shows it"
         type: choice
-        options: [pictures, data]
+        options: [pictures, data, render]
         default: pictures
 
 permissions:
@@ -96,3 +96,34 @@ jobs:
           path: |
             docs/images/
             app/desktop/e2e/out/frames/
+
+  readme-render:
+    name: README as GitHub shows it
+    if: inputs.what == 'render'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --require-hashes -r workers/python/requirements-ci.txt
+      - run: python -m playwright install --with-deps chromium
+      - name: GitHub's Markdown CSS
+        run: |
+          mkdir -p /tmp/css && cd /tmp/css
+          npm pack github-markdown-css@5.9.0 --silent
+          tar xzf github-markdown-css-5.9.0.tgz
+      - name: Render and screenshot (1280 and 390 wide, light and dark)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python .github/scripts/render_readme.py /tmp/css/package render-out
+      - name: The screenshots, in the log
+        run: |
+          echo "=====BEGIN readme-render====="
+          tar czf - render-out/*.png | base64 -w 200
+          echo "=====END readme-render====="
+      - uses: actions/upload-artifact@v4
+        with:
+          name: readme-render
+          path: render-out/

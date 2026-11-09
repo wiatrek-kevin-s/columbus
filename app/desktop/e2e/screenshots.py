@@ -75,6 +75,19 @@ def prepare(root):
         for p in root.iterdir():
             shutil.rmtree(p) if p.is_dir() and not p.is_symlink() else p.unlink()
     root.mkdir(parents=True, exist_ok=True)
+    # The server and the engine's Python where an installed Columbus keeps
+    # them, so Settings shows plain paths (not the build's or the runner's).
+    (root / "Columbus").mkdir()
+    for exe in ["columbus-mcp", "columbus-confine", "columbus-workflow"]:
+        if (GATEWAY.parent / exe).exists():
+            shutil.copy2(GATEWAY.parent / exe, root / "Columbus" / exe)
+    import site
+    import venv
+    env_dir = root / "Columbus" / "engine" / "venv"
+    venv.EnvBuilder(symlinks=True).create(env_dir)
+    # It sees this Python's packages (which may itself be a venv).
+    lib = next((env_dir / "lib").glob("python3*")) / "site-packages"
+    (lib / "_engine.pth").write_text("\n".join(site.getsitepackages()) + "\n")
     gis = root / "GIS"
     austin = gis / "Austin"
     crash_dir = gis / "Crash records"
@@ -330,12 +343,12 @@ def run(theme, facts, frames):
     srv = stand_in(assistant)
     col = ROOT / "Columbus"
     env = dict(os.environ, HOME=str(ROOT),
-               COLUMBUS_APP_API_KEY="sk-ant-demo", COLUMBUS_APP_API_BASE=f"http://127.0.0.1:{srv.server_port}",
-               COLUMBUS_SERVER=str(GATEWAY), COLUMBUS_APP_TEST_CONFIRM="allow",
+               COLUMBUS_APP_API_KEY="sk-ant-example-0000", COLUMBUS_APP_API_BASE=f"http://127.0.0.1:{srv.server_port}",
+               COLUMBUS_SERVER=str(col / "columbus-mcp"), COLUMBUS_APP_TEST_CONFIRM="allow",
                COLUMBUS_POLICY=str(col / "policy.yaml"), COLUMBUS_CONNECTIONS=str(col / "connections"),
                COLUMBUS_WORKSPACES=str(col / "workspaces"), COLUMBUS_AUDIT_DIR=str(col / "audit"),
                COLUMBUS_LIVE_DIR=str(col / "live"), COLUMBUS_TOOLS=str(col / "tools"),
-               COLUMBUS_WORKER=str(REPO / "workers/python/columbus_worker.py"), COLUMBUS_PYTHON=sys.executable,
+               COLUMBUS_WORKER=str(REPO / "workers/python/columbus_worker.py"), COLUMBUS_PYTHON=str(col / "engine" / "venv" / "bin" / "python"),
                COLUMBUS_APPROVALS_BROWSER="none", XDG_CONFIG_HOME=str(ROOT / ".config"), XDG_DATA_HOME=str(ROOT / ".local/share"),
                COLUMBUS_UI_DIR=str(REPO / "app/ui/dist"), COLUMBUS_LOG="warn")
     d, proc = guard.driver(env, APP)
@@ -468,15 +481,11 @@ def run(theme, facts, frames):
             wait.until(EC.visibility_of_element_located((By.ID, "tool-review")))
             s.shot("tool-review", 250, size=(1280, 800))
             d.find_element(By.ID, "review-close").click()
-            for page, name in [("#/home", "home"), ("#/documents", "documents"), ("#/activity/audit", "audit"),
-                               ("#/activity/approvals", "approvals"), ("#/settings/ai", "settings")]:
+            for page, name in [("#/home", "home"), ("#/activity/audit", "audit"),
+                               ("#/settings/ai", "settings")]:
                 d.execute_script("location.hash = arguments[0]", page)
                 time.sleep(1.5)
                 s.shot(name, 250, size=(1280, 800))
-            # The old name of the connections picture, for the app tour.
-            shutil.copyfile(OUT / "tour-connections-light.png", OUT / "connections.png")
-            shutil.copyfile(OUT / "tour-approval-light.png", OUT / "approval.png")
-            shutil.copyfile(OUT / "tour-workflow-run-light.png", OUT / "workflow-run.png")
     finally:
         guard.stop(d, proc)
         srv.shutdown()

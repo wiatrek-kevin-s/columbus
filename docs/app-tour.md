@@ -36,3 +36,26 @@ The same server runs without the app. A few commands people use most:
 | `columbus-mcp audit verify <file>` | Checks an audit log's hash chain |
 
 Every command is in the [technical reference](reference.md).
+
+## Pictures
+
+Taken from the app by [`screenshots.py`](../app/desktop/e2e/screenshots.py), on [public data for central Austin](images/DATA-CREDITS.md).
+
+<table>
+  <tr>
+    <td width="50%"><img src="images/home.png" alt="The Home page: requests waiting, a tool and a workflow to review, recent chats"><br><b>Home</b>: what needs you.</td>
+    <td width="50%"><img src="images/chat.png" alt="A chat: the assistant's steps, its answer table, an export it was allowed to make, and the map beside it"><br><b>Chats</b>: steps, answer and map side by side.</td>
+  </tr>
+  <tr>
+    <td><img src="images/chat-map-first.png" alt="The same chat with the map in the middle and the chat on the side"><br><b>Map first</b>: the map in the middle, for reviewing.</td>
+    <td><img src="images/tool-review.png" alt="A tool the assistant proposed, with its code, before it is installed"><br><b>Tools</b>: read line by line before installing.</td>
+  </tr>
+  <tr>
+    <td><img src="images/workflow-review.png" alt="A proposed workflow, in plain words and in full, before it is approved"><br><b>Workflows</b>: a proposal, read before it is approved.</td>
+    <td><img src="images/audit.png" alt="The audit log: every call and decision, with a check of the chain"><br><b>Activity › Audit log</b>: every call, and every decision.</td>
+  </tr>
+  <tr>
+    <td><img src="images/settings.png" alt="Settings: the AI for chats, its model and thinking level"><br><b>Settings</b>: the AI for chats, and the rest.</td>
+    <td></td>
+  </tr>
+</table>
