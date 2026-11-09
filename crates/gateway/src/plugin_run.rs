@@ -58,6 +58,7 @@ impl Gateway {
         approval_id: Option<String>,
         request: &Value,
         test_run: bool,
+        environment: Option<String>,
     ) -> Result<Json<Output<RunToolResult>>, String> {
         let full = format!("{}.{tool}", p.id());
         // A test run's outputs say so wherever they are listed.
@@ -75,6 +76,34 @@ impl Gateway {
         if let Some(extra) = args.keys().find(|k| !spec.params.contains_key(*k)) {
             return Err(self.deny(ctx, rec, format!("{full} has no parameter {extra:?}")));
         }
+        // F-5, F-6: a personal tool runs in its environment (or the one a
+        // workflow step names), checked now, at every run; never a
+        // trusted one, never at level B. Otherwise the engine's Python.
+        if environment.is_some() && !p.personal_tool {
+            return Err(self.deny(
+                ctx,
+                rec,
+                format!("environment applies only to personal tools; {full} runs in the engine's Python"),
+            ));
+        }
+        let env_id = environment
+            .clone()
+            .or_else(|| p.manifest.environment.clone())
+            .filter(|_| p.personal_tool);
+        if p.personal_tool {
+            // F-8: the environment's id, or null for the engine's Python.
+            rec.environment = Some(env_id.clone());
+        }
+        let senv = match &env_id {
+            None => None,
+            Some(id) => {
+                let policy = self.state.policy();
+                match self.tool_environment_checked(p.id(), id, &policy).await {
+                    Ok(x) => Some(x),
+                    Err(e) => return Err(self.deny(ctx, rec, e)),
+                }
+            }
+        };
         // A personal tool keeps nothing between runs: one run at a time in a
         // session (as scripts), a new worker started from a checked copy of
         // exactly the installed files, an empty folder of its own, and all
@@ -97,7 +126,10 @@ impl Gateway {
             if let Err(e) = host.stage_code(&p, &code) {
                 return Err(self.deny(ctx, rec, e));
             }
-            match host.fresh_worker(&p, &code).await {
+            match host
+                .fresh_worker(&p, &code, senv.as_ref().map(|(_, te)| te))
+                .await
+            {
                 Ok(w) => Arc::new(w),
                 Err(e) => return Err(self.deny(ctx, rec, e)),
             }
@@ -478,6 +510,7 @@ impl Gateway {
                 code: None,
                 standing: None,
                 always_covers: None,
+                script_session: false,
             };
             match self.seek_approval(ctx, ask).await {
                 Ok(crate::approval_flow::Sought::Granted(id)) => rec.approval = Some(id),
@@ -796,6 +829,7 @@ impl Gateway {
                 "tool": full, "plugin": p.id(), "plugin_version": p.manifest.version,
                 "plugin_hash": p.hash, "run": run_id, "params": params, "approval": rec.approval,
                 "personal_tool": p.personal_tool, "test_run": test_run,
+                "environment": senv.as_ref().map(|(se, _)| se.provenance()),
             }],
             "checks": checks,
             "outputs": saved.iter().map(|f| f.handle.clone()).collect::<Vec<_>>(),

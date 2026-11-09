@@ -412,7 +412,22 @@ async fn check(state: &State, request: &str, seen: &mut Seen) -> Result<Plan, St
                 built.id
             ));
         }
-        let warnings = lint_tool(state, &args, &label).await?;
+        let mut warnings = lint_tool(state, &args, &label).await?;
+        // F-5: a shared tool names an environment only by its id (never a
+        // path); it runs in the recipient's own environment of that name.
+        if let Some(e) = &built.manifest.environment {
+            use columbus_shared::environments::{self as envs, Status, Trust};
+            let v = envs::view(&state.paths.environments, e);
+            let mine = matches!(v.status, Status::Ready)
+                && v.env.as_ref().is_some_and(|x| {
+                    x.trust == Trust::Governed && x.confinement == envs::Confinement::A
+                });
+            warnings.push(if mine {
+                format!("It runs in your environment {e} (whoever shared it used their own environment of that name; check yours has what the tool needs).")
+            } else {
+                format!("It runs in an environment named {e}, and you have no governed, ready environment of that name: until you register your own Python as {e} (Settings, Environments, or `columbus-mcp env add {e} --python <path>`), the tool stops with \"needs you\".")
+            });
+        }
         let replaces = store::list_installed(tools_root)
             .into_iter()
             .find(|x| x.id == built.id)

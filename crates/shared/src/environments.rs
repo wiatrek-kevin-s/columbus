@@ -35,6 +35,73 @@ use crate::policy::EnvironmentsPolicy;
 pub const CONFIRMED: &str = ".confirmed.json";
 /// The probe's time limit (R-13).
 pub const PROBE_SECONDS: u64 = 120;
+/// What every approval card for a run in a trusted environment states
+/// (D-3, REQ-15), word for word.
+pub const TRUSTED_CARD: &str = "Columbus cannot enforce your connection rules for this run: the script can read, write and send data anywhere you can.";
+/// The licence state when `arcpy.ProductInfo()` says `NotInitialized`
+/// (REQ-16), word for word.
+pub const NOT_INITIALIZED: &str = "not initialized: open ArcGIS Pro and sign in; Named User licences lapse after about 14 days without Pro being opened";
+/// The marker on arcpy and trusted environments until H-2 passes (D-13).
+pub const EXPERIMENTAL: &str = "(experimental)";
+/// The data label every output of a trusted run carries, with the
+/// session's labels (REQ-15).
+pub fn environment_label(id: &str) -> String {
+    format!("environment:{id}")
+}
+
+/// The probe's time limit: [`PROBE_SECONDS`]. Test builds only (debug
+/// assertions on) may shorten it with `COLUMBUS_TEST_PROBE_SECONDS`, so
+/// the hung-probe test need not wait two minutes; it can never lengthen it,
+/// and release builds never read it.
+pub fn probe_limit() -> Duration {
+    let full = Duration::from_secs(PROBE_SECONDS);
+    if cfg!(debug_assertions) {
+        if let Some(s) = std::env::var("COLUMBUS_TEST_PROBE_SECONDS")
+            .ok()
+            .and_then(|v| v.trim().parse::<u64>().ok())
+        {
+            return Duration::from_secs(s.clamp(1, PROBE_SECONDS));
+        }
+    }
+    full
+}
+
+/// `arcpy.ProductInfo()` in plain words (REQ-16). The values are Esri's
+/// (ArcGIS Pro ProductInfo documentation, checked 2026-11-08):
+/// `ArcInfo`, `ArcEditor` and `ArcView` are the Advanced, Standard and
+/// Basic licence levels; `ArcServer`, `Engine` and `EngineGeoDB` are not
+/// Pro licences; `NotInitialized` means no licence is set. Anything else
+/// is shown, cut to letters and digits, as unrecognized.
+pub fn licence_words(raw: Option<&str>) -> String {
+    match raw.map(str::trim) {
+        Some("ArcInfo") => "Advanced".into(),
+        Some("ArcEditor") => "Standard".into(),
+        Some("ArcView") => "Basic".into(),
+        Some("ArcServer") => "ArcGIS Server (not an ArcGIS Pro licence)".into(),
+        Some("Engine") => "ArcGIS Engine (not an ArcGIS Pro licence)".into(),
+        Some("EngineGeoDB") => {
+            "ArcGIS Engine Geodatabase Update (not an ArcGIS Pro licence)".into()
+        }
+        Some("NotInitialized") => NOT_INITIALIZED.into(),
+        Some(other) => {
+            let shown: String = other
+                .chars()
+                .filter(char::is_ascii_alphanumeric)
+                .take(40)
+                .collect();
+            format!("unrecognized ({shown}): open ArcGIS Pro and check its licence")
+        }
+        None => "unknown: arcpy imported but arcpy.ProductInfo() did not answer".into(),
+    }
+}
+
+/// Whether `arcpy.ProductInfo()` names a working ArcGIS Pro licence level.
+pub fn licence_ready(raw: Option<&str>) -> bool {
+    matches!(
+        raw.map(str::trim),
+        Some("ArcInfo" | "ArcEditor" | "ArcView")
+    )
+}
 /// What every refusal of a changed environment says (R-13b).
 pub const CONFIRM_AGAIN: &str = "confirm it again in Settings";
 /// Most environments listed.
@@ -184,14 +251,53 @@ impl Environment {
     }
 
     /// The probe in plain words for `whoami` and the terminal: "arcpy: no",
-    /// or "arcpy: yes, licence ArcInfo". (T-8 words the licence fully.)
+    /// or "arcpy: yes (experimental); ArcGIS Pro licence: Advanced" (D-13,
+    /// REQ-16).
     pub fn arcpy_line(&self) -> String {
-        if !self.probe.arcpy {
-            return "arcpy: no".into();
+        match self.licence_line() {
+            None => "arcpy: no".into(),
+            Some(l) => format!("arcpy: yes {EXPERIMENTAL}; {l}"),
         }
-        match &self.probe.licence {
-            Some(l) => format!("arcpy: yes, licence {l}"),
-            None => "arcpy: yes, licence unknown".into(),
+    }
+
+    /// "ArcGIS Pro licence: Advanced", or the not-initialized sentence, for
+    /// an environment where arcpy imports; None where it doesn't. Workflow
+    /// approval (T-9) shows this as a warning.
+    pub fn licence_line(&self) -> Option<String> {
+        self.probe.arcpy.then(|| {
+            format!(
+                "ArcGIS Pro licence: {}",
+                licence_words(self.probe.licence.as_deref())
+            )
+        })
+    }
+
+    /// The trust in plain words, marked experimental for trusted (D-13).
+    pub fn trust_line(&self) -> String {
+        match self.trust {
+            Trust::Governed => "governed: scripts run confined, with extracts only".into(),
+            Trust::Trusted => format!(
+                "trusted {EXPERIMENTAL}: scripts run unconfined as the person, each run approved; Columbus cannot enforce connection rules for them"
+            ),
+        }
+    }
+
+    /// Whether arcpy or trusted makes this environment experimental (D-13).
+    pub fn experimental(&self) -> bool {
+        self.probe.arcpy || self.trust == Trust::Trusted
+    }
+
+    /// Personal tools and workflow steps run only in governed environments
+    /// (Part 5, F-5, F-6): a trusted one runs only through interactive
+    /// `run_python`, each run approved. The check T-9 calls for a tool's
+    /// or a step's `environment`, at proposal and at every run.
+    pub fn usable_in_tools_and_steps(&self) -> Result<(), String> {
+        match self.trust {
+            Trust::Governed => Ok(()),
+            Trust::Trusted => Err(format!(
+                "environment {} is trusted; trusted environments run only through run_python, each run approved by the person, never inside a personal tool or a workflow step. Use a governed environment",
+                self.id
+            )),
         }
     }
 }
@@ -559,7 +665,7 @@ pub fn probe(python: &Path, limit: Duration) -> Result<Found, String> {
         } => (stdout, stderr, success),
         Ran::TimedOut => {
             return Err(format!(
-                "the probe of {shown} ran longer than {} s and was stopped",
+                "the probe of {shown} ran longer than {} s and was stopped, with everything it started; nothing was recorded. Check that this Python starts on its own (for an ArcGIS Pro clone, open ArcGIS Pro once and sign in), then try again",
                 limit.as_secs()
             ))
         }
@@ -592,19 +698,21 @@ pub(crate) enum Ran {
 }
 
 /// Run a command to its end or `limit`, ending it and what it started on
-/// time-out (its process group on Unix, its process tree on Windows).
+/// time-out (its process group on Unix, its job object on Windows; see
+/// [`crate::proctree`]). Whatever it left running when it ended is ended
+/// too, and output is read on threads that are never waited on past a
+/// short grace once the tree is gone, so a left-behind process holding
+/// the pipes cannot make this wait.
 pub(crate) fn run_limited(mut cmd: std::process::Command, limit: Duration) -> Ran {
     use std::io::Read;
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        cmd.process_group(0);
-    }
+    crate::proctree::prepare(&mut cmd);
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => return Ran::Failed(e.to_string()),
     };
+    let mut tree = crate::proctree::Tree::of(&child);
     let read = |r: Option<Box<dyn Read + Send>>| {
+        let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let mut buf = Vec::new();
             if let Some(mut r) = r {
@@ -612,8 +720,9 @@ pub(crate) fn run_limited(mut cmd: std::process::Command, limit: Duration) -> Ra
                 // Read the rest so the program never blocks on a full pipe.
                 let _ = std::io::copy(&mut r, &mut std::io::sink());
             }
-            String::from_utf8_lossy(&buf).into_owned()
-        })
+            let _ = tx.send(String::from_utf8_lossy(&buf).into_owned());
+        });
+        rx
     };
     let out = read(
         child
@@ -633,41 +742,26 @@ pub(crate) fn run_limited(mut cmd: std::process::Command, limit: Duration) -> Ra
             Ok(Some(s)) => break Some(s),
             Ok(None) if started.elapsed() >= limit => break None,
             Ok(None) => std::thread::sleep(Duration::from_millis(50)),
-            Err(e) => return Ran::Failed(e.to_string()),
+            Err(e) => {
+                tree.kill();
+                let _ = child.kill();
+                return Ran::Failed(e.to_string());
+            }
         }
     };
+    // Its whole tree: on time-out, and what it left running when it ended.
+    tree.kill();
     let Some(status) = status else {
-        kill_tree(&mut child);
+        let _ = child.kill();
         let _ = child.wait();
         return Ran::TimedOut;
     };
-    #[cfg(unix)]
-    kill_tree(&mut child);
+    let grace = Duration::from_secs(5);
     Ran::Done {
-        stdout: out.join().unwrap_or_default(),
-        stderr: err.join().unwrap_or_default(),
+        stdout: out.recv_timeout(grace).unwrap_or_default(),
+        stderr: err.recv_timeout(grace).unwrap_or_default(),
         success: status.success(),
     }
-}
-
-fn kill_tree(child: &mut std::process::Child) {
-    #[cfg(unix)]
-    {
-        let pid = child.id() as i32;
-        if pid > 1 {
-            // It leads its own group.
-            unsafe { libc::kill(-pid, libc::SIGKILL) };
-        }
-    }
-    #[cfg(windows)]
-    {
-        let _ = std::process::Command::new("taskkill")
-            .args(["/T", "/F", "/PID", &child.id().to_string()])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
-    }
-    let _ = child.kill();
 }
 
 /// The cheap freshness signal: the interpreter file's size and time, and
@@ -1003,6 +1097,46 @@ mod tests {
         for bad in ["rm", "pythonw-evil", "sh", "python3-config", "ipython"] {
             assert!(!looks_like_python(Path::new(bad)), "{bad}");
         }
+    }
+
+    #[test]
+    fn licence_states_read_in_plain_words() {
+        assert_eq!(licence_words(Some("ArcInfo")), "Advanced");
+        assert_eq!(licence_words(Some("ArcEditor")), "Standard");
+        assert_eq!(licence_words(Some("ArcView")), "Basic");
+        assert_eq!(licence_words(Some("NotInitialized")), NOT_INITIALIZED);
+        assert!(licence_words(Some("ArcServer")).contains("not an ArcGIS Pro licence"));
+        assert!(licence_words(Some("EngineGeoDB")).contains("Geodatabase Update"));
+        let odd = licence_words(Some("Weird<b>\nx"));
+        assert!(odd.starts_with("unrecognized (Weirdbx)"), "{odd}");
+        assert!(licence_words(None).starts_with("unknown"));
+        assert!(licence_ready(Some("ArcView")) && !licence_ready(Some("NotInitialized")));
+        assert_eq!(PROBE_SECONDS, 120);
+        let mut env = Environment {
+            id: "pro".into(),
+            python: "/opt/py/bin/python".into(),
+            trust: Trust::Governed,
+            confinement: Confinement::A,
+            created_by: CreatedBy::Person,
+            description: None,
+            probe: probe_record(&found(), "2026-11-08T10:00:00-06:00"),
+            confirmed_at: "2026-11-08T10:00:00-06:00".into(),
+        };
+        assert_eq!(env.arcpy_line(), "arcpy: no");
+        assert!(env.licence_line().is_none() && !env.experimental());
+        assert!(env.usable_in_tools_and_steps().is_ok());
+        env.probe.arcpy = true;
+        env.probe.licence = Some("ArcInfo".into());
+        assert_eq!(
+            env.arcpy_line(),
+            "arcpy: yes (experimental); ArcGIS Pro licence: Advanced"
+        );
+        env.trust = Trust::Trusted;
+        assert!(env.trust_line().starts_with("trusted (experimental)"));
+        assert!(env
+            .usable_in_tools_and_steps()
+            .unwrap_err()
+            .contains("never inside a personal tool or a workflow step"));
     }
 
     #[test]

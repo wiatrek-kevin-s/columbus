@@ -233,6 +233,10 @@ pub struct Step {
     /// default the run stops there).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub continue_on_fail: bool,
+    /// F-6, personal tool steps only: the registered governed environment
+    /// the step runs in (its id); absent: the tool's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -535,6 +539,19 @@ pub fn check(text: &str) -> Result<Workflow, String> {
                 STEP_TOOLS.join(", ")
             ));
         }
+        if let Some(e) = &s.environment {
+            if personal_tool_id(&s.tool).is_none() {
+                return Err(format!(
+                    "{at}: environment applies only to a personal tool step (personal.<name>.run); {} runs in Columbus's engine",
+                    s.tool
+                ));
+            }
+            if !crate::environments::id_ok(e) {
+                return Err(format!(
+                    "{at}: environment {e:?} is not an environment id (a-z, 0-9 and -, at most 40)"
+                ));
+            }
+        }
         match &s.args {
             Value::Null => {}
             Value::Object(_) => {}
@@ -817,10 +834,14 @@ pub fn describe(wf: &Workflow) -> Vec<String> {
             args = format!("{}…", args.chars().take(240).collect::<String>());
         }
         out.push(format!(
-            "Step {} ({}): {}{}{}",
+            "Step {} ({}): {}{}{}{}",
             i + 1,
             s.id,
             s.tool,
+            s.environment
+                .as_deref()
+                .map(|e| format!(" in environment {e}"))
+                .unwrap_or_default(),
             if args.is_empty() { "" } else { " " },
             args
         ));
@@ -871,6 +892,70 @@ pub fn describe(wf: &Workflow) -> Vec<String> {
     out
 }
 
+/// The environment a personal tool step runs in (F-6): its own, or its
+/// tool's (F-5, read from the installed `plugin.yaml`), or None for the
+/// engine's Python.
+pub fn step_environment(step: &Step, tools_root: &Path) -> Option<String> {
+    if let Some(e) = &step.environment {
+        return Some(e.clone());
+    }
+    let id = personal_tool_id(&step.tool)?;
+    let bytes = read_plain(
+        &tools_root.join(&id).join(tools::MANIFEST),
+        tools::MAX_MANIFEST,
+    )
+    .ok()?;
+    let v: serde_yaml::Value = serde_yaml::from_slice(&bytes).ok()?;
+    v.get("environment")
+        .and_then(|e| e.as_str())
+        .map(String::from)
+}
+
+/// Warnings to show when the person approves a workflow (REQ-18): for each
+/// step in a registered environment, the arcpy licence line where that
+/// environment has arcpy, and why a step would stop with "needs you" where
+/// its environment is missing, `changed`, invalid or trusted.
+pub fn environment_warnings(wf: &Workflow, tools_root: &Path, envs_dir: &Path) -> Vec<String> {
+    use crate::environments::{self as envs, Status, Trust};
+    let mut out = Vec::new();
+    for s in &wf.steps {
+        let Some(id) = step_environment(s, tools_root) else {
+            continue;
+        };
+        let v = envs::view(envs_dir, &id);
+        match (&v.status, &v.env) {
+            (_, Some(e)) if e.trust == Trust::Trusted => out.push(format!(
+                "Step {} names environment {id}, which is trusted: trusted environments never run in a workflow, so this step will stop with \"needs you\".",
+                s.id
+            )),
+            (_, Some(e)) if e.confinement == envs::Confinement::B => out.push(format!(
+                "Step {} names environment {id}, which runs with network (confinement B): workflow steps run without network, so this step will stop with \"needs you\".",
+                s.id
+            )),
+            (Status::Ready, Some(e)) => {
+                if let Some(l) = e.licence_line() {
+                    out.push(format!(
+                        "Step {} runs in environment {id}, which has arcpy {}: {l}. If the licence is not available when the workflow runs, the step fails.",
+                        s.id,
+                        envs::EXPERIMENTAL
+                    ));
+                }
+            }
+            (Status::Changed(why), _) => out.push(format!(
+                "Step {} runs in environment {id}, which changed since you confirmed it ({why}): the step will stop with \"needs you\" until you {}.",
+                s.id,
+                envs::CONFIRM_AGAIN
+            )),
+            (st, _) => out.push(format!(
+                "Step {} runs in environment {id}, which can't be used here ({}): the step will stop with \"needs you\".",
+                s.id,
+                st.reason().unwrap_or("not registered")
+            )),
+        }
+    }
+    out
+}
+
 /// What the app shows of a workflow.
 #[derive(Debug, Clone, Serialize)]
 pub struct WorkflowView {
@@ -878,8 +963,13 @@ pub struct WorkflowView {
     pub name: String,
     pub purpose: String,
     pub fingerprint: String,
-    /// The plain-words account (see [`describe`]).
+    /// The plain-words account (see [`describe`]), then any warnings.
     pub plain: Vec<String>,
+    /// What the person should know before approving it (REQ-18): the arcpy
+    /// licence of an environment a step runs in, or why a step would stop
+    /// with "needs you". Also at the end of `plain`, marked "Warning:".
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
     /// The schedule, for the app's scheduler: days `mon` … `sun` and the time.
     pub days: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -915,6 +1005,7 @@ fn view(id: &str, dir: &Path, tools_root: &Path) -> WorkflowView {
         purpose: String::new(),
         fingerprint: String::new(),
         plain: vec![],
+        warnings: vec![],
         days: vec![],
         at: None,
         tools: vec![],
@@ -950,6 +1041,9 @@ fn view(id: &str, dir: &Path, tools_root: &Path) -> WorkflowView {
     v.name = wf.name.clone();
     v.purpose = wf.purpose.clone();
     v.plain = describe(&wf);
+    v.warnings = environment_warnings(&wf, tools_root, &crate::environments::environments_dir());
+    v.plain
+        .extend(v.warnings.iter().map(|w| format!("Warning: {w}")));
     v.days = wf.days().into_iter().map(String::from).collect();
     v.at = wf.at().map(|(h, m)| format!("{h:02}:{m:02}"));
     v.tools = wf.steps.iter().map(|s| s.tool.clone()).collect();

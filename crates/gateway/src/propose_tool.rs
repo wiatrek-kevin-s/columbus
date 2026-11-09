@@ -252,6 +252,14 @@ pub struct ProposeToolArgs {
     /// dict. No network, subprocesses, environment, credentials or
     /// absolute paths. Do not import columbus_plugin.
     pub code: String,
+    /// A Python environment the person registered (whoami lists them) to
+    /// run the tool in, instead of the engine's Python: a governed one at
+    /// confinement level A (no network), for packages the engine lacks.
+    /// Only its id is saved with the tool, never its path. Trusted
+    /// environments are refused (they run only through run_python). Needs
+    /// organization policy environments.allow.
+    #[serde(default)]
+    pub environment: Option<String>,
     /// The test run on this session's data, before the person sees it.
     #[serde(deserialize_with = "object_or_json_text")]
     pub test: TestDecl,
@@ -591,6 +599,7 @@ fn trimmed(a: &ProposeToolArgs) -> ProposeToolArgs {
     a.description = t(&a.description);
     a.not_for = t(&a.not_for);
     a.version = a.version.as_deref().map(t);
+    a.environment = a.environment.as_deref().map(t);
     for i in a.inputs.values_mut() {
         i.description = t(&i.description);
         i.crs = i.crs.as_deref().map(t);
@@ -636,6 +645,13 @@ pub(crate) fn build(a: &ProposeToolArgs) -> Result<Built, Vec<String>> {
         problems.push(format!(
             "version {version:?} must be three numbers, like 1.0.0"
         ));
+    }
+    if let Some(e) = &a.environment {
+        if !columbus_shared::environments::id_ok(e) {
+            problems.push(format!(
+                "environment {e:?} is not an environment id (a-z, 0-9 and -, at most 40; whoami lists them)"
+            ));
+        }
     }
 
     let mut params: BTreeMap<String, ParamSpec> = BTreeMap::new();
@@ -907,6 +923,7 @@ pub(crate) fn build(a: &ProposeToolArgs) -> Result<Built, Vec<String>> {
         entry: store::ENTRY.into(),
         engine_env: None,
         confinement: None,
+        environment: a.environment.clone(),
         tools: BTreeMap::from([(store::TOOL.to_string(), tool)]),
     };
     let yaml = match serde_json::to_value(&manifest)
@@ -932,7 +949,18 @@ pub(crate) fn build(a: &ProposeToolArgs) -> Result<Built, Vec<String>> {
                     ],
                 );
             }
-            ordered(v, &["id", "name", "version", "runtime", "entry", "tools"])
+            ordered(
+                v,
+                &[
+                    "id",
+                    "name",
+                    "version",
+                    "runtime",
+                    "entry",
+                    "environment",
+                    "tools",
+                ],
+            )
         })
         .and_then(|v| serde_yaml::to_string(&v).map_err(|e| e.to_string()))
     {
@@ -1164,6 +1192,7 @@ pub(crate) fn args_from_files(
         "checks": t.check_notes,
         "examples": t.examples,
         "code": code,
+        "environment": m.environment,
         "test": {"inputs": test},
     });
     serde_json::from_value(tidy(args))
@@ -1402,6 +1431,33 @@ impl Gateway {
             ));
         }
 
+        // Its environment (F-5): registered, governed, level A, ready, and
+        // allowed by policy, checked before the person is asked (and again
+        // at the test run and every run after).
+        let senv = match &built.manifest.environment {
+            None => None,
+            Some(id) => match self.tool_environment(id, &policy) {
+                Ok(se) => Some(se),
+                Err(e) => {
+                    return Err(self.deny(
+                        &ctx,
+                        rec,
+                        format!(
+                            "the tool was not proposed: {}",
+                            e.trim_start_matches(crate::script_tools::ENV_NEEDS_YOU)
+                                .trim()
+                        ),
+                    ))
+                }
+            },
+        };
+        let where_runs = senv.as_ref().map_or(String::new(), |se| {
+            format!(
+                " in environment {} (Python {}, governed, level A)",
+                se.env.id, se.env.probe.python_version
+            )
+        });
+
         // The test inputs: Columbus's own files, unchanged, bound by content.
         let mut inputs = Vec::new();
         for (name, handle) in &args.test.inputs {
@@ -1421,7 +1477,7 @@ impl Gateway {
         // The person approves the test run, reading the code, as for a script.
         let lines = built.entry.lines().count();
         let summary = format!(
-            "Test-run a tool your assistant wants to save, \"{}\" ({}.{}, {lines} lines, {}), on {}; no network; it can write only its own folder.{} If it runs, it waits for you in the Columbus app (Settings, Tools): it is added only if you install it there.",
+            "Test-run a tool your assistant wants to save, \"{}\" ({}.{}, {lines} lines, {}){where_runs}, on {}; no network; it can write only its own folder.{} If it runs, it waits for you in the Columbus app (Settings, Tools): it is added only if you install it there.",
             built.manifest.display_name(),
             built.id,
             store::TOOL,
@@ -1441,6 +1497,7 @@ impl Gateway {
             "hash": built.hash,
             "inputs": inputs.iter().map(|i| json!({"name": i.name, "handle": i.handle, "sha256": i.sha256})).collect::<Vec<_>>(),
             "params": args.test.params,
+            "environment": senv.as_ref().map(|e| json!({"id": e.env.id, "confirmed": e.env.confirmation_hash()})),
         });
         let detail = json!({
             "code": built.entry,
@@ -1449,7 +1506,8 @@ impl Gateway {
             "lines": lines,
             "files": inputs.iter().map(|i| json!({"name": format!("{} ({})", i.name, i.handle), "rows": i.meta.rows})).collect::<Vec<_>>(),
             "labels": from,
-            "arguments": {"tool": format!("{}.{}", built.id, store::TOOL), "network": "none", "writes": "its own folder only", "params": args.test.params},
+            "arguments": {"tool": format!("{}.{}", built.id, store::TOOL), "network": "none", "writes": "its own folder only", "params": args.test.params,
+                "environment": senv.as_ref().map_or_else(|| "the engine's Python".to_string(), |e| format!("{} (Python {}, {}, {})", e.env.id, e.env.probe.python_version, e.env.trust_line(), e.env.arcpy_line()))},
         });
         let ask = Ask {
             tool: "propose_tool",
@@ -1463,6 +1521,7 @@ impl Gateway {
             code: Some(&built.entry),
             standing: None,
             always_covers: None,
+            script_session: false,
         };
         match self.seek_approval(&ctx, ask).await {
             Ok(Sought::Granted(id)) => rec.approval = Some(id),
@@ -1540,6 +1599,7 @@ impl Gateway {
                 None,
                 &request,
                 true,
+                None,
             )
             .await;
         drop(host);

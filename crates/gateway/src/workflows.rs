@@ -161,6 +161,7 @@ impl Gateway {
                 "status": "waiting_for_person",
                 "id": w.id,
                 "plain": wf::describe(&w),
+                "warnings": wf::environment_warnings(&w, self.state.tools.root(), &self.state.paths.environments),
                 "next": "Tell the person the workflow is waiting in the Columbus app under Workflows, where they read it and approve it. Nothing runs before that. After approving, they can run it once with Run now and read its report.",
             }),
             checks: vec![],
@@ -230,6 +231,33 @@ pub(crate) fn workflow_problems(
             problems.push(format!(
                 "it uses the personal tool {t}, which is not installed; install it first (propose_tool, then the person installs it in the Columbus app)"
             ));
+        }
+    }
+    // F-6, REQ-18: a step's environment (its own, or its tool's) is a
+    // registered governed one at level A; trusted ones never run in a
+    // workflow. One that is missing or changed now is a warning when the
+    // person approves it, and stops the step with "needs you" if still so.
+    for s in &w.steps {
+        let Some(e) = wf::step_environment(s, tools_root) else {
+            continue;
+        };
+        if !policy.environments.allow {
+            problems.push(format!(
+                "step {:?} runs in environment {e}, and organization policy does not allow environments (environments.allow)",
+                s.id
+            ));
+            continue;
+        }
+        let dir = columbus_shared::environments::environments_dir();
+        if let Some(env) = columbus_shared::environments::view(&dir, &e).env {
+            if let Err(why) = env.usable_in_tools_and_steps() {
+                problems.push(format!("step {:?}: {why}", s.id));
+            } else if env.confinement == columbus_shared::environments::Confinement::B {
+                problems.push(format!(
+                    "step {:?}: environment {e} runs with network (confinement B); workflow steps run at level A only (no network)",
+                    s.id
+                ));
+            }
         }
     }
     for c in &w.scope.connections {
@@ -896,6 +924,20 @@ fn resolve(v: &Value, results: &BTreeMap<String, Value>) -> Result<Value, String
     })
 }
 
+/// The first of `steps` whose result `v` refers to (`${step}` or
+/// `${step.a.b}`), if any.
+fn uses_any(v: &Value, steps: &[String]) -> Option<String> {
+    match v {
+        Value::Object(m) => m.values().find_map(|x| uses_any(x, steps)),
+        Value::Array(a) => a.iter().find_map(|x| uses_any(x, steps)),
+        Value::String(s) => wf::reference(s)
+            .map(|(step, _)| step)
+            .filter(|step| steps.iter().any(|x| x == step))
+            .map(String::from),
+        _ => None,
+    }
+}
+
 /// The layer or file a step made: its handle.
 fn main_handle(result: &Value) -> Option<String> {
     for p in [
@@ -1009,6 +1051,9 @@ async fn run_steps(
 ) -> Result<String, String> {
     let mut results: BTreeMap<String, Value> = BTreeMap::new();
     let mut warned = false;
+    // R-13c: steps that stopped because their environment can't be used;
+    // the run goes on with every step that doesn't use their results.
+    let mut stopped: Vec<String> = Vec::new();
     for s in &workflow.steps {
         let started = Local::now();
         let mut step = json!({"id": s.id, "tool": s.tool, "started": started.to_rfc3339()});
@@ -1017,6 +1062,15 @@ async fn run_steps(
                 a.push(step);
             }
         };
+        if let Some(on) = uses_any(&s.args, &stopped) {
+            step["status"] = json!("skipped");
+            step["error"] = json!(format!(
+                "it uses the result of step {on}, which needs you, so it was not run"
+            ));
+            stopped.push(s.id.clone());
+            push(record, step);
+            continue;
+        }
         let left = deadline.saturating_duration_since(Instant::now());
         if left.is_zero() {
             step["status"] = json!("stopped");
@@ -1045,10 +1099,13 @@ async fn run_steps(
                         return Err("failed".into());
                     }
                 };
-                (
-                    "run_tool".to_string(),
-                    json!({"name": s.tool, "args": if args.is_null() { json!({}) } else { args }}),
-                )
+                let mut call_args =
+                    json!({"name": s.tool, "args": if args.is_null() { json!({}) } else { args }});
+                // F-6: the step's environment, else the tool's own.
+                if let Some(e) = &s.environment {
+                    call_args["environment"] = json!(e);
+                }
+                ("run_tool".to_string(), call_args)
             }
             None if wf::STEP_TOOLS.contains(&s.tool.as_str()) => match resolve(&s.args, &results) {
                 Ok(a) => (s.tool.clone(), if a.is_null() { json!({}) } else { a }),
@@ -1090,6 +1147,11 @@ async fn run_steps(
             let needs_you = text.contains(NEEDS_YOU);
             step["status"] = json!(if needs_you { "needs_you" } else { "failed" });
             step["error"] = json!(text.chars().take(2000).collect::<String>());
+            if text.contains(crate::script_tools::ENV_NEEDS_YOU) {
+                push(record, step);
+                stopped.push(s.id.clone());
+                continue;
+            }
             push(record, step);
             return Err(if text.contains("time limit") {
                 "stopped_at_limit".into()
@@ -1121,6 +1183,10 @@ async fn run_steps(
         .iter()
         .filter_map(|(k, v)| main_handle(v).map(|h| (k.clone(), h)))
         .collect::<BTreeMap<_, _>>());
+    if !stopped.is_empty() {
+        // Nothing is exported or reviewed from a run that is missing steps.
+        return Err("needs_you".into());
+    }
     Ok(if warned {
         "succeeded_with_warnings".into()
     } else {

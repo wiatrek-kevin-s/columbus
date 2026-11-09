@@ -307,6 +307,14 @@ pub fn check_files(id: &str, manifest: &[u8], entry: &[u8]) -> Result<serde_yaml
     if s("runtime") != Some("python") || s("entry") != Some(ENTRY) {
         return Err("a personal tool is Python, with tool.py as its entry".into());
     }
+    // F-5: an environment's id, never a path (the person who installs it
+    // has their own environment of that name, or registers one).
+    if let Some(e) = v.get("environment") {
+        match e.as_str() {
+            Some(e) if crate::environments::id_ok(e) => {}
+            _ => return Err("environment is the id of a registered environment (a-z, 0-9 and -, at most 40), never a path".into()),
+        }
+    }
     if let Some(c) = v.get("confinement") {
         let level = c.get("level").and_then(|l| l.as_str()).unwrap_or("A");
         if !level.eq_ignore_ascii_case("A") {

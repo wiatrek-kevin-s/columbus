@@ -61,6 +61,16 @@ Routes with measures (M values): read and write with `engine="pyogrio", use_arro
 (`gpd.read_file(path, engine="pyogrio", use_arrow=True)`, and the same in `to_file`).
 pyogrio's plain read drops M, and GeoPandas' plain write fails on it.
 
+## Running in an environment (optional)
+
+By default a tool runs in the engine's Python. If it needs a package the engine lacks (from the
+modules the rules below allow, such as `scipy` or `networkx`), pass `environment: <id>` to
+`propose_tool`: a Python environment the person registered, governed and at level A (whoami
+lists them; never a trusted one). The test run and every later run happen in it, confined as
+always. Only the id is saved with the tool; a coworker it is shared with uses their own
+environment of that name. If it is missing or changed when the tool runs, the run stops with
+"needs you".
+
 ## Rules Columbus enforces (refused if broken)
 
 - **No network**: no `socket`, `urllib`, `requests`, `http`, cloud SDKs, URLs or

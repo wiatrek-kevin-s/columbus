@@ -797,10 +797,14 @@ async fn no_tool_can_register_or_change_an_environment() {
             !about_env || asks_only.contains(&name.as_str()),
             "a tool touches environments: {name}"
         );
-        // Only run_python takes an environment.
+        // Only the tools that run code in one take an environment's id
+        // (scripts; personal tools since T-9: F-5, F-6).
         let schema = serde_json::to_string(&t.input_schema).unwrap();
         if schema.contains("\"environment\"") {
-            assert_eq!(name, "run_python", "{schema}");
+            assert!(
+                ["run_python", "propose_tool", "run_tool"].contains(&name.as_str()),
+                "{name}: {schema}"
+            );
         }
     }
     for name in [

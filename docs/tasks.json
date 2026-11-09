@@ -180,8 +180,8 @@
           "expected": "whoami shows the 'not initialized: open ArcGIS Pro and sign in' sentence; then 'Advanced'; the hung probe is stopped at 120 s and reported; whoami marks arcpy and trusted environments experimental (D-13); A-6 recorded in the progress log"
         }
       ],
-      "status": "todo",
-      "evidence": ""
+      "status": "done",
+      "evidence": "Commits 068a440, cccad8b, 962739f, a986da2 (Windows fixes merged in 4c6fe28). crates/gateway/tests/environments_trusted.rs: trusted_runs_need_the_switch_are_approved_each_time_and_labelled (refused without allow_trusted; card has the exact 'Columbus cannot enforce your connection rules…' sentence, no session allow; outputs labelled environment:pro; export under a flow rule asks) and arcpy_licence_is_reported_in_plain_words_and_a_hung_probe_is_stopped (stub arcpy NotInitialized sentence, then 'Advanced'; hung probe stopped with its process tree; 120 s default asserted; arcpy and trusted marked experimental). Green on all 13 CI jobs: https://github.com/wiatrek-kevin-s/columbus/actions/runs/42539452409. A-6 recorded as expected."
     },
     {
       "id": "T-9",
@@ -201,8 +201,8 @@
           "expected": "one approval for the first pair; asks again on change; trusted never offers it"
         }
       ],
-      "status": "todo",
-      "evidence": ""
+      "status": "done",
+      "evidence": "Commit 50e23d6. crates/gateway/tests/environments_tools.rs: tool in a governed env runs (stand-in package only in that env; audit/provenance carry it); workflow step whose env was removed stops 'needs you', independent steps continue; shared .columbus has no interpreter path; trusted env refused for propose_tool, run_tool, propose_workflow and at run; arcpy licence warning on workflow approval; session approval: same code new inputs asks once, one changed character asks again, new session asks again, trusted/level-B/switch-off never offer it. Workspace 330 passed; pytest 216 passed 36 skipped."
     },
     {
       "id": "T-10",

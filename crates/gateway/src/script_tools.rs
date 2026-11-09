@@ -3,8 +3,9 @@
 //!
 //! The agent is untrusted, so the script is too. It runs only when
 //! organization policy allows scripts, only after the person approves that
-//! exact code with those exact inputs (every run: no "allow for this
-//! session"), and only confined at level A through the `columbus-confine`
+//! exact code with those exact inputs (every run, unless policy
+//! `scripts.session_approval` lets them allow that code for the session:
+//! the engine and governed level-A environments only), and only confined at level A through the `columbus-confine`
 //! launcher: its own run folder is the one place it can write, the Python
 //! installation the one other place it can read, and it has no network.
 //! There is no unconfined fallback, whatever `allow_unconfined_local` says.
@@ -14,6 +15,15 @@
 //! output. What it leaves in `out/` comes back as workspace outputs that
 //! carry the inputs' data labels and fails, copied out of the run folder
 //! without following links.
+//!
+//! The one exception is a **trusted** environment (D-3, REQ-15), under
+//! policy `environments.allow_trusted`: its scripts run unconfined, as the
+//! person, and the card says Columbus cannot enforce the connection rules
+//! for that run. It is still approved every run (never for the session),
+//! still gets the same run folder, copies and time limit (its process tree
+//! ended), and what it leaves in `out/` comes back carrying every data
+//! label of the session plus `environment:<id>`, so exports through
+//! Columbus still follow the flow rules.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
@@ -43,6 +53,12 @@ use crate::server::{
 /// so the code that runs is the code the person read. Python run on a file
 /// would honour `# coding: utf-7` and decode a comment into code.
 const RUN_TEXT: &str = "import sys, types; p = sys.argv[1]; t = open(p, encoding='utf-8', newline='').read(); m = types.ModuleType('__main__'); m.__file__ = p; m.__builtins__ = __builtins__; sys.modules['__main__'] = m; sys.argv = [p]; exec(compile(t, p, 'exec', dont_inherit=True), m.__dict__)";
+
+/// How a personal tool or workflow step whose environment can't be used
+/// stops (REQ-18, R-13c): it needs the person. A workflow run goes on with
+/// the steps that don't depend on it.
+pub(crate) const ENV_NEEDS_YOU: &str =
+    "needs you: the environment this tool runs in can't be used:";
 
 /// Largest script, in bytes.
 const MAX_CODE: usize = 100 * 1024;
@@ -81,23 +97,57 @@ pub struct RunPythonArgs {
     #[serde(default)]
     pub approval_id: Option<String>,
     /// A Python environment the person registered (whoami lists them, with
-    /// their Python version and packages), instead of the engine's Python.
-    /// It runs governed: confined, with the same extracts; its own
-    /// interpreter folder is the only extra folder it can read. Needs
+    /// their Python version, packages and arcpy licence), instead of the
+    /// engine's Python. A governed one runs confined, with the same
+    /// extracts; its own interpreter folder is the only extra folder it can
+    /// read. A trusted one (experimental; policy environments.allow_trusted)
+    /// runs unconfined as the person, approved every run; its outputs carry
+    /// every data label of the session plus environment:<id>. Needs
     /// organization policy environments.allow.
     #[serde(default)]
     pub environment: Option<String>,
 }
 
-/// A governed environment a script runs in, checked just now.
+/// A registered environment a script runs in, checked just now.
 pub(crate) struct ScriptEnv {
     pub(crate) env: columbus_shared::environments::Environment,
-    pub(crate) level: columbus_confine::Level,
+    /// The confinement level of a governed environment; None for a trusted
+    /// one, which runs unconfined (D-3).
+    pub(crate) level: Option<columbus_confine::Level>,
     /// The interpreter's prefixes, as confirmed: the folders it may read.
     pub(crate) read_only: Vec<PathBuf>,
 }
 
 impl ScriptEnv {
+    /// A trusted environment: unconfined, as the person (D-3, REQ-15).
+    pub(crate) fn trusted(&self) -> bool {
+        self.level.is_none()
+    }
+    /// Whether "Allow this script for the session" may ever be offered for
+    /// a run here (AF-6, REQ-17: governed level A only). Never for trusted:
+    /// every trusted run is approved on its own.
+    pub(crate) fn session_allow_possible(&self) -> bool {
+        self.level == Some(columbus_confine::Level::A)
+    }
+    /// Personal tools and workflow steps (REQ-18) take governed
+    /// environments at level A only; this says why another is refused.
+    pub(crate) fn usable_in_tools_and_steps(&self) -> Result<(), String> {
+        self.env.usable_in_tools_and_steps()?;
+        if self.level != Some(columbus_confine::Level::A) {
+            return Err(format!(
+                "environment {} runs with network (confinement B); personal tools and workflow steps run at level A only (no network), so they cannot use it. Use an environment at level A",
+                self.env.id
+            ));
+        }
+        Ok(())
+    }
+    /// The confinement profile of a personal tool running here: one per
+    /// tool and environment, so on Windows neither the environment's
+    /// scripts nor another tool are ever granted this tool's folder.
+    pub(crate) fn tool_profile(&self, tool: &str) -> String {
+        let h = columbus_shared::canon::sha256_hex(format!("{tool}\0{}", self.env.id).as_bytes());
+        format!("tool-env.{}", &h[..16])
+    }
     pub(crate) fn python(&self) -> PathBuf {
         PathBuf::from(&self.env.python)
     }
@@ -174,19 +224,33 @@ async fn capture(mut r: impl AsyncRead + Unpin) -> Captured {
     Captured { kept, total }
 }
 
-/// Ends the script's process group if the call is dropped part way (the
-/// client cancelled): nothing it started is left running. On Windows the
-/// launcher's job object does this when the launcher is killed.
-struct GroupGuard(Option<u32>);
+/// Ends the script and everything it started, at the time limit, when it
+/// ends (anything it left running), and if the call is dropped part way
+/// (the client cancelled). A confined run is the launcher's: its process
+/// group on Unix, and on Windows the launcher's own job object, closed
+/// when the launcher is killed. A direct (trusted) run is a
+/// [`columbus_shared::proctree::Tree`]: its process group on Unix, a job
+/// object of its own on Windows.
+enum GroupGuard {
+    Launcher(Option<u32>),
+    Direct(columbus_shared::proctree::Tree),
+}
 
 impl GroupGuard {
     fn kill(&mut self) {
-        #[cfg(unix)]
-        if let Some(pid) = self.0 {
-            if pid > 1 {
-                // The script was started as the leader of its own group.
-                unsafe { libc::kill(-(pid as i32), libc::SIGKILL) };
+        match self {
+            GroupGuard::Launcher(pid) => {
+                #[cfg(unix)]
+                if let Some(pid) = *pid {
+                    if pid > 1 {
+                        // The launcher was started as the leader of its own group.
+                        unsafe { libc::kill(-(pid as i32), libc::SIGKILL) };
+                    }
+                }
+                #[cfg(not(unix))]
+                let _ = pid;
             }
+            GroupGuard::Direct(tree) => tree.kill(),
         }
     }
 }
@@ -486,21 +550,22 @@ impl Gateway {
             }
             (Status::Ready, None) => return Err(format!("environment {id} cannot be used")),
         };
-        if env.trust == Trust::Trusted {
+        let level = if env.trust == Trust::Trusted {
+            // Checked at every run, so turning the switch off stops them.
             if !policy.environments.allow_trusted {
                 return Err(format!("environment {id} is trusted, and organization policy does not allow trusted environments (environments.allow_trusted is off)"));
             }
-            // T-8 runs trusted environments, unconfined and approved each time.
-            return Err(format!("environment {id} is trusted; running scripts in trusted environments is not available in this version of Columbus yet"));
-        }
-        let level = match env.confinement {
-            Confinement::A => columbus_confine::Level::A,
-            Confinement::B => {
-                if !policy.environments.allow_network {
-                    return Err(format!("environment {id} runs with network (confinement B), and organization policy does not allow that (environments.allow_network is off)"));
+            None
+        } else {
+            Some(match env.confinement {
+                Confinement::A => columbus_confine::Level::A,
+                Confinement::B => {
+                    if !policy.environments.allow_network {
+                        return Err(format!("environment {id} runs with network (confinement B), and organization policy does not allow that (environments.allow_network is off)"));
+                    }
+                    columbus_confine::Level::B
                 }
-                columbus_confine::Level::B
-            }
+            })
         };
         let read_only: Vec<PathBuf> = v
             .confirmed
@@ -523,13 +588,59 @@ impl Gateway {
         })
     }
 
+    /// The environment `id`, ready for a personal tool or workflow step to
+    /// run in (F-5, F-6, REQ-18), or why not, in words that start with
+    /// [`ENV_NEEDS_YOU`]: missing, `changed`, trusted, at level B, or no
+    /// longer allowed by policy. A trusted one is refused for what it is,
+    /// whatever the policy says.
+    pub(crate) fn tool_environment(
+        &self,
+        id: &str,
+        policy: &columbus_shared::policy::OrgPolicy,
+    ) -> Result<ScriptEnv, String> {
+        use columbus_shared::environments as envs;
+        let needs = |why: String| format!("{ENV_NEEDS_YOU} {why}");
+        if let Some(e) = envs::view(&self.state.paths.environments, id).env {
+            e.usable_in_tools_and_steps().map_err(needs)?;
+        }
+        let se = self.script_environment(id, policy).map_err(needs)?;
+        se.usable_in_tools_and_steps().map_err(needs)?;
+        Ok(se)
+    }
+
+    /// [`tool_environment`](Self::tool_environment), then the interpreter
+    /// checked confined (as `check_environment`), with the profile the
+    /// tool runs under.
+    pub(crate) async fn tool_environment_checked(
+        &self,
+        tool: &str,
+        id: &str,
+        policy: &columbus_shared::policy::OrgPolicy,
+    ) -> Result<(ScriptEnv, crate::plugins::ToolEnv), String> {
+        let se = self.tool_environment(id, policy)?;
+        let launcher = columbus_confine::ready(columbus_confine::Level::A).map_err(|e| {
+            format!("tools run only confined (level A: no network, writes only their own folder), and {e}; Columbus never runs one unconfined")
+        })?;
+        self.check_environment(Some(&launcher), &se, policy.plugins.memory_mb)
+            .await
+            .map_err(|why| format!("{ENV_NEEDS_YOU} {why}"))?;
+        let te = crate::plugins::ToolEnv {
+            python: se.python(),
+            read_only: se.read_only.clone(),
+            level: se.level,
+            profile: se.tool_profile(tool),
+        };
+        Ok((se, te))
+    }
+
     /// Check, confined exactly as its scripts will be, that the
     /// environment's interpreter starts and still sees the packages the
     /// person confirmed (R-13b). An interpreter that cannot start confined
-    /// here is refused, never run unconfined (A-1's fallback).
+    /// here is refused, never run unconfined (A-1's fallback). A trusted
+    /// environment is checked as it runs: unconfined (`launcher` None).
     pub(crate) async fn check_environment(
         &self,
-        launcher: &Path,
+        launcher: Option<&Path>,
         se: &ScriptEnv,
         memory_mb: u64,
     ) -> Result<(), String> {
@@ -554,27 +665,46 @@ impl Gateway {
             processes: Some(PROCESSES),
         };
         let python = se.python().to_string_lossy().into_owned();
-        let ran = run_under(
-            launcher,
-            &spec,
-            &run,
-            &python,
-            &envs::probe_args(false),
-            script_env(&run),
-            Duration::from_secs(envs::PROBE_SECONDS),
-        )
-        .await;
+        let ran = match launcher {
+            Some(launcher) => {
+                run_under(
+                    launcher,
+                    &spec,
+                    &run,
+                    &python,
+                    &envs::probe_args(false),
+                    script_env(&run),
+                    envs::probe_limit(),
+                )
+                .await
+            }
+            None => {
+                run_direct(
+                    &run,
+                    &python,
+                    &envs::probe_args(false),
+                    trusted_env(&run),
+                    envs::probe_limit(),
+                )
+                .await
+            }
+        };
         let _ = std::fs::remove_dir_all(&run);
         let ran = ran?;
+        let trusted = launcher.is_none();
         let unconfinable = |why: String| {
-            format!(
-                "environment {id} cannot run confined on this system ({why}), so its scripts are refused here; Columbus never runs a governed environment unconfined. Leave environment out to use the engine's Python"
-            )
+            if trusted {
+                format!("environment {id}'s interpreter did not start ({why}), so nothing was run; the person can check it and {}", envs::CONFIRM_AGAIN)
+            } else {
+                format!(
+                    "environment {id} cannot run confined on this system ({why}), so its scripts are refused here; Columbus never runs a governed environment unconfined. Leave environment out to use the engine's Python"
+                )
+            }
         };
         if ran.timed_out {
             return Err(unconfinable(format!(
-                "its interpreter did not answer within {} s",
-                envs::PROBE_SECONDS
+                "its interpreter did not answer within {} s and was stopped",
+                envs::probe_limit().as_secs()
             )));
         }
         let found = match envs::parse_probe(&ran.stdout.text()) {
@@ -614,11 +744,12 @@ impl Gateway {
         Ok(())
     }
 
-    /// Start the script under the launcher, wait for it within `timeout`,
-    /// and end everything it started.
-    async fn run_confined(
+    /// Start the script under the launcher (or, for a trusted environment,
+    /// `launcher` None, directly as the person), wait for it within
+    /// `timeout`, and end everything it started.
+    async fn run_script(
         &self,
-        launcher: &Path,
+        launcher: Option<&Path>,
         spec: &columbus_confine::Spec,
         run: &Path,
         timeout: Duration,
@@ -632,17 +763,68 @@ impl Gateway {
             .iter()
             .map(|s| s.to_string())
             .collect();
-        run_under(
-            launcher,
-            spec,
-            run,
-            &python,
-            &args,
-            script_env(run),
-            timeout,
-        )
-        .await
+        match launcher {
+            Some(launcher) => {
+                run_under(
+                    launcher,
+                    spec,
+                    run,
+                    &python,
+                    &args,
+                    script_env(run),
+                    timeout,
+                )
+                .await
+            }
+            None => run_direct(run, &python, &args, trusted_env(run), timeout).await,
+        }
     }
+}
+
+/// The environment a trusted script gets: the person's own (arcpy's
+/// licence check reads their profile, and for Named User licences the
+/// network), without any `COLUMBUS_*` setting of the gateway's, with its
+/// temporary files in the run folder.
+pub(crate) fn trusted_env(run: &Path) -> Vec<(String, OsString)> {
+    let mut env: Vec<(String, OsString)> = std::env::vars_os()
+        .filter_map(|(k, v)| {
+            let name = k.to_str()?.to_string();
+            let upper = name.to_ascii_uppercase();
+            let dropped = upper.starts_with("COLUMBUS_")
+                || ["TEMP", "TMP", "TMPDIR", "PYTHONIOENCODING"].contains(&upper.as_str());
+            (!dropped).then_some((name, v))
+        })
+        .collect();
+    let tmp = run.join("tmp").into_os_string();
+    for k in ["TEMP", "TMP", "TMPDIR"] {
+        env.push((k.into(), tmp.clone()));
+    }
+    env.push(("PYTHONIOENCODING".into(), "utf-8".into()));
+    env.push(("COLUMBUS_RUN_DIR".into(), run.as_os_str().to_owned()));
+    env
+}
+
+/// Run `program args` directly, unconfined, as the person (trusted
+/// environments only), in `cwd` with only `env`; wait for it within
+/// `timeout`, and end everything it started: its process group on Unix,
+/// a job object of its own on Windows ([`columbus_shared::proctree`]).
+pub(crate) async fn run_direct(
+    cwd: &Path,
+    program: &str,
+    args: &[String],
+    env: Vec<(String, OsString)>,
+    timeout: Duration,
+) -> Result<Ran, String> {
+    let mut cmd = tokio::process::Command::new(program);
+    cmd.args(args)
+        .current_dir(cwd)
+        .env_clear()
+        .envs(env)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    wait_for(cmd, timeout, true).await
 }
 
 /// Run `program args` under the confinement launcher, in `cwd` with only
@@ -665,13 +847,49 @@ pub(crate) async fn run_under(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
-    #[cfg(unix)]
-    cmd.process_group(0);
+    wait_for(cmd, timeout, false).await
+}
+
+/// Start `cmd`, wait for it within `timeout`, and end everything it
+/// started. `tree`: a direct run, whose tree is ended through
+/// [`columbus_shared::proctree`] (it has no launcher job object to do it).
+/// Output is read on tasks that are waited on for at most a short grace
+/// once the tree is gone, never for a pipe's end that a left-behind
+/// process could hold open.
+async fn wait_for(
+    mut cmd: tokio::process::Command,
+    timeout: Duration,
+    tree: bool,
+) -> Result<Ran, String> {
     let started = Instant::now();
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| format!("could not start the confined script: {e}"))?;
-    let mut group = GroupGuard(child.id());
+    if tree {
+        columbus_shared::proctree::prepare(cmd.as_std_mut());
+    } else {
+        #[cfg(unix)]
+        cmd.process_group(0);
+    }
+    let mut child = cmd.spawn().map_err(|e| {
+        if tree {
+            format!("could not start the script: {e}")
+        } else {
+            format!("could not start the confined script: {e}")
+        }
+    })?;
+    let mut group = if tree {
+        #[cfg(windows)]
+        let t = match (child.id(), child.raw_handle()) {
+            (Some(pid), Some(h)) => columbus_shared::proctree::Tree::adopt(pid, h),
+            _ => {
+                let _ = child.start_kill();
+                return Err("could not start the script: it ended at once".into());
+            }
+        };
+        #[cfg(unix)]
+        let t = columbus_shared::proctree::Tree::adopt(child.id().unwrap_or(0));
+        GroupGuard::Direct(t)
+    } else {
+        GroupGuard::Launcher(child.id())
+    };
     let out = tokio::spawn(capture(child.stdout.take().expect("piped stdout")));
     let err = tokio::spawn(capture(child.stderr.take().expect("piped stderr")));
     let (status, timed_out) = match tokio::time::timeout(timeout, child.wait()).await {
@@ -682,16 +900,16 @@ pub(crate) async fn run_under(
             return Err(format!("lost track of the script: {e}"));
         }
         Err(_) => {
-            // The whole tree: the group on Linux, the job (closed with
-            // the launcher) on Windows.
+            // The whole tree: the group on Unix; on Windows the run's job
+            // object, or the launcher's (closed with the launcher).
             group.kill();
             let _ = child.start_kill();
             (child.wait().await.ok(), true)
         }
     };
-    // Anything it left running in its group goes too.
+    // Anything it left running goes too, which also closes its copies of
+    // the output pipes.
     group.kill();
-    group.0 = None;
     let seconds = started.elapsed().as_secs_f64();
     let grace = Duration::from_secs(5);
     let empty = || Captured {
@@ -722,7 +940,7 @@ pub(crate) async fn run_under(
 #[tool_router(router = script_router, vis = "pub(crate)")]
 impl Gateway {
     #[tool(
-        description = "Run a Python script on workspace layers, for what the GIS tools cannot do. The person sees the full code and approves every run. It runs confined: no network, it can write only its own run folder, and it is stopped at the time limit. Inputs (name -> ws:// handle) are copied to in/<name>.<ext> and listed in inputs.json; every file it writes in out/ comes back as a workspace output carrying the inputs' data labels; stdout and stderr come back (64 KB each). Needs organization policy to allow scripts (whoami: scripts_allowed). By default it runs in the engine's Python, which has no ArcPy; pass environment to run in one the person registered (whoami: environments), under the same rules.",
+        description = "Run a Python script on workspace layers, for what the GIS tools cannot do. The person sees the full code and approves every run (where organization policy allows it, they may allow that exact code for the session: the same code with new inputs then runs without asking, any change asks again). It runs confined: no network, it can write only its own run folder, and it is stopped at the time limit. Inputs (name -> ws:// handle) are copied to in/<name>.<ext> and listed in inputs.json; every file it writes in out/ comes back as a workspace output carrying the inputs' data labels; stdout and stderr come back (64 KB each). Needs organization policy to allow scripts (whoami: scripts_allowed). By default it runs in the engine's Python, which has no ArcPy; pass environment to run in one the person registered (whoami: environments), under the same rules. A trusted environment (experimental; where policy allows it, for example for ArcPy) runs unconfined as the person, still approved every run, and its outputs carry the session's data labels plus environment:<id>.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -768,7 +986,7 @@ impl Gateway {
         if let Err(why) = shown_as_run(&args.code) {
             return Err(self.deny(&ctx, rec, why));
         }
-        // A registered environment, governed and as confirmed, or the engine.
+        // A registered environment as confirmed, or the engine.
         let senv = match args.environment.as_deref() {
             None => None,
             Some(id) => match self.script_environment(id, policy) {
@@ -776,28 +994,33 @@ impl Gateway {
                 Err(e) => return Err(self.deny(&ctx, rec, e)),
             },
         };
+        // A trusted environment runs unconfined (D-3); everything else at
+        // its level or not at all.
+        let trusted = senv.as_ref().is_some_and(ScriptEnv::trusted);
         let level = senv
             .as_ref()
-            .map_or(columbus_confine::Level::A, |e| e.level);
-        let network = level == columbus_confine::Level::B;
-        // Confined at the level or not at all.
-        let launcher = match columbus_confine::ready(level) {
-            Ok(l) => l,
-            Err(e) => {
-                return Err(self.deny(
-                    &ctx,
-                    rec,
-                    format!(
-                        "scripts run only confined (level {}: {}, writes only to their own folder), and {e}; Columbus never runs a script unconfined",
-                        level.as_str(),
-                        if network { "network" } else { "no network" }
-                    ),
-                ))
-            }
+            .map_or(Some(columbus_confine::Level::A), |e| e.level);
+        let network = level == Some(columbus_confine::Level::B);
+        let launcher = match level {
+            None => None,
+            Some(level) => match columbus_confine::ready(level) {
+                Ok(l) => Some(l),
+                Err(e) => {
+                    return Err(self.deny(
+                        &ctx,
+                        rec,
+                        format!(
+                            "scripts run only confined (level {}: {}, writes only to their own folder), and {e}; Columbus never runs a script unconfined",
+                            level.as_str(),
+                            if network { "network" } else { "no network" }
+                        ),
+                    ))
+                }
+            },
         };
         if let Some(se) = &senv {
             if let Err(e) = self
-                .check_environment(&launcher, se, policy.plugins.memory_mb)
+                .check_environment(launcher.as_deref(), se, policy.plugins.memory_mb)
                 .await
             {
                 return Err(self.deny(&ctx, rec, e));
@@ -835,31 +1058,70 @@ impl Gateway {
         let files: Vec<PathBuf> = inputs.iter().map(|i| i.path.clone()).collect();
         let mut labels: BTreeSet<String> = self.state.flow.labels_for(&files);
         labels.extend(self.state.flow.session_labels());
-        rec.labels = labels.iter().cloned().collect();
         let from: Vec<String> = labels
             .iter()
             .map(|l| l.trim_start_matches("connection:").to_string())
             .collect();
+        // A trusted run's outputs carry every label of the session and its
+        // inputs, plus the environment's (REQ-15), so exports through
+        // Columbus still follow the flow rules.
+        if let Some(se) = senv.as_ref().filter(|e| e.trusted()) {
+            labels.insert(columbus_shared::environments::environment_label(&se.env.id));
+        }
+        rec.labels = labels.iter().cloned().collect();
 
         // The person reads the code and says yes to this run.
         let lines = args.code.lines().count();
         let digest = columbus_shared::canon::sha256_hex(args.code.as_bytes());
         let where_runs = match &senv {
             None => String::new(),
+            Some(se) if se.trusted() => format!(
+                " in trusted environment {} {} (Python {}, unconfined, as you{})",
+                se.env.id,
+                columbus_shared::environments::EXPERIMENTAL,
+                se.env.probe.python_version,
+                se.env
+                    .licence_line()
+                    .map(|l| format!("; {l}"))
+                    .unwrap_or_default()
+            ),
             Some(se) => format!(
                 " in environment {} (Python {}, governed, level {})",
                 se.env.id,
                 se.env.probe.python_version,
-                se.level.as_str()
+                se.level.map_or("?", |l| l.as_str())
             ),
         };
-        let net_text = if network {
-            "the script can reach the internet"
+        let reach = if trusted {
+            format!(
+                "{} Its outputs that come back through Columbus carry the session's data labels plus {}",
+                columbus_shared::environments::TRUSTED_CARD,
+                columbus_shared::environments::environment_label(
+                    senv.as_ref().map_or("", |e| e.env.id.as_str())
+                )
+            )
+        } else if network {
+            "the script can reach the internet; can write only its own run folder".to_string()
         } else {
-            "no network"
+            "no network; can write only its own run folder".to_string()
         };
+        // REQ-17, R-15: under policy scripts.session_approval, the engine
+        // and governed level-A environments may be allowed for the session,
+        // bound to this exact code and environment (as confirmed) in this
+        // Columbus session; never a trusted or level-B one.
+        let session_ok = policy.scripts.session_approval
+            && senv.as_ref().is_none_or(ScriptEnv::session_allow_possible);
+        let session_scope = [json!({"session_script": code_sha256,
+            "environment": senv.as_ref().map(|e| json!({"id": e.env.id, "confirmed": e.env.confirmation_hash()}))})];
+        let session_words = format!(
+            "\"Allow this script for the session\" runs this exact code (sha256 {}){} again with any inputs, without asking, until this chat or AI app connection ends; any change to the code asks again",
+            &digest[..12],
+            senv.as_ref()
+                .map(|e| format!(" in environment {}", e.env.id))
+                .unwrap_or_else(|| " in the engine's Python".into())
+        );
         let summary = format!(
-            "Run a Python script ({lines} line{}, {} bytes, sha256 {}){where_runs} on {}; {net_text}; can write only its own run folder; stopped after {timeout} s.{} Scripts are approved one run at a time.",
+            "Run a Python script ({lines} line{}, {} bytes, sha256 {}){where_runs} on {}; {reach}; stopped after {timeout} s.{} {}",
             if lines == 1 { "" } else { "s" },
             args.code.len(),
             &digest[..12],
@@ -877,6 +1139,11 @@ impl Gateway {
             } else {
                 format!(" Data in play came from: {}.", from.join(", "))
             },
+            if session_ok {
+                "You can allow this script for the session."
+            } else {
+                "Scripts are approved one run at a time."
+            },
         );
         let bound_inputs: Vec<Value> = inputs
             .iter()
@@ -892,9 +1159,10 @@ impl Gateway {
             "files": inputs.iter().map(|i| json!({"name": format!("{} ({})", i.name, i.handle), "rows": i.meta.rows})).collect::<Vec<_>>(),
             "labels": from,
             "arguments": {"timeout": format!("{timeout} s"),
-                "network": if network { "internet: the script can reach the internet" } else { "none" },
-                "writes": "its own run folder only",
-                "environment": senv.as_ref().map_or_else(|| "the engine's Python".to_string(), |e| format!("{} (Python {}, {})", e.env.id, e.env.probe.python_version, e.env.arcpy_line()))},
+                "network": if trusted { "anything you can reach (unconfined)" } else if network { "internet: the script can reach the internet" } else { "none" },
+                "writes": if trusted { "anywhere you can (unconfined)" } else { "its own run folder only" },
+                "environment": senv.as_ref().map_or_else(|| "the engine's Python".to_string(), |e| format!("{} (Python {}, {}, {})", e.env.id, e.env.probe.python_version, e.env.trust_line(), e.env.arcpy_line()))},
+            "warning": trusted.then_some(columbus_shared::environments::TRUSTED_CARD),
         });
         let ask = Ask {
             tool: "run_python",
@@ -904,10 +1172,14 @@ impl Gateway {
             summary,
             detail: Some(detail),
             approval_id: args.approval_id.as_deref(),
-            every_time: true,
+            // Every run, unless policy allows the session approval here
+            // (`ScriptEnv::session_allow_possible`, or the engine); a
+            // trusted run is always asked on its own.
+            every_time: !session_ok,
             code: Some(&args.code),
-            standing: None,
-            always_covers: None,
+            standing: session_ok.then_some(&session_scope[..]),
+            always_covers: session_ok.then_some(session_words),
+            script_session: session_ok,
         };
         match self.seek_approval(&ctx, ask).await {
             Ok(Sought::Granted(id)) => rec.approval = Some(id),
@@ -1006,7 +1278,7 @@ impl Gateway {
             ),
         };
         let spec = columbus_confine::Spec {
-            level,
+            level: level.unwrap_or(columbus_confine::Level::A),
             name: profile,
             read_write: vec![run.clone()],
             read_only: python_dirs.clone(),
@@ -1027,8 +1299,8 @@ impl Gateway {
             return Err(e);
         }
         let ran = match self
-            .run_confined(
-                &launcher,
+            .run_script(
+                launcher.as_deref(),
                 &spec,
                 &run,
                 Duration::from_secs(timeout),
@@ -1043,7 +1315,8 @@ impl Gateway {
             }
         };
         let stderr_text = ran.stderr.text();
-        if ran.exit_code == Some(columbus_confine::EXIT_CONFINE_FAILED)
+        if !trusted
+            && ran.exit_code == Some(columbus_confine::EXIT_CONFINE_FAILED)
             && stderr_text.starts_with("columbus-confine:")
         {
             cleanup(&run);
@@ -1214,8 +1487,12 @@ impl Gateway {
                 "exit_code": ran.exit_code, "timed_out": ran.timed_out,
                 "approval": rec.approval,
                 "environment": senv.as_ref().map(ScriptEnv::provenance),
-                "confinement": {"level": level.as_str(), "network": if network { "internet" } else { "none" }, "read_write": ["<run folder>"],
-                    "read_only": python_dirs, "memory_mb": policy.plugins.memory_mb, "processes": PROCESSES},
+                "confinement": if trusted {
+                    json!({"level": "none", "unconfined": true, "network": "as the person", "read_write": "as the person"})
+                } else {
+                    json!({"level": level.map_or("A", |l| l.as_str()), "network": if network { "internet" } else { "none" }, "read_write": ["<run folder>"],
+                    "read_only": python_dirs, "memory_mb": policy.plugins.memory_mb, "processes": PROCESSES})
+                },
                 "stdout_bytes": ran.stdout.total, "stderr_bytes": ran.stderr.total}],
             "labels": labels,
             "checks": checks,

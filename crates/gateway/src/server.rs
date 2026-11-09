@@ -184,6 +184,11 @@ pub struct RunToolArgs {
     /// person has approved it.
     #[serde(default)]
     pub approval_id: Option<String>,
+    /// For a personal tool only: run it in this registered environment
+    /// (governed, level A; whoami lists them) instead of its own. Leave it
+    /// out to use the tool's (workflow steps that name one pass it).
+    #[serde(default)]
+    pub environment: Option<String>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -1487,7 +1492,13 @@ impl Gateway {
                     "status": v.status.as_str(),
                     "python_version": e.probe.python_version,
                     "arcpy": e.arcpy_line(),
-                    "confinement": e.confinement.as_str(),
+                    // REQ-16: "ArcGIS Pro licence: Advanced", or the
+                    // not-initialized sentence; null without arcpy.
+                    "licence": e.licence_line(),
+                    // D-13: arcpy and trusted are experimental until H-2.
+                    "trust_line": e.trust_line(),
+                    "experimental": e.experimental(),
+                    "confinement": if e.trust == columbus_shared::environments::Trust::Trusted { "none" } else { e.confinement.as_str() },
                     "description": e.description,
                     "reason": v.status.reason().map(|r| if matches!(v.status, columbus_shared::environments::Status::Changed(_)) {
                         format!("{r}; the person must {}", columbus_shared::environments::CONFIRM_AGAIN)
@@ -2586,7 +2597,10 @@ impl Gateway {
         ctx: RequestContext<RoleServer>,
     ) -> Result<Json<Output<RunToolResult>>, String> {
         // The approval id is not part of the request an approval is bound to.
-        let request = json!({"name": args.name, "args": args.args});
+        let mut request = json!({"name": args.name, "args": args.args});
+        if let Some(e) = &args.environment {
+            request["environment"] = json!(e);
+        }
         let mut rec = self.gate(&ctx, "run_tool", &request)?;
         let Some((ns, tool)) = args.name.rsplit_once('.') else {
             return Err(self.deny(
@@ -2611,8 +2625,19 @@ impl Gateway {
                     args.approval_id.clone(),
                     &request,
                     false,
+                    args.environment.clone(),
                 )
                 .await;
+        }
+        if args.environment.is_some() && !ns.starts_with(columbus_shared::tools::ID_PREFIX) {
+            return Err(self.deny(
+                &ctx,
+                rec,
+                format!(
+                    "environment applies only to personal tools; {} is not one",
+                    args.name
+                ),
+            ));
         }
         if ns.starts_with(columbus_shared::tools::ID_PREFIX) {
             let why = if self.state.policy().allow_personal_tools {
@@ -2745,6 +2770,7 @@ impl Gateway {
                 code: None,
                 standing: None,
                 always_covers: None,
+                script_session: false,
             };
             match self.seek_approval(&ctx, ask).await {
                 Ok(crate::approval_flow::Sought::Granted(id)) => rec.approval = Some(id),

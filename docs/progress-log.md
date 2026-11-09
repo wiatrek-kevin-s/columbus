@@ -4,8 +4,8 @@ Kit version 1.1 · as of 2026-11-08, session S1 not started
 
 ## Where things stand
 
-- **Session:** S3 finishing (PR open) · **Task:** T-8 next
-- **Next step:** merge the S3 PR when CI is green, then S4 (T-8, T-9) on `rework/s4-trusted`
+- **Session:** S4 finishing (PR #4 open) · **Task:** T-10 next
+- **Next step:** merge PR #4 when CI is green, then S5 (T-10, T-11, T-12, T-20) on `rework/s5-arcgis`
 - **Waiting on the owner:** nothing
 - **Homework received:** setup round answered ("skip" on Dependabot alerts); H-1 and H-2 are optional, after release
 
@@ -46,18 +46,34 @@ Kit version 1.1 · as of 2026-11-08, session S1 not started
 | 2026-11-08 | Environment creation runs uv through a per-creation proxy on 127.0.0.1 that allows only `environments.index_hosts`; uv gets a cleared environment, `--no-config`, `--no-build`, no Python downloads | Catches redirects and index links to other hosts at the network level | Decided |
 | 2026-11-08 | Proposals are approved from the terminal (`env approve <id>`) now; the app's approve button comes with T-12 (Settings › Environments) | The app UI is T-12's scope | Decided |
 | 2026-11-08 | Third-party notices file (uv MIT/Apache-2.0) is created in T-16 | No notices file exists yet; uv is installed from PyPI, not bundled | Decided |
+| 2026-11-08 | Trusted runs start Python directly (no launcher) with the person's environment minus `COLUMBUS_*`; `environment:<id>` goes on outputs, audit and provenance labels, not session labels | arcpy's licence check needs the person's profile; the brief labels outputs | Decided |
+| 2026-11-08 | Licence words: ArcInfo Advanced, ArcEditor Standard, ArcView Basic; ArcServer/Engine/EngineGeoDB "(not an ArcGIS Pro licence)"; others "unrecognized" | Esri's ProductInfo values | Decided |
+| 2026-11-08 | Probe limit stays 120 s; only debug builds read `COLUMBUS_TEST_PROBE_SECONDS`, which can only shorten it | Test hook without changing the product | Decided |
+| 2026-11-08 | On Windows, trusted runs, probes and environment creation run in a job object (kill on close); `taskkill /T` is the fallback | Ends everything a run started, also after a normal exit | Decided |
+| 2026-11-08 | Shared `.columbus` tool files keep the environment id (never a path); the recipient's environment of that name is used, or the tool stops with "needs you" | The manifest hash covers the id; the recipient chooses their own interpreter | Decided |
+| 2026-11-08 | Personal tools and workflow steps run in governed level-A environments only; trusted is refused before the policy check | Keeps "personal tools run at level A" and D-3 | Decided |
+| 2026-11-08 | Session approval binds to code SHA-256 + environment id and its confirmed hash + the gateway process (one chat or one MCP connection) | R-15, slightly stricter | Decided |
+| 2026-11-08 | The tool-code lint keeps its fixed module list inside environments (CR-1) | No rule loosens unless the brief says so | Decided |
 | 2026-11-08 | Python baseline is 149 passed, not the audit's 115 | `main` moved past the audit commit 8b6bf173 before the kit upload; more tests and no failures, so no action | Decided |
 
 ## Change requests
 
 | ID | Date | What and why | Options | Recommendation | Status |
 |---|---|---|---|---|---|
+| CR-1 | 2026-11-08 | Let a personal tool in an environment import that environment's other packages (today the tool lint allows only its fixed module list, so whitebox or arcpy can't be used from a tool; `run_python` scripts can use them) | Keep the list; allow any package installed in the governed environment; allow a per-organization list | Keep the list this round (no rule loosens); decide in Blueprint | Sent to Blueprint (blocks no task) |
 
 Status: raised, approved, declined, or Sent to Blueprint (touches a one-way door; affected tasks paused).
 
 ## Handoff notes
 
 Newest first, written as you go. Mark each claim verified (checked this session) or unverified.
+
+### Session S4 → S5 (2026-11-09)
+
+- **Done:** S3 merged (PR #3, 01814e9). S4: T-8 and T-9 on `rework/s4-trusted`, PR #4; T-8 verified green on all systems on the helper branch `rework/s4-trusted-windows` (merged in, kept, not deleted).
+- **Decisions and deviations:** see Decisions. CR-1 sent to Blueprint (tool lint module list); blocks nothing.
+- **Loose ends:** T-10 must request `f=json` (ESRIJSON) so Z/M survive; the T-5 pager (`crates/gateway/src/arcgis_pager.rs`, `fetch_layer` + `LayerQuery` + `Transport`) supports it and takes a caller-supplied bearer. T-12 adds the app's approve button for environment proposals (`env_create::approve`) and Settings › Environments. Third-party notices (uv) → T-16. The approvals page may not render `detail.warning`; the sentence is in the summary.
+- **Next:** S5.
 
 ### Session S3 → S4 (2026-11-08)
 
@@ -79,6 +95,9 @@ Newest first, written as you go. Mark each claim verified (checked this session)
 - 2026-11-08 T-19: first PR #2 CI run 42525997319 failed 3 jobs (gdb_export compared a raw temp path with the canonical one on macOS/Windows; Windows `\\?\` paths broke the GeoPackage M-flag check; Oracle WKB lost measures). Fixed in b3ec68e; run 42529178838 green on 13 jobs incl. Oracle; PR #2 merged (4148908). T-19 done (verified in CI).
 - 2026-11-08 T-6 done: commit 3accf6e; environments.rs 7/7 on Linux, macOS and Windows (CI run 42528260440). **A-1 confirmed** on all three systems.
 - 2026-11-08 T-7 done: commit 40e90d2; environment_create.rs 3/3 incl. real PyPI (verified); uv 0.13.7 pinned with hashes.
+- 2026-11-08 PR #3 merged (01814e9) after CI run 42530598019 green on 13 jobs.
+- 2026-11-08 T-8: commit 068a440 green on Linux and macOS; Windows CI (run 42531980419) hung, cancelled to read logs. Causes were in the tests (`\\?\` prefix in a path compare; a terminal prompt waiting on the runner's console). Fixed on `rework/s4-trusted-windows` with a job-object process tree; run 42539452409 green on 13 jobs. T-8 done.
+- 2026-11-09 T-9 done: commit 50e23d6; environments_tools.rs pass (verified after merge); workspace 330. A-6 recorded as expected (arcpy needs trusted; H-2 confirms).
 
 ### Kit → Session S1 (2026-11-08)
 
