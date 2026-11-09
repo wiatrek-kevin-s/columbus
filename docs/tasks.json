@@ -547,8 +547,8 @@
           "expected": "both mark arcpy and trusted environments experimental (D-13)"
         }
       ],
-      "status": "todo",
-      "evidence": ""
+      "status": "done",
+      "evidence": "Commits 4d0ad47 (docs, examples, skill, manual checks, notices, release notes, version), 641fde0..364de06 (README and GitHub page, CR-2). skills/check_skills.py: skills ok; columbus-mcp pack lint examples/context/contoso-county: 0 problems. README has no 'Coming'; every listed name found in docs/reference.md (connection_types table added). Cargo.toml, app tauri.conf.json and packaging/release-notes.md say 0.14.0. Release notes and whoami (environments_trusted test with stub arcpy) mark arcpy and trusted environments experimental. README 107 lines; fresh-reviewer 10-second test passed. CI run https://github.com/wiatrek-kevin-s/columbus/actions/runs/42685605864 green on 15 jobs incl. Docs links."
     },
     {
       "id": "T-17",
