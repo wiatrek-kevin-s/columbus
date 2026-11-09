@@ -341,8 +341,8 @@
           "expected": "pip refuses with a hash mismatch"
         }
       ],
-      "status": "todo",
-      "evidence": ""
+      "status": "done",
+      "evidence": "Commit 1c974f1. CI run https://github.com/wiatrek-kevin-s/columbus/actions/runs/42614233624 green on 13 jobs: gis, db, projectdb and uv files install with --require-hashes everywhere; CI extras pinned in requirements-ci.txt; COLUMBUS_TEST_REQUIRE_ENGINE=1 in every engine job, 0 'skipping: the GIS engine' lines. gis.rs with COLUMBUS_TEST_REQUIRE_ENGINE=1 and no engine fails naming the variable. Tampered hash in a scratch copy: pip refuses with 'DO NOT MATCH THE HASHES'. .github/dependabot.yml present; A-4 not confirmed for uv-compiled hash files, fallback .github/workflows/engine-requirements.yml (weekly regenerate + PR). Workspace 356 passed, pytest 224."
     },
     {
       "id": "T-19",
