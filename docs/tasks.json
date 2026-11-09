@@ -599,8 +599,8 @@
           "expected": "the engine stays up; memory stays bounded (well under the file size times a small factor); other files in the folder stay usable; a file over the limit is refused with a plain R-14 message naming the file, its size and the fix"
         }
       ],
-      "status": "todo",
-      "evidence": ""
+      "status": "done",
+      "evidence": "Commit fb20570. files.rs large_csv_is_streamed_into_the_cache_under_a_memory_cap (280 MB, 4,564,423 rows, ulimit -v 2 GB): engine peak RSS 310 MB local / 379 MB CI, listing 85-103 s, bbox query 0.7 s, other file fine; a killed engine gives the R-14 'The engine stopped while reading the files connection …' message. a_file_over_the_size_limit_is_refused_plainly_and_the_rest_works on all systems. 1 GB CSV: skipped at default limits with 'it is 1.0 GB, more than the 300 MB … split it … or convert it to a GeoPackage'; converts in 329 s at peak 314 MB with limits.seconds 600 (was OOM at 6.2 GB). Fresh re-check: FIXED. CI run https://github.com/wiatrek-kevin-s/columbus/actions/runs/42705526192 green on 14 jobs incl. 'Large files (Linux)'."
     },
     {
       "id": "R-102",
@@ -616,8 +616,8 @@
           "expected": "no known advisories in the pinned engine requirements; RUSTSEC-2026-0462 and RUSTSEC-2026-0459 gone; the Engine requirements workflow has run once"
         }
       ],
-      "status": "todo",
-      "evidence": ""
+      "status": "blocked",
+      "evidence": "Done: Pillow 12.3.0 -> 13.0.0 (commit e393259); pip-audit finds no known vulnerabilities in all five pinned engine files (fresh re-check confirmed); Engine requirements workflow ran once (run https://github.com/wiatrek-kevin-s/columbus/actions/runs/42698196436, branch deps/engine-requirements-20261109). Blocked: RUSTSEC-2026-0462 (rmcp) and RUSTSEC-2026-0459 (libsqlite3-sys, plugin SDK only) clear only when the owner merges the green Dependabot PRs #9, #13 and #11; the session's safety check refuses merging pull requests it didn't author. Both advisories predate the rework."
     }
   ]
 }
