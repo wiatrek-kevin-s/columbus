@@ -498,8 +498,8 @@
           "expected": "2 gaps found; fixed-width segments produced; dissolved layer present; checks pass; the opened chat filters and exports a .gdb with the expected rows"
         }
       ],
-      "status": "todo",
-      "evidence": ""
+      "status": "done",
+      "evidence": "Commit 7ea37ee. crates/gateway/tests/row_job.rs row_job_end_to_end_on_oracle ran in the CI Oracle engine job ('test row_job_end_to_end_on_oracle ... ok', no skip): Oracle ROW_ROUTES (3302) + ROW_EVENTS through columbus_ro, fake ArcGIS ROW FeatureServer, two personal tools installed through propose_tool + approval, 'columbus-mcp workflow run row-weekly --scheduled' succeeded with no approvals; 2 gaps (A 400-600, C 700-1000); fixed-width segments A 400-475 @80, 475-600 @86, C 700-825 @100, 825-1000 @120; dissolved layer 2 features; opened chat filters ROUTE_NAME <> 'C' and exports approved_row.gdb (after approval) with the two A segments; fake imagery WMTS saved as a web layer, tile served through the gateway with the chat's page token (401 without). Same job on a GeoPackage passes on Linux, macOS and Windows. CI run https://github.com/wiatrek-kevin-s/columbus/actions/runs/42651014882 green on 13 jobs."
     },
     {
       "id": "T-16",
