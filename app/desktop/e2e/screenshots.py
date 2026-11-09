@@ -50,6 +50,7 @@ ap.add_argument("app")
 ap.add_argument("--root", required=True, help="the stand-in person's home folder (emptied first)")
 ap.add_argument("--data", default=str(HERE / "demo" / "austin.gpkg"))
 ap.add_argument("--themes", default="light,dark")
+ap.add_argument("--no-basemap", action="store_true", help="for a trial run on a machine without internet")
 ARGS = ap.parse_args()
 GATEWAY = Path(ARGS.gateway).resolve()
 APP = Path(ARGS.app).resolve()
@@ -59,7 +60,8 @@ W, H = 1600, 1000
 QUESTION = "Which fatal crashes from 2020 to 2023 happened within 150 feet of IH 35 in central Austin? Count them by year."
 EXPORT_ASK = "Export those crashes to the review folder for the safety team."
 CRASHES = "fars_fatal_crashes_2020_2023"
-IH35_WHERE = "street_name LIKE 'I- 35%' OR street_name LIKE 'I-35%' OR street_name LIKE 'Interstate 35%'"
+# TIGER names IH 35 "I- 35", "N I- 35", "I- 35 Svc Rd S" (frontage roads) and so on.
+IH35_WHERE = "street_name LIKE '%I- 35%'"
 
 
 # ---------------------------------------------------------------- the data
@@ -88,7 +90,7 @@ def prepare(root):
     crashes.drop(columns="geometry").to_csv(crash_dir / f"{CRASHES}.csv", index=False)
 
     # The answer, worked out the way the assistant's steps do it.
-    ih35 = roads[roads["street_name"].fillna("").str.match(r"^(I- ?35|I-35|Interstate 35)")]
+    ih35 = roads[roads["street_name"].fillna("").str.contains("I- 35", regex=False)]
     if ih35.empty:
         sys.exit("no IH 35 segments in the extract (check the street names)")
     corridor = ih35.buffer(150).union_all()
@@ -299,8 +301,8 @@ class Session:
             if time.monotonic() > end:
                 raise SystemExit(f"step '{guard.last()}' waited {limit}s in vain")
             if self.frames is not None:
-                self.frame(0.7)
-            time.sleep(every if self.frames is None else 0.1)
+                self.frame(0.45)
+            time.sleep(every if self.frames is None else 0.15)
 
 
 def layers_on(d, names=None):
@@ -344,7 +346,7 @@ def run(theme, facts, frames):
         d.set_window_size(W, H)
         wait = WebDriverWait(d, 60)
         wait.until(lambda drv: drv.execute_script("return !!document.getElementById('page-title')"))
-        d.execute_script("window.__TAURI__.core.invoke('prefs_set', {prefs: {theme: arguments[0], basemap: true, skipped: ['ai','engine','connection'], setup_done: true}})", theme)
+        d.execute_script("window.__TAURI__.core.invoke('prefs_set', {prefs: {theme: arguments[0], basemap: arguments[1], skipped: ['ai','engine','connection'], setup_done: true}})", theme, not ARGS.no_basemap)
         d.refresh()
         wait.until(lambda drv: drv.execute_script("return !!document.getElementById('page-title')"))
 
@@ -352,7 +354,7 @@ def run(theme, facts, frames):
         wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "a.btn.primary[href='#/chats/fresh']"))).click()
         box = wait.until(EC.visibility_of_element_located((By.ID, "text")))
         time.sleep(2)
-        s.frame(1.5)
+        s.frame(1.0)
         words = QUESTION.split(" ")
         for i in range(0, len(words), 6):
             box.send_keys(" ".join(words[i:i + 6]) + (" " if i + 6 < len(words) else ""))
@@ -381,19 +383,41 @@ def run(theme, facts, frames):
 
         s.frames_until(progress, limit=180)
         in_map(lambda: layers_on(d))
+
+        def show(first_name_part, zoom):
+            """Make a layer the active one (its checks and record open), and
+            zoom to it if asked."""
+            d.execute_script("""
+                const want = arguments[0];
+                const b = [...document.querySelectorAll('li.out .out-name')].find((x) => x.textContent.includes(want));
+                if (b) b.click();""", first_name_part)
+            time.sleep(0.8)
+            if zoom:
+                d.execute_script("""
+                    const l = [...document.querySelectorAll('li.out.active button.link')].find((x) => /Zoom to layer/.test(x.textContent));
+                    if (l) l.click();""")
+                time.sleep(2)
+
+        # The checks and provenance: chat first, the counted crashes' record open.
+        in_map(lambda: show(CRASHES, True))
+        in_map(lambda: show("clip-", False))
         time.sleep(3)  # basemap tiles
         d.execute_script("const l = document.getElementById('log'); l.scrollTop = l.scrollHeight;")
-        s.frame(1.0)
-        s.frame(3.5)
-        s.shot(f"hero{sfx}", 400, settle=2)
+        s.shot(f"tour-checks{sfx}", 250, size=(1280, 800), settle=1.5)
 
-        step(f"{theme}: checks and provenance (map first)")
+        step(f"{theme}: the hero (map first)")
         d.find_element(By.XPATH, "//button[normalize-space()='Map first']").click()
         time.sleep(1.5)
-        in_map(lambda: d.execute_script("""
-            const b = [...document.querySelectorAll('li.out .out-name')].pop(); if (b) b.click();"""))
-        time.sleep(2)
-        s.shot(f"tour-checks{sfx}", 250, size=(1280, 800))
+        in_map(lambda: show(CRASHES, True))
+        in_map(lambda: show("clip-", False))
+        time.sleep(3)
+        d.execute_script("""
+            const l = document.getElementById('log');
+            const answers = [...l.querySelectorAll('table')];
+            const t = answers.length ? answers[answers.length - 1] : null;
+            if (t) { t.scrollIntoView({block: 'center'}); } else { l.scrollTop = l.scrollHeight; }""")
+        s.frame(4.0)
+        s.shot(f"hero{sfx}", 400, settle=2)
         if theme == "light":
             s.shot("chat-map-first", 250, size=(1280, 800), settle=0.2)
         d.find_element(By.XPATH, "//button[normalize-space()='Chat first']").click()
@@ -409,12 +433,12 @@ def run(theme, facts, frames):
         allow = card.find_element(By.XPATH, ".//button[normalize-space()='Allow once']")
         WebDriverWait(d, 5).until(lambda drv: allow.is_enabled())
         d.execute_script("arguments[0].scrollIntoView({block: 'center'})", card)
-        s.frame(3.5)
+        s.frame(3.0)
         s.shot(f"tour-approval{sfx}", 250, size=(1280, 800))
         allow.click()
         s.frames_until(lambda drv: "Exported" in drv.find_element(By.ID, "log").text and "provenance file" in drv.find_element(By.ID, "log").text, limit=60)
         d.execute_script("const l = document.getElementById('log'); l.scrollTop = l.scrollHeight;")
-        s.frame(4.0)
+        s.frame(3.5)
         if theme == "light":
             s.shot("chat", 250, size=(1280, 800))
 
@@ -429,7 +453,6 @@ def run(theme, facts, frames):
         WebDriverWait(d, 20).until(lambda drv: "Weekly IH 35" in drv.find_element(By.ID, "wf-installed").text)
         d.find_element(By.XPATH, "//ul[@id='wf-installed']//button[normalize-space()='Run now']").click()
         WebDriverWait(d, 180).until(lambda drv: drv.find_elements(By.ID, "wf-report") and "Succeeded" in drv.find_element(By.ID, "wf-report").text)
-        d.execute_script("document.getElementById('wf-runs').scrollIntoView({block: 'start'})")
         s.shot(f"tour-workflow-run{sfx}", 250, size=(1280, 800))
 
         step(f"{theme}: connections")
