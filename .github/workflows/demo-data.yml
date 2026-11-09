@@ -12,18 +12,14 @@ on:
         type: choice
         options: [pictures, data]
         default: pictures
-  # Until this file is on main (a dispatch needs it there), a push to the
-  # docs branch whose message says [demo-data] or [pictures] runs it.
-  push:
-    branches: ["rework/s7-docs"]
 
 permissions:
   contents: read
 
 jobs:
-  data:
+  sample-data:
     name: Sample data (public extract)
-    if: github.event.inputs.what == 'data' || contains(github.event.head_commit.message, '[demo-data]')
+    if: inputs.what == 'data'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -38,9 +34,9 @@ jobs:
           name: demo-data
           path: demo-out/
 
-  pictures:
+  readme-pictures:
     name: README pictures
-    if: github.event.inputs.what == 'pictures' || contains(github.event.head_commit.message, '[pictures]')
+    if: inputs.what == 'pictures'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
