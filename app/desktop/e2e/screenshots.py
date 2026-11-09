@@ -57,6 +57,9 @@ APP = Path(ARGS.app).resolve()
 ROOT = Path(ARGS.root)
 
 W, H = 1600, 1000
+# The hero's window: the chat and its map, cropped, at about the size the
+# README shows them (900 pixels wide), so the words are readable.
+HERO = (1240, 860)
 QUESTION = "Which fatal crashes from 2020 to 2023 happened within 150 feet of IH 35 in central Austin? Count them by year."
 EXPORT_ASK = "Export those crashes to the review folder for the safety team."
 CRASHES = "fars_fatal_crashes_2020_2023"
@@ -291,11 +294,20 @@ class Session:
             for (const n of document.querySelectorAll('.notice')) if (/no Touch ID or Windows Hello|Schedules are not available|cannot be made here/.test(n.textContent)) n.remove();
         """)
 
-    def shot(self, name, budget_kb, size=None, settle=1.2):
+    def shot(self, name, budget_kb, size=None, settle=1.2, crop=None):
         time.sleep(settle)
         self.tidy()
         p = OUT / f"{name}.png"
         self.d.save_screenshot(str(p))
+        if crop:
+            from PIL import Image
+
+            r = self.d.execute_script("""
+                const b = document.querySelector(arguments[0]).getBoundingClientRect();
+                return [b.left, b.top, b.right, b.bottom, window.innerWidth];""", crop)
+            im = Image.open(p)
+            k = im.width / r[4]  # device pixels per CSS pixel
+            im.crop(tuple(round(v * k) for v in r[:4])).save(p)
         shrink(p, budget_kb, size)
 
     def frame(self, hold=0.6):
@@ -306,6 +318,13 @@ class Session:
         self.d.save_screenshot(str(p))
         self.frames.append((p.name, hold))
         self.n += 1
+
+    def poster(self, hold=3.5):
+        """A frame that the animation shows first (see main)."""
+        if self.frames is None:
+            return
+        self.frame(hold)
+        self.frames.insert(0, self.frames.pop())
 
     def frames_until(self, cond, limit=120, every=0.7):
         """Frames while waiting for `cond` (or just wait, with no frames)."""
@@ -417,6 +436,9 @@ def run(theme, facts, frames):
         time.sleep(3)  # basemap tiles
         d.execute_script("const l = document.getElementById('log'); l.scrollTop = l.scrollHeight;")
         s.shot(f"tour-checks{sfx}", 250, size=(1280, 800), settle=1.5)
+        # The animation opens (and loops back) on this finished result, so a
+        # reader who sees only its first frame still sees the answer.
+        s.poster()
 
         step(f"{theme}: the hero (map first)")
         d.find_element(By.XPATH, "//button[normalize-space()='Map first']").click()
@@ -424,15 +446,29 @@ def run(theme, facts, frames):
         in_map(lambda: show(CRASHES, True))
         in_map(lambda: show("clip-", False))
         time.sleep(3)
-        d.execute_script("""
+        scroll_to_answer = """
             const l = document.getElementById('log');
             const answers = [...l.querySelectorAll('table')];
             const t = answers.length ? answers[answers.length - 1] : null;
-            if (t) { t.scrollIntoView({block: 'center'}); } else { l.scrollTop = l.scrollHeight; }""")
-        s.frame(4.0)
-        s.shot(f"hero{sfx}", 400, settle=2)
+            if (t) { t.scrollIntoView({block: 'center'}); } else { l.scrollTop = l.scrollHeight; }"""
+        d.execute_script(scroll_to_answer)
         if theme == "light":
-            s.shot("chat-map-first", 250, size=(1280, 800), settle=0.2)
+            s.shot("chat-map-first", 250, size=(1280, 800), settle=2)
+        # The hero: the same chat in a smaller window, cropped to the chat
+        # and its map (no menu bar), so its words read at the README's 900
+        # pixels. The map page puts the layer list, with its checks, above
+        # the map at this width.
+        d.set_window_size(*HERO)
+        time.sleep(2)
+        # The last layer open (its details below the fold), so the list
+        # shows each layer's name, rows and checks.
+        in_map(lambda: show(CRASHES, True))
+        in_map(lambda: d.execute_script("const o = document.querySelector('.outputs'); if (o) o.scrollTop = 0;"))
+        time.sleep(3)
+        d.execute_script(scroll_to_answer)
+        s.shot(f"hero{sfx}", 400, settle=2, crop="#chatview")
+        d.set_window_size(W, H)
+        time.sleep(1.5)
         d.find_element(By.XPATH, "//button[normalize-space()='Chat first']").click()
         time.sleep(1)
 
