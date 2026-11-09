@@ -11,7 +11,10 @@ use std::time::Duration;
 use chrono::Local;
 use columbus_shared::audit::AuditRecord;
 use columbus_shared::policy::{Connection, EffectiveAccess};
-use columbus_shared::sqlcheck::{check_select, check_select_unlimited, check_where, SqlDialect};
+use columbus_shared::sqlcheck::{
+    check_select, check_select_bbox, check_select_unlimited, check_where, BboxIndex, BboxPushdown,
+    SqlDialect,
+};
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::service::RequestContext;
 use rmcp::{tool, tool_router, Json, RoleServer};
@@ -305,7 +308,21 @@ struct Read {
     hidden: Vec<String>,
     /// For an `arcgis` read: the layer, request and pages (provenance).
     arcgis: Option<Value>,
+    /// With a bbox: whether the source's spatial index served it (T-13).
+    bbox_note: Option<Check>,
 }
+
+/// Oracle's geodetic rectangles treat their edges as lines of latitude,
+/// which can miss a shape within a few metres of an edge (Oracle Spatial
+/// "Geodetic MBRs"): the box sent to the index is this much larger, in
+/// degrees (about 100 m). The engine still keeps exactly the rows that meet
+/// the box asked for.
+const GEODETIC_PAD: f64 = 0.001;
+
+/// Above this many degrees of longitude Oracle splits a geodetic rectangle,
+/// and only ANYINTERACT queries are safe with it: wider boxes are not sent
+/// to the index.
+const GEODETIC_MAX_SPAN: f64 = 119.0;
 
 impl Gateway {
     /// `describe_dataset`'s answer for a dataset, cached for the session.
@@ -570,6 +587,7 @@ impl Gateway {
                 max_rows: a.max_rows,
                 hidden: a.hidden,
                 arcgis: Some(a.record),
+                bbox_note: None,
             });
         }
         if !Self::engine_ready(&conn.kind) {
@@ -591,18 +609,50 @@ impl Gateway {
         let read_limit = access.limits.max_rows();
         let max_rows = limit.unwrap_or(read_limit).min(read_limit).max(1);
         let cols = self.table_columns(&access, &conn).await?;
-        let checked = if plan.bbox.is_some() {
-            check_select_unlimited(&plan.sql, &access, max_rows, &cols)
-        } else {
-            check_select(&plan.sql, &access, max_rows, &cols)
-        }
-        .map_err(|e| e.to_string())?;
+        let timeout = access.limits.max_seconds();
+        let crs_spec = info
+            .get("crs")
+            .and_then(|c| c.get("code"))
+            .map(|c| json!({"code": c}))
+            .or_else(|| info.get("crs_spec").cloned());
+        let mut bbox_note = None;
+        let checked = match &plan.bbox {
+            Some(b) => {
+                let push = self
+                    .bbox_pushdown(&conn, &info, &q.dataset, b, &plan, &crs_spec, timeout)
+                    .await?;
+                let checked = match &push {
+                    Some(p) => check_select_bbox(&plan.sql, &access, max_rows, &cols, p),
+                    None => check_select_unlimited(&plan.sql, &access, max_rows, &cols),
+                }
+                .map_err(|e| e.to_string())?;
+                bbox_note = Some(match push.as_ref().filter(|_| checked.bbox_pushed) {
+                    Some(p) => Check::info(
+                        "query.bbox_index",
+                        format!(
+                            "The bbox was applied inside the database, beside the row filter, through its spatial index ({})",
+                            match p.index {
+                                BboxIndex::PostGis { .. } => "PostGIS &&",
+                                BboxIndex::GpkgRtree { .. } => "GeoPackage R-tree",
+                                BboxIndex::Oracle { .. } => "Oracle SDO_FILTER",
+                                BboxIndex::MsSql { .. } => "SQL Server Filter()",
+                            }
+                        ),
+                    ),
+                    None => Check::info(
+                        "query.bbox_index",
+                        "The bbox was applied by Columbus after reading: this dataset has no spatial index Columbus can use, so every row the filters keep was read",
+                    ),
+                });
+                checked
+            }
+            None => check_select(&plan.sql, &access, max_rows, &cols).map_err(|e| e.to_string())?,
+        };
         let handle = self.handle(&conn)?;
         let output_stem = match stem {
             Some(s) => Some(self.state.sandbox.resolve(s).map_err(|e| e.to_string())?),
             None => None,
         };
-        let timeout = access.limits.max_seconds();
         let reply = self
             .state
             .worker
@@ -617,8 +667,7 @@ impl Gateway {
                     "layer_name": file_stem(&q.dataset),
                     "hide_fields": self.state.policy().hide_fields,
                     "geometry_column": info.get("geometry_column"),
-                    "crs_spec": info.get("crs").and_then(|c| c.get("code")).map(|c| json!({"code": c}))
-                        .or_else(|| info.get("crs_spec").cloned()),
+                    "crs_spec": crs_spec,
                     "bbox": plan.bbox,
                     "bbox_crs": plan.bbox_crs,
                     "timeout_s": timeout,
@@ -689,7 +738,111 @@ impl Gateway {
             max_rows,
             hidden: checked.hidden.clone(),
             arcgis: None,
+            bbox_note,
         })
+    }
+
+    /// The bbox condition for the source's spatial index, in the dataset's
+    /// own coordinates (a bbox in another CRS is moved by the engine, the
+    /// same way it moves it to keep rows), or None where the source has no
+    /// index Columbus can use: then every row the filters keep is read and
+    /// the engine keeps those meeting the box, as before (T-13, REQ-19).
+    #[allow(clippy::too_many_arguments)]
+    async fn bbox_pushdown(
+        &self,
+        conn: &Connection,
+        info: &Value,
+        dataset: &str,
+        bbox: &[f64],
+        plan: &Plan,
+        crs_spec: &Option<Value>,
+        timeout: u64,
+    ) -> Result<Option<BboxPushdown>, String> {
+        let Some(geom) = info.get("geometry_column").and_then(Value::as_str) else {
+            return Ok(None);
+        };
+        let srid = info.get("srs_id").and_then(Value::as_i64);
+        let kind = conn.kind.to_ascii_lowercase();
+        let indexed = info.get("spatial_index").and_then(Value::as_bool) == Some(true);
+        let index = match kind.as_str() {
+            "postgis" | "postgres" | "postgresql" => match srid {
+                // A column without a typed SRID (0) may mix SRIDs: `&&`
+                // would fail on them, so it is not used.
+                Some(s) if s > 0 => BboxIndex::PostGis { srid: s },
+                _ => return Ok(None),
+            },
+            "gpkg" | "geopackage" | "sqlite" | "spatialite" | "files" if indexed => {
+                BboxIndex::GpkgRtree {
+                    rtree: format!("rtree_{dataset}_{geom}"),
+                }
+            }
+            "oracle" | "sde-oracle" if indexed => BboxIndex::Oracle { srid },
+            // geography columns are left to the engine: Filter() on a
+            // geography box follows great circles, not the box's edges.
+            "sqlserver" | "mssql" | "azure-sql" | "sde-sqlserver"
+                if info.get("spatial_type").and_then(Value::as_str) == Some("geometry") =>
+            {
+                match srid {
+                    Some(s) => BboxIndex::MsSql { srid: s },
+                    None => return Ok(None),
+                }
+            }
+            _ => return Ok(None),
+        };
+        let (mut b, geographic) = if plan.bbox_crs.is_some() {
+            let r = self
+                .state
+                .worker
+                .core(
+                    "bbox_to_dataset",
+                    json!({"bbox": bbox, "bbox_crs": plan.bbox_crs, "crs_spec": crs_spec}),
+                    Duration::from_secs(timeout + 10),
+                )
+                .await
+                .map_err(|e| e.to_string())?;
+            let b: Vec<f64> = r
+                .get("bbox")
+                .and_then(Value::as_array)
+                .map(|a| a.iter().filter_map(Value::as_f64).collect())
+                .unwrap_or_default();
+            (
+                b,
+                r.get("geographic").and_then(Value::as_bool) == Some(true),
+            )
+        } else {
+            (
+                bbox.to_vec(),
+                info.get("crs")
+                    .and_then(|c| c.get("geographic"))
+                    .and_then(Value::as_bool)
+                    == Some(true),
+            )
+        };
+        if b.len() != 4 || b.iter().any(|v| !v.is_finite()) || b[0] > b[2] || b[1] > b[3] {
+            return Ok(None);
+        }
+        if matches!(index, BboxIndex::Oracle { .. } | BboxIndex::MsSql { .. })
+            && (b[0] == b[2] || b[1] == b[3])
+        {
+            // A box without area is not a valid polygon on these two.
+            return Ok(None);
+        }
+        if geographic && matches!(index, BboxIndex::Oracle { .. }) {
+            b = vec![
+                (b[0] - GEODETIC_PAD).max(-180.0),
+                (b[1] - GEODETIC_PAD).max(-90.0),
+                (b[2] + GEODETIC_PAD).min(180.0),
+                (b[3] + GEODETIC_PAD).min(90.0),
+            ];
+            if b[2] - b[0] > GEODETIC_MAX_SPAN {
+                return Ok(None);
+            }
+        }
+        Ok(Some(BboxPushdown {
+            geometry_column: geom.to_string(),
+            bbox: [b[0], b[1], b[2], b[3]],
+            index,
+        }))
     }
 
     fn read_checks(&self, r: &Read, has_where: bool) -> Vec<Check> {
@@ -791,6 +944,9 @@ impl Gateway {
                 detail: None,
                 fix: None,
             });
+        }
+        if let Some(c) = &r.bbox_note {
+            checks.push(c.clone());
         }
         checks.extend(checks_from(r.reply.get("checks")));
         checks

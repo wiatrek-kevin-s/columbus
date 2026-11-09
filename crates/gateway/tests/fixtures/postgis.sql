@@ -71,6 +71,9 @@ GRANT USAGE ON SCHEMA lookalike TO PUBLIC;
 DROP OPERATOR IF EXISTS lookalike.= (text, text);
 CREATE OPERATOR lookalike.= (LEFTARG = text, RIGHTARG = text, FUNCTION = pg_catalog.texteq);
 
+-- The spatial index a bbox query uses (T-13, REQ-19).
+CREATE INDEX roadway_inventory_geom_gist ON roads.roadway_inventory USING gist (geom);
+
 ANALYZE roads.roadway_inventory;
 
 -- For the edit tests alone (tests/edits.rs), so their writes never change

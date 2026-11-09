@@ -93,6 +93,30 @@ fn setup(py: &str) -> Env {
         ),
     )
     .unwrap();
+    // A copy of the file without its R-tree, for the bbox test (T-13).
+    let bare = root.join("austin_no_rtree.gpkg");
+    std::fs::copy(root.join("austin.gpkg"), &bare).unwrap();
+    let drop = StdCommand::new(py)
+        .args([
+            "-c",
+            "import sqlite3, sys\ndb = sqlite3.connect(sys.argv[1])\n\
+             for (n,) in db.execute(\"SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'rtree_roads_geom%'\").fetchall():\n    db.execute(f'DROP TRIGGER \"{n}\"')\n\
+             try:\n    db.execute('DROP TABLE rtree_roads_geom')\nexcept sqlite3.OperationalError:\n    pass  # no R-tree module here: the engine cannot use it either\n\
+             db.execute(\"DELETE FROM gpkg_extensions WHERE table_name = 'roads' AND extension_name = 'gpkg_rtree_index'\")\n\
+             db.commit()",
+        ])
+        .arg(&bare)
+        .status()
+        .unwrap();
+    assert!(drop.success());
+    let bare_json = serde_json::to_string(&bare.display().to_string()).unwrap();
+    std::fs::write(
+        root.join("connections").join("austin-bare.yaml"),
+        format!(
+            "id: austin-bare\ntype: gpkg\npath: {bare_json}\ndatasets:\n  allow: [\"roads\"]\nrow_filter: \"district = 14\"\n"
+        ),
+    )
+    .unwrap();
     Env { _dir: dir, root }
 }
 
@@ -181,6 +205,137 @@ fn check<'a>(v: &'a Value, id: &str) -> &'a Value {
         .iter()
         .find(|c| c["id"] == id)
         .unwrap_or_else(|| panic!("no {id} check in {}", v["checks"]))
+}
+
+/// Route ids of a query_features result whose first column is route_id.
+fn route_ids(v: &Value) -> Vec<String> {
+    let mut ids: Vec<String> = v["result"]["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r[0].as_str().unwrap().to_string())
+        .collect();
+    ids.sort();
+    ids
+}
+
+/// The bbox's R-tree condition sits in the filtered table, and SQLite's
+/// plan for the exact SQL the gateway ran reads the R-tree.
+fn rtree_plan(env: &Env, py: &str, lonlat: &Value) {
+    assert!(
+        check(lonlat, "query.bbox_index")["message"]
+            .as_str()
+            .unwrap()
+            .contains("GeoPackage R-tree"),
+        "{}",
+        lonlat["checks"]
+    );
+    let sql = lonlat["result"]["executed_sql"].as_str().unwrap();
+    assert!(
+        sql.contains("(columbus_filtered.district = 14) AND (columbus_filtered.rowid IN (SELECT \"id\" FROM \"rtree_roads_geom\""),
+        "inside the filtered table, beside the row filter: {sql}"
+    );
+    assert!(!sql.contains("owner_"), "hidden fields stay out: {sql}");
+    // SQLite's own plan for the exact SQL the gateway ran.
+    let gpkg = env.root.join("austin.gpkg");
+    let out = StdCommand::new(py)
+        .args([
+            "-c",
+            "import sqlite3, sys\ndb = sqlite3.connect(sys.argv[1])\nfor r in db.execute('EXPLAIN QUERY PLAN ' + sys.argv[2]):\n    print(r[-1])",
+        ])
+        .arg(&gpkg)
+        .arg(sql)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let plan = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(
+        plan.contains("rtree_roads_geom VIRTUAL TABLE INDEX"),
+        "the plan reads the R-tree: {plan}"
+    );
+}
+
+/// T-13 (REQ-19) on a GeoPackage: the bbox (here in lon/lat, moved to the
+/// layer's EPSG:3081 first) goes into the R-tree inside the filtered
+/// table, SQLite's plan reads the R-tree, and the rows are the same as on
+/// a copy of the file without an R-tree, where the engine filters them.
+async fn bbox_uses_the_rtree(
+    client: &RunningService<RoleClient, ()>,
+    env: &Env,
+    py: &str,
+    lonlat: &Value,
+) {
+    // CPython's SQLite has the R-tree module on Windows, macOS and Linux;
+    // without it the engine reads every row, as before, and only the rows
+    // are compared.
+    let rtree = StdCommand::new(py)
+        .args([
+            "-c",
+            "import sqlite3\nsqlite3.connect(':memory:').execute('CREATE VIRTUAL TABLE t USING rtree(id, a, b)')",
+        ])
+        .status()
+        .is_ok_and(|s| s.success());
+    if rtree {
+        rtree_plan(env, py, lonlat);
+    } else {
+        eprintln!("no R-tree module in this Python's SQLite: comparing rows only");
+    }
+    // The same file without its R-tree (made by setup) gives the same
+    // rows, filtered by the engine: for a native box (EPSG:3081) and one
+    // in lon/lat.
+    let native = StdCommand::new(py)
+        .args([
+            "-c",
+            "from pyproj import Transformer\nprint(','.join(repr(v) for v in Transformer.from_crs(4326, 3081, always_xy=True).transform_bounds(-97.79, 30.19, -97.735, 30.31)))",
+        ])
+        .output()
+        .unwrap();
+    let native: Vec<f64> = String::from_utf8_lossy(&native.stdout)
+        .trim()
+        .split(',')
+        .map(|v| v.parse().unwrap())
+        .collect();
+    for args in [
+        json!({"bbox": [-97.805, 30.19, -97.775, 30.31], "bbox_crs": "EPSG:4326"}),
+        json!({"bbox": native}),
+    ] {
+        let mut runs = Vec::new();
+        for conn in ["austin", "austin-bare"] {
+            let mut a = json!({"connection": conn, "dataset": "roads", "fields": ["route_id"]});
+            a.as_object_mut()
+                .unwrap()
+                .extend(args.as_object().unwrap().clone());
+            let r = ok(&call(client, "query_features", a).await);
+            runs.push(r);
+        }
+        assert!(
+            check(&runs[1], "query.bbox_index")["message"]
+                .as_str()
+                .unwrap()
+                .contains("after reading"),
+            "{}",
+            runs[1]["checks"]
+        );
+        assert!(!runs[1]["result"]["executed_sql"]
+            .as_str()
+            .unwrap()
+            .contains("rtree"));
+        assert_eq!(
+            runs[0]["result"]["executed_sql"]
+                .as_str()
+                .unwrap()
+                .contains("rtree_roads_geom"),
+            rtree,
+            "{}",
+            runs[0]["result"]["executed_sql"]
+        );
+        assert!(!route_ids(&runs[0]).is_empty(), "{args}");
+        assert_eq!(route_ids(&runs[0]), route_ids(&runs[1]), "{args}");
+    }
 }
 
 #[tokio::test]
@@ -272,6 +427,7 @@ async fn gis_session_on_a_geopackage() {
     )
     .await);
     assert_eq!(b["result"]["rows_read"], 3, "{}", b["result"]);
+    bbox_uses_the_rtree(&client, &env, &py, &b).await;
 
     // Refusals: hidden or unknown fields, injection through names, subqueries,
     // a bad CRS string.

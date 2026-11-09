@@ -258,6 +258,55 @@ async fn csv_folder_is_read_buffered_and_exported_under_the_rules() {
     assert_eq!(r["result"]["layer"]["summary"]["rows"], 2, "{r}");
     assert!(!text.contains("\"Bo\"") && !text.contains("\"Di\""), "{r}");
     assert!(!text.contains("\"OWNER\""), "hidden field returned: {r}");
+    // A bbox (T-13): the cache's R-tree serves it, beside the row filter,
+    // and the rows are those meeting the box: crash 1 and 3 (2 is an R
+    // row, 4 is outside). The roads have no CRS: a box in their own
+    // coordinates.
+    let rtree = StdCommand::new(&py)
+        .args([
+            "-c",
+            "import sqlite3\nsqlite3.connect(':memory:').execute('CREATE VIRTUAL TABLE t USING rtree(id, a, b)')",
+        ])
+        .status()
+        .is_ok_and(|s| s.success());
+    for (args, want) in [
+        (
+            json!({"dataset": "crashes", "fields": ["CRASH_ID"], "bbox": [-97.765, 30.26, -97.74, 30.295], "bbox_crs": "EPSG:4326", "order_by": "CRASH_ID"}),
+            json!([[1], [3]]),
+        ),
+        (
+            json!({"dataset": "roads", "fields": ["ROAD"], "bbox": [3110500, 10070500, 3110600, 10070600]}),
+            json!([["R1"]]),
+        ),
+    ] {
+        let mut a = json!({"connection": "crash-csvs"});
+        a.as_object_mut()
+            .unwrap()
+            .extend(args.as_object().unwrap().clone());
+        let b = ok(&call(&c, "query_features", a).await);
+        let rows: Vec<Value> = b["result"]["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| json!([r[0]]))
+            .collect();
+        assert_eq!(json!(rows), want, "{b}");
+        let note = b["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["id"] == "query.bbox_index")
+            .unwrap_or_else(|| panic!("{b}"))["message"]
+            .to_string();
+        assert_eq!(note.contains("GeoPackage R-tree"), rtree, "{note}");
+        let sql = b["result"]["executed_sql"].as_str().unwrap();
+        if rtree {
+            assert!(
+                sql.contains("(columbus_filtered.STATUS <> 'R') AND (columbus_filtered.rowid IN (SELECT \"id\" FROM \"rtree_"),
+                "{sql}"
+            );
+        }
+    }
     let s = ok(&call(
         &c,
         "sql_select",

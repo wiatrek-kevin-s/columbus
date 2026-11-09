@@ -326,3 +326,126 @@ async fn sql_server_governed_session() {
         "the secret never reaches the audit log"
     );
 }
+
+/// Sorted first column of a query_features result, as integers.
+fn ids(q: &Value) -> Vec<i64> {
+    let mut v: Vec<i64> = q["result"]["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r[0].as_i64().unwrap())
+        .collect();
+    v.sort();
+    v
+}
+
+/// The query.bbox_index check's message.
+fn bbox_note(q: &Value) -> String {
+    q["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == "query.bbox_index")
+        .unwrap_or_else(|| panic!("no query.bbox_index check: {q}"))["message"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+/// T-13 (REQ-19): a bbox on a geometry column goes into `Filter()` inside
+/// the filtered table, beside the row filter, and gives exactly the rows
+/// meeting the box, in the layer's EPSG:3081 and in lon/lat; on a
+/// geography column the engine keeps the rows meeting the box, as before.
+#[tokio::test]
+async fn sql_server_bbox_uses_the_spatial_index() {
+    let Ok(host) = std::env::var("COLUMBUS_TEST_MSSQL_HOST") else {
+        eprintln!("skipping: COLUMBUS_TEST_MSSQL_HOST not set");
+        return;
+    };
+    let port = std::env::var("COLUMBUS_TEST_MSSQL_PORT").unwrap_or_else(|_| "1433".into());
+    let db = std::env::var("COLUMBUS_TEST_MSSQL_DB").unwrap_or_else(|_| "gis".into());
+    let py = python().expect(
+        "python with pyodbc and geopandas is required when COLUMBUS_TEST_MSSQL_HOST is set",
+    );
+    let env = setup(&host, &port, &db);
+    let client = start(&env, &py).await;
+
+    // Road i runs from x = 1,000,000 + 10 i for 5 m at y 7,000,000 to
+    // 7,000,010; district 14 is the even ids.
+    let native = [1_001_007.5, 6_999_990.0, 1_002_007.5, 7_000_020.0];
+    // The same box in lon/lat, and back as the engine moves it (larger).
+    let out = StdCommand::new(&py)
+        .args([
+            "-c",
+            "import sys\nfrom pyproj import Transformer\nb = [float(v) for v in sys.argv[1:5]]\n\
+             ll = Transformer.from_crs(3081, 4326, always_xy=True).transform_bounds(*b)\n\
+             back = Transformer.from_crs(4326, 3081, always_xy=True).transform_bounds(*ll)\n\
+             print(','.join(repr(v) for v in list(ll) + list(back)))",
+        ])
+        .args(native.map(|v| v.to_string()))
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: Vec<f64> = String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .split(',')
+        .map(|s| s.parse().unwrap())
+        .collect();
+    let (lonlat, back) = (v[0..4].to_vec(), v[4..8].to_vec());
+    // The roads meeting a box in EPSG:3081.
+    let meeting = |b: &[f64]| -> Vec<i64> {
+        (1..=1200)
+            .filter(|i| i % 2 == 0)
+            .filter(|i| {
+                let x = 1_000_000.0 + 10.0 * *i as f64;
+                x <= b[2] && x + 5.0 >= b[0] && 7_000_000.0 <= b[3] && 7_000_010.0 >= b[1]
+            })
+            .collect()
+    };
+    for (args, expected) in [
+        (json!({"bbox": native}), meeting(&native)),
+        (
+            json!({"bbox": lonlat, "bbox_crs": "EPSG:4326"}),
+            meeting(&back),
+        ),
+    ] {
+        assert!(!expected.is_empty());
+        let mut a = json!({"connection": CONN, "dataset": "roads.roads", "fields": ["id"], "order_by": "id"});
+        a.as_object_mut()
+            .unwrap()
+            .extend(args.as_object().unwrap().clone());
+        let q = ok(&call(&client, "query_features", a).await);
+        let sql = q["result"]["executed_sql"].as_str().unwrap();
+        assert!(
+            sql.contains("WHERE (columbus_filtered.district = 14) AND (columbus_filtered.[geom].Filter(geometry::STGeomFromText('POLYGON (("),
+            "inside the filtered table, beside the row filter: {sql}"
+        );
+        assert!(sql.contains("', 3081)) = 1)"), "{sql}");
+        assert!(!sql.contains("owner_name"), "{sql}");
+        assert!(bbox_note(&q).contains("Filter()"), "{q}");
+        assert_eq!(ids(&q), expected, "{args}: {q}");
+    }
+    assert_eq!(
+        meeting(&native),
+        (101..=200).filter(|i| i % 2 == 0).collect::<Vec<i64>>()
+    );
+
+    // geography: not pushed; the engine keeps the place meeting the box.
+    let g = ok(&call(
+        &client,
+        "query_features",
+        json!({"connection": CONN, "dataset": "roads.places", "fields": ["id"], "bbox": [-98.5, 30.0, -97.0, 31.5], "bbox_crs": "EPSG:4326"}),
+    )
+    .await);
+    assert!(!g["result"]["executed_sql"]
+        .as_str()
+        .unwrap()
+        .contains("Filter("));
+    assert!(bbox_note(&g).contains("after reading"), "{g}");
+    assert_eq!(ids(&g), vec![1], "{g}");
+    client.cancel().await.unwrap();
+}

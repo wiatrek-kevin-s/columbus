@@ -54,7 +54,7 @@ FILES_KINDS = w.FILES_KINDS
 
 # Raise when what a build writes changes, so caches made by an older engine
 # are rebuilt rather than read.
-BUILD = 3  # 3: M values kept (T-19)
+BUILD = 4  # 3: M values kept (T-19); 4: R-tree spatial index (T-13)
 
 # Supported formats: extension -> reader(path, conn, layer). A reader
 # returns a ``Table`` or raises ``Unreadable``.
@@ -1176,6 +1176,11 @@ def _state(db: sqlite3.Connection, d: dict[str, Any], stamp: tuple[str, int, int
 
 
 def _drop(db: sqlite3.Connection, name: str, meta: bool = True) -> None:
+    row = db.execute("SELECT column_name FROM gpkg_geometry_columns WHERE table_name = ?", (name,)).fetchone()
+    if row is not None:
+        db.execute(f"DROP TABLE IF EXISTS {_q(f'rtree_{name}_{row[0]}')}")
+        if db.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'gpkg_extensions'").fetchone():
+            db.execute("DELETE FROM gpkg_extensions WHERE table_name = ?", (name,))
     db.execute(f"DROP TABLE IF EXISTS {_q(name)}")
     db.execute("DELETE FROM gpkg_geometry_columns WHERE table_name = ?", (name,))
     db.execute("DELETE FROM gpkg_contents WHERE table_name = ?", (name,))
@@ -1257,11 +1262,54 @@ def _build(db: sqlite3.Connection, d: dict[str, Any], t: Table, stamp: tuple[str
         has_m = any(_blob_has_m(g) for g in geoms)
         db.execute("INSERT INTO gpkg_geometry_columns VALUES (?,?,?,?,?,?)",
                    (name, gcol, t.geom_type or "GEOMETRY", srs_id, 1 if t.has_z else 0, 1 if has_m else 0))
+        _rtree(db, name, fid, gcol)
     else:
         db.execute("INSERT INTO gpkg_contents VALUES (?,?,?,?,?,NULL,NULL,NULL,NULL,NULL)", (name, "attributes", name, "", now))
     db.execute(f"INSERT INTO {META} VALUES (?,?,?,?,?,?,?,?,?,?)",
                (name, stamp[0], d.get("layer"), stamp[1], stamp[2], sha, BUILD, (old[0] if old else 0) + 1,
                 json.dumps(t.checks), gcol))
+
+
+def _blob_envelope(blob: bytes | None) -> tuple[float, float, float, float] | None:
+    """(min x, max x, min y, max y) of a GeoPackage blob, from its header's
+    envelope, or from the point it holds; None for no or empty geometry."""
+    if not blob or len(blob) < 8 or blob[3] & 0x10:
+        return None
+    flags = blob[3]
+    endian = "<" if flags & 0x01 else ">"
+    if (flags >> 1) & 0x07:
+        minx, maxx, miny, maxy = struct.unpack_from(endian + "4d", blob, 8)
+    else:
+        import shapely
+
+        g = shapely.from_wkb(bytes(blob[8:]))
+        if g is None or g.is_empty:
+            return None
+        minx, miny, maxx, maxy = g.bounds
+    if any(math.isnan(v) for v in (minx, maxx, miny, maxy)):
+        return None
+    return minx, maxx, miny, maxy
+
+
+def _rtree(db: sqlite3.Connection, name: str, fid: str, gcol: str) -> None:
+    """The table's R-tree (GeoPackage's RTree Spatial Index extension), so
+    a bbox query reads only the rows whose envelope meets the box (T-13).
+    The cache is written only here, whole, so the R-tree needs none of the
+    extension's triggers. An SQLite without the R-tree module goes
+    without: queries then read every row, as before."""
+    rtree = f"rtree_{name}_{gcol}"
+    try:
+        db.execute(f"CREATE VIRTUAL TABLE {_q(rtree)} USING rtree(id, minx, maxx, miny, maxy)")
+    except sqlite3.OperationalError:
+        return
+    boxes = [(i, *env) for i, blob in db.execute(f"SELECT {_q(fid)}, {_q(gcol)} FROM {_q(name)}")
+             if (env := _blob_envelope(blob)) is not None]
+    db.executemany(f"INSERT INTO {_q(rtree)} VALUES (?,?,?,?,?)", boxes)
+    db.execute("CREATE TABLE IF NOT EXISTS gpkg_extensions (table_name TEXT, column_name TEXT, extension_name TEXT NOT NULL, "
+               "definition TEXT NOT NULL, scope TEXT NOT NULL, "
+               "CONSTRAINT ge_tce UNIQUE (table_name, column_name, extension_name))")
+    db.execute("INSERT OR REPLACE INTO gpkg_extensions VALUES (?,?,?,?,?)",
+               (name, gcol, "gpkg_rtree_index", "http://www.geopackage.org/spec120/#extension_rtree", "write-only"))
 
 
 def _tx(db: sqlite3.Connection, fn) -> Any:

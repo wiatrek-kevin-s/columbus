@@ -389,3 +389,105 @@ async fn oracle_lrs_measures_survive() {
     .await;
     client.cancel().await.unwrap();
 }
+
+/// Sorted first column of a query_features result, as integers.
+fn ids(q: &Value) -> Vec<i64> {
+    let mut v: Vec<i64> = q["result"]["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r[0].as_f64().unwrap() as i64)
+        .collect();
+    v.sort();
+    v
+}
+
+/// The query.bbox_index check's message.
+fn bbox_note(q: &Value) -> String {
+    q["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == "query.bbox_index")
+        .unwrap_or_else(|| panic!("no query.bbox_index check: {q}"))["message"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+/// Web Mercator (EPSG:3857) x, y of a lon/lat point.
+fn mercator(lon: f64, lat: f64) -> (f64, f64) {
+    let r = 6_378_137.0_f64;
+    (
+        r * lon.to_radians(),
+        r * (std::f64::consts::FRAC_PI_4 + lat.to_radians() / 2.0)
+            .tan()
+            .ln(),
+    )
+}
+
+/// T-13 (REQ-19): a bbox on an indexed SDO_GEOMETRY layer goes into
+/// SDO_FILTER inside the filtered table, beside the row filter, and gives
+/// exactly the rows meeting the box, in the layer's lon/lat and in Web
+/// Mercator; on a layer without a spatial index (ROUTES) the engine keeps
+/// the rows meeting the box, as before.
+#[tokio::test]
+async fn oracle_bbox_uses_the_spatial_index() {
+    let Ok(host) = std::env::var("COLUMBUS_TEST_ORA_HOST") else {
+        eprintln!("skipping: COLUMBUS_TEST_ORA_HOST not set");
+        return;
+    };
+    let port = std::env::var("COLUMBUS_TEST_ORA_PORT").unwrap_or_else(|_| "1521".into());
+    let service = std::env::var("COLUMBUS_TEST_ORA_SERVICE").unwrap_or_else(|_| "FREEPDB1".into());
+    let py = python().expect(
+        "python with oracledb and geopandas is required when COLUMBUS_TEST_ORA_HOST is set",
+    );
+    let env = setup(&host, &port, &service, false);
+    let client = start(&env, &py).await;
+
+    // Road i runs from lon -97.8 + 0.0001 i for 0.00005 at lat 30.2: the
+    // box's edges fall in the gaps, around roads 101 to 200; district 14
+    // is the even ids.
+    let (x0, x1) = (-97.8 + 0.0100 + 0.000075, -97.8 + 0.0200 + 0.000075);
+    let expected: Vec<i64> = (101..=200).filter(|i| i % 2 == 0).collect();
+    let (mx0, my0) = mercator(x0, 30.1);
+    let (mx1, my1) = mercator(x1, 30.3);
+    for args in [
+        json!({"bbox": [x0, 30.1, x1, 30.3]}),
+        json!({"bbox": [x0, 30.1, x1, 30.3], "bbox_crs": "EPSG:4326"}),
+        json!({"bbox": [mx0, my0, mx1, my1], "bbox_crs": "EPSG:3857"}),
+    ] {
+        let mut a = json!({"connection": CONN, "dataset": "ROADS.ROADS", "fields": ["ID"]});
+        a.as_object_mut()
+            .unwrap()
+            .extend(args.as_object().unwrap().clone());
+        let q = ok(&call(&client, "query_features", a).await);
+        let sql = q["result"]["executed_sql"].as_str().unwrap();
+        assert!(
+            sql.contains("(columbus_filtered.district = 14) AND (MDSYS.SDO_FILTER(columbus_filtered.\"GEOM\", MDSYS.SDO_GEOMETRY(2003, 4326, NULL, MDSYS.SDO_ELEM_INFO_ARRAY(1, 1003, 3), MDSYS.SDO_ORDINATE_ARRAY("),
+            "inside the filtered table, beside the row filter: {sql}"
+        );
+        assert!(sql.contains("= 'TRUE') AND ROWNUM > 0"), "{sql}");
+        assert!(!sql.contains("OWNER_NAME"), "{sql}");
+        assert!(bbox_note(&q).contains("SDO_FILTER"), "{q}");
+        assert_eq!(ids(&q), expected, "{args}: {q}");
+    }
+
+    // ROUTES has no spatial index: no SDO_FILTER (Oracle would refuse it),
+    // and the engine keeps the routes meeting the box. Route i runs from
+    // lat 30.2 + 0.0001 i for 0.0001; the box's edges cut routes 100 and
+    // 150.
+    let (y0, y1) = (30.2 + 0.0100 + 0.00005, 30.2 + 0.0150 + 0.00005);
+    let q = ok(&call(
+        &client,
+        "query_features",
+        json!({"connection": CONN, "dataset": "ROADS.ROUTES", "fields": ["ID"], "bbox": [-97.81, y0, -97.79, y1], "bbox_crs": "EPSG:4326"}),
+    )
+    .await);
+    let sql = q["result"]["executed_sql"].as_str().unwrap();
+    assert!(!sql.contains("SDO_FILTER"), "{sql}");
+    assert!(bbox_note(&q).contains("after reading"), "{q}");
+    let expected: Vec<i64> = (100..=150).filter(|i| i % 2 == 0).collect();
+    assert_eq!(ids(&q), expected, "{q}");
+    client.cancel().await.unwrap();
+}

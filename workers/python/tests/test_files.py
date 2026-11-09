@@ -94,6 +94,42 @@ class Cache(unittest.TestCase):
         _, rows, *_ = w._fetch(self.conn, 'SELECT COUNT(*) FROM "empty"', 2, 10)
         self.assertEqual(rows[0][0], 0)
 
+    def test_cache_has_an_rtree(self):
+        # T-13: each geometry table in the cache gets its R-tree, so the
+        # gateway can push a bbox into it; rebuilt with the table.
+        self.write("pts.csv", "id,lon,lat\n1,-97.7,30.2\n2,,\n3,-97.6,30.4\n")
+        self.write("lines.csv", "id,WKT\n1,\"LINESTRING (0 0, 2 1)\"\n2,\"POINT EMPTY\"\n")
+        d = w.describe_dataset({"connection": self.conn, "dataset": "pts"})
+        self.assertIs(d["spatial_index"], True)
+        self.assertIs(w.describe_dataset({"connection": self.conn, "dataset": "lines"})["spatial_index"], True)
+        import sqlite3
+
+        db = sqlite3.connect(self.conn["cache"])
+        boxes = db.execute(f'SELECT id, minx, maxx, miny, maxy FROM "rtree_pts_{d["geometry_column"]}" ORDER BY id').fetchall()
+        lines = db.execute('SELECT id, minx, maxx, miny, maxy FROM "rtree_lines_geometry"').fetchall()
+        ext = db.execute("SELECT extension_name FROM gpkg_extensions WHERE table_name = 'pts'").fetchall()
+        db.close()
+        # No row for the point without coordinates or the empty one.
+        self.assertEqual([b[0] for b in boxes], [1, 3])
+        self.assertAlmostEqual(boxes[0][1], -97.7, places=4)
+        self.assertAlmostEqual(boxes[0][3], 30.2, places=4)
+        self.assertEqual(len(lines), 1)
+        self.assertAlmostEqual(lines[0][2], 2.0, places=5)
+        self.assertEqual(ext, [("gpkg_rtree_index",)])
+        # Rebuilt with the file; gone with it.
+        time.sleep(0.01)
+        self.write("pts.csv", "id,lon,lat\n1,-97.7,30.2\n")
+        w.describe_dataset({"connection": self.conn, "dataset": "pts"})
+        db = sqlite3.connect(self.conn["cache"])
+        self.assertEqual(db.execute(f'SELECT COUNT(*) FROM "rtree_pts_{d["geometry_column"]}"').fetchone()[0], 1)
+        db.close()
+        os.remove(os.path.join(self.root, "pts.csv"))
+        self.names()
+        db = sqlite3.connect(self.conn["cache"])
+        self.assertIsNone(db.execute("SELECT 1 FROM sqlite_master WHERE name LIKE 'rtree_pts%'").fetchone())
+        self.assertEqual(db.execute("SELECT COUNT(*) FROM gpkg_extensions WHERE table_name = 'pts'").fetchone()[0], 0)
+        db.close()
+
     def test_connection_crs_and_xy(self):
         self.write("a.csv", "E,N\n3110000,10070000\n")
         conn = dict(self.conn, crs="EPSG:2277", x="E", y="N")

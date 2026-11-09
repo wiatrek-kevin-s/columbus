@@ -41,6 +41,11 @@ SELECT i,
                                        1000000 + i * 10 + 5, ' 7000010)'), 3081)
 FROM n;
 
+-- The spatial index a bbox query uses (T-13, REQ-19).
+CREATE SPATIAL INDEX roads_geom_sx ON roads.roads (geom)
+  USING GEOMETRY_AUTO_GRID
+  WITH (BOUNDING_BOX = (xmin = 990000, ymin = 6990000, xmax = 1020000, ymax = 7010000));
+
 CREATE TABLE roads.places (id INT PRIMARY KEY, district INT NOT NULL, name NVARCHAR(40), loc geography);
 INSERT INTO roads.places VALUES
   (1, 14, N'Capitol', geography::Point(30.2747, -97.7404, 4326)),

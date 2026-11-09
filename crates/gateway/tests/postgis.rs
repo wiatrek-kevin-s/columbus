@@ -379,3 +379,136 @@ async fn postgis_governed_session() {
         "the secret never reaches the audit log"
     );
 }
+
+/// Runs `script` with the PostGIS connection details as argv[1..5] and
+/// `extra` after them; its stdout.
+fn pg_script(py: &str, host: &str, port: &str, db: &str, script: &str, extra: &[&str]) -> String {
+    let out = StdCommand::new(py)
+        .arg("-c")
+        .arg(script)
+        .args([host, port, db, "columbus_rw", PASSWORD])
+        .args(extra)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).to_string()
+}
+
+/// T-13 (REQ-19): a bbox goes inside the filtered table, beside the row
+/// filter, as `geom && ST_MakeEnvelope(...)`. With sequential scans off for
+/// the session, PostgreSQL's plan for the exact SQL the gateway ran uses
+/// the GiST index; and the rows are those of the unpushed query (the row
+/// filter, then the rows whose geometry meets the box), for a box in the
+/// layer's EPSG:3081 and one in lon/lat.
+#[tokio::test]
+async fn postgis_bbox_uses_the_spatial_index() {
+    let Ok(host) = std::env::var("COLUMBUS_TEST_PG_HOST") else {
+        eprintln!("skipping: COLUMBUS_TEST_PG_HOST not set");
+        return;
+    };
+    let port = std::env::var("COLUMBUS_TEST_PG_PORT").unwrap_or_else(|_| "5432".into());
+    let db = std::env::var("COLUMBUS_TEST_PG_DB").unwrap_or_else(|_| "gis".into());
+    let py = python().expect("python with psycopg is required when COLUMBUS_TEST_PG_HOST is set");
+    let env = setup(&host, &port, &db);
+    let client = start(&env, &py).await;
+
+    const EXPLAIN: &str = "import sys, psycopg\n\
+        h, p, d, u, pw, sql = sys.argv[1:7]\n\
+        with psycopg.connect(host=h, port=p, dbname=d, user=u, password=pw) as c:\n\
+        \x20   c.execute('SET enable_seqscan = off')\n\
+        \x20   for (line,) in c.execute('EXPLAIN ' + sql).fetchall():\n\
+        \x20       print(line)\n";
+    // The unpushed query: the row filter, then the rows meeting the box,
+    // which is moved to EPSG:3081 the way the engine moves it.
+    const REFERENCE: &str = "import sys, json, psycopg\n\
+        from pyproj import Transformer\n\
+        h, p, d, u, pw, crs = sys.argv[1:7]\n\
+        b = [float(v) for v in sys.argv[7:11]]\n\
+        if crs != 'EPSG:3081':\n\
+        \x20   b = list(Transformer.from_crs(crs, 'EPSG:3081', always_xy=True).transform_bounds(*b))\n\
+        with psycopg.connect(host=h, port=p, dbname=d, user=u, password=pw) as c:\n\
+        \x20   rows = c.execute('SELECT fid FROM roads.roadway_inventory WHERE district_nbr = 14 AND ST_Intersects(geom, ST_MakeEnvelope(%s, %s, %s, %s, 3081)) ORDER BY fid', b).fetchall()\n\
+        print(json.dumps([r[0] for r in rows]))\n";
+    const TO_LONLAT: &str = "import sys\n\
+        from pyproj import Transformer\n\
+        b = [float(v) for v in sys.argv[6:10]]\n\
+        print(','.join(repr(v) for v in Transformer.from_crs('EPSG:3081', 'EPSG:4326', always_xy=True).transform_bounds(*b)))\n";
+
+    // Segment i runs from x = 1,000,000 + 10 i to 5 m further: the box's
+    // edges fall in the gaps, around segments 101 to 200; district 14 is
+    // the even ones, fid i + 1.
+    let native = [1_001_007.5, 6_999_990.0, 1_002_007.5, 7_000_020.0];
+    let expected: Vec<i64> = (101..=200).filter(|i| i % 2 == 0).map(|i| i + 1).collect();
+    let lonlat: Vec<f64> = pg_script(
+        &py,
+        &host,
+        &port,
+        &db,
+        TO_LONLAT,
+        &native
+            .map(|v| v.to_string())
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+    )
+    .trim()
+    .split(',')
+    .map(|v| v.parse().unwrap())
+    .collect();
+    for (bbox, crs) in [(native.to_vec(), "EPSG:3081"), (lonlat, "EPSG:4326")] {
+        let q = ok(&call(
+            &client,
+            "query_features",
+            json!({"connection": "roads-pg", "dataset": "roads.roadway_inventory", "fields": ["fid", "route_id"],
+                   "bbox": bbox, "bbox_crs": crs, "order_by": "fid"}),
+        )
+        .await);
+        let sql = q["result"]["executed_sql"].as_str().unwrap().to_string();
+        assert!(
+            sql.contains("WHERE (columbus_filtered.district_nbr = 14) AND (columbus_filtered.\"geom\" && \"public\".st_makeenvelope("),
+            "inside the filtered table, beside the row filter: {sql}"
+        );
+        assert!(sql.contains(", 3081)) OFFSET 0)"), "{sql}");
+        assert!(!sql.contains("owner_name"), "{sql}");
+        assert!(
+            q["checks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|c| c["id"] == "query.bbox_index"
+                    && c["message"].as_str().unwrap().contains("PostGIS")),
+            "{}",
+            q["checks"]
+        );
+        let plan = pg_script(&py, &host, &port, &db, EXPLAIN, &[&sql]);
+        assert!(
+            plan.contains("roadway_inventory_geom_gist"),
+            "the plan uses the spatial index:\n{plan}"
+        );
+        let got: Vec<i64> = q["result"]["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r[0].as_i64().unwrap())
+            .collect();
+        let b: Vec<String> = bbox.iter().map(|v| v.to_string()).collect();
+        let mut args = vec![crs];
+        args.extend(b.iter().map(String::as_str));
+        let reference: Vec<i64> =
+            serde_json::from_str(pg_script(&py, &host, &port, &db, REFERENCE, &args).trim())
+                .unwrap();
+        assert_eq!(got, reference, "{crs}: same rows as the unpushed query");
+        assert_eq!(q["result"]["rows_read"], json!(reference.len()));
+        if crs == "EPSG:3081" {
+            assert_eq!(got, expected);
+        } else {
+            // Moving the box to lon/lat and back can only make it larger.
+            assert!(expected.iter().all(|f| got.contains(f)), "{got:?}");
+        }
+    }
+    client.cancel().await.unwrap();
+}

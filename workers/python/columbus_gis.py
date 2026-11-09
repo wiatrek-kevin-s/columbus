@@ -56,6 +56,7 @@ __all__ = [
     "geometry_checks",
     "decode",
     "bbox_filter",
+    "bbox_in_layer_crs",
     "build_layer",
     "write_layer",
     "read_layer",
@@ -636,19 +637,28 @@ def m_dropped_check(inputs: list, out, what: str) -> dict | None:
                  fix="Keep the measured layer for linear referencing; calibrate measures again on the new shapes if they need them")
 
 
+def bbox_in_layer_crs(bbox: list[float], bbox_crs: CRS | None, layer_crs: CRS | None) -> list[float]:
+    """The box in the layer's own coordinates: the bounds of the box moved
+    from ``bbox_crs`` (None: already the layer's). The gateway pushes this
+    same box into the source's spatial index (T-13), and ``bbox_filter``
+    keeps the rows that meet it, so both work on one box."""
+    if len(bbox) != 4 or bbox[0] > bbox[2] or bbox[1] > bbox[3]:
+        raise GISError("bbox.invalid", "bbox must be [min x, min y, max x, max y]")
+    box = [float(v) for v in bbox]
+    if bbox_crs is not None and layer_crs is None:
+        raise GISError("bbox.crs", "the dataset records no CRS, so a bbox in another CRS cannot be placed on it",
+                       fix="Give the bbox in the dataset's own coordinates and leave out bbox_crs")
+    if bbox_crs is not None and layer_crs is not None and not bbox_crs.equals(layer_crs):
+        box = [float(v) for v in Transformer.from_crs(bbox_crs, layer_crs, always_xy=True).transform_bounds(*box)]
+    return box
+
+
 def bbox_filter(bbox: list[float] | None, bbox_crs: CRS | None, layer_crs: CRS | None):
     """A predicate on Shapely geometries for rows whose bounds meet the
     box. The box is moved into the layer's CRS first."""
     if not bbox:
         return None
-    if len(bbox) != 4 or bbox[0] > bbox[2] or bbox[1] > bbox[3]:
-        raise GISError("bbox.invalid", "bbox must be [min x, min y, max x, max y]")
-    box = list(bbox)
-    if bbox_crs is not None and layer_crs is None:
-        raise GISError("bbox.crs", "the dataset records no CRS, so a bbox in another CRS cannot be placed on it",
-                       fix="Give the bbox in the dataset's own coordinates and leave out bbox_crs")
-    if bbox_crs is not None and layer_crs is not None and not bbox_crs.equals(layer_crs):
-        box = list(Transformer.from_crs(bbox_crs, layer_crs, always_xy=True).transform_bounds(*box))
+    box = bbox_in_layer_crs(bbox, bbox_crs, layer_crs)
     target = shapely.box(*box)
 
     shapely.prepare(target)
