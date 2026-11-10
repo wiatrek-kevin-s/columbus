@@ -122,7 +122,7 @@ async function pack(body) {
       `Your organization's context pack (datasets, domains, LRS, SOPs, roles, delivery specs) is a folder IT places at ${r.dir}. Columbus works without one; your own notes still help your assistant.`));
     return;
   }
-  body.append(h("div", { class: "notice" }, h("div", {}, h("b", {}, "Read only here. "), "The pack belongs to your organization; editing it, and suggesting changes to its owners, comes later. ", h("span", { class: "mono" }, r.dir))));
+  body.append(h("div", { class: "notice" }, h("div", {}, h("b", {}, "Read only here. "), "The pack belongs to your organization. ", h("span", { class: "mono" }, r.dir))));
   const left = h("section", { class: "card" });
   body.append(left);
   left.append(h("div", { class: "hd" }, h("h2", {}, "Entries"), h("span", { class: "muted small more" }, plural(r.entries.length, "entry", "entries"))));

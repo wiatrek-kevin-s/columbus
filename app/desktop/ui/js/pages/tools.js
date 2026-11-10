@@ -52,7 +52,7 @@ export async function render(main) {
     h("div", { class: "bd stack" },
       h("p", { class: "small muted" }, "An installed tool runs whenever it is needed, without asking, in the same sandbox as scripts: no network; each run starts afresh, reads only the layers it is given for that run (and the Python installation) and writes only its own folder, which is deleted when the run ends. Ask your assistant, for example: ", h("i", {}, "add the script we just made as a tool"), "."),
       sw,
-      h("p", { class: "small muted wrap-any" }, "Stored in ", h("code", { id: "tools-dir" }), ". Built-in tools, engine plugins and connected servers are listed by your assistant (list_providers); a page for them comes later.")));
+      h("p", { class: "small muted wrap-any" }, "Stored in ", h("code", { id: "tools-dir" }), ". Built-in tools, engine plugins and connected servers are listed by your assistant (list_providers).")));
   teamLibrary(teamBody, err, () => refresh());
   invoke("org_tools_list").then((o) => {
     const list = o.tools || [];

@@ -295,7 +295,7 @@ async function keyboard(body) {
   ];
   const tbody = h("tbody", {}, ...rows.map(([k, t]) => h("tr", {}, h("td", { class: "nowrap" }, h("span", { class: "kbd" }, k)), h("td", {}, t))));
   body.append(h("section", { class: "card" }, h("table", { class: "t" }, h("thead", {}, h("tr", {}, h("th", {}, "Keys"), h("th", {}, "Does"))), tbody)),
-    h("p", { class: "small muted" }, "Approval cards in your chat are answered with their buttons, which wait a second before they work so a keystroke meant for something else cannot approve a request. Editable shortcuts come later."));
+    h("p", { class: "small muted" }, "Approval cards in your chat are answered with their buttons, which wait a second before they work so a keystroke meant for something else cannot approve a request."));
 }
 
 // ---------- Environments ----------
@@ -487,5 +487,5 @@ async function org(body) {
         h("div", { class: "bd" }, el("pre", "box", info.policy.text))));
     }
   }
-  body.append(h("p", { class: "small muted" }, "The history of settings changes (what each reload withdrew) and audit health come later; the audit log itself is under ", h("a", { href: "#/activity/audit" }, "Activity"), "."));
+  body.append(h("p", { class: "small muted" }, "The audit log is under ", h("a", { href: "#/activity/audit" }, "Activity"), "."));
 }

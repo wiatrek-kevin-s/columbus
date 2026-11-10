@@ -119,7 +119,7 @@ export async function render(main, rest) {
         h("b", {}, h("a", { href: projHash(p.id) }, p.name)),
         h("span", { class: "where" }, `${plural(n, "chat")}${last ? ` · active ${ago(last)}` : ""} · ${connectionsText(p)}`),
         p.instructions ? h("span", { class: "muted small" }, p.instructions.length > 140 ? `${p.instructions.slice(0, 140)}…` : p.instructions) : null),
-        h("div", { class: "acts" }, button("New chat", "primary sm", () => go(`#/chats/fresh/${encodeURIComponent(p.id)}`), { title: `Start a chat in ${p.name}` })));
+        h("div", { class: "acts" }, button("New chat", "sm", () => go(`#/chats/fresh/${encodeURIComponent(p.id)}`), { title: `Start a chat in ${p.name}` })));
       ul.append(li);
     }
     if (state.projects.length) {
@@ -137,7 +137,7 @@ export async function render(main, rest) {
           h("p", { class: "small muted" }, "Chats can't start in these until their files are fixed or removed."))));
     }
     body.append(dbsCard(null));
-    body.append(h("p", { class: "small muted" }, "Attach data groups on a project's page. Documents and skills for each project, and sharing a project with your team, come later."));
+    body.append(h("p", { class: "small muted" }, "Attach data groups on a project's page."));
   }
 
   // ---- A project: its settings, and its chats --------------------------

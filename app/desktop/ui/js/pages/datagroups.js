@@ -90,7 +90,7 @@ export async function render(main, rest) {
         h("div", { class: "bd" }, h("ul", { class: "small" }, ...state.problems.map(([gid, why]) => el("li", null, `${gid}: ${why}`))),
           h("p", { class: "small muted" }, "A project that names one of these can't start a chat until it's fixed or removed from the project."))));
     }
-    body.append(h("p", { class: "small muted" }, "Attach a group to a project on the project's page. You can mention one to your assistant by its id; it can read it with describe_data_group. Sharing groups with your team comes later."));
+    body.append(h("p", { class: "small muted" }, "Attach a group to a project on the project's page. You can mention one to your assistant by its id; it can read it with describe_data_group."));
   }
 
   // ---- One of the organization's, read only ----------------------------
