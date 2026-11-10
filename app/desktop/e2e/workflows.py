@@ -218,7 +218,9 @@ def main():
         assert "Runs by itself" in text(d, "wf-installed")
         click(d, By.XPATH, "//ul[@id='wf-installed']/li[@data-id='tract-export']//a")
         wait.until(EC.element_to_be_clickable((By.ID, "wf-run-now")))
-        assert "Weekdays at 06:00." in text(d, "main"), text(d, "main")
+        assert "Weekdays at 06:00." in text(d, "page-host"), text(d, "page-host")
+        # No scheduler on Linux: its page says so too.
+        assert "Schedules are not available on this system yet" in text(d, "wf-entry"), text(d, "wf-entry")
         step("Run now: the real server runs it, and its report shows")
         click(d, By.ID, "wf-run-now")
         try:

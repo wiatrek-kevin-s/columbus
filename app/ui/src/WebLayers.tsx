@@ -1,5 +1,5 @@
 // Web map layers (T-25, REQ-33), opened from the foot of the outputs list:
-// the saved web layers (Connections › Map layers in the Columbus app, or
+// the saved web layers (Data › Map layers in the Columbus app, or
 // the organization's), each off until the person turns it on in this chat,
 // with opacity, order, zoom to extent and choose as basemap, all remembered
 // per chat. The assistant never sees any of this.
@@ -177,7 +177,7 @@ export function WebLayers(props: {
             </button>
             {addHint && (
               <p className="muted">
-                Add web layers in the Columbus app, under Connections › Map layers, by pasting the service's address.
+                Add web layers in the Columbus app, under Data › Map layers, by pasting the service's address.
               </p>
             )}
           </div>

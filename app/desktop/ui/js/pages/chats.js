@@ -160,8 +160,9 @@ export function markdown(box, md) {
     const head = /^#{1,6}\s+(.*)$/.exec(line);
     if (head) {
       flush();
-      // A heading: the answer's headline (# and ##) or a smaller one.
-      const big = /^#{1,2}\s/.test(line);
+      // A heading that opens the text is its headline; any other is a
+      // section's.
+      const big = !box.childNodes.length && /^#{1,2}\s/.test(line);
       const hd = el(big ? "h3" : "h4", big ? "md-h" : "md-h small");
       inline(hd, head[1]);
       box.append(hd);
@@ -929,12 +930,13 @@ function drawSub() {
     sub.replaceChildren(pick);
     fitSelect(pick);
   } else {
-    // Under the message box: the project this chat works in.
-    sub.replaceChildren(live.project
+    // Under the message box: the project this chat works in; a chat opened
+    // from a workflow run says which, with a way back to its report.
+    const project = live.project
       ? h("a", { href: `#/projects/${encodeURIComponent(live.project)}`, title: "This chat's project: its instructions and the connections it may use" }, projectName(live.project))
-      : h("a", { href: "#/projects", title: "Not in a project. Projects give a chat instructions and narrow the connections it may use." }, "No project"));
-    // A chat opened from a workflow run says which, with a way back to its report.
-    if (live.run) sub.append(h("span", { class: "sep" }), h("a", { id: "chat-run", href: `#/workflows/${encodeURIComponent(live.run.workflow)}/${encodeURIComponent(live.run.run)}`, title: "The run this chat opened" }, `${live.run.name || live.run.workflow} run`));
+      : live.run ? null : h("a", { href: "#/projects", title: "Not in a project. Projects give a chat instructions and narrow the connections it may use." }, "No project");
+    const run = live.run ? h("a", { id: "chat-run", href: `#/workflows/${encodeURIComponent(live.run.workflow)}/${encodeURIComponent(live.run.run)}`, title: "The run this chat opened" }, `${live.run.name || live.run.workflow} run`) : null;
+    sub.replaceChildren(...[project, project && run ? h("span", { class: "sep" }) : null, run].filter(Boolean));
   }
   // What the assistant is following, in plain sight.
   const box = $("chat-project");
@@ -960,7 +962,7 @@ async function newChat(project = null, run = null) {
   live.pick = null;
   live.cards.clear();
   live.log.replaceChildren();
-  live.renderer = new Renderer(live.log, true, (id) => live.map.files(id));
+  live.renderer = new Renderer(live.log, true, (id) => live.map.files(id), () => live.map.table());
   $("chat-title").textContent = "New chat";
   $("chat-title").removeAttribute("title");
   delete $("chat-title").dataset.set;
@@ -1000,8 +1002,10 @@ async function emptyChat() {
       c.server_older ? `The Columbus server this chat uses is version ${c.server_version}, older than this app (${c.app_version}), so the map and newer tools may not work. ` : "The GIS engine was not found, so tools that read data will fail. ",
       h("a", { href: "#/settings/ai" }, "See Settings › Assistant"), ".")));
   }
-  // Nothing set up yet: the first run stands in for the question.
-  document.body.classList.toggle("setup", !!s.needsSetup);
+  // Nothing set up yet: the first run. With no AI connected there is no
+  // question to ask, so it stands in for the message box; with one, it sits
+  // under it.
+  document.body.classList.toggle("setup", !!s.needsSetup && !s.done.ai);
   if (s.needsSetup) {
     box.append(firstSteps(s, () => emptyChat()));
     return;
@@ -1209,7 +1213,7 @@ async function showSaved(main, id) {
     title.textContent = s ? s.title : "Chat";
     title.title = title.textContent;
     sub.replaceChildren(...(meta.project ? [h("a", { href: `#/projects/${encodeURIComponent(meta.project)}` }, projectName(meta.project)), " · "] : []), when(lines[0]?.ts));
-    const r = new Renderer(logEl, false, (pid) => map.files(pid));
+    const r = new Renderer(logEl, false, (pid) => map.files(pid), () => map.table());
     for (const l of lines) r.event(l);
     r.finish();
     logEl.append(ended);

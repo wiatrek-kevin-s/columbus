@@ -36,11 +36,17 @@ function stateText(w) {
   return "Off: not approved";
 }
 
+// When a workflow runs, in a few words: "weekdays at 06:00".
+function scheduleWhen(w) {
+  if (!w.at) return "runs when you start it";
+  const days = w.days.length === 7 ? "every day" : (w.days.join(",") === "mon,tue,wed,thu,fri" ? "weekdays" : w.days.join(", "));
+  return `${days} at ${w.at}`;
+}
+
 function scheduleText(w) {
   if (!w.at) return "Runs when you start it";
-  const days = w.days.length === 7 ? "every day" : (w.days.join(",") === "mon,tue,wed,thu,fri" ? "weekdays" : w.days.join(", "));
   const entry = { on: "", off: " · paused", differs: " · schedule needs repair", none: "" }[w.schedule_entry] ?? "";
-  return `${days} at ${w.at}${entry}`;
+  return `${scheduleWhen(w)}${entry}`;
 }
 
 // A run's state as a dot: passed, to look at, failed, or nothing to say.
@@ -230,10 +236,16 @@ export async function render(main, rest) {
     ], { class: "iconbtn wf-more" });
     page.append(pageHead(w.name, null, [run, menu], back), h("div", { class: "scroll" }, body));
     const why = stateText(w);
-    const sched = scheduleText(w);
+    const sched = scheduleWhen(w);
+    // Whether its schedule is in force on this computer, in a line.
+    const entry = !w.at ? null
+      : !state.scheduler ? "Schedules are not available on this system yet. Run now works."
+        : w.schedule_entry === "off" ? "Its schedule is paused: it runs only when you start it."
+          : w.schedule_entry === "differs" ? "Its schedule on this computer needs repair (More › Repair its schedule)." : null;
     body.append(notice, err, ...[
       why ? el("p", "notice warn", why) : null,
-      h("h2", { class: "big" }, w.at ? `${sched[0].toUpperCase()}${sched.slice(1)}.` : "Runs when you start it."),
+      h("h2", { class: "big" }, `${sched[0].toUpperCase()}${sched.slice(1)}.`),
+      entry ? h("p", { class: "small muted", id: "wf-entry" }, entry) : null,
       w.purpose ? h("p", {}, w.purpose) : null,
       h("p", { class: "small muted wrap-any" }, [w.installed ? `Approved ${when(w.installed)}` : null, `id ${w.id}`].filter(Boolean).join(" · ")),
     ].filter(Boolean));
