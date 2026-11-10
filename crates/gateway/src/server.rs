@@ -2322,7 +2322,7 @@ impl Gateway {
                     &ctx,
                     rec,
                     if self.state.policy().allow_personal_tools {
-                        format!("{ns} is not installed; the person installs personal tools from Settings, Tools, in the Columbus app")
+                        format!("{ns} is not installed; the person installs personal tools from Workflows › Tools in the Columbus app")
                     } else {
                         "organization policy turns personal tools off (allow_personal_tools)".to_string()
                     },
@@ -2700,7 +2700,7 @@ impl Gateway {
         }
         if ns.starts_with(columbus_shared::tools::ID_PREFIX) {
             let why = if self.state.policy().allow_personal_tools {
-                format!("{ns} is not installed. A personal tool runs once the person installs it from Settings, Tools, in the Columbus app (propose one with propose_tool)")
+                format!("{ns} is not installed. A personal tool runs once the person installs it from Workflows › Tools in the Columbus app (propose one with propose_tool)")
             } else {
                 "organization policy turns personal tools off (allow_personal_tools), so none can run here".to_string()
             };

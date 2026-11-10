@@ -1,4 +1,4 @@
-//! Settings › Environments: the person's registered Python environments
+//! Settings › Python environments: the person's registered Python environments
 //! (build brief Part 5, F-4, REQ-11), and the environments their
 //! assistant proposed (T-7).
 //!
@@ -115,7 +115,7 @@ pub async fn settings_environments() -> Result<Value, String> {
     .map_err(|e| e.to_string())?
 }
 
-/// Settings › Environments › Add: probe the interpreter, then register it
+/// Settings › Python environments › Add: probe the interpreter, then register it
 /// once the person confirms what was found.
 #[tauri::command]
 pub async fn settings_env_add(
@@ -272,7 +272,7 @@ pub async fn settings_env_approve(
 /// The engine's Python, whose uv creates environments.
 fn engine(app: &AppHandle) -> Result<PathBuf, String> {
     let (_, engine) = crate::registry::program(app)?;
-    engine.ok_or_else(|| "the GIS engine was not found, so Columbus cannot create environments: set it up under Settings › Models and accounts".into())
+    engine.ok_or_else(|| "the GIS engine was not found, so Columbus cannot create environments: set it up under Settings › Assistant".into())
 }
 
 fn approve(engine: &Path, id: &str, fingerprint: &str) -> Result<Value, String> {

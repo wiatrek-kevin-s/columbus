@@ -1,4 +1,4 @@
-//! Connections › Map layers: the person's web map layers (build brief
+//! Data › Map layers: the person's web map layers (build brief
 //! part 2, Part 3: REQ-31, REQ-33, F-13, F-14; T-25). The server side is
 //! T-24's `columbus-mcp map-source inspect|save|test|remove|list`, which
 //! these commands run, as Sign in runs `arcgis signin`.

@@ -1,4 +1,4 @@
-//! Documents > Import: a Word, Excel, PDF, CSV, Markdown or text file the
+//! Data › Notes › Import: a Word, Excel, PDF, CSV, Markdown or text file the
 //! person chooses becomes a draft entry in their notes, through Columbus's
 //! server (`columbus-mcp notes import`): previewed first (nothing written),
 //! then added with the original kept beside it.

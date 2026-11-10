@@ -78,7 +78,7 @@ feature services) to their map, in the app. These are **display only**: you can'
 turn on or read them, they are not workspace layers, `list_outputs` and `map_snapshot`
 don't include them, and `whoami` gives only their titles (`web_layers`). To analyse an
 ArcGIS layer, use an `arcgis` connection. If the person asks you to "add imagery to the
-map", tell them to use **Add web layer** on the map or **Connections › Map layers**.
+map", tell them to use **Add web layer** on the map or **Data › Map layers**.
 
 ## Exports and workflows
 

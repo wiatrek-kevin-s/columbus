@@ -126,7 +126,7 @@ person's own notes (cards say `"pack": "the person's own notes"`, with the
   2024 roadway data dictionary, p. 12"). Never invent a meaning; leave it blank and ask.
 - **Reviewed notes, or "later".** A note the person has reviewed can't be changed by
   you. Use `suggest_note_changes` (same `changes`, plus `why`: where it came from): it
-  waits in Documents > Proposals for them to accept or dismiss, and asks nothing now.
+  waits in Data › Notes › Proposals for them to accept or dismiss, and asks nothing now.
   Also use it when they'd rather look later than approve during the chat. Don't wait
   for an answer.
 - **Batch.** Work out everything first, then send it in ONE `update_notes` call:
@@ -443,7 +443,7 @@ or the same script keeps being written, use `propose_tool`. Read
 [references/designing-tools.md](references/designing-tools.md) (also `columbus_guide {"name": "designing-tools"}` from the server) first: the code is a
 `run(ctx)` function, the manifest is written for other assistants, and Columbus refuses
 network use, credentials, environment variables, absolute paths and undeclared names. The
-person approves a test run, then installs the tool in the Columbus app (Settings, Tools);
+person approves a test run, then installs the tool in the Columbus app (Workflows › Tools);
 you cannot install it, and it is usable from the next call after they do. A changed tool is
 a new proposal and a new install.
 

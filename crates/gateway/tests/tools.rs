@@ -443,7 +443,7 @@ async fn propose_test_install_run_and_remove_a_personal_tool() {
     assert!(card["summary"]
         .as_str()
         .unwrap()
-        .contains("Settings, Tools"));
+        .contains("Workflows › Tools"));
     // Declined: nothing runs, nothing is filed.
     b.decide(&ap, "decline").await;
     let mut again = proposal(&routes, &crashes);
@@ -491,7 +491,7 @@ async fn propose_test_install_run_and_remove_a_personal_tool() {
     assert!(r["result"]["next"]
         .as_str()
         .unwrap()
-        .contains("Settings, Tools"));
+        .contains("Workflows › Tools"));
     assert_eq!(r["result"]["test"]["summary"]["located"], 2);
     let off = r["checks"]
         .as_array()

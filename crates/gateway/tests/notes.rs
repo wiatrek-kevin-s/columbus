@@ -720,7 +720,7 @@ fn audit_text(root: &Path) -> String {
         .collect()
 }
 
-/// `columbus-mcp notes check`, as the app's Documents > Proposals runs it.
+/// `columbus-mcp notes check`, as the app's Data › Notes › Proposals runs it.
 fn notes_check(root: &Path, py: &str) -> Value {
     notes_cli(root, py, &["notes", "check", "{}"])
 }

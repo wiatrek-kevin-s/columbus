@@ -95,7 +95,7 @@ fn err(status: u16, message: impl Into<String>) -> WebError {
 }
 
 /// The refusal for a request that names an address.
-pub(crate) const NO_URLS: &str = "web layers are named by a saved layer's id, never by an address: add the layer in the Columbus app (Connections › Map layers), then turn it on";
+pub(crate) const NO_URLS: &str = "web layers are named by a saved layer's id, never by an address: add the layer in the Columbus app (Data › Map layers), then turn it on";
 
 /// Where a source comes from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2285,7 +2285,7 @@ pub mod cli {
         }
     }
 
-    /// `map-source list`: every source, for Connections › Map layers.
+    /// `map-source list`: every source, for Data › Map layers.
     pub fn list() -> anyhow::Result<()> {
         let (env, _) = env()?;
         let (all, notes) = all(&env);
