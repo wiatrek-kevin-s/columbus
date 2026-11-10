@@ -83,7 +83,14 @@ def place(d, wait, href, title):
             break
         except StaleElementReferenceException:
             time.sleep(0.3)
-    wait.until(lambda drv: title == text(drv, "#page-title"))
+    try:
+        wait.until(lambda drv: title == text(drv, "#page-title"))
+    except Exception:
+        d.save_screenshot(str(OUT / "shell-place-failed.png"))
+        raise SystemExit(f"{href} did not show {title}: " + d.execute_script(
+            "return JSON.stringify({hash: location.hash, title: document.querySelector('#page-title')?.textContent, body: document.body.className,"
+            " dialog: !!document.querySelector('dialog[open]'), focus: document.activeElement && (document.activeElement.id || document.activeElement.tagName),"
+            " hosts: [...document.querySelectorAll('#main > *')].map((e) => e.id + (e.hidden ? ' hidden' : ''))})"))
     named(d)
 
 

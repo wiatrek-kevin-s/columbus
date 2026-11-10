@@ -275,6 +275,12 @@ def main():
             click_table.click()
             try:
                 WebDriverWait(d, 30).until(lambda drv: rows_shown() == rows)
+                # It stays that card's: the map page reads the session's
+                # results every 2 s, and a result it lists only now (the
+                # newest, made a moment before the click) must not take the
+                # table back from the one the person asked for.
+                time.sleep(2.6)
+                assert rows_shown() == rows
             except Exception:
                 d.save_screenshot(str(OUT / "chat-table-failed.png"))
                 raise SystemExit(f"Table on a result card showed {rows_shown()} rows, not that card's {rows}")
@@ -292,11 +298,13 @@ def main():
         WebDriverWait(d, 10).until(lambda drv: drv.execute_script("return document.body.classList.contains('start')"))
 
         step("A model chosen in Settings shows in the new chat under the sheet as soon as it closes")
-        WebDriverWait(d, 10).until(lambda drv: drv.execute_script("return document.getElementById('chat-model').options.length > 1"))
-        was = d.execute_script("return document.getElementById('chat-model').value")
         d.find_element(By.ID, "nav-settings").click()
         WebDriverWait(d, 10).until(lambda drv: drv.execute_script(
-            "const s = document.getElementById('set-model'); return !!s && s.options.length > 1 && s.value === arguments[0]", was))
+            "const s = document.getElementById('set-model'); return !!s && s.options.length > 1"))
+        was = d.execute_script("return document.getElementById('set-model').value")
+        # The new chat under the sheet starts with that model (the old chat's
+        # own choice went with it).
+        WebDriverWait(d, 10).until(lambda drv: drv.execute_script("return document.getElementById('chat-model').value") == was)
         other = d.execute_script("const s = document.getElementById('set-model'); return [...s.options].map((o) => o.value).find((v) => v !== s.value)")
         Select(d.find_element(By.ID, "set-model")).select_by_value(other)
         d.find_element(By.ID, "settings-close").click()

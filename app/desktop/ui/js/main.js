@@ -125,6 +125,10 @@ async function showPage(r) {
   shown = r;
   drawNav(r);
   document.title = `${PAGES[r.page][2]} · Columbus`;
+  // A page that cannot be the start takes its place at the side at once,
+  // not when its data has come: the panel does not wait in the middle and
+  // then move while the person is reaching for something on it.
+  if (!(r.page === "chats" && ["new", "fresh", "run"].includes(r.rest[0]))) posture();
   try {
     const off = (await PAGES[r.page][0](main, r.rest)) || null;
     if (seq !== showSeq) {

@@ -38,6 +38,7 @@ from pathlib import Path
 from selenium import webdriver
 from selenium.webdriver.common.options import ArgOptions
 from selenium.webdriver.remote.client_config import ClientConfig
+from selenium.webdriver.remote.webelement import WebElement
 from selenium.webdriver.support.ui import WebDriverWait
 
 _CONF = Path(__file__).resolve().parents[1] / "src-tauri" / "tauri.conf.json"
@@ -206,6 +207,38 @@ def ready(d, wait):
         "return document.querySelectorAll('#nav a.tab').length === 4 && !!document.getElementById('text')"))
 
 
+
+
+AT_REST = """
+const p = document.getElementById('panel');
+if (!p || typeof p.getAnimations !== 'function') return true;
+return p.getAnimations().every((a) => a.playState !== 'running' && a.playState !== 'pending');
+"""
+
+
+def at_rest(d, seconds=5):
+    """Wait until the main window's panel has stopped moving. It glides for a
+    moment between the middle of the window (the start) and its side, and a
+    click aimed while it moves lands where the thing was. A window without
+    the panel (the classic windows, a browser page, a frame) is at rest."""
+    try:
+        WebDriverWait(d, seconds, poll_frequency=0.05).until(lambda drv: drv.execute_script(AT_REST))
+    except Exception:
+        # Not this wait's to report: the click that follows says what is wrong.
+        pass
+
+
+# Every click a script makes waits for the panel to be at rest first, as a
+# person would.
+_click = WebElement.click
+
+
+def _click_at_rest(self):
+    at_rest(self.parent)
+    return _click(self)
+
+
+WebElement.click = _click_at_rest
 
 
 def unnamed(d):

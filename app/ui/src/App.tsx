@@ -302,6 +302,9 @@ export function App() {
   const theme = useTheme();
   const win = useWindowSize();
   const basemapSet = useRef(false);
+  // Read the session's results now, not at the next poll (set by the poll
+  // below, once the page is signed in).
+  const pollNow = useRef<() => Promise<void>>(async () => {});
   // The app's layout and preferences: plain values, only from the app's
   // own page that frames this one.
   useEffect(() => {
@@ -318,7 +321,13 @@ export function App() {
       else if (d.view === "table" || d.view === "split") {
         setTableOpen(true);
         // Whose table: checked against this session's own outputs below.
-        if (d.output !== undefined) setWanted({ output: d.output, until: Date.now() + 10_000 });
+        // The results are read first, so that one made a moment ago is
+        // listed (and takes the focus, as a new layer does) before the
+        // person's choice is applied, not after it.
+        if (d.output !== undefined) {
+          const output = d.output;
+          void pollNow.current().finally(() => setWanted({ output, until: Date.now() + 10_000 }));
+        }
       }
       // What the app's panel covers, in CSS pixels: checked numbers only.
       const covered = parseInset(d.inset);
@@ -524,23 +533,30 @@ export function App() {
         signedOut(e);
       }
     };
-    tick();
-    const t = window.setInterval(tick, POLL_MS);
+    // One read at a time, in the order asked for: a read asked for by name
+    // (the app wants one result's table) then ends after any read that was
+    // under way, with every result there is by then listed.
+    let chain: Promise<void> = Promise.resolve();
+    let reading = 0;
+    const read = () => {
+      reading += 1;
+      chain = chain.then(tick).finally(() => {
+        reading -= 1;
+      });
+      return chain;
+    };
+    void read();
+    pollNow.current = read;
+    // The poll skips a beat while a read is still under way.
+    const t = window.setInterval(() => {
+      if (!reading) void read();
+    }, POLL_MS);
     return () => {
       live = false;
+      pollNow.current = async () => {};
       window.clearInterval(t);
     };
   }, [phase, signedOut]);
-
-  // The app asked for one result's table: that result becomes the active
-  // one, if it is one of this session's own with rows to show. Any other
-  // value changes nothing.
-  useEffect(() => {
-    if (!wanted) return;
-    const handle = Date.now() <= wanted.until ? namedOutput(wanted.output, outputs) : null;
-    if (handle) setActive(handle);
-    if (handle || Date.now() > wanted.until) setWanted(null);
-  }, [wanted, outputs]);
 
   // A new layer goes on the map and gets the focus; the person can take it off.
   useEffect(() => {
@@ -558,6 +574,18 @@ export function App() {
     const present = new Set(outputs.map((o) => o.handle));
     setOnMap((m) => m.filter((h) => present.has(h)));
   }, [outputs]);
+
+  // The app asked for one result's table: that result becomes the active
+  // one, if it is one of this session's own with rows to show. Any other
+  // value changes nothing. Written after the effect above on purpose:
+  // effects run in the order written, so when a new layer and the person's
+  // choice arrive together, the choice is the later and stands.
+  useEffect(() => {
+    if (!wanted) return;
+    const handle = Date.now() <= wanted.until ? namedOutput(wanted.output, outputs) : null;
+    if (handle) setActive(handle);
+    if (handle || Date.now() > wanted.until) setWanted(null);
+  }, [wanted, outputs]);
 
   // Load what is on the map.
   useEffect(() => {
