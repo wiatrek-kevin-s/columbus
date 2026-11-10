@@ -320,6 +320,7 @@ def main():
         fill(d, "url", f"http://127.0.0.1:{dead}/arcgis/rest/services/Gone/FeatureServer")
         got = test_says(d, wait, "ArcGIS service at 127.0.0.1", "Check the address or your network, then Test again.")
         assert "test-bad" in d.find_element(By.ID, "test-result").get_attribute("class"), got
+        assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
         d.save_screenshot(str(OUT / "sources-network-error.png"))
         click(d, By.ID, "cancel")
 
@@ -354,6 +355,7 @@ def main():
             d.save_screenshot(str(OUT / "sources-signin.png"))
         said = d.find_element(By.XPATH, status).text
         assert "Signed in" in said and MARK not in said, said
+        assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
         asked = authorize_requests(base)
         assert len(asked) == 1, asked
         target = asked[0]["target"]

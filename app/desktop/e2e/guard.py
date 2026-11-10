@@ -211,18 +211,32 @@ def ready(d, wait):
 
 AT_REST = """
 const p = document.getElementById('panel');
-if (!p || typeof p.getAnimations !== 'function') return true;
-return p.getAnimations().every((a) => a.playState !== 'running' && a.playState !== 'pending');
+if (!p) return 'none';
+if (typeof p.getAnimations === 'function' && p.getAnimations().some((a) => a.playState === 'running' || a.playState === 'pending')) return 'moving';
+const r = p.getBoundingClientRect();
+return [Math.round(r.left), Math.round(r.top), Math.round(r.width)].join(',');
 """
 
 
 def at_rest(d, seconds=5):
     """Wait until the main window's panel has stopped moving. It glides for a
     moment between the middle of the window (the start) and its side, and a
-    click aimed while it moves lands where the thing was. A window without
-    the panel (the classic windows, a browser page, a frame) is at rest."""
+    click aimed while it moves lands where the thing was. At rest means: no
+    move under way, and the panel drawn in the same place on two looks a
+    couple of frames apart (a move ends by the clock, its last frame a
+    moment later). A window without the panel (the classic windows, a
+    browser page, a frame) is at rest."""
+    looks = []
+
+    def still(drv):
+        now = drv.execute_script(AT_REST)
+        if now == "none":
+            return True
+        looks.append(now)
+        return now != "moving" and len(looks) >= 2 and looks[-2] == now
+
     try:
-        WebDriverWait(d, seconds, poll_frequency=0.05).until(lambda drv: drv.execute_script(AT_REST))
+        WebDriverWait(d, seconds, poll_frequency=0.03).until(still)
     except Exception:
         # Not this wait's to report: the click that follows says what is wrong.
         pass

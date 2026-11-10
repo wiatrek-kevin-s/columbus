@@ -89,7 +89,8 @@ export async function render(body) {
   };
   redraw = draw;
   await draw();
-  return () => { redraw = null; };
+  // (Only its own: the page shown next may have set its own by now.)
+  return () => { if (redraw === draw) redraw = null; };
 }
 
 async function testOne(id, btn, status) {

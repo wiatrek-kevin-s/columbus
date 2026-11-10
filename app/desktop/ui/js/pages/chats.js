@@ -542,7 +542,13 @@ function liveCard(r, e) {
   drawTray();
   // In front of the person: the panel comes back if it was put away, and a
   // word is said when this chat is not what they are looking at.
-  if (document.body.classList.contains("panel-away") && store.setAway) store.setAway(false);
+  if (document.body.classList.contains("panel-away") && store.setAway) {
+    store.setAway(false);
+    // The focus was on the map: it goes to the request, so Tab reaches its
+    // buttons (after the panel itself has taken it, main.js).
+    card.tabIndex = -1;
+    setTimeout(() => { if (card.isConnected && live.shown && !document.querySelector("dialog[open]")) card.focus({ preventScroll: true }); }, 0);
+  }
   if (!live.shown || document.querySelector("dialog[open]")) toast(`Your chat is asking: ${e.title}`);
   // Show the card from its title, not its end.
   card.scrollIntoView({ block: "start" });
@@ -877,8 +883,10 @@ function buildLive() {
     log.scrollTop = log.scrollHeight;
     setBusy(true);
     // Send gave way to Stop: the focus stays in the message box, for the
-    // next thing the person wants to say.
-    text.focus({ preventScroll: true });
+    // next thing the person wants to say (unless they have moved on to
+    // something else while the chat started).
+    const at = document.activeElement;
+    if (!at || at === document.body || composer.contains(at)) text.focus({ preventScroll: true });
     store.set("chatstate", "asked");
     try {
       await invoke("chat_send", { text: t });
@@ -943,6 +951,11 @@ async function start() {
   if (live.started) return true;
   $("status").textContent = "Starting a Columbus session…";
   try {
+    // What the two boxes under the message show is what this chat runs on:
+    // it is sent with the start and kept as the chat's own from then on. A
+    // later change of the default in Settings is for new chats.
+    const boxes = { model: $("chat-model").value, effort: $("chat-effort").value };
+    if (!live.pick && boxes.model) live.pick = boxes;
     const s = await invoke("chat_start", { ...(live.pick || {}), project: live.project, run: live.run ? { workflow: live.run.workflow, run: live.run.run } : null });
     live.started = true;
     live.session = s.session || null;
@@ -1213,6 +1226,16 @@ export async function render(main, rest) {
   return showIndex(main);
 }
 
+/** The live chat leaves the panel now. (The page shown next may have been
+ * asked for while the live chat's own page was still being drawn, before
+ * its clean-up was handed back.) */
+export function leaveLive() {
+  if (!host || host.hidden) return;
+  host.hidden = true;
+  live.shown = false;
+  if (trayFor === "live") trayEl = null;
+}
+
 let liveShows = 0;
 function showLive(main) {
   const mine = ++liveShows;
@@ -1237,7 +1260,8 @@ function showLive(main) {
     hostEl.hidden = true;
     main.hidden = false;
     live.shown = false;
-    trayEl = null;
+    // (Only its own: a session's page shown since has its own.)
+    if (trayFor === "live") trayEl = null;
   };
 }
 

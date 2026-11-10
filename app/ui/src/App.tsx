@@ -8,6 +8,8 @@ import { LAYER_TONES, useTheme } from "./theme";
 import { NO_WEB_PREFS, ordered, WebLayers, type WebPrefs } from "./WebLayers";
 
 const POLL_MS = 2000;
+// The longest a table asked for by name waits for the results to be read.
+const NAMED_READ_MS = 3000;
 // How often the list of web layers is read again (one added, edited or
 // removed in the Columbus app shows in every chat).
 const WEB_POLL_MS = 5000;
@@ -533,24 +535,30 @@ export function App() {
         signedOut(e);
       }
     };
-    // One read at a time, in the order asked for: a read asked for by name
-    // (the app wants one result's table) then ends after any read that was
-    // under way, with every result there is by then listed.
-    let chain: Promise<void> = Promise.resolve();
-    let reading = 0;
+    // The poll's reads run on their own, as they always did: one that never
+    // answers holds up nothing.
+    const under = new Set<Promise<void>>();
     const read = () => {
-      reading += 1;
-      chain = chain.then(tick).finally(() => {
-        reading -= 1;
+      const p: Promise<void> = tick().finally(() => under.delete(p));
+      under.add(p);
+      return p;
+    };
+    // A read asked for by name (the app wants one result's table) ends
+    // after the reads under way, and then reads once more: every result
+    // there is by then is listed before the person's choice is applied.
+    // Asked-for reads keep their order, and none waits long for a read that
+    // is stuck.
+    const soon = (p: Promise<unknown>) => Promise.race([p, new Promise((done) => window.setTimeout(done, NAMED_READ_MS))]);
+    let asked: Promise<void> = Promise.resolve();
+    pollNow.current = () => {
+      asked = asked.then(async () => {
+        await soon(Promise.all([...under]));
+        await soon(read());
       });
-      return chain;
+      return asked;
     };
     void read();
-    pollNow.current = read;
-    // The poll skips a beat while a read is still under way.
-    const t = window.setInterval(() => {
-      if (!reading) void read();
-    }, POLL_MS);
+    const t = window.setInterval(() => void read(), POLL_MS);
     return () => {
       live = false;
       pollNow.current = async () => {};

@@ -11,10 +11,23 @@ import { $, h, el, icon, invoke as call, store, showError, savePrefs, applyTheme
 // but these reads saves something.
 let changed = false;
 const READS = new Set(["chat_settings", "settings_state", "settings_environments", "settings_pick", "open_classic"]);
+const pending = new Set();
 const invoke = (cmd, args) => {
-  if (!READS.has(cmd)) changed = true;
-  return call(cmd, args);
+  if (READS.has(cmd)) return call(cmd, args);
+  changed = true;
+  const p = call(cmd, args);
+  // Kept until it is answered, either way: the page under the sheet is
+  // brought up to date only after every save has landed.
+  const done = p.then(() => {}, () => {}).finally(() => pending.delete(done));
+  pending.add(done);
+  return p;
 };
+
+/** Resolves when every save begun in the sheet has been answered (a
+ * confirmation at the keyboard can keep one waiting after the sheet closed). */
+export function saves() {
+  return Promise.all([...pending]);
+}
 
 const SWITCHES = {
   allow_edits: ["Allow edits.", "Your assistant may write to connections set to read-write, and only after you approve each change set. When off, every connection is read-only."],

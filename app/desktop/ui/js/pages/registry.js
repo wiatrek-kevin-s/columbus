@@ -132,7 +132,9 @@ export async function render(main, rest) {
     }
     const e = r.result?.entry;
     if (!e) { body.append(emptyState("Not found", "The registry has no entry with this id.")); return; }
-    document.getElementById("page-title").textContent = e.name || e.id;
+    // This page's own title (the person may have gone on while it loaded).
+    const title = page.querySelector("#page-title");
+    if (title) title.textContent = e.name || e.id;
     const rows = [];
     const add = (label, value) => { if (value != null && value !== "" && !(Array.isArray(value) && !value.length)) rows.push([label, value]); };
     add("Kind", e.kind === "data" ? "Data source" : "Tool");

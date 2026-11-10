@@ -151,6 +151,7 @@ def fill_layer(d, wait, url, layer, title, sid):
         choose(d, "wl_layer", layer)
     fill(d, "wl_title", title)
     fill(d, "wl_id", sid)
+    assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
     return d.execute_script("return document.getElementById('wl-found').textContent + ' | ' + document.getElementById('wl-hint').textContent")
 
 
@@ -259,6 +260,7 @@ def main():
             err = save_dialog(d, wait)
             assert "not confirmed" in err, err
             assert not list(saved.glob("*.yaml")) if saved.exists() else True, "nothing is saved"
+            assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
             d.save_screenshot(str(OUT / "weblayers-declined.png"))
         finally:
             guard.stop(d, proc)  # the app has gone: the next launch is a restart

@@ -397,6 +397,27 @@ test("the map's colours in code are the page's tokens in styles.css", () => {
     assert.equal(token(darkSystem, name), value, `dark (system) --${name}`);
     assert.equal(token(darkChosen, name), value, `dark (chosen) --${name}`);
   }
+  // The app window's own stylesheet carries the same ones: the two are one
+  // look, and a colour changed in one file alone would split them.
+  const app = readFileSync(new URL("../../desktop/ui/app.css", import.meta.url), "utf8");
+  const appBlock = (start) => {
+    const at = app.indexOf(start);
+    assert.ok(at >= 0, `app.css has ${start}`);
+    return app.slice(at, app.indexOf("}", at));
+  };
+  const appLight = appBlock(":root {");
+  const appDarkSystem = appBlock(':root:not([data-theme="light"]) {');
+  const appDarkChosen = appBlock(':root[data-theme="dark"] {');
+  for (const [name, value] of Object.entries(want.light)) assert.equal(token(appLight, name), value, `app.css light --${name}`);
+  for (const [name, value] of Object.entries(want.dark)) {
+    assert.equal(token(appDarkSystem, name), value, `app.css dark (system) --${name}`);
+    assert.equal(token(appDarkChosen, name), value, `app.css dark (chosen) --${name}`);
+  }
+  // The edge of a field (3:1 on the panel) is the same in both, too.
+  for (const [text, where] of [[light, "styles.css light"], [appLight, "app.css light"]]) assert.equal(token(text, "field"), "#85868a", where);
+  for (const [text, where] of [[darkSystem, "styles.css dark"], [darkChosen, "styles.css dark (chosen)"], [appDarkSystem, "app.css dark"], [appDarkChosen, "app.css dark (chosen)"]]) {
+    assert.equal(token(text, "field"), "#77787b", where);
+  }
   for (const theme of ["light", "dark"]) {
     const w = want[theme];
     assert.equal(MAP_TONES[theme].paper, w.paper);

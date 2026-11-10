@@ -191,12 +191,13 @@ async function databases(body, search, notesLink) {
     }));
     outCard.hidden = !folders.length || !!search.value.trim();
   };
-  afterSave = async () => {
+  const listSaved = async () => {
     await refresh();
     notice.textContent = savedText();
     notice.hidden = false;
     showError(error, null);
   };
+  afterSave = listSaved;
   const refresh = async () => {
     try { await loadState(); draw(); } catch (e) { showError(error, e); }
   };
@@ -210,7 +211,8 @@ async function databases(body, search, notesLink) {
       ? `${plural(n.notes.length, "note")} on what your data means.${drafts ? ` ${drafts === 1 ? "1 is a draft" : `${drafts} are drafts`}.` : ""}`
       : "Notes on what your data means. None yet.";
   }).catch(() => {});
-  return () => { afterSave = null; };
+  // (Only its own: the page shown next may have set its own by now.)
+  return () => { if (afterSave === listSaved) afterSave = null; };
 }
 
 // ---------- One connection: its rules in plain words, and what to do with it ----------
@@ -306,7 +308,7 @@ async function source(page, scroll, body, id) {
       rules, acts, status, result].filter(Boolean));
     drawNotes();
   };
-  afterSave = async () => {
+  const sourceSaved = async () => {
     try { await loadState(); } catch (e) { showError(error, e); return; }
     if (!state.connections.some((x) => x.id === id)) { location.hash = "#/data"; return; }
     draw();
@@ -314,9 +316,10 @@ async function source(page, scroll, body, id) {
     notice.hidden = false;
     showError(error, null);
   };
+  afterSave = sourceSaved;
   try { await loadState(); draw(); } catch (e) { showError(error, e); }
   loadNotes();
-  return () => { afterSave = null; };
+  return () => { if (afterSave === sourceSaved) afterSave = null; };
 }
 
 async function draftNotes(id, btn, status) {

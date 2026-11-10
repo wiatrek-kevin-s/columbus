@@ -347,6 +347,30 @@ def main():
         assert "cannot continue" in d.find_element(By.ID, "saved-log").text
         assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
         d.save_screenshot(str(OUT / "chat-saved.png"))
+
+        step("A started chat keeps the model it runs on when the default changes in Settings")
+        d.execute_script("location.hash = '#/chats/new'")
+        box = WebDriverWait(d, 20).until(EC.visibility_of_element_located((By.ID, "text")))
+        WebDriverWait(d, 10).until(lambda drv: drv.execute_script("return document.getElementById('chat-model').value") == other)
+        box.send_keys("Hello")
+        d.find_element(By.ID, "send").click()
+        WebDriverWait(d, 90).until(lambda drv: "(end)" in drv.find_element(By.ID, "log").text)
+        assert SEEN[-1][1]["model"] == other, f"the chat runs on what its box showed: {SEEN[-1][1]['model']}"
+        d.find_element(By.ID, "nav-settings").click()
+        WebDriverWait(d, 10).until(lambda drv: drv.execute_script(
+            "const s = document.getElementById('set-model'); return !!s && s.options.length > 1 && s.value === arguments[0]", other))
+        Select(d.find_element(By.ID, "set-model")).select_by_value(was)
+        d.find_element(By.ID, "settings-close").click()
+        WebDriverWait(d, 10).until(lambda drv: not drv.execute_script("return document.getElementById('settings').open"))
+        # The focus is back on the Settings button, save or no save.
+        WebDriverWait(d, 10).until(lambda drv: drv.execute_script("return document.activeElement && document.activeElement.id") == "nav-settings")
+        # The page under the sheet has been brought up to date by now (the
+        # new default is saved); this chat still shows, and runs on, its own.
+        WebDriverWait(d, 10).until(lambda drv: drv.execute_async_script(
+            "const done = arguments[arguments.length - 1];"
+            "window.__TAURI__.core.invoke('chat_settings').then((s) => done(s.model), () => done(''));") == was)
+        time.sleep(1.0)
+        assert d.execute_script("return document.getElementById('chat-model').value") == other, "a started chat's box follows the default"
         print("desktop chat e2e: ok")
     finally:
         guard.stop(d, driver_proc)

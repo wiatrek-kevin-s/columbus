@@ -59,9 +59,17 @@ let underSettings = "#/chats/new";
 let pageHost = h("div", { class: "page", id: "page-host" });
 $("main").append(pageHost);
 let showSeq = 0;
+let shows = 0;
+// Whether the person has typed or chosen anything on the page that is open
+// (it is then never drawn again under them).
+let touched = false;
+for (const t of ["input", "change"]) {
+  $("main").addEventListener(t, (e) => { if (pageHost.contains(e.target)) touched = true; }, true);
+}
 
 async function show(ev) {
-  const r = route();
+  const mine = ++shows;
+  let r = route();
   if (r.page === "settings") {
     // Settings is a sheet over whatever page is open. The address to put
     // back when it closes is the one the person came from: a page may have
@@ -75,19 +83,24 @@ async function show(ev) {
       // The focus goes back to where Settings is opened from (the nav was
       // drawn again while the sheet was open, so the browser cannot do it).
       // A moment later: until the sheet has left the screen, nothing under
-      // it can take the focus.
+      // it can take the focus. Then the page under it is brought up to
+      // date, without moving the focus again.
       setTimeout(() => {
         const a = document.activeElement;
         if ((!a || a === document.body) && !document.querySelector("dialog[open]") && $("nav-settings")) $("nav-settings").focus({ preventScroll: true });
+        if (saved) refreshUnder();
       }, 60);
-      if (saved) refreshUnder();
     });
     drawNav(r);
     return;
   }
   // Left by a link to a page: that page is drawn with what was saved.
   if (settings.closeSheet()) {
+    await settings.saves();
     try { await refresh.info(); } catch (e) { console.error(e); }
+    // The person went on again while that was read: the later call draws.
+    if (mine !== shows) return;
+    r = route();
   }
   underSettings = location.hash || "#/chats/new";
   await showPage(r);
@@ -99,23 +112,32 @@ async function show(ev) {
 // it: their words are worth more than a fresh page.
 async function refreshUnder() {
   const r = shown;
+  // A save still on its way (a confirmation at the keyboard) lands first.
+  await settings.saves();
   try { await refresh.info(); } catch (e) { console.error(e); }
   if (!r || r !== shown || route().page === "settings") return;
   if (r.page === "chats") {
     chats.settingsSaved();
     return;
   }
-  const typed = [...pageHost.querySelectorAll("input:not([type=search]):not([type=checkbox]):not([type=radio]), textarea")].some((e) => e.value !== e.defaultValue);
-  if (!typed) await showPage(r);
+  // Left as it is: a page the person has typed or chosen something on, and
+  // a page with a dialog open over it (its buttons belong to the page as
+  // it was drawn).
+  if (touched || document.querySelector("dialog[open]")) return;
+  await showPage(r, { keepFocus: true });
 }
 
-async function showPage(r) {
+async function showPage(r, { keepFocus = false } = {}) {
   const seq = ++showSeq;
   if (unmount) {
     try { unmount(); } catch (e) { console.error(e); }
     unmount = null;
   }
+  // The live chat leaves the panel now, even if the page before this one
+  // was still being drawn and has handed back no clean-up yet.
+  chats.leaveLive();
   closeSide();
+  touched = false;
   // A fresh sheet for each page. One that is still being drawn when the
   // person goes on keeps drawing on the sheet that was taken away, not on
   // the next page's.
@@ -137,12 +159,15 @@ async function showPage(r) {
       if (off) {
         try { off(); } catch (e) { console.error(e); }
       }
+      // What it changed while it was drawn (the chat shown, say) no longer
+      // decides where the panel stands.
+      posture();
       return;
     }
     unmount = off;
     // After following a link, a screen reader starts at the new page's title.
     const a = document.activeElement;
-    if (booted && (!a || a === document.body || $("nav").contains(a))) {
+    if (!keepFocus && booted && (!a || a === document.body || $("nav").contains(a))) {
       const t = main.hidden ? null : $("page-title");
       if (t) t.focus({ preventScroll: true });
     }

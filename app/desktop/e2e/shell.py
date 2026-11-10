@@ -28,6 +28,7 @@ from selenium.common.exceptions import StaleElementReferenceException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.support.ui import Select
 
 import guard
 from guard import step
@@ -83,15 +84,21 @@ def place(d, wait, href, title):
             break
         except StaleElementReferenceException:
             time.sleep(0.3)
+    arrive(d, wait, href, title)
+    named(d)
+
+
+def arrive(d, wait, how, title):
+    """Wait for the page with this title; if it never comes, say what the
+    window shows instead."""
     try:
         wait.until(lambda drv: title == text(drv, "#page-title"))
     except Exception:
-        d.save_screenshot(str(OUT / "shell-place-failed.png"))
-        raise SystemExit(f"{href} did not show {title}: " + d.execute_script(
+        d.save_screenshot(str(OUT / "shell-arrive-failed.png"))
+        raise SystemExit(f"{how} did not show {title}: " + d.execute_script(
             "return JSON.stringify({hash: location.hash, title: document.querySelector('#page-title')?.textContent, body: document.body.className,"
             " dialog: !!document.querySelector('dialog[open]'), focus: document.activeElement && (document.activeElement.id || document.activeElement.tagName),"
             " hosts: [...document.querySelectorAll('#main > *')].map((e) => e.id + (e.hidden ? ' hidden' : ''))})"))
-    named(d)
 
 
 def inside(d, wait, href, title):
@@ -99,14 +106,14 @@ def inside(d, wait, href, title):
     link = f"#main a[href='{href}']"
     wait.until(lambda drv: drv.find_elements(By.CSS_SELECTOR, link))
     click(d, By.CSS_SELECTOR, link)
-    wait.until(lambda drv: title == text(drv, "#page-title"))
+    arrive(d, wait, f"the link to {href}", title)
     named(d)
 
 
 def back(d, wait, title):
     """The page's own way back."""
     click(d, By.CSS_SELECTOR, "#main .pagehead a.back")
-    wait.until(lambda drv: title == text(drv, "#page-title"))
+    arrive(d, wait, "the page's back arrow", title)
 
 
 def main():
@@ -120,8 +127,12 @@ def main():
         .to_file(root / "t.gpkg", layer="tracts", driver="GPKG", engine="pyogrio")
     (root / "connections").mkdir()
     (root / "outbox").mkdir()
+    # A second export folder with a long path: the app shows its end.
+    deep = root / ("a-folder-with-a-long-name-" * 4 + "x") / "review-out"
+    deep.mkdir(parents=True)
     (root / "policy.yaml").write_text(
-        f"connection_types: [gpkg]\nexports:\n  - {{ id: outbox, path: {json.dumps(str(root / 'outbox'))} }}\n")
+        f"connection_types: [gpkg]\nexports:\n  - {{ id: outbox, path: {json.dumps(str(root / 'outbox'))} }}\n"
+        f"  - {{ id: review, path: {json.dumps(str(deep))} }}\n")
     (root / "connections/tiger.yaml").write_text(
         f"id: tiger\ntype: gpkg\npath: {json.dumps(str(root / 't.gpkg'))}\ndatasets:\n  allow: [\"*\"]\n")
     note = root / "notes" / "datasets" / "tiger" / "tracts.md"
@@ -192,6 +203,21 @@ def main():
             return [t.data, left(0) < left(1) && left(1) < left(t.data.length - 1)];""")
         # (The folder as the app names it: a system may spell the temporary folder its own way.)
         assert shown[0].replace("\\", "/").endswith("/outbox") and shown[1] is True, shown
+        # A path too long for its place is cut at the start: its end, the
+        # folder itself, stays in view.
+        cut = d.execute_script("""
+            const li = [...document.querySelectorAll('#export-folders li')].find((x) => x.querySelector('b').textContent === 'review');
+            const where = li.querySelector('.when');
+            const box = where.getBoundingClientRect();
+            const t = where.querySelector('bdi').firstChild;
+            const at = (i) => { const r = document.createRange(); r.setStart(t, i); r.setEnd(t, i + 1); return r.getBoundingClientRect(); };
+            const n = t.data.length;
+            return { end: t.data.slice(-10), tooLong: where.scrollWidth > where.clientWidth,
+                     // The last two characters are drawn, in order, inside the box, at its right edge.
+                     endInView: at(n - 1).width > 0 && at(n - 2).left < at(n - 1).left && at(n - 1).left >= box.left && Math.abs(at(n - 1).right - box.right) <= 2,
+                     // The first is not drawn at all.
+                     startCut: at(0).width === 0 };""")
+        assert cut == {"end": "review-out", "tooLong": True, "endInView": True, "startCut": True}, cut
         step("Skip to content moves the focus into the page, and opens nothing")
         d.execute_script("document.querySelector('a.skip').focus()")
         d.switch_to.active_element.send_keys(Keys.ENTER)
@@ -245,6 +271,33 @@ def main():
         click(d, By.ID, "settings-close")
         wait.until(lambda drv: not drv.execute_script("return document.getElementById('settings').open"))
         assert d.execute_script("return location.hash") == "#/chats/new", d.execute_script("return location.hash")
+
+        step("Something saved in Settings shows on the page under it, and the focus returns to the Settings button")
+        other_level = "const s = document.getElementById('set-effort'); return [...s.options].map((o) => o.value).find((v) => v !== s.value)"
+
+        def save_in_settings():
+            click(d, By.ID, "nav-settings")
+            wait.until(lambda drv: drv.execute_script("const s = document.getElementById('set-effort'); return !!s && s.options.length > 1"))
+            Select(d.find_element(By.ID, "set-effort")).select_by_value(d.execute_script(other_level))
+            click(d, By.ID, "settings-close")
+            wait.until(lambda drv: not drv.execute_script("return document.getElementById('settings').open"))
+            wait.until(lambda drv: drv.execute_script("return document.activeElement && document.activeElement.id") == "nav-settings")
+
+        mark = "return document.getElementById('page-host').dataset.mark || ''"
+        place(d, wait, "#/data", "Data")
+        d.execute_script("document.getElementById('page-host').dataset.mark = 'as drawn'")
+        save_in_settings()
+        wait.until(lambda drv: drv.execute_script(mark) == "")  # drawn again
+        wait.until(lambda drv: text(drv, "#page-title") == "Data" and drv.find_elements(By.CSS_SELECTOR, "#connections li.conn"))
+        assert d.execute_script("return document.activeElement && document.activeElement.id") == "nav-settings", "drawing the page again leaves the focus where it is"
+        step("A page the person has typed on is left as it is")
+        d.execute_script("location.hash = '#/projects/new'")
+        wait.until(lambda drv: drv.find_elements(By.ID, "pj-name"))
+        d.find_element(By.ID, "pj-name").send_keys("Roadway QC")
+        d.execute_script("document.getElementById('page-host').dataset.mark = 'typed on'")
+        save_in_settings()
+        time.sleep(1.0)  # past the moment the page under would have been drawn again
+        assert d.execute_script(mark) == "typed on" and d.find_element(By.ID, "pj-name").get_attribute("value") == "Roadway QC"
 
         step("The session another AI app runs, under Chats: its activity and its map")
         place(d, wait, "#/chats", "Chats")
@@ -345,6 +398,7 @@ def main():
         wait.until(lambda drv: "whoami" not in text(drv, "#audit-rows") and "query_features" in text(drv, "#audit-rows"))
         click(d, By.ID, "audit-verify")
         wait.until(lambda drv: "holds" in text(drv, "#audit-verify-result"))
+        named(d)
         d.save_screenshot(str(OUT / "shell-audit.png"))
         step("Decisions alone, then the exports it records (none: the export was declined)")
         click(d, By.CSS_SELECTOR, "#main .histhead button[data-view='decisions']")
@@ -387,7 +441,14 @@ def main():
         row = "//ul[@id='palette-list']/li[span[normalize-space()='tiger'] and span[normalize-space()='Data']]"
         wait.until(lambda drv: drv.find_elements(By.XPATH, row))
         named(d)
-        d.find_element(By.XPATH, row).click()
+        # (The list is drawn again when the search of the chats' content
+        # answers: a row found a moment ago may be gone.)
+        for _ in range(5):
+            try:
+                d.find_element(By.XPATH, row).click()
+                break
+            except StaleElementReferenceException:
+                time.sleep(0.2)
         wait.until(lambda drv: drv.execute_script("return location.hash") == "#/data/c/tiger")
         wait.until(lambda drv: text(drv, "#page-title") == "tiger" and drv.find_elements(By.ID, "source-edit"))
         named(d)
