@@ -40,6 +40,7 @@ from playwright.sync_api import expect, sync_playwright
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from mcp_client import Mcp, wait_file  # noqa: E402
+import a11y  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[2]
@@ -242,6 +243,7 @@ def main():
                            "/Dynamic/MapServer/export", "/Elevation/ImageServer/exportImage", "/Parcels/FeatureServer/0/query"]:
                 assert any(marker.lower() in e["target"].lower() for e in log), f"no request for {marker}"
             assert any((e["host"] or "").startswith("cdn.fake.test") for e in log), "WMTS tiles on their own host"
+            assert not a11y.unnamed(page), a11y.unnamed(page)  # every control has a name, and Tab reaches it
             page.screenshot(path=str(OUT / "web-1-all-on.png"))
 
             print("weblayers: 12,000 features in view: 5,000 drawn, zoom in to see all")
@@ -308,6 +310,7 @@ def main():
             settled(page, before=v1)
             for sid, *_ in kinds:
                 expect(row(page, sid).locator(".error")).to_have_count(0)
+            assert not a11y.unnamed(page), a11y.unnamed(page)  # every control has a name, and Tab reaches it
             page.screenshot(path=str(OUT / "web-2-settings.png"))
 
             print("weblayers: a direct request to a service host is blocked")
@@ -358,6 +361,7 @@ def main():
             row(page2, "dead-tiles").get_by_role("checkbox").check()
             page2.wait_for_timeout(500)
             expect(page2.locator(".web-notice")).to_have_count(0)
+            assert not a11y.unnamed(page2), a11y.unnamed(page2)  # every control has a name, and Tab reaches it
             page2.screenshot(path=str(OUT / "web-3-reloaded.png"))
             page2.close()
 

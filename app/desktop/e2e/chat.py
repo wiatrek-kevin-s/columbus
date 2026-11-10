@@ -58,8 +58,14 @@ SCRIPT = [
     {"content": [{"type": "text", "text": "The script was declined."}], "stop_reason": "end_turn"},
     # Third message: a script the person stops while its prompt waits.
     tool_use("t5", "run_python", {"code": "print(3)\n"}),
+    # Fourth message: a second result, so each card's Table can be told apart.
+    tool_use("t6", "query_features", {"connection": "tiger", "dataset": "tracts", "where": "NAME = 'A'"}),
+    {"content": [{"type": "text", "text": "One tract is named A."}], "stop_reason": "end_turn"},
 ]
 SEEN = []
+# Cleared, the stand-in's next reply waits (a slow answer); set, it goes.
+HOLD = threading.Event()
+HOLD.set()
 
 
 class Stand(BaseHTTPRequestHandler):
@@ -75,6 +81,7 @@ class Stand(BaseHTTPRequestHandler):
             handle = json.loads(last)["result"]["layer"]["handle"]
             nxt = tool_use("t3", "export_output", {"handle": handle, "folder": "outbox", "name": "tracts"})
         data = json.dumps(nxt).encode()
+        HOLD.wait(60)
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))
@@ -132,16 +139,20 @@ def main():
 
         card = WebDriverWait(d, 90).until(EC.presence_of_element_located((By.CSS_SELECTOR, ".ask")))
         assert not d.execute_script("return document.body.classList.contains('start')"), "once asked, the panel sits at the side"
+        assert d.execute_script("return !!(document.getElementById('log').compareDocumentPosition(document.getElementById('composer')) & Node.DOCUMENT_POSITION_FOLLOWING)"), "in a chat the message box comes after the conversation"
+        assert d.execute_script("return document.activeElement && document.activeElement.id") == "text", "the message box keeps the focus when the chat starts"
         assert "tracts" in card.text, card.text
         assert "Columbus needs your OK" in card.text, card.text
         assert not card.find_elements(By.CSS_SELECTOR, "pre.code"), "an export shows no code box"
         allow = card.find_element(By.XPATH, ".//button[normalize-space()='Allow once']")
         assert not allow.is_enabled(), "the prompt's buttons wait a moment before they work"
         WebDriverWait(d, 5).until(lambda drv: allow.is_enabled())
+        assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
         d.save_screenshot(str(OUT / "chat-approval.png"))
         allow.click()
         WebDriverWait(d, 60).until(lambda drv: "Exported 2 tracts" in drv.find_element(By.ID, "log").text)
         time.sleep(1)
+        assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
         d.save_screenshot(str(OUT / "chat-done.png"))
         logtext = d.find_element(By.ID, "log").text
         assert "Allowed once." in logtext, logtext
@@ -151,6 +162,7 @@ def main():
         assert "tracts" in made.get_attribute("textContent"), made.get_attribute("textContent")
         made.find_element(By.CSS_SELECTOR, ".result-made").click()
         WebDriverWait(d, 20).until(lambda drv: "Provenance" in drv.find_element(By.ID, "side").text and ".gpkg" in drv.find_element(By.ID, "side").text)
+        assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
         d.save_screenshot(str(OUT / "chat-made.png"))
         d.find_element(By.ID, "side-close").click()
         step("A table in the reply is drawn as a table, its cells as text")
@@ -199,6 +211,7 @@ def main():
         assert SEEN[before][1].get("output_config") == {"effort": "high"}
         decline = card.find_element(By.XPATH, ".//button[normalize-space()='Decline']")
         WebDriverWait(d, 5).until(lambda drv: decline.is_enabled())
+        assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
         d.save_screenshot(str(OUT / "chat-script.png"))
         decline.click()
         WebDriverWait(d, 60).until(lambda drv: "The script was declined." in drv.find_element(By.ID, "log").text)
@@ -207,9 +220,25 @@ def main():
         step("Stop while a prompt waits: its card is withdrawn, not left live")
         box.send_keys("And one more.")
         WebDriverWait(d, 10).until(lambda drv: drv.find_element(By.ID, "send").is_enabled())
+        HOLD.clear()
         d.find_element(By.ID, "send").click()
+        # The panel is put away while the assistant works: a request that
+        # comes then brings it back (it could not be answered otherwise).
+        d.find_element(By.CSS_SELECTOR, "#main .chat-more").click()
+        d.find_element(By.CSS_SELECTOR, "#main .chat-away").click()
+        WebDriverWait(d, 10).until(lambda drv: not drv.find_element(By.ID, "panel").is_displayed())
+        assert len(d.find_elements(By.CSS_SELECTOR, ".ask")) == 2, "the request has not come yet"
+        HOLD.set()
         WebDriverWait(d, 90).until(lambda drv: len(drv.find_elements(By.CSS_SELECTOR, ".ask")) == 3)
+        WebDriverWait(d, 10).until(lambda drv: drv.find_element(By.ID, "panel").is_displayed())
         card = d.find_elements(By.CSS_SELECTOR, ".ask")[2]
+        # Put away again while it waits: the pill says something waits.
+        d.find_element(By.CSS_SELECTOR, "#main .chat-more").click()
+        d.find_element(By.CSS_SELECTOR, "#main .chat-away").click()
+        # (textContent: WebKit's driver leaves text in a clipping box out of an element's text.)
+        WebDriverWait(d, 10).until(lambda drv: "Columbus needs your OK" in drv.find_element(By.ID, "pill").get_attribute("textContent"))
+        d.find_element(By.ID, "pill-show").click()
+        WebDriverWait(d, 10).until(lambda drv: drv.find_element(By.ID, "panel").is_displayed())
         assert "Code written by the AI (1 line)" in card.text, card.text
         d.find_element(By.ID, "stop").click()
         WebDriverWait(d, 20).until(lambda drv: "No longer waiting" in card.text)
@@ -220,7 +249,62 @@ def main():
         d.switch_to.frame(frame)
         WebDriverWait(d, 40).until(lambda drv: "tracts" in drv.execute_script("return document.body.textContent"))
         d.switch_to.default_content()
+        assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
         d.save_screenshot(str(OUT / "chat-panel.png"))
+
+        step("Table on a result card opens that card's own rows, not the newest result's")
+        box.send_keys("Which tract is named A?")
+        WebDriverWait(d, 10).until(lambda drv: drv.find_element(By.ID, "send").is_enabled())
+        d.find_element(By.ID, "send").click()
+        WebDriverWait(d, 90).until(lambda drv: len(drv.find_elements(By.CSS_SELECTOR, "#log .result")) == 2)
+
+        def rows_shown():
+            """Rows in the table sheet on the map (-1: the sheet is not open)."""
+            d.switch_to.frame(frame)
+            try:
+                return d.execute_script("return document.querySelector('section.table') ? document.querySelectorAll('section.table tbody tr').length : -1")
+            finally:
+                d.switch_to.default_content()
+
+        cards = d.find_elements(By.CSS_SELECTOR, "#log .result")
+        assert rows_shown() == -1, "the map alone until the table is asked for"
+        # The first turn exported the two tracts it read; the second read one.
+        for card, rows in [(cards[0], 2), (cards[1], 1), (cards[0], 2)]:
+            click_table = card.find_element(By.CSS_SELECTOR, ".result-table")
+            d.execute_script("arguments[0].scrollIntoView({block: 'center'})", click_table)
+            click_table.click()
+            try:
+                WebDriverWait(d, 30).until(lambda drv: rows_shown() == rows)
+            except Exception:
+                d.save_screenshot(str(OUT / "chat-table-failed.png"))
+                raise SystemExit(f"Table on a result card showed {rows_shown()} rows, not that card's {rows}")
+        assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
+        d.save_screenshot(str(OUT / "chat-table.png"))
+
+        step("A new chat from this one: what was open beside the panel goes with the old chat")
+        made = cards[1].find_element(By.CSS_SELECTOR, ".result-made")
+        d.execute_script("arguments[0].scrollIntoView({block: 'center'})", made)
+        made.click()
+        WebDriverWait(d, 20).until(lambda drv: drv.find_element(By.ID, "side").is_displayed())
+        d.find_element(By.ID, "new").click()
+        WebDriverWait(d, 30).until(lambda drv: drv.execute_script("return document.getElementById('chat-title').textContent") == "New chat")
+        WebDriverWait(d, 10).until(lambda drv: not drv.find_element(By.ID, "side").is_displayed())
+        WebDriverWait(d, 10).until(lambda drv: drv.execute_script("return document.body.classList.contains('start')"))
+
+        step("A model chosen in Settings shows in the new chat under the sheet as soon as it closes")
+        WebDriverWait(d, 10).until(lambda drv: drv.execute_script("return document.getElementById('chat-model').options.length > 1"))
+        was = d.execute_script("return document.getElementById('chat-model').value")
+        d.find_element(By.ID, "nav-settings").click()
+        WebDriverWait(d, 10).until(lambda drv: drv.execute_script(
+            "const s = document.getElementById('set-model'); return !!s && s.options.length > 1 && s.value === arguments[0]", was))
+        other = d.execute_script("const s = document.getElementById('set-model'); return [...s.options].map((o) => o.value).find((v) => v !== s.value)")
+        Select(d.find_element(By.ID, "set-model")).select_by_value(other)
+        d.find_element(By.ID, "settings-close").click()
+        try:
+            WebDriverWait(d, 10).until(lambda drv: drv.execute_script("return document.getElementById('chat-model').value") == other)
+        except Exception:
+            d.save_screenshot(str(OUT / "chat-settings-failed.png"))
+            raise SystemExit(f"the new chat still shows {was}, not {other}, after Settings closed")
 
         step("The chat is saved: listed under Chats, found by what was said")
         d.execute_script("location.hash = '#/chats'")
@@ -253,6 +337,7 @@ def main():
             d.save_screenshot(str(OUT / "chat-saved-failed.png"))
             raise SystemExit("the saved chat did not read back: " + d.execute_script("return location.hash + ' | ' + document.querySelector('main').textContent.slice(0, 400)"))
         assert "cannot continue" in d.find_element(By.ID, "saved-log").text
+        assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
         d.save_screenshot(str(OUT / "chat-saved.png"))
         print("desktop chat e2e: ok")
     finally:

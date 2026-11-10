@@ -4,7 +4,17 @@
 // where files live, the keyboard, and the organization's policy in force
 // (read only, with today's switches, each turned on only after the person
 // confirms at the keyboard in the app's own code).
-import { $, h, el, icon, invoke, store, showError, savePrefs, applyTheme, toast, button, iconButton, sec, openDialog } from "../core.js";
+import { $, h, el, icon, invoke as call, store, showError, savePrefs, applyTheme, toast, button, iconButton, sec, openDialog } from "../core.js";
+
+// Whether anything was saved since the sheet opened: the page under it is
+// brought up to date when the sheet closes (main.js). Every command here
+// but these reads saves something.
+let changed = false;
+const READS = new Set(["chat_settings", "settings_state", "settings_environments", "settings_pick", "open_classic"]);
+const invoke = (cmd, args) => {
+  if (!READS.has(cmd)) changed = true;
+  return call(cmd, args);
+};
 
 const SWITCHES = {
   allow_edits: ["Allow edits.", "Your assistant may write to connections set to read-write, and only after you approve each change set. When off, every connection is read-only."],
@@ -66,7 +76,9 @@ export function openSheet(sub, onClosed) {
       sheet.replaceChildren();
       const fn = sheetClosed;
       sheetClosed = null;
-      if (fn) fn();
+      const saved = changed;
+      changed = false;
+      if (fn) fn(saved);
     });
     // A click on the veil beside the sheet closes it.
     sheet.addEventListener("click", (e) => { if (e.target === sheet) sheet.close(); });
@@ -82,16 +94,24 @@ export function openSheet(sub, onClosed) {
       h("div", { class: "actions" }, iconButton("close", "Close settings", () => sheet.close(), { id: "settings-close" }))),
     part ? h("p", { class: "lede" }, LEDES[part[0]]) : null),
     h("div", { class: "scroll" }, body), foot));
-  if (!sheet.open) sheet.showModal();
+  if (!sheet.open) {
+    changed = false;
+    sheet.showModal();
+  }
   // A screen reader starts at the sheet's title, not its close button.
   title.focus({ preventScroll: true });
   if (part) ({ ai, privacy, keyboard, environments, org })[part[0]](body);
   else overview(body, foot);
 }
 
-/** Close the sheet (the person went to a page). */
+/** Close the sheet (the person went to a page, which is drawn fresh).
+ * Says whether anything was saved while it was open. */
 export function closeSheet() {
-  if (sheet && sheet.open) sheet.close();
+  if (!sheet || !sheet.open) return false;
+  const saved = changed;
+  changed = false;
+  sheet.close();
+  return saved;
 }
 
 // Today's session list and settings window, kept beside the main window.
@@ -234,7 +254,7 @@ async function overview(body, foot) {
       setRow("Scripts run in", engineLine, go("Change", "#/settings/ai", "set-engine")),
       setRow("Other environments", envLine, go("Manage", "#/settings/environments", "set-envs"))),
     h("section", { class: "card" }, sec("Map"),
-      setRow("Street background", "Loads street tiles from OpenFreeMap, which sends that site the area in view. Off, the map shows only your data.", basemap),
+      setRow("Street background", "What new maps start with; each map has its own switch. On, street tiles come from OpenFreeMap, which then sees the area in view. Your organization can remove it.", basemap),
       setRow("Appearance", null, theme)),
     h("section", { class: "card" }, sec("This computer"),
       setRow("Chats, results and the audit log are kept here", info && info.places ? h("span", { class: "mono" }, info.places.workspaces) : "On this computer only.", go("Show", "#/settings/privacy", "set-privacy")),
@@ -288,9 +308,9 @@ async function privacy(body) {
 async function keyboard(body) {
   const mac = navigator.platform.startsWith("Mac");
   const rows = [
-    [mac ? "⌘ K" : "Ctrl K", "Search chats, sessions and pages"],
+    [mac ? "⌘ K" : "Ctrl K", "Search chats, data, workflows and pages"],
     ["Enter", "Send a message (Shift Enter for a new line)"],
-    ["Esc", "Close a dialog, a menu, the search or this sheet"],
+    ["Esc", "Close a dialog, a menu, the search, this sheet, or the sheet beside the panel"],
     ["Tab / Shift Tab", "Move between controls; every control can be reached"],
   ];
   const tbody = h("tbody", {}, ...rows.map(([k, t]) => h("tr", {}, h("td", { class: "nowrap" }, h("span", { class: "kbd" }, k)), h("td", {}, t))));

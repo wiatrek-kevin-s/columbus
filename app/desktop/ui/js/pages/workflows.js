@@ -120,7 +120,9 @@ export async function render(main, rest) {
     const waitingCard = h("section", { class: "card", id: "wf-waiting-card" },
       h("div", { class: "sec" }, h("h2", {}, "Can't run until you read it"), waitingN), h("div", { class: "bd flush" }, waiting));
     const installed = h("ul", { id: "wf-installed", class: "list", "aria-live": "polite" });
-    const none = h("p", { id: "wf-no-installed", class: "muted small quiet", hidden: true }, "Nothing yet. Ask your assistant, for example: ", h("i", {}, "make what we just did a workflow that runs every weekday at 6"), ".");
+    const noneEx = h("i", {}, "make what we just did a workflow that runs every weekday at 6");
+    const noneEnd = document.createTextNode(".");
+    const none = h("p", { id: "wf-no-installed", class: "muted small quiet", hidden: true }, "Nothing yet. Ask your assistant, for example: ", noneEx, noneEnd);
     const sw = h("div", {});
     const more = h("ul", { class: "list compact", id: "wf-more-list" });
     const moreRow = (href, title, sub) => {
@@ -196,7 +198,10 @@ export async function render(main, rest) {
           return li;
         })]);
       none.hidden = installed.children.length > 0;
-      none.firstChild.textContent = q ? "Nothing matches. " : "Nothing yet. Ask your assistant, for example: ";
+      // A search with no match says only that; the example is for an empty list.
+      none.firstChild.textContent = q ? "Nothing matches." : "Nothing yet. Ask your assistant, for example: ";
+      noneEx.hidden = !!q;
+      noneEnd.textContent = q ? "" : ".";
       toolsSub.textContent = tools.installed.length ? `${plural(tools.installed.length, "tool")} installed` : "steps your assistant can reuse";
       moreCard.hidden = about.hidden = !!q;
     };

@@ -1,4 +1,4 @@
-// Connections › Map layers (T-25; build brief part 2, Part 3): web map
+// Data › Map layers (T-25; build brief part 2, Part 3): web map
 // layers the person adds by pasting a service's address. Columbus reads
 // the service's capabilities and offers its layers; each saved layer is
 // listed in every chat's Web layers (off until turned on there) and here,

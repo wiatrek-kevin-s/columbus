@@ -2,7 +2,7 @@
 // apps. A chat is the panel; its session's map fills the window behind it,
 // and its files open in the side sheet. Everything the model, the server
 // or a file says is shown as text, never as markup.
-import { $, el, h, icon, iconButton, menuButton, fitSelect, invoke, listen, store, button, redraw, placeHead, sec, when, ago, shortWhen, era, size, plural, timeLeft, clientName, toast, emptyState, askConfirm, askText, openSide, insets, onLayout, savePrefs, numbered } from "../core.js";
+import { $, el, h, icon, iconButton, menuButton, fitSelect, invoke, listen, store, button, redraw, placeHead, sec, when, ago, shortWhen, era, size, plural, timeLeft, clientName, toast, emptyState, askConfirm, askText, openSide, closeSide, insets, onLayout, savePrefs, numbered } from "../core.js";
 import { openWebLayerEditor, onChange as onWebLayersChange } from "./maplayers.js";
 import { setupState, notices, firstSteps } from "./start.js";
 
@@ -48,6 +48,38 @@ export function waitingCount() {
 /** The titles of the requests waiting in the app's own chat. */
 export function waitingTitles() {
   return [...live.cards.values()].filter((c) => c.row.isConnected).map((c) => c.title);
+}
+
+/** Settings were saved while the sheet lay over the live chat: it takes the
+ * new defaults (the model and thinking level a new chat starts with, and
+ * whether an AI is connected). A chat's own choice stays. */
+export function settingsSaved() {
+  if (!live.shown || !live.view) return;
+  updateChip();
+  emptyChat();
+}
+
+/** On the start the question is drawn first, above what to try. It comes
+ * first in the document then too, so Tab and a screen reader meet things in
+ * the order they are seen; in a chat it comes last, under the conversation. */
+export function questionFirst(first) {
+  if (!live.view) return;
+  const col = live.view.querySelector(".chatcol");
+  const head = col && col.querySelector(".chathead");
+  const composer = $("composer");
+  if (!head || !composer || composer.parentElement !== col) return;
+  if ((head.nextElementSibling === composer) === first) return;
+  const held = composer.contains(document.activeElement) ? document.activeElement : null;
+  const note = col.querySelector(":scope > .project-note");
+  if (first) {
+    head.after(composer);
+    if (note) col.append(note);
+  } else {
+    col.append(composer);
+    if (note) head.after(note);
+  }
+  // Moving it took the focus away: give it back.
+  if (held) held.focus({ preventScroll: true });
 }
 
 /** Whether the page shown is a chat with nothing asked yet: the start. */
@@ -350,7 +382,10 @@ class Renderer {
         if (e.fails) li.insertBefore(el("span", "bad", `${e.fails} check${e.fails > 1 ? "s" : ""} failed`), s.raw || null);
         if (e.warns) li.insertBefore(el("span", "warn", `${e.warns} to review`), s.raw || null);
         if (e.ok && e.provenance) {
-          this.made = { title: resultName(e, s.input), summary: e.summary, provenance: e.provenance, handle: e.handle || null, fails: e.fails || 0, warns: e.warns || 0 };
+          // Whose rows its Table shows: the layer it made, or (an export,
+          // which makes files) the layer it was given.
+          const given = s.input && typeof s.input.handle === "string" ? s.input.handle : null;
+          this.made = { title: resultName(e, s.input), summary: e.summary, provenance: e.provenance, handle: e.handle || given, fails: e.fails || 0, warns: e.warns || 0 };
           if (!e.fails && !e.warns) li.insertBefore(el("span", "badge pass", "Checks passed"), s.raw || null);
           const b = h("button", { type: "button", class: "linkbtn", title: "Inputs, steps and checks of this result" }, "Provenance");
           b.addEventListener("click", () => this.onProvenance && this.onProvenance(e.provenance));
@@ -505,8 +540,11 @@ function liveCard(r, e) {
   live.cards.set(e.id, { row, card, title: askTitle(e.title) });
   store.set("waiting", waitingCount());
   drawTray();
-  // Show the card from its title, not its end; bring the chat forward.
-  if (!location.hash.startsWith("#/chats")) toast(`Your chat is asking: ${e.title}`);
+  // In front of the person: the panel comes back if it was put away, and a
+  // word is said when this chat is not what they are looking at.
+  if (document.body.classList.contains("panel-away") && store.setAway) store.setAway(false);
+  if (!live.shown || document.querySelector("dialog[open]")) toast(`Your chat is asking: ${e.title}`);
+  // Show the card from its title, not its end.
   card.scrollIntoView({ block: "start" });
 }
 
@@ -535,6 +573,7 @@ class SessionMap {
     this.origin = null;
     this.loading = false;
     this.view = null; // "table" once the person asked for the table
+    this.output = null; // whose table: a result's handle, when a card asked
     this.ready = false; // the page said it listens
     this.host = h("div", { class: "frame-host", hidden: true });
     $("stage-frames").append(this.host);
@@ -585,14 +624,22 @@ class SessionMap {
     const msg = { type: "columbus-embed", basemap: !!store.prefs.basemap, theme: store.prefs.theme || "system", inset: insets() };
     // Asked once, when the page listens: after that the page keeps the
     // table as the person leaves it.
-    if (this.view && this.ready) { msg.view = this.view; this.view = null; }
+    if (this.view && this.ready) {
+      msg.view = this.view;
+      if (this.output) msg.output = this.output;
+      this.view = null;
+      this.output = null;
+    }
     this.frame.contentWindow.postMessage(msg, this.origin);
   }
 
-  /** Open the table sheet on the map (the page shows its active result). */
-  table() {
+  /** Open the table sheet on the map: of the result named (a plain
+   * workspace handle the page checks against its own list), else of the
+   * result the page has active. */
+  table(handle) {
     if (!this.session) return toast("The map is not open yet.");
     this.view = "table";
+    this.output = typeof handle === "string" && /^[A-Za-z0-9_\-./:]{1,200}$/.test(handle) ? handle : null;
     this.post();
   }
 
@@ -815,7 +862,7 @@ function buildLive() {
   view.append(col);
   live.view = view;
   live.log = log;
-  live.renderer = new Renderer(log, true, (id) => live.map.files(id), () => live.map.table());
+  live.renderer = new Renderer(log, true, (id) => live.map.files(id), (handle) => live.map.table(handle));
 
   composer.addEventListener("submit", async (ev) => {
     ev.preventDefault();
@@ -829,6 +876,9 @@ function buildLive() {
     fitText();
     log.scrollTop = log.scrollHeight;
     setBusy(true);
+    // Send gave way to Stop: the focus stays in the message box, for the
+    // next thing the person wants to say.
+    text.focus({ preventScroll: true });
     store.set("chatstate", "asked");
     try {
       await invoke("chat_send", { text: t });
@@ -962,6 +1012,8 @@ function drawSub() {
 
 async function newChat(project = null, run = null) {
   const was = live.chatId;
+  // What the old chat had open beside the panel goes with it.
+  closeSide();
   live.project = project || null;
   live.run = run || null;
   await invoke("chat_end");
@@ -972,7 +1024,7 @@ async function newChat(project = null, run = null) {
   live.pick = null;
   live.cards.clear();
   live.log.replaceChildren();
-  live.renderer = new Renderer(live.log, true, (id) => live.map.files(id), () => live.map.table());
+  live.renderer = new Renderer(live.log, true, (id) => live.map.files(id), (handle) => live.map.table(handle));
   $("chat-title").textContent = "New chat";
   $("chat-title").removeAttribute("title");
   delete $("chat-title").dataset.set;
@@ -1161,7 +1213,9 @@ export async function render(main, rest) {
   return showIndex(main);
 }
 
+let liveShows = 0;
 function showLive(main) {
+  const mine = ++liveShows;
   const hostEl = liveHost();
   if (!hostEl.isConnected) main.parentElement.append(hostEl);
   main.hidden = true;
@@ -1177,6 +1231,9 @@ function showLive(main) {
   live.map.show();
   setTimeout(() => $("text")?.focus(), 0);
   return () => {
+    // Shown again since (a page drawn late is cleaned up late): it is not
+    // this showing's to hide.
+    if (mine !== liveShows) return;
     hostEl.hidden = true;
     main.hidden = false;
     live.shown = false;
@@ -1187,8 +1244,11 @@ function showLive(main) {
 // Leaving a saved chat or another app's session: the live chat's map, if it
 // has one, takes the stage again.
 function backToLiveMap(map) {
+  // Only if this page's map still has the stage: the page the person went
+  // on to may have put its own there already.
+  const mine = onStage === map || onStage === null;
   map.destroy();
-  if (live.map && live.session) live.map.show();
+  if (mine && live.map && live.session) live.map.show();
 }
 
 async function showSaved(main, id) {
@@ -1223,7 +1283,7 @@ async function showSaved(main, id) {
     title.textContent = s ? s.title : "Chat";
     title.title = title.textContent;
     sub.replaceChildren(...(meta.project ? [h("a", { href: `#/projects/${encodeURIComponent(meta.project)}` }, projectName(meta.project)), " · "] : []), when(lines[0]?.ts));
-    const r = new Renderer(logEl, false, (pid) => map.files(pid), () => map.table());
+    const r = new Renderer(logEl, false, (pid) => map.files(pid), (handle) => map.table(handle));
     for (const l of lines) r.event(l);
     r.finish();
     logEl.append(ended);
@@ -1284,7 +1344,7 @@ async function showSession(main, session) {
   load();
   const timer = setInterval(load, 5000);
   const unsub = store.on((k) => { if (k === "inbox") drawTray(); });
-  return () => { clearInterval(timer); unsub(); trayEl = null; backToLiveMap(map); };
+  return () => { clearInterval(timer); unsub(); if (trayEl === tray) trayEl = null; backToLiveMap(map); };
 }
 
 function showIndex(main) {
@@ -1349,7 +1409,7 @@ function showIndex(main) {
       }
       const li = h("li", { class: "clickable", "data-href": r.href, "data-project": r.project || null },
         h("div", { class: "text" }, h("b", {}, h("a", { href: r.href }, r.title)), h("span", { class: "where clip" }, r.sub)),
-        h("span", { class: "when" }, r.waiting ? h("span", { class: "dot warn", title: "Waiting for you" }) : null, shortWhen(r.t)));
+        h("span", { class: "when" }, r.waiting ? h("span", { class: "dot warn", role: "img", "aria-label": "Waiting for you", title: "Waiting for you" }) : null, shortWhen(r.t)));
       ul.append(li);
     }
     if (!rows.length) out.push(emptyState(ql ? "No chat matches" : "No chats yet", ql ? "Chats are searched by title and by what was said." : "Ask something and it is saved here, on this computer."));

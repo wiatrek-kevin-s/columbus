@@ -24,6 +24,9 @@ export const GAP = 16;
 
 const SIDES = ["left", "top", "right", "bottom"] as const;
 const MAX_INSET = 4000;
+// The longest handle the app passes on (the chat keeps plain ids of at most
+// this length).
+const MAX_HANDLE = 200;
 // The page's own panel; wider while a request can be decided in it, so the
 // code and the facts read without wrapping every few words.
 const PANEL = 400;
@@ -47,6 +50,16 @@ export function parseInset(v: unknown): Inset | null {
     out[side] = n;
   }
   return out;
+}
+
+/** The result the app names when it asks for the table (`output`): taken
+ * only when it is a short string equal to the handle of one of this
+ * session's own outputs that has rows to show. Anything else names nothing
+ * (null), and the page keeps the result it had. */
+export function namedOutput(v: unknown, outputs: readonly { handle: string; viewable: boolean }[]): string | null {
+  if (typeof v !== "string" || v.length === 0 || v.length > MAX_HANDLE) return null;
+  const o = outputs.find((x) => x.handle === v);
+  return o && o.viewable ? o.handle : null;
 }
 
 const clamp = (n: number, lo: number, hi: number) => Math.min(Math.max(n, lo), Math.max(lo, hi));

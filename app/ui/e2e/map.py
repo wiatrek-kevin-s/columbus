@@ -42,6 +42,7 @@ from playwright.sync_api import expect, sync_playwright
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from mcp_client import Mcp, wait_file  # noqa: E402
+import a11y  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[2]
@@ -229,6 +230,7 @@ def main():
                 ow, os_, oe, on = bbox(other)
                 assert oe < v[0] or ow > v[2], f"another route {bbox(other)} is in view {v}"
             expect(page.locator("table tbody tr.selected")).to_have_count(1)
+            assert not a11y.unnamed(page), a11y.unnamed(page)  # every control has a name, and Tab reaches it
             page.screenshot(path=str(OUT / "map-1-row2.png"))
             print("map: row 2 fits route 2", (w, s, e, n))
 
@@ -291,6 +293,7 @@ def main():
             expect(page.locator("table tbody tr").nth(2)).to_have_class(re.compile("selected"))
             # The double-click finished the line without zooming.
             assert view(page) == at, f"measuring moved the map: {at} -> {view(page)}"
+            assert not a11y.unnamed(page), a11y.unnamed(page)  # every control has a name, and Tab reaches it
             page.screenshot(path=str(OUT / "map-2-measure.png"))
             print(f"map: measured {text!r}")
 

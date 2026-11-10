@@ -173,6 +173,7 @@ gpd.GeoDataFrame({"RTE": ["IH0035", "US0183"], "district": [14, 12]}, geometry=[
         click(d, By.ID, "test")
         wait.until(lambda drv: "Opened" in drv.find_element(By.ID, "test-result").text)
         assert "routes" in d.find_element(By.ID, "test-result").text
+        assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
         d.save_screenshot(str(OUT / "settings-test.png"))
         assert not (root / "connections" / "roads.yaml").exists(), "Test saves nothing"
         fill(d, "deny", "*audit*")
@@ -182,6 +183,7 @@ gpd.GeoDataFrame({"RTE": ["IH0035", "US0183"], "district": [14, 12]}, geometry=[
         click(d, By.ID, "save")
         wait.until(lambda drv: "a field your organization hides" in drv.find_element(By.ID, "form-error").text)
         fill(d, "row_filter", "district = 14")
+        assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
         d.save_screenshot(str(OUT / "settings-add.png"))
         click(d, By.ID, "save")
         wait.until(lambda drv: drv.find_element(By.ID, "restart").is_displayed())
@@ -217,6 +219,7 @@ gpd.GeoDataFrame({"RTE": ["IH0035", "US0183"], "district": [14, 12]}, geometry=[
         assert note.exists(), list((root / "notes").rglob("*"))
         text = note.read_text()
         assert "status: draft" in text and "RTE" in text, text
+        assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
         d.save_screenshot(str(OUT / "settings-notes.png"))
 
         # Make it read-write, and turn edits on: the rest of the policy file stays.
@@ -227,6 +230,9 @@ gpd.GeoDataFrame({"RTE": ["IH0035", "US0183"], "district": [14, 12]}, geometry=[
         # What the assistant may do is a choice between two cards.
         wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, "#editor .choice[data-mode='read-write']")))
         assert d.execute_script("return document.querySelector('#editor input[name=mode_pick]:checked').value") == "read"
+        # The focus is on the card that is chosen, never on the unseen select
+        # that holds the value (arrow keys there would change it unseen).
+        assert d.execute_script("const a = document.activeElement; return [a.name, a.value]") == ["mode_pick", "read"]
         click(d, By.CSS_SELECTOR, "#editor .choice[data-mode='read-write']")
         assert d.execute_script("return document.querySelector('#editor [name=mode]').value") == "read-write"
         click(d, By.ID, "save")
@@ -241,6 +247,7 @@ gpd.GeoDataFrame({"RTE": ["IH0035", "US0183"], "district": [14, 12]}, geometry=[
         text = (root / "policy.yaml").read_text()
         assert text == POLICY.replace("allow_edits: false     # edits", "allow_edits: true     # edits"), text
         time.sleep(0.5)
+        assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
         d.save_screenshot(str(OUT / "settings.png"))
 
         # Personal tools: turned on (confirmed) on the Tools page, then a proposal is read and installed.
@@ -258,6 +265,7 @@ gpd.GeoDataFrame({"RTE": ["IH0035", "US0183"], "district": [14, 12]}, geometry=[
         assert len(d.find_elements(By.CSS_SELECTOR, "#review-code span.ln")) == 2
         assert "id: personal.count-rows" in d.find_element(By.ID, "review-manifest").text
         assert count_hash in d.find_element(By.ID, "review-name").text
+        assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
         d.save_screenshot(str(OUT / "settings-tool-review.png"))
         click(d, By.ID, "review-install")
         installed = root / "tools" / "personal.count-rows"
@@ -271,6 +279,7 @@ gpd.GeoDataFrame({"RTE": ["IH0035", "US0183"], "district": [14, 12]}, geometry=[
         step("tools: decline and remove")
         d.find_element(By.XPATH, waiting.format("Other tool", "Decline")).click()
         wait.until(lambda drv: not (root / "tools" / "proposals" / "personal.other-tool").exists())
+        assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
         d.save_screenshot(str(OUT / "settings-tools.png"))
         # Nor does removing.
         d.find_element(By.XPATH, "//ul[@id='tools-installed']//button[normalize-space()='Remove']").click()

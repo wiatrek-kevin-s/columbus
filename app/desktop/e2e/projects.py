@@ -72,6 +72,7 @@ def main():
         click(d, By.ID, "pj-conn-some")
         click(d, By.ID, "pj-c-tiger")
         d.execute_script("const s = document.getElementById('pj-folder'); s.value = 'outbox'; s.dispatchEvent(new Event('change'))")
+        assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
         d.save_screenshot(str(OUT / "projects-new.png"))
         click(d, By.ID, "pj-save")
         wait.until(lambda drv: drv.execute_script("return location.hash") == "#/projects/tract-review-2027")
@@ -96,6 +97,7 @@ def main():
         d.execute_script("location.hash = '#/projects'")
         wait.until(lambda drv: "Tract review 2027" in text(drv, "pj-list"))
         assert "Uses tiger" in text(d, "pj-list"), text(d, "pj-list")
+        assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
         d.save_screenshot(str(OUT / "projects-list.png"))
 
         step("A changed instruction is saved; deleting removes the file")

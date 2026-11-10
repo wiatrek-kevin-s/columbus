@@ -21,6 +21,7 @@ REPO = Path(__file__).resolve().parents[3]
 OUT = Path(__file__).resolve().parent / "out"
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from mcp_client import Mcp, wait_file  # noqa: E402
+import a11y  # noqa: E402
 
 
 def main():
@@ -85,6 +86,7 @@ def main():
             expect(card).to_contain_text("one change set at a time")
             allow = card.get_by_role("button", name="Allow once")
             expect(allow).to_be_enabled(timeout=3000)
+            assert not a11y.unnamed(page), a11y.unnamed(page)  # every control has a name, and Tab reaches it
             page.screenshot(path=str(OUT / "edit-approval.png"), full_page=True)
             allow.click()
             t.join(60)
@@ -127,6 +129,7 @@ def main():
             expect(card.get_by_role("button", name="Allow for this session")).to_have_count(0)
             decline = card.get_by_role("button", name="Decline")
             expect(decline).to_be_enabled(timeout=3000)
+            assert not a11y.unnamed(page), a11y.unnamed(page)  # every control has a name, and Tab reaches it
             page.screenshot(path=str(OUT / "edit-approval-plain.png"), full_page=True)
             decline.click()
             t.join(60)

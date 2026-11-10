@@ -36,6 +36,7 @@ OUT = HERE / "out"
 
 
 from mcp_client import Mcp, wait_file  # noqa: E402
+import a11y  # noqa: E402
 
 PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")
 
@@ -146,6 +147,7 @@ def main():
             expect(page.locator("table")).to_contain_text("Tract 3")
             expect(page.locator("section.table")).to_contain_text("Rows 1–12 of 12")
             page.wait_for_timeout(1500)
+            assert not a11y.unnamed(page), a11y.unnamed(page)  # every control has a name, and Tab reaches it
             page.screenshot(path=str(OUT / "1-layer.png"))
 
             # The street background (the basemap): its tiles load (through
@@ -163,6 +165,7 @@ def main():
             # after switching it off again.
             expect(page.locator(".map[data-layers='1']")).to_have_count(1, timeout=10000)
             page.wait_for_timeout(1500)
+            assert not a11y.unnamed(page), a11y.unnamed(page)  # every control has a name, and Tab reaches it
             page.screenshot(path=str(OUT / "1-basemap.png"))
             streets.uncheck()
             expect(page.locator(".map[data-layers='1']")).to_have_count(1, timeout=10000)
@@ -198,6 +201,7 @@ def main():
             expect(card).to_be_visible(timeout=20000)
             expect(card).to_contain_text("tracts")
             expect(card.get_by_role("button", name="Allow once")).to_have_count(0)
+            assert not a11y.unnamed(page), a11y.unnamed(page)  # every control has a name, and Tab reaches it
             page.screenshot(path=str(OUT / "2-approval-view.png"))
             # The approval page opened for the waiting request (or on review).
             if not (root / "launch.txt").exists():
@@ -212,6 +216,7 @@ def main():
             allow = card2.get_by_role("button", name="Allow once")
             expect(allow).to_be_disabled()
             expect(allow).to_be_enabled(timeout=3000)
+            assert not a11y.unnamed(page2), a11y.unnamed(page2)  # every control has a name, and Tab reaches it
             page2.screenshot(path=str(OUT / "2-approval-browser.png"))
             allow.click()
             t.join(60)
@@ -219,6 +224,7 @@ def main():
             assert (root / "outbox" / "tracts.gpkg").exists()
             expect(card).to_have_count(0, timeout=10000)
             expect(page2.get_by_role("status")).to_contain_text("Allowed")
+            assert not a11y.unnamed(page), a11y.unnamed(page)  # every control has a name, and Tab reaches it
             page.screenshot(path=str(OUT / "3-done.png"))
 
             # The rendered page held to its policy: no CSP violations.

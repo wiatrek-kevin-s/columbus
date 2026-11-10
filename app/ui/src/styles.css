@@ -14,13 +14,14 @@
   --faint: #a6a7aa;
   --line: #edece9;
   --line2: #dfdeda;
+  --field: #85868a;
   --fill: #f6f5f3;
   --fill2: #eeedea;
   --hit: #ef4b23;
   --wait: #f0ae1b;
   --wait-ink: #7a5200;
   --wait-bg: #fff6dc;
-  --ok: #1b8556;
+  --ok: #18794e;
   --ok-bg: #e7f3ec;
   --bad: #be3319;
   --bad-bg: #fbe9e5;
@@ -51,6 +52,7 @@
     --faint: #66676a;
     --line: #2a2b2f;
     --line2: #393a3f;
+    --field: #77787b;
     --fill: #25262a;
     --fill2: #2e2f34;
     --hit: #ff5b34;
@@ -77,6 +79,7 @@
   --faint: #66676a;
   --line: #2a2b2f;
   --line2: #393a3f;
+  --field: #77787b;
   --fill: #25262a;
   --fill2: #2e2f34;
   --hit: #ff5b34;
@@ -132,7 +135,7 @@ svg.ic { width: 14px; height: 14px; flex: none; fill: none; stroke: currentColor
 .btn:disabled { opacity: .45; cursor: default; }
 /* A plain link that is a button. */
 .link {
-  border: 0; background: none; padding: 0; cursor: pointer; justify-self: start;
+  border: 0; background: none; padding: 3px 0; margin: -3px 0; cursor: pointer; justify-self: start;
   color: var(--ink); font-size: 12.5px; font-weight: 500;
   text-decoration: underline; text-decoration-color: var(--line2); text-underline-offset: 3px;
 }
@@ -225,7 +228,7 @@ pre.request { margin-top: 8px; padding-left: 12px; }
 pre.code { counter-reset: ln; }
 pre.code .ln { display: block; counter-increment: ln; padding-left: 3.4em; text-indent: -3.4em; }
 pre.code .ln::before { content: counter(ln); display: inline-block; width: 2.6em; margin-right: .8em; text-align: right; color: var(--mute); }
-.approval > .link { display: block; margin-top: 12px; }
+.approval > .link { display: block; margin-top: 9px; }
 .approval-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
 .hint { margin-top: 10px; color: var(--mute); font-size: 12px; line-height: 17px; }
 
@@ -239,16 +242,16 @@ pre.code .ln::before { content: counter(ln); display: inline-block; width: 2.6em
 .outputs ul { display: grid; gap: 1px; }
 .out { border-radius: 9px; }
 .out.active { background: var(--fill); }
-.out-head { display: flex; align-items: center; gap: 6px; min-height: 30px; padding: 4px 10px 4px 4px; }
+.out-head { display: flex; align-items: center; gap: 4px; min-height: 30px; padding: 3px 10px 3px 4px; }
 /* The toggle that shows a layer on the map, drawn as its swatch: the real
    checkbox lies over the swatch, unseen. */
-.out-show { position: relative; width: 22px; height: 22px; flex: none; display: grid; place-items: center; border-radius: 7px; cursor: pointer; }
+.out-show { position: relative; width: 24px; height: 24px; flex: none; display: grid; place-items: center; border-radius: 7px; cursor: pointer; }
 .out-show:hover { background: var(--fill2); }
 .out-show input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
 .out-show input:focus-visible + .swatch { outline: 2px solid var(--ink); outline-offset: 3px; border-radius: 5px; }
 .out-kind { min-width: 22px; flex: none; color: var(--mute); font-size: 11px; line-height: 16px; text-align: center; }
 .out-name {
-  flex: 1 1 auto; min-width: 0; border: 0; background: none; padding: 2px 0; text-align: left; cursor: pointer;
+  flex: 1 1 auto; min-width: 0; border: 0; background: none; padding: 4px 0; text-align: left; cursor: pointer;
   color: var(--ink); font: 500 12px/16px var(--mono); letter-spacing: -.01em; overflow-wrap: anywhere;
 }
 .out-name:hover { text-decoration: underline; text-decoration-color: var(--line2); text-underline-offset: 3px; }
@@ -259,7 +262,7 @@ pre.code .ln::before { content: counter(ln); display: inline-block; width: 2.6em
 .out .note, .out .error { font-size: 12px; line-height: 17px; overflow-wrap: anywhere; }
 .out .note { color: var(--wait-ink); }
 .out-acts { display: flex; flex-wrap: wrap; gap: 6px; }
-.out-more > summary { display: inline-flex; align-items: center; gap: 6px; color: var(--mute); font-size: 12px; font-weight: 500; line-height: 18px; list-style: none; cursor: pointer; }
+.out-more > summary { display: inline-flex; align-items: center; gap: 6px; padding: 3px 0; margin: -3px 0; color: var(--mute); font-size: 12px; font-weight: 500; line-height: 18px; list-style: none; cursor: pointer; }
 .out-more > summary::-webkit-details-marker { display: none; }
 .out-more > summary::before { content: ""; width: 6px; height: 6px; margin: 0 2px 0 1px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(-45deg); }
 .out-more[open] > summary::before { transform: rotate(45deg); }
@@ -309,7 +312,7 @@ pre.code .ln::before { content: counter(ln); display: inline-block; width: 2.6em
 .web-notice { display: flex; align-items: center; gap: 8px; padding: 8px 8px 8px 12px; border-radius: 10px; background: var(--wait-bg); color: var(--ink); }
 .web-notice span { flex: 1; font-weight: 500; }
 .web-base { display: flex; align-items: center; gap: 8px; color: var(--mute); font-size: 12px; }
-.web-base select { flex: 1; min-width: 0; height: 28px; padding: 0 6px; border: 1px solid var(--line2); border-radius: 8px; background: var(--panel); color: var(--ink); font-size: 12.5px; }
+.web-base select { flex: 1; min-width: 0; height: 28px; padding: 0 6px; border: 1px solid var(--field); border-radius: 8px; background: var(--panel); color: var(--ink); font-size: 12.5px; }
 .web-list { display: grid; }
 .web-row { padding: 8px 0; border-top: 1px solid var(--line); }
 .web-head { display: flex; align-items: center; gap: 8px; }

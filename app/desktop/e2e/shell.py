@@ -26,6 +26,7 @@ from pathlib import Path
 
 from selenium.common.exceptions import StaleElementReferenceException
 from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as EC
 
 import guard
@@ -66,6 +67,13 @@ def click(d, how, what):
     e.click()
 
 
+def named(d):
+    """Every control on show has a name a screen reader can say, and Tab
+    reaches it (the 0.14 audit left accessibility, B10, to this window)."""
+    bad = guard.unnamed(d)
+    assert not bad, bad
+
+
 def place(d, wait, href, title):
     """Follow one of the four place links (the nav is redrawn as counts
     change: try again)."""
@@ -76,6 +84,7 @@ def place(d, wait, href, title):
         except StaleElementReferenceException:
             time.sleep(0.3)
     wait.until(lambda drv: title == text(drv, "#page-title"))
+    named(d)
 
 
 def inside(d, wait, href, title):
@@ -84,6 +93,7 @@ def inside(d, wait, href, title):
     wait.until(lambda drv: drv.find_elements(By.CSS_SELECTOR, link))
     click(d, By.CSS_SELECTOR, link)
     wait.until(lambda drv: title == text(drv, "#page-title"))
+    named(d)
 
 
 def back(d, wait, title):
@@ -136,6 +146,7 @@ def main():
         assert "Start with your data." in first and "Connect an AI for the chat" in first, first
         assert "Your first connection is added" in first, first
         assert not d.find_element(By.ID, "text").is_displayed(), "no question to ask before an AI is connected"
+        named(d)
         d.save_screenshot(str(OUT / "shell-first-run.png"))
         click(d, By.ID, "fr-skip")
         step("The app opens on a question: a new chat, its panel in the middle")
@@ -144,6 +155,12 @@ def main():
         wait.until(lambda drv: drv.execute_script("return document.activeElement && document.activeElement.id") == "text")
         assert d.execute_script("return document.activeElement && document.activeElement.id") == "text", "the question has the focus"
         main_window = d.current_window_handle
+        named(d)
+        # Tab and a screen reader follow the document: the question comes
+        # first on the start, as it is drawn, and the panel before the map.
+        follows = "return !!(document.getElementById(arguments[0]).compareDocumentPosition(document.getElementById(arguments[1])) & Node.DOCUMENT_POSITION_FOLLOWING)"
+        assert d.execute_script(follows, "composer", "log"), "on the start the question is first in the document"
+        assert d.execute_script(follows, "panel", "stage"), "the panel comes before the map"
         d.save_screenshot(str(OUT / "shell-start.png"))
 
         step("The four places, and the pages inside them: each says what it is")
@@ -160,6 +177,19 @@ def main():
         inside(d, wait, "#/registry", "Registry")
         wait.until(lambda drv: drv.find_elements(By.ID, "rg-q"))
         back(d, wait, "Data")
+        step("An export folder's path reads left to right, its first character first")
+        wait.until(lambda drv: drv.find_elements(By.CSS_SELECTOR, "#export-folders li .when bdi"))
+        shown = d.execute_script("""
+            const t = document.querySelector('#export-folders li .when bdi').firstChild;
+            const left = (i) => { const r = document.createRange(); r.setStart(t, i); r.setEnd(t, i + 1); return r.getBoundingClientRect().left; };
+            return [t.data, left(0) < left(1) && left(1) < left(t.data.length - 1)];""")
+        # (The folder as the app names it: a system may spell the temporary folder its own way.)
+        assert shown[0].replace("\\", "/").endswith("/outbox") and shown[1] is True, shown
+        step("Skip to content moves the focus into the page, and opens nothing")
+        d.execute_script("document.querySelector('a.skip').focus()")
+        d.switch_to.active_element.send_keys(Keys.ENTER)
+        wait.until(lambda drv: drv.execute_script("return document.activeElement && document.activeElement.id") == "page-title")
+        assert d.execute_script("return location.hash") == "#/data" and text(d, "#page-title") == "Data"
         step("Nothing unbuilt is offered: no part of Data says it is coming")
         assert "oming" not in text(d, "#page-host"), text(d, "#page-host")
         assert not d.find_elements(By.CSS_SELECTOR, "#main a[href='#/data/accounts']")
@@ -185,6 +215,7 @@ def main():
         wait.until(lambda drv: text(drv, "#settings-title") == "Settings")
         assert d.execute_script("return document.getElementById('settings').open")
         wait.until(lambda drv: "policy file on this computer" in text(drv, "#set-policy"))
+        named(d)
         for part, title, ready in [("ai", "Assistant", "key-form"), ("environments", "Python environments", "env-add"),
                                    ("privacy", "Privacy and files", None), ("org", "Organization rules", "allow_edits"),
                                    ("keyboard", "Keyboard shortcuts", None)]:
@@ -192,11 +223,21 @@ def main():
             wait.until(lambda drv: text(drv, "#settings-title") == title)
             if ready:
                 wait.until(lambda drv: drv.find_elements(By.ID, ready))
+            named(d)
             click(d, By.ID, "settings-back")
             wait.until(lambda drv: text(drv, "#settings-title") == "Settings")
         click(d, By.ID, "settings-close")
         wait.until(lambda drv: not drv.execute_script("return document.getElementById('settings').open"))
         assert d.execute_script("return location.hash") == "#/activity", "closing the sheet returns to the page under it"
+        wait.until(lambda drv: drv.execute_script("return document.activeElement && document.activeElement.id") == "nav-settings")
+        step("Closing Settings puts back the address the page has, not the link that led to it")
+        click(d, By.ID, "nav-new")  # "#/chats/fresh", which the new chat rewrites to "#/chats/new"
+        wait.until(lambda drv: drv.execute_script("return location.hash") == "#/chats/new")
+        click(d, By.ID, "nav-settings")
+        wait.until(lambda drv: drv.execute_script("return document.getElementById('settings').open"))
+        click(d, By.ID, "settings-close")
+        wait.until(lambda drv: not drv.execute_script("return document.getElementById('settings').open"))
+        assert d.execute_script("return location.hash") == "#/chats/new", d.execute_script("return location.hash")
 
         step("The session another AI app runs, under Chats: its activity and its map")
         place(d, wait, "#/chats", "Chats")
@@ -210,6 +251,10 @@ def main():
         assert src.startswith(f"http://127.0.0.1:{port}/embed#t="), src
         size = d.execute_script("const r = arguments[0].getBoundingClientRect(); return [r.left, r.top, r.width, r.height, innerWidth, innerHeight]", frame)
         assert size[:2] == [0, 0] and size[2:4] == size[4:], f"the map fills the window behind the panel: {size}"
+        # Beside the panel, a click lands on the map; on the panel, it does not.
+        hit = "const e = document.elementFromPoint(arguments[0], arguments[1]); return e === arguments[2] ? 'map' : e && e.closest('#panel') ? 'panel' : String(e && e.tagName)"
+        assert d.execute_script(hit, size[4] - 40, size[5] - 40, frame) == "map"
+        assert d.execute_script(hit, 60, size[5] / 2, frame) == "panel"
         d.switch_to.frame(frame)
         step("The companion page signed in with its view link and shows the layer")
         WebDriverWait(d, 40).until(lambda drv: "tracts" in drv.execute_script("return document.body.textContent"))
@@ -218,17 +263,20 @@ def main():
         assert framed["embedded"], framed
         d.switch_to.default_content()
         time.sleep(2)
+        named(d)
         d.save_screenshot(str(OUT / "shell-session.png"))
         step("Its files, in the sheet beside the panel")
         click(d, By.CSS_SELECTOR, "#main .chat-more")
         click(d, By.CSS_SELECTOR, "#main .chat-files")
         wait.until(lambda drv: ".gpkg" in text(drv, "#side"))
+        named(d)
         d.save_screenshot(str(OUT / "shell-files.png"))
         click(d, By.ID, "side-close")
         step("The panel put away leaves the map alone, and comes back")
         click(d, By.CSS_SELECTOR, "#main .chat-more")
         click(d, By.CSS_SELECTOR, "#main .chat-away")
         wait.until(lambda drv: not drv.find_element(By.ID, "panel").is_displayed())
+        named(d)
         d.save_screenshot(str(OUT / "shell-map-only.png"))
         click(d, By.ID, "pill-show")
         wait.until(lambda drv: drv.find_element(By.ID, "panel").is_displayed())
@@ -243,6 +291,7 @@ def main():
         page = text(d, "#approvals")
         assert "Allow once" not in page and not d.find_elements(By.XPATH, "//*[@id='approvals']//button[normalize-space()='Allow once']")
         assert "decided in that app or in your browser, not here" in page, page
+        named(d)
         d.save_screenshot(str(OUT / "shell-approvals.png"))
         step("The nav counts it")
         wait.until(lambda drv: "1 waiting" in (drv.find_element(By.CSS_SELECTOR, "#nav a[href='#/activity']").get_attribute("aria-label") or ""))
@@ -319,10 +368,23 @@ def main():
         want = NOTE.replace("the tract's name", "changed behind your back").replace("status: draft", "status: reviewed")
         assert note.read_text() == want, note.read_text()
 
-        step("Ctrl+K opens the search")
+        step("Esc closes the sheet beside the panel")
+        assert d.find_element(By.ID, "side").is_displayed()
+        d.execute_script("document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true, cancelable: true}))")
+        wait.until(lambda drv: not drv.find_element(By.ID, "side").is_displayed())
+
+        step("Ctrl+K opens the search; a connection is found by its name and opens its page")
         d.execute_script("document.dispatchEvent(new KeyboardEvent('keydown', {key: 'k', ctrlKey: true}))")
         wait.until(lambda drv: drv.execute_script("return document.getElementById('palette').open"))
-        d.execute_script("document.getElementById('palette').close()")
+        d.find_element(By.ID, "palette-q").send_keys("tig")
+        row = "//ul[@id='palette-list']/li[span[normalize-space()='tiger'] and span[normalize-space()='Data']]"
+        wait.until(lambda drv: drv.find_elements(By.XPATH, row))
+        named(d)
+        d.find_element(By.XPATH, row).click()
+        wait.until(lambda drv: drv.execute_script("return location.hash") == "#/data/c/tiger")
+        wait.until(lambda drv: text(drv, "#page-title") == "tiger" and drv.find_elements(By.ID, "source-edit"))
+        named(d)
+        assert not d.execute_script("return document.getElementById('palette').open")
 
         step("A classic window is still there, from Settings")
         click(d, By.ID, "nav-settings")

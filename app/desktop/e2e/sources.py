@@ -271,6 +271,7 @@ def main():
         fill(d, "y", "NORTHING")
         test_says(d, wait, "Opened", "crashes", "2026/more")
         assert not (root / "connections" / "drops.yaml").exists(), "Test saves nothing"
+        assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
         d.save_screenshot(str(OUT / "sources-files.png"))
         click(d, By.ID, "save")
         wait.until(lambda drv: (root / "connections" / "drops.yaml").exists())
@@ -395,6 +396,7 @@ def main():
         reg = yaml.safe_load((root / "environments" / "stub-pro.yaml").read_text())
         assert reg["python"] == str(python) and reg["trust"] == "governed" and reg["probe"]["arcpy"] is True, reg
         assert reg["created_by"] == "person", reg
+        assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
         d.save_screenshot(str(OUT / "sources-environments.png"))
         # Edited by hand: changed, until confirmed again.
         step("environments: edited by hand, confirmed again")
@@ -404,6 +406,7 @@ def main():
         nav(d, wait, "#/settings/environments", "env-add")
         wait.until(lambda drv: "Changed: confirm it again" in env_text(drv, "stub-pro"))
         assert "edited after it was confirmed" in env_text(d, "stub-pro")
+        assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
         d.save_screenshot(str(OUT / "sources-env-changed.png"))
         env_row(d, "stub-pro").find_element(By.XPATH, ".//button[normalize-space()='Confirm']").click()
         wait.until(lambda drv: "Ready" in env_text(drv, "stub-pro"))
@@ -427,6 +430,7 @@ def main():
         nav(d, wait, "#/settings/environments", "env-add")
         wait.until(lambda drv: "words" in text(drv, "env-proposals"))
         assert "six==1.17.0" in text(d, "env-proposals") and "crash narratives" in text(d, "env-proposals")
+        assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
         d.save_screenshot(str(OUT / "sources-env-proposal.png"))
         d.find_element(By.XPATH, "//ul[@id='env-proposals']/li[.//b[normalize-space()='words']]//button[normalize-space()='Decline']").click()
         wait.until(lambda drv: not (root / "environments" / ".proposals" / "words.json").exists())

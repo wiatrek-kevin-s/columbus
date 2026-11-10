@@ -9,8 +9,6 @@
   <body>
     <a class="skip" href="#main">Skip to content</a>
     <div class="app">
-      <!-- The map's place: chart paper until a session's map is shown. -->
-      <div class="stage" id="stage"><div class="frames" id="stage-frames"></div></div>
       <!-- The panel: the four places, and the page of the one that is open. -->
       <div class="panel" id="panel">
         <nav class="nav" id="nav" aria-label="Columbus"></nav>
@@ -20,12 +18,16 @@
       <aside class="side" id="side" hidden></aside>
       <!-- The panel put away: the map alone. -->
       <div class="pill" id="pill"></div>
+      <!-- The map's place: chart paper until a session's map is shown. It is
+           drawn under everything else, and comes last here so that Tab and a
+           screen reader reach the panel before the map's own controls. -->
+      <div class="stage" id="stage"><div class="frames" id="stage-frames"></div></div>
     </div>
     <div id="toast" class="toast" popover="manual" role="status" aria-live="polite" hidden></div>
-    <dialog id="palette" class="palette" aria-label="Search chats and pages">
-      <input id="palette-q" type="search" placeholder="Search chats, sessions and pages" aria-label="Search chats, sessions and pages" autocomplete="off" spellcheck="false" role="combobox" aria-expanded="true" aria-controls="palette-list" />
+    <dialog id="palette" class="palette" aria-label="Search chats, data, workflows and pages">
+      <input id="palette-q" type="search" placeholder="Search chats, data, workflows and pages" aria-label="Search chats, data, workflows and pages" autocomplete="off" spellcheck="false" role="combobox" aria-expanded="true" aria-controls="palette-list" />
       <ul id="palette-list" role="listbox" aria-label="Results"></ul>
-      <p class="hint">↑ ↓ to move · Enter to open · Esc to close. Chats are searched by title and content.</p>
+      <p class="hint">↑ ↓ to move · Enter to open · Esc to close. Chats are searched by title and content; connections, workflows and projects by name.</p>
     </dialog>
     <script type="module" src="js/main.js"></script>
   </body>

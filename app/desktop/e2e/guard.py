@@ -206,6 +206,19 @@ def ready(d, wait):
         "return document.querySelectorAll('#nav a.tab').length === 4 && !!document.getElementById('text')"))
 
 
+
+
+def unnamed(d):
+    """The controls on show that a screen reader could not name, or that Tab
+    cannot reach: in the dialog that is open, else in the whole window. A
+    name is an aria-label, a label, the control's own text or its title; a
+    placeholder alone is not one. (The script is shared with the map page's
+    tests: app/ui/e2e/a11y.py.)"""
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ui" / "e2e"))
+    from a11y import UNNAMED
+    return d.execute_script(UNNAMED)
+
+
 def stop(d, proc):
     """End the session, the app and the driver (bounded).
 

@@ -202,6 +202,7 @@ def main():
         assert "Reads only: tiger" in plain, plain
         assert "export folder outbox" in plain, plain
         assert "query_features" in text(d, "wf-review-file")
+        assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
         d.save_screenshot(str(OUT / "workflows-review.png"))
         click(d, By.ID, "wf-review-install")
         wait.until(lambda drv: not dlg.is_displayed())
@@ -211,6 +212,13 @@ def main():
         # Open a shared file is offered on the list (the file dialog itself
         # is the system's).
         assert d.find_element(By.ID, "wf-open-shared").is_displayed()
+        # A search that matches nothing says so, and no more.
+        find = d.find_element(By.CSS_SELECTOR, "input[aria-label='Search workflows']")
+        find.send_keys("zzzz")
+        wait.until(lambda drv: drv.find_element(By.ID, "wf-no-installed").is_displayed())
+        assert d.find_element(By.ID, "wf-no-installed").text == "Nothing matches.", d.find_element(By.ID, "wf-no-installed").text
+        d.execute_script("arguments[0].value = ''; arguments[0].dispatchEvent(new Event('input', {bubbles: true}))", find)
+        wait.until(lambda drv: not drv.find_element(By.ID, "wf-no-installed").is_displayed())
 
         step("The list says when it runs; its own page says so in a sentence")
         row = d.execute_script("return document.querySelector(\"#wf-installed li[data-id='tract-export']\").textContent")
@@ -231,6 +239,7 @@ def main():
         report = text(d, "wf-report")
         assert "exported to the outbox folder" in report, report
         assert any(p.name.startswith("tract-export-tracts-") for p in (root / "outbox").iterdir()), list((root / "outbox").iterdir())
+        assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
         d.save_screenshot(str(OUT / "workflows-run.png"))
 
         step("Open in a chat: the run's layer on the chat's map and table, its report for the assistant")
@@ -258,6 +267,7 @@ def main():
             assert on_map >= 1, "the run's layer is on the map"
         finally:
             d.switch_to.default_content()
+        assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
         d.save_screenshot(str(OUT / "workflows-open-in-chat.png"))
 
         step("The export from that chat asks for approval as usual; allowed, it lands")
@@ -281,6 +291,7 @@ def main():
         system = "".join(b["text"] for b in SEEN[0]["system"])
         assert "# Tract export" in system and "tract-export-tracts.gpkg" in system, "the report is in context"
         assert tree_hashes(*run_files) == before, "the run's files are unchanged"
+        assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
         d.save_screenshot(str(OUT / "workflows-chat-export.png"))
         d.execute_script(f"location.hash = '#/workflows/tract-export/{run_id}'")
         WebDriverWait(d, 30).until(lambda drv: drv.find_elements(By.ID, "wf-report") and "Succeeded" in text(drv, "wf-report"))

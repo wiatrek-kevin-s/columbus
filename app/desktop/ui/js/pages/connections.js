@@ -185,7 +185,7 @@ async function databases(body, search, notesLink) {
     outCount.textContent = folders.length ? String(folders.length) : "";
     out.replaceChildren(...folders.map((f) => {
       const li = h("li", {}, h("span", { class: "glyph" }, icon("out")),
-        h("div", { class: "text" }, h("b", {}, f.id), h("span", { class: "where" }, f.granted ? "Saves without asking" : "Asks you each time")), h("span", { class: "when mono clip" }, f.path));
+        h("div", { class: "text" }, h("b", {}, f.id), h("span", { class: "where" }, f.granted ? "Saves without asking" : "Asks you each time")), h("span", { class: "when mono clip" }, h("bdi", {}, f.path)));
       li.title = f.path;
       return li;
     }));
@@ -239,7 +239,7 @@ async function source(page, scroll, body, id) {
           h("span", { class: `badge ${n.status === "reviewed" ? "mute" : "warn"}` }, n.status === "reviewed" ? "Note reviewed" : "Draft note"));
         const open = () => { try { sessionStorage.setItem("columbus.note", n.path); } catch { /* none */ } location.hash = "#/documents/notes"; };
         li.addEventListener("click", open);
-        li.addEventListener("keydown", (e) => { if (e.key === "Enter") open(); });
+        li.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } });
         ul.append(li);
       }
       notesBox.append(h("section", { class: "card" }, sec("Datasets with notes", mine.length), h("div", { class: "bd flush" }, ul)));
@@ -373,6 +373,7 @@ function buildEditor() {
   // What the assistant may do with it: two cards the person chooses
   // between. The select they drive holds the value the form saves.
   const mode = h("select", { name: "mode", class: "visually-hidden", "aria-hidden": "true", tabindex: "-1" }, h("option", { value: "read" }, "Read only"), h("option", { value: "read-write" }, "Read and write (needs edits allowed)"));
+  mode.addEventListener("change", syncMode);
   const choice = (value, title, text) => {
     const r = h("input", { type: "radio", name: "mode_pick", value });
     r.addEventListener("change", () => { if (r.checked) mode.value = value; });
@@ -510,7 +511,9 @@ export async function openEditor(c, onSaved) {
   setKind(form.kind.value);
   syncMode();
   dlg.showModal();
-  (c ? form.mode : form.conn_id).focus();
+  // An existing connection opens on its access cards (the select that holds
+  // the saved value is never shown, so it never takes the focus).
+  (c ? form.querySelector("input[name=mode_pick]:checked") || form.conn_id : form.conn_id).focus();
 }
 
 // Comma-separated patterns; a comma inside {…} belongs to the pattern.

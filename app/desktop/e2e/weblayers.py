@@ -284,6 +284,7 @@ def main():
             hosts = json.loads((saved / ".hosts.json").read_text())
             assert hosts["ortho"]["hosts"] == ["cdn.fake.test"], hosts
             assert dict(listed(d)) == {k[0]: k[1] for k in kinds}, listed(d)
+            assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
             d.save_screenshot(str(OUT / "weblayers-tab.png"))
 
             step("Test says each is reachable")
@@ -313,6 +314,7 @@ def main():
                 drv.execute_script("document.querySelector(\".web-row[data-id='parcels'] input[type=checkbox]\").click()")
                 wait.until(lambda x: NOTICE in (x.execute_script("const n = document.querySelector('.web-notice'); return n ? n.textContent : ''")))
             in_map(d, wait, turn_on)
+            assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
             d.save_screenshot(str(OUT / "weblayers-map.png"))
         finally:
             guard.stop(d, proc)  # the app has gone: the next launch is a restart
@@ -331,6 +333,7 @@ def main():
             session_hash = f"#/chats/s/{other_session}"
             d.execute_script("location.hash = arguments[0]", session_hash)
             in_map(d, wait, lambda drv: wait_rows(drv, wait, want))
+            assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
             d.save_screenshot(str(OUT / "weblayers-other-chat.png"))
 
             step("Edit on the Map layers tab: both chats show it")
@@ -369,6 +372,7 @@ def main():
             in_map(d, wait, lambda drv: wait_rows(drv, wait, want))
             d.execute_script("location.hash = arguments[0]", session_hash)
             in_map(d, wait, lambda drv: wait_rows(drv, wait, want))
+            assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
             d.save_screenshot(str(OUT / "weblayers-removed.png"))
         finally:
             guard.stop(d, proc)  # the app has gone: the next launch is a restart

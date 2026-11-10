@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { api, currentScope, signIn, SignedOut, webApi, type Approval, type Check, type FeatureCollection, type OutputCard, type Overview, type WebSource, type WebSourceInfo } from "./api";
 import { ApprovalCard } from "./ApprovalCard";
-import { layout, NO_INSET, parseInset, type Inset } from "./layout";
+import { layout, namedOutput, NO_INSET, parseInset, type Inset } from "./layout";
 import { MapView, type MapLayer, type WebDraw, type WebState } from "./MapView";
 import { Table } from "./Table";
 import { LAYER_TONES, useTheme } from "./theme";
@@ -293,6 +293,9 @@ export function App() {
   // The map alone until the person opens the table (or the app asks for
   // it).
   const [tableOpen, setTableOpen] = useState(false);
+  // The result the app named with its last request for the table, kept for
+  // a few seconds in case the page has not listed that result yet.
+  const [wanted, setWanted] = useState<{ output: unknown; until: number } | null>(null);
   const [measuring, setMeasuring] = useState(false);
   // How much of this page the app's own panel covers (framed only).
   const [inset, setInset] = useState<Inset>(NO_INSET);
@@ -305,14 +308,18 @@ export function App() {
     if (!FRAMED) return;
     const on = (e: MessageEvent) => {
       if (e.source !== window.parent || !APP_ORIGINS.includes(e.origin)) return;
-      const d = e.data as { type?: unknown; view?: unknown; basemap?: unknown; theme?: unknown; inset?: unknown } | null;
+      const d = e.data as { type?: unknown; view?: unknown; output?: unknown; basemap?: unknown; theme?: unknown; inset?: unknown } | null;
       if (d && d.type === "columbus-web-layers") {
         webReload.current();
         return;
       }
       if (!d || d.type !== "columbus-embed") return;
       if (d.view === "map") setTableOpen(false);
-      else if (d.view === "table" || d.view === "split") setTableOpen(true);
+      else if (d.view === "table" || d.view === "split") {
+        setTableOpen(true);
+        // Whose table: checked against this session's own outputs below.
+        if (d.output !== undefined) setWanted({ output: d.output, until: Date.now() + 10_000 });
+      }
       // What the app's panel covers, in CSS pixels: checked numbers only.
       const covered = parseInset(d.inset);
       if (covered) setInset(covered);
@@ -524,6 +531,16 @@ export function App() {
       window.clearInterval(t);
     };
   }, [phase, signedOut]);
+
+  // The app asked for one result's table: that result becomes the active
+  // one, if it is one of this session's own with rows to show. Any other
+  // value changes nothing.
+  useEffect(() => {
+    if (!wanted) return;
+    const handle = Date.now() <= wanted.until ? namedOutput(wanted.output, outputs) : null;
+    if (handle) setActive(handle);
+    if (handle || Date.now() > wanted.until) setWanted(null);
+  }, [wanted, outputs]);
 
   // A new layer goes on the map and gets the focus; the person can take it off.
   useEffect(() => {

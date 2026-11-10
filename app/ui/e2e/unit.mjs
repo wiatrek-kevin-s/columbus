@@ -4,8 +4,9 @@
 //   page's paper and ink, against a hand-made style with the usual
 //   OpenMapTiles layers (as OpenFreeMap's positron has them). The real style
 //   is on the internet; this is the stand-in for it.
-// - `parseInset` and `layout` (src/layout.ts): the app's inset, and where
-//   the sheets go.
+// - `parseInset`, `namedOutput` and `layout` (src/layout.ts): the app's
+//   inset, the result it names with a request for the table, and where the
+//   sheets go.
 // - The colours the map is given in code agree with the page's tokens in
 //   src/styles.css.
 //
@@ -25,7 +26,7 @@ if (!process.features.typescript) {
 }
 
 const { BASEMAP_URL, MAP_TONES, blankStyle, isStyle, restyle } = await import("../src/basemap.ts");
-const { GAP, NO_INSET, layout, parseInset } = await import("../src/layout.ts");
+const { GAP, NO_INSET, layout, namedOutput, parseInset } = await import("../src/layout.ts");
 const { LAYER_TONES } = await import("../src/theme.ts");
 
 const OFM = "https://tiles.openfreemap.org";
@@ -293,6 +294,26 @@ test("parseInset: anything else is refused whole", () => {
   }
 });
 
+test("namedOutput: only the handle of one of the session's own outputs with rows to show", () => {
+  const outputs = [
+    { handle: "ws://s/results/roads.gpkg", viewable: true },
+    { handle: "ws://s/results/elevation.tif", viewable: false },
+  ];
+  assert.equal(namedOutput("ws://s/results/roads.gpkg", outputs), "ws://s/results/roads.gpkg");
+  // A result with no rows to show, one the page does not have, one from
+  // another session: none of them is named.
+  assert.equal(namedOutput("ws://s/results/elevation.tif", outputs), null);
+  assert.equal(namedOutput("ws://s/results/other.gpkg", outputs), null);
+  assert.equal(namedOutput("ws://t/results/roads.gpkg", outputs), null);
+  // Not a short string: refused before it is compared with anything.
+  for (const bad of [undefined, null, 7, true, "", {}, ["ws://s/results/roads.gpkg"], { handle: "ws://s/results/roads.gpkg" }]) {
+    assert.equal(namedOutput(bad, outputs), null, JSON.stringify(bad));
+  }
+  const long = "ws://s/results/" + "a".repeat(200);
+  assert.equal(namedOutput(long, [{ handle: long, viewable: true }]), null, "longer than a handle the app passes on");
+  assert.equal(namedOutput("ws://s/results/roads.gpkg", []), null);
+});
+
 test("layout, framed: the app's inset, the table from it, the map padded by both", () => {
   const inset = { left: 488, top: 0, right: 0, bottom: 0 };
   const closed = layout({ width: 1440, height: 900, covered: inset, tableOpen: false });
@@ -366,9 +387,9 @@ test("the map's colours in code are the page's tokens in styles.css", () => {
   const light = block(":root {");
   const darkSystem = block(':root:not([data-theme="light"]) {');
   const darkChosen = block(':root[data-theme="dark"] {');
-  // The brief's tokens, exactly.
+  // The agreed tokens, exactly (the same as the app window's, in app/desktop/ui/app.css).
   const want = {
-    light: { paper: "#efede8", panel: "#ffffff", ink: "#17181a", ink2: "#3f4044", mute: "#66676b", faint: "#a6a7aa", line: "#edece9", line2: "#dfdeda", fill: "#f6f5f3", fill2: "#eeedea", hit: "#ef4b23", wait: "#f0ae1b", "wait-ink": "#7a5200", "wait-bg": "#fff6dc", ok: "#1b8556", "ok-bg": "#e7f3ec", bad: "#be3319", "bad-bg": "#fbe9e5" },
+    light: { paper: "#efede8", panel: "#ffffff", ink: "#17181a", ink2: "#3f4044", mute: "#66676b", faint: "#a6a7aa", line: "#edece9", line2: "#dfdeda", fill: "#f6f5f3", fill2: "#eeedea", hit: "#ef4b23", wait: "#f0ae1b", "wait-ink": "#7a5200", "wait-bg": "#fff6dc", ok: "#18794e", "ok-bg": "#e7f3ec", bad: "#be3319", "bad-bg": "#fbe9e5" },
     dark: { paper: "#121315", panel: "#1c1d20", ink: "#f3f2ef", ink2: "#cfceca", mute: "#9c9c9a", faint: "#66676a", line: "#2a2b2f", line2: "#393a3f", fill: "#25262a", fill2: "#2e2f34", hit: "#ff5b34", wait: "#f2b01e", "wait-ink": "#f5c55a", "wait-bg": "#2c2513", ok: "#4cc38a", "ok-bg": "#16291f", bad: "#ff7b63", "bad-bg": "#321a15" },
   };
   for (const [name, value] of Object.entries(want.light)) assert.equal(token(light, name), value, `light --${name}`);

@@ -137,7 +137,7 @@ async function pack(body) {
       try { bd.append(el("pre", "box", await invoke("context_read", { path: e.path }))); } catch (x) { bd.append(el("p", "error-text", String(x))); }
     };
     li.addEventListener("click", go);
-    li.addEventListener("keydown", (k) => { if (k.key === "Enter") go(); });
+    li.addEventListener("keydown", (k) => { if (k.key === "Enter" || k.key === " ") { k.preventDefault(); go(); } });
     ul.append(li);
   }
   left.append(h("div", { class: "bd flush" }, r.entries.length ? ul : h("p", { class: "pad muted" }, "The pack has no entries.")));
