@@ -1124,7 +1124,7 @@ pub async fn notes_check(app: tauri::AppHandle) -> Result<Value, String> {
     .map_err(|e| e.to_string())?
 }
 
-/// The assistants' suggested changes to the notes (Documents > Proposals):
+/// The assistants' suggested changes to the notes (Data › Notes › Proposals):
 /// listed, or one accepted or dismissed, by Columbus's server
 /// (`columbus-mcp notes suggestions`), which checks and audits each.
 #[tauri::command]

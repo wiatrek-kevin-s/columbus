@@ -151,6 +151,7 @@ def fill_layer(d, wait, url, layer, title, sid):
         choose(d, "wl_layer", layer)
     fill(d, "wl_title", title)
     fill(d, "wl_id", sid)
+    assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
     return d.execute_script("return document.getElementById('wl-found').textContent + ' | ' + document.getElementById('wl-hint').textContent")
 
 
@@ -172,7 +173,7 @@ def row_button(d, sid, label):
 def visible_frame(d, wait):
     """The map frame of the chat on screen."""
     def find(drv):
-        for f in drv.find_elements(By.CSS_SELECTOR, ".outpanel iframe"):
+        for f in drv.find_elements(By.CSS_SELECTOR, "#stage iframe"):
             if drv.execute_script("return arguments[0].offsetParent !== null && arguments[0].getBoundingClientRect().width > 0", f):
                 return f
         return False
@@ -214,7 +215,7 @@ def start_chat(d, wait):
     box.send_keys("Show me the map.")
     js_click(d, d.find_element(By.ID, "send"))
     WebDriverWait(d, 90).until(lambda drv: "Ready when you are." in drv.find_element(By.ID, "log").text)
-    WebDriverWait(d, 40).until(EC.presence_of_element_located((By.CSS_SELECTOR, "#chatview .outpanel iframe")))
+    WebDriverWait(d, 40).until(EC.presence_of_element_located((By.CSS_SELECTOR, "#stage iframe")))
     return d.execute_script("return location.hash")
 
 
@@ -251,24 +252,25 @@ def main():
         d, proc = guard.driver(dict(env, COLUMBUS_APP_TEST_CONFIRM="deny"), APP)
         try:
             wait = WebDriverWait(d, 60)
-            wait.until(lambda drv: drv.execute_script("return !!document.getElementById('page-title')"))
-            nav(d, wait, "#/connections/maplayers", "add-web-layer")
+            guard.ready(d, wait)
+            nav(d, wait, "#/data/maplayers", "add-web-layer")
             js_click(d, d.find_element(By.ID, "add-web-layer"))
             said = fill_layer(d, wait, kinds[0][2], kinds[0][3], kinds[0][1], kinds[0][0])
             assert "confirm" in said, said
             err = save_dialog(d, wait)
             assert "not confirmed" in err, err
             assert not list(saved.glob("*.yaml")) if saved.exists() else True, "nothing is saved"
+            assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
             d.save_screenshot(str(OUT / "weblayers-declined.png"))
         finally:
             guard.stop(d, proc)  # the app has gone: the next launch is a restart
 
-        step("allowed: one service of each kind, pasted on Connections › Map layers")
+        step("allowed: one service of each kind, pasted on Data › Map layers")
         d, proc = guard.driver(dict(env, COLUMBUS_APP_TEST_CONFIRM="allow"), APP)
         try:
             wait = WebDriverWait(d, 60)
-            wait.until(lambda drv: drv.execute_script("return !!document.getElementById('page-title')"))
-            nav(d, wait, "#/connections/maplayers", "add-web-layer")
+            guard.ready(d, wait)
+            nav(d, wait, "#/data/maplayers", "add-web-layer")
             for sid, title, url, layer in kinds:
                 step(f"add {sid}")
                 js_click(d, d.find_element(By.ID, "add-web-layer"))
@@ -284,6 +286,7 @@ def main():
             hosts = json.loads((saved / ".hosts.json").read_text())
             assert hosts["ortho"]["hosts"] == ["cdn.fake.test"], hosts
             assert dict(listed(d)) == {k[0]: k[1] for k in kinds}, listed(d)
+            assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
             d.save_screenshot(str(OUT / "weblayers-tab.png"))
 
             step("Test says each is reachable")
@@ -313,6 +316,7 @@ def main():
                 drv.execute_script("document.querySelector(\".web-row[data-id='parcels'] input[type=checkbox]\").click()")
                 wait.until(lambda x: NOTICE in (x.execute_script("const n = document.querySelector('.web-notice'); return n ? n.textContent : ''")))
             in_map(d, wait, turn_on)
+            assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
             d.save_screenshot(str(OUT / "weblayers-map.png"))
         finally:
             guard.stop(d, proc)  # the app has gone: the next launch is a restart
@@ -323,18 +327,19 @@ def main():
         d, proc = guard.driver(dict(env, COLUMBUS_APP_TEST_CONFIRM="allow"), APP)
         try:
             wait = WebDriverWait(d, 60)
-            wait.until(lambda drv: drv.execute_script("return !!document.getElementById('page-title')"))
-            nav(d, wait, "#/connections/maplayers", "add-web-layer")
+            guard.ready(d, wait)
+            nav(d, wait, "#/data/maplayers", "add-web-layer")
             wait.until(lambda drv: dict(listed(drv)) == want)
             chat_hash = start_chat(d, wait)
             in_map(d, wait, lambda drv: wait_rows(drv, wait, want))
             session_hash = f"#/chats/s/{other_session}"
             d.execute_script("location.hash = arguments[0]", session_hash)
             in_map(d, wait, lambda drv: wait_rows(drv, wait, want))
+            assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
             d.save_screenshot(str(OUT / "weblayers-other-chat.png"))
 
             step("Edit on the Map layers tab: both chats show it")
-            nav(d, wait, "#/connections/maplayers", "add-web-layer")
+            nav(d, wait, "#/data/maplayers", "add-web-layer")
             wait.until(lambda drv: dict(listed(drv)) == want)
             js_click(d, row_button(d, "tiles", "Edit"))
             wait.until(lambda drv: dialog_open(drv) and drv.execute_script(
@@ -359,7 +364,7 @@ def main():
             in_map(d, wait, lambda drv: wait_rows(drv, wait, want))
 
             step("Remove on the Map layers tab: gone from both chats")
-            nav(d, wait, "#/connections/maplayers", "add-web-layer")
+            nav(d, wait, "#/data/maplayers", "add-web-layer")
             wait.until(lambda drv: "tiles" in dict(listed(drv)))
             js_click(d, row_button(d, "tiles", "Remove"))
             wait.until(lambda drv: "tiles" not in dict(listed(drv)))
@@ -369,6 +374,7 @@ def main():
             in_map(d, wait, lambda drv: wait_rows(drv, wait, want))
             d.execute_script("location.hash = arguments[0]", session_hash)
             in_map(d, wait, lambda drv: wait_rows(drv, wait, want))
+            assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
             d.save_screenshot(str(OUT / "weblayers-removed.png"))
         finally:
             guard.stop(d, proc)  # the app has gone: the next launch is a restart

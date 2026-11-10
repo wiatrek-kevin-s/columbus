@@ -383,7 +383,7 @@ async fn check(state: &State, request: &str, seen: &mut Seen) -> Result<Plan, St
         }
         if waiting_tools.contains(&t.id) {
             return Err(format!(
-                "{label} is already waiting for your review under Tools: install or decline it first, then open this file again"
+                "{label} is already waiting for your review under Workflows › Tools: install or decline it first, then open this file again"
             ));
         }
         let (args, built) = crate::propose_tool::rebuild(&t.id, &t.manifest, &t.code)
@@ -425,7 +425,7 @@ async fn check(state: &State, request: &str, seen: &mut Seen) -> Result<Plan, St
             warnings.push(if mine {
                 format!("It runs in your environment {e} (whoever shared it used their own environment of that name; check yours has what the tool needs).")
             } else {
-                format!("It runs in an environment named {e}, and you have no governed, ready environment of that name: until you register your own Python as {e} (Settings, Environments, or `columbus-mcp env add {e} --python <path>`), the tool stops with \"needs you\".")
+                format!("It runs in an environment named {e}, and you have no governed, ready environment of that name: until you register your own Python as {e} (Settings › Python environments, or `columbus-mcp env add {e} --python <path>`), the tool stops with \"needs you\".")
             });
         }
         let replaces = store::list_installed(tools_root)
@@ -457,7 +457,7 @@ async fn check(state: &State, request: &str, seen: &mut Seen) -> Result<Plan, St
     }
     if waiting_tools.len() + tools.len() > store::MAX_PROPOSALS {
         return Err(format!(
-            "it would put more than {} tools waiting for your review; install or decline some under Tools first",
+            "it would put more than {} tools waiting for your review; install or decline some under Workflows › Tools first",
             store::MAX_PROPOSALS
         ));
     }

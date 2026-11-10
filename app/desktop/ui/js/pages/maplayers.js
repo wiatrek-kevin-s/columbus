@@ -1,4 +1,4 @@
-// Connections › Map layers (T-25; build brief part 2, Part 3): web map
+// Data › Map layers (T-25; build brief part 2, Part 3): web map
 // layers the person adds by pasting a service's address. Columbus reads
 // the service's capabilities and offers its layers; each saved layer is
 // listed in every chat's Web layers (off until turned on there) and here,
@@ -47,7 +47,7 @@ export async function render(body) {
   const list = h("ul", { id: "web-layers", class: "list", "aria-live": "polite" });
   const none = h("div", { id: "no-web-layers", class: "pad", hidden: true },
     h("p", { class: "muted" }, "No web layers yet. Add one by pasting a WMTS, WMS, XYZ tile, ArcGIS MapServer, ImageServer or feature layer address."));
-  body.append(error, note, h("section", { class: "card" }, h("div", { class: "hd" }, h("h2", {}, "Map layers")), h("div", { class: "bd flush" }, list, none)),
+  body.append(error, note, h("section", { class: "card" }, h("div", { class: "hd" }, h("h2", {}, "Your layers")), h("div", { class: "bd flush" }, list, none)),
     h("p", { class: "small muted" }, "Services that need a user name and password are not supported. A secured ArcGIS service signs in through one of your ArcGIS connections."));
   const draw = async () => {
     let r;
@@ -89,7 +89,8 @@ export async function render(body) {
   };
   redraw = draw;
   await draw();
-  return () => { redraw = null; };
+  // (Only its own: the page shown next may have set its own by now.)
+  return () => { if (redraw === draw) redraw = null; };
 }
 
 async function testOne(id, btn, status) {

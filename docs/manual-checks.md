@@ -46,9 +46,9 @@ Columbus ships no client id (D-12): each organization registers its own app, so 
 ### Part B: connect and sign in (the analyst)
 
 1. Pick a feature layer shared only with your organization (not public), and copy its address from its item page (**URL**, ending `/FeatureServer` or `/FeatureServer/<n>`).
-2. Make sure policy allows it. In `policy.yaml` (Windows: `%ProgramData%\Columbus\policy.yaml`; Mac: `/Library/Application Support/Columbus/policy.yaml`), `connection_types` must include `arcgis`, and `hosts` must include the layer's host (for ArcGIS Online, `services.arcgis.com` or `servicesN.arcgis.com`, as in the address) and the portal's host (`www.arcgis.com`, or your portal's). In the app, **Settings › Organization** shows the policy in force.
-3. Add the connection. **In the app:** **Connections**, **Add connection**, type **ArcGIS service**; paste the address; **Sign-in: ArcGIS OAuth**; **Portal** `https://www.arcgis.com` (or `https://<your portal>/portal`); **Client id** from Part A; **Save**, and confirm with Windows Hello or Touch ID. **Or by hand:** copy `examples/connections/row-polygons.yaml` into your connections folder as `h1-test.yaml`, change `id` to `h1-test`, `url` to your layer and `client_id` to yours.
-4. Sign in with the loopback route (the default). **In the app:** press **Sign in** on the connection. **Or in the terminal:** `columbus-mcp arcgis signin h1-test`.
+2. Make sure policy allows it. In `policy.yaml` (Windows: `%ProgramData%\Columbus\policy.yaml`; Mac: `/Library/Application Support/Columbus/policy.yaml`), `connection_types` must include `arcgis`, and `hosts` must include the layer's host (for ArcGIS Online, `services.arcgis.com` or `servicesN.arcgis.com`, as in the address) and the portal's host (`www.arcgis.com`, or your portal's). In the app, **Settings › Organization rules** shows the policy in force.
+3. Add the connection. **In the app:** **Data**, **Add data**, type **ArcGIS service**; paste the address; **Sign-in: ArcGIS OAuth**; **Portal** `https://www.arcgis.com` (or `https://<your portal>/portal`); **Client id** from Part A; **Save**, and confirm with Windows Hello or Touch ID. **Or by hand:** copy `examples/connections/row-polygons.yaml` into your connections folder as `h1-test.yaml`, change `id` to `h1-test`, `url` to your layer and `client_id` to yours.
+4. Sign in with the loopback route (the default). **In the app:** under **Data**, click the connection's row and press **Sign in** on its page. **Or in the terminal:** `columbus-mcp arcgis signin h1-test`.
 5. Your browser opens ArcGIS's sign-in page. Sign in.
 
    **Record (H-1.B5):** what happened next:
@@ -78,7 +78,7 @@ Running arcpy under your Pro licence through Columbus is your organization's dec
 
 1. Open ArcGIS Pro and sign in. Leave it open for a minute, then close it.
 2. Clone Pro's Python environment (never change `arcgispro-py3` itself): in ArcGIS Pro, **Project** (or the **Settings** page), **Package Manager**, the **Environment Manager** button (beside **Active Environment**), then **Clone** `arcgispro-py3`. Name it `arcgispro-py3-columbus` and wait for it to finish (several minutes). Note the folder it shows, usually `C:\Users\<you>\AppData\Local\ESRI\conda\envs\arcgispro-py3-columbus`.
-3. Turn on what the check needs in `%ProgramData%\Columbus\policy.yaml` (or **Settings › Organization** in the app, if your organization lets you):
+3. Turn on what the check needs in `%ProgramData%\Columbus\policy.yaml` (or **Settings › Organization rules** in the app, if your organization lets you):
 
    ```yaml
    allow_scripts: true
@@ -131,8 +131,8 @@ Running arcpy under your Pro licence through Columbus is your organization's dec
    ```
 
    Type `pro` to confirm.
-2. Ask your assistant to call `whoami`, or look at **Settings › Environments** in the app. **Record (H-2.C2):** for `pro`, the arcpy line, the licence line, and that it is marked **experimental** (whoami: `experimental: true`; trust line "trusted (experimental): …").
-3. Ask the assistant to run the same script in environment `pro`. The approval card must say: "Columbus cannot enforce your connection rules for this run: the script can read, write and send data anywhere you can." It must offer no "Allow for this session". Approve once.
+2. Ask your assistant to call `whoami`, or look at **Settings › Python environments** in the app. **Record (H-2.C2):** for `pro`, the arcpy line, the licence line, and that it is marked **experimental** (whoami: `experimental: true`; trust line "trusted (experimental): …").
+3. Ask the assistant to run the same script in environment `pro`. The approval card must say: "Columbus cannot enforce your connection rules for this run: the script can read, write and send data anywhere you can." It must offer no "Allow for this session" (in the Columbus app's chat, the same choice would read "Allow this script for this chat"). Approve once.
 
    **Record (H-2.C3):** the card's wording, and what the script printed (`"product": "ArcInfo"` or another licence, with a Pro version, is a pass).
 4. Ask the assistant to list outputs. `arcpy_check.json` should be there, labelled `environment:pro`. **Record:** whether the label shows.

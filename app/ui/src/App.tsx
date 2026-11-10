@@ -1,22 +1,25 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { api, currentScope, signIn, SignedOut, webApi, type Approval, type Check, type FeatureCollection, type OutputCard, type Overview, type WebSource, type WebSourceInfo } from "./api";
 import { ApprovalCard } from "./ApprovalCard";
+import { layout, namedOutput, NO_INSET, parseInset, type Inset } from "./layout";
 import { MapView, type MapLayer, type WebDraw, type WebState } from "./MapView";
 import { Table } from "./Table";
+import { LAYER_TONES, useTheme } from "./theme";
 import { NO_WEB_PREFS, ordered, WebLayers, type WebPrefs } from "./WebLayers";
 
-// Distinct, colour-blind-aware hues for layers, in the order they appear.
-const COLORS = ["#1767c2", "#c2185b", "#2e7d32", "#ef6c00", "#6a1b9a", "#00838f", "#8d6e63", "#546e7a"];
 const POLL_MS = 2000;
+// The longest a table asked for by name waits for the results to be read.
+const NAMED_READ_MS = 3000;
 // How often the list of web layers is read again (one added, edited or
 // removed in the Columbus app shows in every chat).
 const WEB_POLL_MS = 5000;
 
 type Phase = "starting" | "ready" | "no-link" | "used" | "ended";
 
-// Shown inside the Columbus app's output panel (the server lets only the
-// app's own pages frame this one). A framed page never decides approvals,
-// whatever its link: the app shows them and opens the browser page.
+// Shown inside the Columbus app, which lays its own panel over this page
+// (the server lets only the app's own pages frame this one). A framed page
+// never decides approvals, whatever its link: the app shows them and opens
+// the browser page.
 const FRAMED = (() => {
   try {
     return window.self !== window.top;
@@ -25,12 +28,46 @@ const FRAMED = (() => {
   }
 })();
 const APP_ORIGINS = ["tauri://localhost", "http://tauri.localhost", "https://tauri.localhost"];
-type EmbedView = "map" | "table" | "split";
 
 function size(b: number): string {
   if (b < 1024) return `${b} B`;
   if (b < 1024 * 1024) return `${(b / 1024).toFixed(0)} KB`;
   return `${(b / 1024 / 1024).toFixed(1)} MB`;
+}
+
+/** The Columbus mark: a compass, its north half in the "hit" colour. */
+function Mark() {
+  return (
+    <svg className="mark" viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="12" cy="12" r="10" fill="none" strokeWidth="1.6" />
+      <path className="north" d="M12 5 14.4 12H9.6z" />
+      <path className="south" d="M12 19 9.6 12h4.8z" />
+    </svg>
+  );
+}
+
+type Shape = "point" | "line" | "area" | "any";
+
+/** How a layer's swatch is drawn: as its features are, once they are
+ * here. */
+function shapeOf(fc: FeatureCollection | null): Shape {
+  const kind = fc?.geometry_type || fc?.features.find((f) => f.geometry)?.geometry?.type || "";
+  if (/point/i.test(kind)) return "point";
+  if (/line/i.test(kind)) return "line";
+  if (/polygon/i.test(kind)) return "area";
+  return "any";
+}
+
+/** A layer's mark in the colour it has on the map now; hollow while the
+ * layer is off the map. */
+function Swatch(props: { shape: Shape; color: string | null }) {
+  return (
+    <span
+      className={`swatch ${props.shape}${props.color ? "" : " off"}`}
+      style={props.color ? ({ "--c": props.color } as CSSProperties) : undefined}
+      aria-hidden="true"
+    />
+  );
 }
 
 function CheckBadges(props: { c: OutputCard["checks"] }) {
@@ -86,11 +123,125 @@ function Details(props: { card: OutputCard }) {
         </>
       )}
       <p className="muted">
-        Provenance {id}
+        Provenance <span className="mono">{id}</span>
         {prov.created ? `, ${new Date(String(prov.created)).toLocaleString()}` : ""}
       </p>
     </div>
   );
+}
+
+/** One output in the list: a toggle that shows it on the map (drawn as its
+ * swatch), its name (click makes it the active one), its row count. The
+ * active one opens: rows, size, checks, Table and Zoom to layer, and the
+ * provenance behind Details. */
+function OutputRow(props: {
+  o: OutputCard;
+  active: boolean;
+  onMap: boolean;
+  /** The colour it has on the map now. */
+  color: string;
+  layer: FeatureCollection | { error: string } | undefined;
+  tableOpen: boolean;
+  onToggle: () => void;
+  onActive: () => void;
+  onTable: () => void;
+  onZoom: () => void;
+}) {
+  const { o } = props;
+  const [details, setDetails] = useState(false);
+  const err = props.layer && "error" in props.layer ? props.layer.error : null;
+  const fc = props.layer && !("error" in props.layer) ? props.layer : null;
+  const notes = (
+    <>
+      {fc?.truncated && (
+        <p className="note">
+          The map shows the first {fc.shown.toLocaleString()} of {fc.total.toLocaleString()} features.
+        </p>
+      )}
+      {err && <p className="error">Not on the map: {err}</p>}
+    </>
+  );
+  const cut = o.truncated && <span className="badge warn">Cut off at a limit</span>;
+  // At rest only what needs the person's eye shows: a mark for checks that
+  // failed or want a look.
+  const flag = o.checks && (o.checks.fail > 0 || o.checks.warn > 0) ? (o.checks.fail > 0 ? "fail" : "warn") : null;
+  const flagText = o.checks ? [o.checks.fail > 0 && `${o.checks.fail} failed`, o.checks.warn > 0 && `${o.checks.warn} to review`].filter(Boolean).join(", ") : "";
+  return (
+    <li className={props.active ? "out active" : "out"}>
+      <div className="out-head">
+        {o.kind === "layer" && o.viewable ? (
+          <label className="out-show" title={`Show ${o.name} on the map`}>
+            <input type="checkbox" aria-label={`Show ${o.name} on the map`} checked={props.onMap} onChange={props.onToggle} />
+            <Swatch shape={shapeOf(fc)} color={props.onMap ? props.color : null} />
+          </label>
+        ) : (
+          <span className="out-kind">{o.kind}</span>
+        )}
+        <button type="button" className="out-name" aria-current={props.active ? "true" : undefined} onClick={props.onActive}>
+          {o.name}
+        </button>
+        {!props.active && flag && <span className={`dot ${flag}`} role="img" aria-label={flagText} title={flagText} />}
+        {o.rows != null && (
+          <span className="out-count" title={`${o.rows.toLocaleString()} rows`}>
+            {o.rows.toLocaleString()}
+          </span>
+        )}
+      </div>
+      {props.active ? (
+        <div className="out-open">
+          <div className="out-meta">
+            {o.rows != null && <span>{o.rows.toLocaleString()} rows</span>}
+            <span>{size(o.bytes)}</span>
+            <CheckBadges c={o.checks} />
+            {cut}
+          </div>
+          {notes}
+          <div className="out-acts">
+            {o.viewable && (
+              <button type="button" className="btn sm" aria-pressed={props.tableOpen} onClick={props.onTable}>
+                <svg className="ic" viewBox="0 0 16 16" aria-hidden="true">
+                  <rect x="2.5" y="3" width="11" height="10" rx="2" />
+                  <path d="M2.5 6.5h11M2.5 9.75h11M6.5 6.5V13" />
+                </svg>
+                Table
+              </button>
+            )}
+            {props.onMap && (
+              <button type="button" className="btn sm" onClick={props.onZoom}>
+                Zoom to layer
+              </button>
+            )}
+          </div>
+          <details className="out-more" onToggle={(e) => setDetails(e.currentTarget.open)}>
+            <summary>Details</summary>
+            {details && <Details card={o} />}
+          </details>
+        </div>
+      ) : (
+        (cut || fc?.truncated || err) && (
+          <div className="out-flags">
+            {cut}
+            {notes}
+          </div>
+        )
+      )}
+    </li>
+  );
+}
+
+/** The window's size: the page fills it, so this is the page's too. */
+function useWindowSize(): { width: number; height: number } {
+  const [s, setS] = useState(() => ({ width: window.innerWidth, height: window.innerHeight }));
+  useEffect(() => {
+    const on = () =>
+      setS((old) =>
+        old.width === window.innerWidth && old.height === window.innerHeight ? old : { width: window.innerWidth, height: window.innerHeight },
+      );
+    window.addEventListener("resize", on);
+    on();
+    return () => window.removeEventListener("resize", on);
+  }, []);
+  return s;
 }
 
 export function App() {
@@ -141,21 +292,48 @@ export function App() {
       /* the choice is not remembered */
     }
   };
-  const [embedView, setEmbedView] = useState<EmbedView>("split");
+  // The map alone until the person opens the table (or the app asks for
+  // it).
+  const [tableOpen, setTableOpen] = useState(false);
+  // The result the app named with its last request for the table, kept for
+  // a few seconds in case the page has not listed that result yet.
+  const [wanted, setWanted] = useState<{ output: unknown; until: number } | null>(null);
+  const [measuring, setMeasuring] = useState(false);
+  // How much of this page the app's own panel covers (framed only).
+  const [inset, setInset] = useState<Inset>(NO_INSET);
+  const theme = useTheme();
+  const win = useWindowSize();
   const basemapSet = useRef(false);
+  // Read the session's results now, not at the next poll (set by the poll
+  // below, once the page is signed in).
+  const pollNow = useRef<() => Promise<void>>(async () => {});
   // The app's layout and preferences: plain values, only from the app's
   // own page that frames this one.
   useEffect(() => {
     if (!FRAMED) return;
     const on = (e: MessageEvent) => {
       if (e.source !== window.parent || !APP_ORIGINS.includes(e.origin)) return;
-      const d = e.data as { type?: unknown; view?: unknown; basemap?: unknown; theme?: unknown } | null;
+      const d = e.data as { type?: unknown; view?: unknown; output?: unknown; basemap?: unknown; theme?: unknown; inset?: unknown } | null;
       if (d && d.type === "columbus-web-layers") {
         webReload.current();
         return;
       }
       if (!d || d.type !== "columbus-embed") return;
-      if (d.view === "map" || d.view === "table" || d.view === "split") setEmbedView(d.view);
+      if (d.view === "map") setTableOpen(false);
+      else if (d.view === "table" || d.view === "split") {
+        setTableOpen(true);
+        // Whose table: checked against this session's own outputs below.
+        // The results are read first, so that one made a moment ago is
+        // listed (and takes the focus, as a new layer does) before the
+        // person's choice is applied, not after it.
+        if (d.output !== undefined) {
+          const output = d.output;
+          void pollNow.current().finally(() => setWanted({ output, until: Date.now() + 10_000 }));
+        }
+      }
+      // What the app's panel covers, in CSS pixels: checked numbers only.
+      const covered = parseInset(d.inset);
+      if (covered) setInset(covered);
       if (typeof d.basemap === "boolean" && !basemapSet.current) {
         basemapSet.current = true;
         setBasemapState(d.basemap);
@@ -215,7 +393,8 @@ export function App() {
   const [reviewing, setReviewing] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const seen = useRef(new Set<string>());
-  const colors = useRef(new Map<string, string>());
+  // Each output's place in the order of appearance: its resting colour.
+  const rank = useRef(new Map<string, number>());
 
   const signedOut = useCallback((e: unknown) => {
     if (e instanceof SignedOut) setPhase((p) => (p === "ready" ? "ended" : p));
@@ -356,10 +535,33 @@ export function App() {
         signedOut(e);
       }
     };
-    tick();
-    const t = window.setInterval(tick, POLL_MS);
+    // The poll's reads run on their own, as they always did: one that never
+    // answers holds up nothing.
+    const under = new Set<Promise<void>>();
+    const read = () => {
+      const p: Promise<void> = tick().finally(() => under.delete(p));
+      under.add(p);
+      return p;
+    };
+    // A read asked for by name (the app wants one result's table) ends
+    // after the reads under way, and then reads once more: every result
+    // there is by then is listed before the person's choice is applied.
+    // Asked-for reads keep their order, and none waits long for a read that
+    // is stuck.
+    const soon = (p: Promise<unknown>) => Promise.race([p, new Promise((done) => window.setTimeout(done, NAMED_READ_MS))]);
+    let asked: Promise<void> = Promise.resolve();
+    pollNow.current = () => {
+      asked = asked.then(async () => {
+        await soon(Promise.all([...under]));
+        await soon(read());
+      });
+      return asked;
+    };
+    void read();
+    const t = window.setInterval(() => void read(), POLL_MS);
     return () => {
       live = false;
+      pollNow.current = async () => {};
       window.clearInterval(t);
     };
   }, [phase, signedOut]);
@@ -368,9 +570,6 @@ export function App() {
   useEffect(() => {
     const fresh = outputs.filter((o) => o.viewable && o.kind === "layer" && !seen.current.has(o.handle));
     for (const o of outputs) seen.current.add(o.handle);
-    for (const o of outputs) {
-      if (!colors.current.has(o.handle)) colors.current.set(o.handle, COLORS[colors.current.size % COLORS.length]);
-    }
     if (fresh.length) {
       const newest = fresh[0];
       // A workflow run opened in this chat: all of its layers draw at once.
@@ -383,6 +582,18 @@ export function App() {
     const present = new Set(outputs.map((o) => o.handle));
     setOnMap((m) => m.filter((h) => present.has(h)));
   }, [outputs]);
+
+  // The app asked for one result's table: that result becomes the active
+  // one, if it is one of this session's own with rows to show. Any other
+  // value changes nothing. Written after the effect above on purpose:
+  // effects run in the order written, so when a new layer and the person's
+  // choice arrive together, the choice is the later and stands.
+  useEffect(() => {
+    if (!wanted) return;
+    const handle = Date.now() <= wanted.until ? namedOutput(wanted.output, outputs) : null;
+    if (handle) setActive(handle);
+    if (handle || Date.now() > wanted.until) setWanted(null);
+  }, [wanted, outputs]);
 
   // Load what is on the map.
   useEffect(() => {
@@ -399,18 +610,28 @@ export function App() {
     }
   }, [onMap, layers, signedOut]);
 
+  // Colour belongs to the data. The active output is drawn in the "hit"
+  // colour; every other output rests in a quiet colour that stays its own,
+  // by order of appearance.
+  for (const o of outputs) if (!rank.current.has(o.handle)) rank.current.set(o.handle, rank.current.size);
+  const tones = LAYER_TONES[theme];
+  const colorOf = (handle: string) => (handle === active ? tones.hit : tones.rest[(rank.current.get(handle) ?? 0) % tones.rest.length]);
+
+  // What the map draws, bottom first: the list's order, its top row on
+  // top.
   const mapLayers: MapLayer[] = useMemo(
     () =>
-      onMap
-        .map((h) => {
-          const d = layers[h];
-          const card = outputs.find((o) => o.handle === h);
-          if (!d || "error" in d || !card) return null;
-          return { handle: h, name: card.name, color: colors.current.get(h) || COLORS[0], data: d };
+      outputs
+        .filter((o) => onMap.includes(o.handle))
+        .map((o) => {
+          const d = layers[o.handle];
+          if (!d || "error" in d) return null;
+          return { handle: o.handle, name: o.name, color: colorOf(o.handle), active: o.handle === active, data: d };
         })
         .filter((x): x is MapLayer => x !== null)
         .reverse(),
-    [onMap, layers, outputs],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [onMap, layers, outputs, active, theme],
   );
 
   const decide = async (id: string, d: "allow_once" | "always_this_session" | "decline") => {
@@ -440,6 +661,7 @@ export function App() {
 
   const toggle = (h: string) => setOnMap((m) => (m.includes(h) ? m.filter((x) => x !== h) : [...m, h]));
   const activeCard = outputs.find((o) => o.handle === active) || null;
+  const activeLayer = active ? layers[active] : undefined;
 
   useEffect(() => {
     document.title = pending.length ? `(${pending.length}) Columbus: approval needed` : "Columbus";
@@ -450,6 +672,32 @@ export function App() {
     return () => window.clearTimeout(t);
   }, [notice]);
 
+  // Where the sheets go, and what they leave of the map. The page's own
+  // panel is wider while a request can be decided in it.
+  const deciding = canDecide && pending.length > 0;
+  const lay = layout({
+    width: win.width,
+    height: win.height,
+    // Framed: what the app's panel covers. Otherwise the page's own panel,
+    // once there is a session to show in it.
+    covered: FRAMED ? inset : phase === "ready" ? null : NO_INSET,
+    tableOpen: phase === "ready" && tableOpen,
+    deciding,
+  });
+  const px = (n: number) => `${n}px`;
+  const place = {
+    "--il": px(lay.inset.left),
+    "--it": px(lay.inset.top),
+    "--ir": px(lay.inset.right),
+    "--ib": px(lay.inset.bottom),
+    "--pl": px(lay.pad.left),
+    "--pt": px(lay.pad.top),
+    "--pr": px(lay.pad.right),
+    "--pb": px(lay.pad.bottom),
+    "--table": px(lay.table),
+    ...(lay.panel ? { "--panel-w": px(lay.panel.width), "--panel-h": px(lay.panel.height) } : {}),
+  } as CSSProperties;
+
   if (phase !== "ready") {
     const text: Record<Exclude<Phase, "ready">, string> = {
       starting: "Connecting to this session…",
@@ -458,109 +706,170 @@ export function App() {
       ended: "This window is no longer connected to its session. The session may have ended, or the window sat idle for 15 minutes. Open it again from the Columbus app.",
     };
     return (
-      <main className="signed-out">
-        <h1>Columbus</h1>
-        <p>{text[phase]}</p>
+      <main className="signed-out" style={place}>
+        <div className="sheet">
+          <div className="brand">
+            <Mark />
+            <h1>Columbus</h1>
+          </div>
+          <p>{text[phase]}</p>
+        </div>
       </main>
     );
   }
 
+  // The session's outputs: the legend when framed, a part of the page's
+  // own panel otherwise.
+  const list = (
+    <aside className="outputs" aria-label="Outputs from this session">
+      <h2>Outputs</h2>
+      {outputs.length === 0 && (
+        <p className="empty">
+          Nothing yet. Layers your assistant makes in this session appear here and on the map as they are made.
+        </p>
+      )}
+      <ul>
+        {outputs.map((o) => (
+          <OutputRow
+            key={o.handle}
+            o={o}
+            active={o.handle === active}
+            onMap={onMap.includes(o.handle)}
+            color={colorOf(o.handle)}
+            layer={layers[o.handle]}
+            tableOpen={tableOpen}
+            onToggle={() => toggle(o.handle)}
+            onActive={() => setActive(o.handle)}
+            onTable={() => setTableOpen((t) => !t)}
+            onZoom={() => setFitTo(o.handle + "#" + Date.now())}
+          />
+        ))}
+      </ul>
+    </aside>
+  );
+
+  // Under the outputs: the street background, web layers, measure.
+  const streets = basemap && !webPrefs.base;
+  const foot = (
+    <div className="foot">
+      {overview?.basemap_allowed && (
+        <label className="switch" title="Street basemap from OpenFreeMap. When on, the area in view is sent to that site to fetch map tiles.">
+          <input
+            type="checkbox"
+            checked={streets}
+            onChange={(e) => {
+              setBasemap(e.target.checked);
+              if (e.target.checked) setWebPrefs((p) => ({ ...p, base: null }));
+            }}
+          />
+          <svg className="ic" viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M8 2.5 2.5 5.5 8 8.5l5.5-3L8 2.5zM2.5 8.5 8 11.5l5.5-3" />
+          </svg>
+          <span className="grow">Street background</span>
+          <span className="switch-state" aria-hidden="true">
+            {streets ? "On" : "Off"}
+          </span>
+        </label>
+      )}
+      <WebLayers
+        enabled={webEnabled}
+        list={webList}
+        listError={webListError}
+        prefs={webPrefs}
+        state={webState}
+        streetsAllowed={!!overview?.basemap_allowed}
+        streetsOn={basemap}
+        notice={webNotice}
+        framed={FRAMED}
+        onToggle={(id, on) => {
+          const notice = on && firstOn();
+          setWebPrefs((p) => ({
+            ...p,
+            noticed: p.noticed || notice,
+            on: on ? [...new Set([...p.on, id])] : p.on.filter((x) => x !== id),
+            order: p.order.includes(id) ? p.order : [...ordered(webList || [], p.order).map((x) => x.id)],
+          }));
+        }}
+        onOpacity={(id, v) => setWebPrefs((p) => ({ ...p, opacity: { ...p.opacity, [id]: v } }))}
+        onMove={(id, by) =>
+          setWebPrefs((p) => {
+            const ids = ordered(webList || [], p.order).map((x) => x.id);
+            const i = ids.indexOf(id);
+            const j = i + by;
+            if (i < 0 || j < 0 || j >= ids.length) return p;
+            [ids[i], ids[j]] = [ids[j], ids[i]];
+            return { ...p, order: ids };
+          })
+        }
+        onZoom={(id) => setWebFit({ id, n: Date.now() })}
+        onBasemap={(choice) => {
+          if (choice === "streets" || choice === "none") {
+            setBasemap(choice === "streets");
+            setWebPrefs((p) => ({ ...p, base: null }));
+          } else {
+            const notice = firstOn();
+            setBasemap(false);
+            setWebPrefs((p) => ({ ...p, noticed: p.noticed || notice, base: choice.web }));
+          }
+        }}
+        onDismissNotice={() => setWebNotice(false)}
+        onAdd={() => window.parent.postMessage({ type: "columbus-add-web-layer" }, "*")}
+        beside={
+          <button type="button" className="btn sm" aria-pressed={measuring} onClick={() => setMeasuring((m) => !m)}>
+            Measure
+          </button>
+        }
+      />
+    </div>
+  );
+
+  let toast: ReactNode = null;
+  if (notice)
+    toast = (
+      <div className="toast" role="status">
+        {notice}
+      </div>
+    );
+
   return (
-    <div className={FRAMED ? `app embedded v-${embedView}` : "app"}>
-      <header className="top">
-        <h1>Columbus</h1>
-        <div className="session">
-          {overview ? (
-            <>
-              <span>{overview.user}</span>
-              <span className="muted">Session {overview.session}</span>
-            </>
-          ) : (
-            <span className="muted">Loading the session…</span>
-          )}
+    <div className={FRAMED ? "app embedded" : "app"} style={place}>
+      {FRAMED ? (
+        // Top right, clear of the app's own panel.
+        <div className="legend">
+          {list}
+          {foot}
         </div>
-        <div className="conns" aria-label="Connections this session may use">
-          {overview?.connections.map((c) => (
-            <span key={c.id} className="conn" title={c.description || c.type}>
-              {c.id}
-            </span>
-          ))}
-        </div>
-        {overview?.basemap_allowed && (
-          <label className="switch" title="Street basemap from OpenFreeMap. When on, the area in view is sent to that site to fetch map tiles.">
-            <input
-              type="checkbox"
-              checked={basemap && !webPrefs.base}
-              onChange={(e) => {
-                setBasemap(e.target.checked);
-                if (e.target.checked) setWebPrefs((p) => ({ ...p, base: null }));
-              }}
-            />
-            Basemap
-          </label>
-        )}
-      </header>
-
-      <div className="body">
-        <aside className="outputs" aria-label="Outputs from this session">
-          <h2>Outputs</h2>
-          {outputs.length === 0 && (
-            <p className="empty">
-              Nothing yet. Layers your assistant makes in this session appear here and on the map as they are made.
-            </p>
-          )}
-          <ul>
-            {outputs.map((o) => {
-              const err = layers[o.handle] && "error" in layers[o.handle] ? (layers[o.handle] as { error: string }).error : null;
-              const fc = layers[o.handle] && !("error" in layers[o.handle]) ? (layers[o.handle] as FeatureCollection) : null;
-              return (
-                <li key={o.handle} className={o.handle === active ? "out active" : "out"}>
-                  <div className="out-head">
-                    {o.kind === "layer" && o.viewable ? (
-                      <input
-                        type="checkbox"
-                        aria-label={`Show ${o.name} on the map`}
-                        checked={onMap.includes(o.handle)}
-                        onChange={() => toggle(o.handle)}
-                        style={{ accentColor: colors.current.get(o.handle) }}
-                      />
-                    ) : (
-                      <span className="out-kind">{o.kind}</span>
-                    )}
-                    <button type="button" className="out-name" onClick={() => setActive(o.handle)}>
-                      {o.name}
-                    </button>
-                  </div>
-                  <div className="out-meta">
-                    {o.rows != null && <span>{o.rows.toLocaleString()} rows</span>}
-                    <span>{size(o.bytes)}</span>
-                    <CheckBadges c={o.checks} />
-                    {o.truncated && <span className="badge warn">Cut off at a limit</span>}
-                  </div>
-                  {fc?.truncated && (
-                    <p className="note">
-                      The map shows the first {fc.shown.toLocaleString()} of {fc.total.toLocaleString()} features.
-                    </p>
-                  )}
-                  {err && <p className="error">Not on the map: {err}</p>}
-                  {o.handle === active && (
-                    <>
-                      {onMap.includes(o.handle) && (
-                        <button type="button" className="link" onClick={() => setFitTo(o.handle + "#" + Date.now())}>
-                          Zoom to layer
-                        </button>
-                      )}
-                      <Details card={o} />
-                    </>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
-        </aside>
-
-        <main className="work">
-          {pending.length > 0 && !FRAMED && (
+      ) : (
+        <div className="panel">
+          <header className="top">
+            <div className="brand">
+              <Mark />
+              <h1>Columbus</h1>
+            </div>
+            <div className="session">
+              {overview ? (
+                <>
+                  <span>{overview.user}</span>
+                  <span className="muted">
+                    Session <span className="mono">{overview.session}</span>
+                  </span>
+                </>
+              ) : (
+                <span className="muted">Loading the session…</span>
+              )}
+            </div>
+            {!!overview?.connections.length && (
+              <div className="conns" aria-label="Connections this session may use">
+                {overview.connections.map((c) => (
+                  <span key={c.id} className="conn" title={c.description || c.type}>
+                    {c.id}
+                  </span>
+                ))}
+              </div>
+            )}
+          </header>
+          {pending.length > 0 && (
+            // Approvals are never shown in a frame: this panel is not there.
             <section className="approvals" aria-live="assertive" aria-label="Requests waiting for your decision">
               {!canDecide && (
                 <div className="review">
@@ -568,7 +877,7 @@ export function App() {
                     {pending.length === 1 ? "A request is" : `${pending.length} requests are`} waiting for your decision.
                     For your safety, requests are decided in the browser page Columbus opens, not in this window.
                   </p>
-                  <button type="button" className="primary" disabled={reviewing} onClick={review}>
+                  <button type="button" className="btn primary" disabled={reviewing} onClick={review}>
                     Review in your browser
                   </button>
                 </div>
@@ -583,88 +892,37 @@ export function App() {
               ))}
             </section>
           )}
-          <MapView
-            layers={mapLayers}
-            basemap={basemap && !!overview?.basemap_allowed && !webBase}
-            fitTo={fitTo}
-            selected={selected}
-            zoomTo={zoomTo}
-            zoomToSelection={zoomToSelection}
-            onZoomToSelection={setZoomToSelection}
-            tools={
-              <>
-                {FRAMED && overview?.basemap_allowed && (
-                  <label className="switch" title="Street basemap from OpenFreeMap. When on, the area in view is sent to that site to fetch map tiles.">
-                    <input
-                      type="checkbox"
-                      checked={basemap && !webPrefs.base}
-                      onChange={(e) => {
-                        setBasemap(e.target.checked);
-                        if (e.target.checked) setWebPrefs((p) => ({ ...p, base: null }));
-                      }}
-                    />
-                    Basemap
-                  </label>
-                )}
-                <WebLayers
-                  enabled={webEnabled}
-                  list={webList}
-                  listError={webListError}
-                  prefs={webPrefs}
-                  state={webState}
-                  streetsAllowed={!!overview?.basemap_allowed}
-                  streetsOn={basemap}
-                  notice={webNotice}
-                  framed={FRAMED}
-                  onToggle={(id, on) => {
-                    const notice = on && firstOn();
-                    setWebPrefs((p) => ({
-                      ...p,
-                      noticed: p.noticed || notice,
-                      on: on ? [...new Set([...p.on, id])] : p.on.filter((x) => x !== id),
-                      order: p.order.includes(id) ? p.order : [...ordered(webList || [], p.order).map((x) => x.id)],
-                    }));
-                  }}
-                  onOpacity={(id, v) => setWebPrefs((p) => ({ ...p, opacity: { ...p.opacity, [id]: v } }))}
-                  onMove={(id, by) =>
-                    setWebPrefs((p) => {
-                      const ids = ordered(webList || [], p.order).map((x) => x.id);
-                      const i = ids.indexOf(id);
-                      const j = i + by;
-                      if (i < 0 || j < 0 || j >= ids.length) return p;
-                      [ids[i], ids[j]] = [ids[j], ids[i]];
-                      return { ...p, order: ids };
-                    })
-                  }
-                  onZoom={(id) => setWebFit({ id, n: Date.now() })}
-                  onBasemap={(choice) => {
-                    if (choice === "streets" || choice === "none") {
-                      setBasemap(choice === "streets");
-                      setWebPrefs((p) => ({ ...p, base: null }));
-                    } else {
-                      const notice = firstOn();
-                      setBasemap(false);
-                      setWebPrefs((p) => ({ ...p, noticed: p.noticed || notice, base: choice.web }));
-                    }
-                  }}
-                  onDismissNotice={() => setWebNotice(false)}
-                  onAdd={() => window.parent.postMessage({ type: "columbus-add-web-layer" }, "*")}
-                />
-              </>
-            }
-            onBasemapFailed={() => {
-              setBasemap(false);
-              setNotice("The basemap could not be loaded (offline, or blocked by your network). Your layers still show.");
-            }}
-            onIdentify={(h, f) => {
-              setActive(h);
-              setSelected({ handle: h, feature: f });
-            }}
-            webLayers={webLayers}
-            webBase={webBase}
-            webFit={webFit}
-            onWebState={(id, st) => setWebState((all) => ({ ...all, [id]: { ...all[id], ...st } }))}
-          />
+          {list}
+          {foot}
+        </div>
+      )}
+
+      <main className="work">
+        <MapView
+          layers={mapLayers}
+          theme={theme}
+          basemap={basemap && !!overview?.basemap_allowed && !webBase}
+          padding={lay.pad}
+          fitTo={fitTo}
+          selected={selected}
+          zoomTo={zoomTo}
+          measuring={measuring}
+          onMeasuring={setMeasuring}
+          notice={toast}
+          onBasemapFailed={() => {
+            setBasemap(false);
+            setNotice("The basemap could not be loaded (offline, or blocked by your network). Your layers still show.");
+          }}
+          onIdentify={(h, f) => {
+            setActive(h);
+            setSelected({ handle: h, feature: f });
+          }}
+          webLayers={webLayers}
+          webBase={webBase}
+          webFit={webFit}
+          onWebState={(id, st) => setWebState((all) => ({ ...all, [id]: { ...all[id], ...st } }))}
+        />
+        {tableOpen && (
           <section className="table" aria-label="Attribute table">
             <Table
               output={activeCard}
@@ -675,15 +933,21 @@ export function App() {
                 setSelected({ handle: active, feature: f });
                 if (zoomToSelection) setZoomTo({ handle: active, feature: f, n: Date.now() });
               }}
+              swatch={
+                activeCard?.kind === "layer" && activeCard.viewable ? (
+                  <Swatch
+                    shape={shapeOf(activeLayer && !("error" in activeLayer) ? activeLayer : null)}
+                    color={onMap.includes(activeCard.handle) ? tones.hit : null}
+                  />
+                ) : null
+              }
+              zoomToSelection={zoomToSelection}
+              onZoomToSelection={setZoomToSelection}
+              onClose={() => setTableOpen(false)}
             />
           </section>
-        </main>
-      </div>
-      {notice && (
-        <div className="toast" role="status">
-          {notice}
-        </div>
-      )}
+        )}
+      </main>
     </div>
   );
 }

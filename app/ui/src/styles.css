@@ -1,23 +1,42 @@
-/* Columbus companion window.
-   A cartographer's working sheet: cool chart paper, survey-navy ink, and
-   hydrography blue for what the person can act on. Check colours follow
-   map-legend convention: green passed, amber review, red failed. */
+/* Columbus map page.
+   The map fills the page and white sheets float on it. The interface is
+   black and white; colour belongs to the data, to what waits for the
+   person (amber) and to what passed or failed a check (green, red).
+   Every text colour reaches 4.5:1 on what it sits on, in both themes
+   ("faint" is for marks, never for text). */
 
 :root {
-  --paper: #f3f6f7;
+  --paper: #efede8;
   --panel: #ffffff;
-  --ink: #17324d;
-  --ink-soft: #4a6176;
-  --rule: #d3dce2;
-  --hydro: #1767c2;
-  --hydro-ink: #ffffff;
-  --pass: #2f7a47;
-  --warn: #9a6408;
-  --warn-bg: #fdf3df;
-  --fail: #b3261e;
-  --fail-bg: #fbe9e7;
-  --select: #e3effb;
-  --font: "Public Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --ink: #17181a;
+  --ink2: #3f4044;
+  --mute: #66676b;
+  --faint: #a6a7aa;
+  --line: #edece9;
+  --line2: #dfdeda;
+  --field: #85868a;
+  --fill: #f6f5f3;
+  --fill2: #eeedea;
+  --hit: #ef4b23;
+  --wait: #f0ae1b;
+  --wait-ink: #7a5200;
+  --wait-bg: #fff6dc;
+  --ok: #18794e;
+  --ok-bg: #e7f3ec;
+  --bad: #be3319;
+  --bad-bg: #fbe9e5;
+  --halo: rgba(239, 237, 232, .92);
+  --edge: rgba(23, 24, 26, .14);
+  --shadow: 0 0 0 1px rgba(23, 24, 26, .05), 0 2px 5px rgba(23, 24, 26, .04), 0 20px 54px rgba(23, 24, 26, .14);
+  --shadow-s: 0 0 0 1px rgba(23, 24, 26, .06), 0 6px 20px rgba(23, 24, 26, .10);
+  /* The system's own faces, as in the Columbus app: no font is bundled. */
+  --sans: "Segoe UI Variable Text", "Segoe UI", "Inter", system-ui, -apple-system, sans-serif;
+  --mono: ui-monospace, "Cascadia Mono", "SF Mono", Consolas, "DejaVu Sans Mono", monospace;
+  /* What covers the page's edges, the map's padding, the table sheet and
+     the page's own panel: set by the page (layout.ts). */
+  --il: 0px; --it: 0px; --ir: 0px; --ib: 0px;
+  --pl: 0px; --pt: 0px; --pr: 0px; --pb: 0px;
+  --table: 0px; --panel-w: 400px; --panel-h: 400px;
   color-scheme: light;
 }
 
@@ -25,36 +44,56 @@
    chose a theme (data-theme, set from its message). */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --paper: #0f1a24;
-    --panel: #152331;
-    --ink: #e2e9ef;
-    --ink-soft: #9fb2c2;
-    --rule: #2a3c4c;
-    --hydro: #5ca3ee;
-    --hydro-ink: #0f1a24;
-    --pass: #6cc08a;
-    --warn: #e7b04f;
-    --warn-bg: #3a2c12;
-    --fail: #f08a80;
-    --fail-bg: #3d1a17;
-    --select: #1d3954;
+    --paper: #121315;
+    --panel: #1c1d20;
+    --ink: #f3f2ef;
+    --ink2: #cfceca;
+    --mute: #9c9c9a;
+    --faint: #66676a;
+    --line: #2a2b2f;
+    --line2: #393a3f;
+    --field: #77787b;
+    --fill: #25262a;
+    --fill2: #2e2f34;
+    --hit: #ff5b34;
+    --wait: #f2b01e;
+    --wait-ink: #f5c55a;
+    --wait-bg: #2c2513;
+    --ok: #4cc38a;
+    --ok-bg: #16291f;
+    --bad: #ff7b63;
+    --bad-bg: #321a15;
+    --halo: rgba(18, 19, 21, .9);
+    --edge: rgba(255, 255, 255, .2);
+    --shadow: 0 0 0 1px rgba(255, 255, 255, .07), 0 20px 54px rgba(0, 0, 0, .6);
+    --shadow-s: 0 0 0 1px rgba(255, 255, 255, .08), 0 6px 20px rgba(0, 0, 0, .5);
     color-scheme: dark;
   }
 }
 :root[data-theme="dark"] {
-  --paper: #0f1a24;
-  --panel: #152331;
-  --ink: #e2e9ef;
-  --ink-soft: #9fb2c2;
-  --rule: #2a3c4c;
-  --hydro: #5ca3ee;
-  --hydro-ink: #0f1a24;
-  --pass: #6cc08a;
-  --warn: #e7b04f;
-  --warn-bg: #3a2c12;
-  --fail: #f08a80;
-  --fail-bg: #3d1a17;
-  --select: #1d3954;
+  --paper: #121315;
+  --panel: #1c1d20;
+  --ink: #f3f2ef;
+  --ink2: #cfceca;
+  --mute: #9c9c9a;
+  --faint: #66676a;
+  --line: #2a2b2f;
+  --line2: #393a3f;
+  --field: #77787b;
+  --fill: #25262a;
+  --fill2: #2e2f34;
+  --hit: #ff5b34;
+  --wait: #f2b01e;
+  --wait-ink: #f5c55a;
+  --wait-bg: #2c2513;
+  --ok: #4cc38a;
+  --ok-bg: #16291f;
+  --bad: #ff7b63;
+  --bad-bg: #321a15;
+  --halo: rgba(18, 19, 21, .9);
+  --edge: rgba(255, 255, 255, .2);
+  --shadow: 0 0 0 1px rgba(255, 255, 255, .07), 0 20px 54px rgba(0, 0, 0, .6);
+  --shadow-s: 0 0 0 1px rgba(255, 255, 255, .08), 0 6px 20px rgba(0, 0, 0, .5);
   color-scheme: dark;
 }
 
@@ -63,205 +102,337 @@ html, body, #root { height: 100%; margin: 0; }
 body {
   background: var(--paper);
   color: var(--ink);
-  font: 400 14px/1.45 var(--font);
+  font: 400 14px/1.5 var(--sans);
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overflow: hidden;
 }
-button, input { font: inherit; color: inherit; }
-:focus-visible { outline: 2px solid var(--hydro); outline-offset: 2px; }
-h1, h2 { margin: 0; }
-.muted { color: var(--ink-soft); }
-.error { color: var(--fail); }
-.sub { margin: 10px 0 4px; font-weight: 600; font-size: 12.5px; }
+button, input, select { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+h1, h2, p, ul, dl, dd { margin: 0; }
+ul { padding: 0; list-style: none; }
+.muted { color: var(--mute); }
+.error { color: var(--bad); }
+.mono { font-family: var(--mono); font-size: .92em; letter-spacing: -.01em; }
+.grow { flex: 1 1 auto; min-width: 0; }
+svg.ic { width: 14px; height: 14px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
 
-button {
-  border: 1px solid var(--rule);
-  background: var(--panel);
-  border-radius: 6px;
-  padding: 6px 12px;
-  cursor: pointer;
+/* ---------- Controls ---------- */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+  height: 34px; padding: 0 14px; border-radius: 10px; border: 1px solid var(--line2);
+  background: var(--panel); color: var(--ink); font-size: 13.5px; font-weight: 500;
+  white-space: nowrap; cursor: pointer;
 }
-button:hover:not(:disabled) { border-color: var(--hydro); }
-button:disabled { opacity: .5; cursor: default; }
-button.primary { background: var(--hydro); border-color: var(--hydro); color: var(--hydro-ink); font-weight: 600; }
-button.danger { color: var(--fail); }
-button.link { border: 0; background: none; padding: 2px 0; color: var(--hydro); text-decoration: underline; text-underline-offset: 2px; }
+.btn:hover:not(:disabled) { border-color: var(--mute); }
+.btn.primary { background: var(--ink); border-color: var(--ink); color: var(--panel); }
+.btn.primary:hover:not(:disabled) { border-color: var(--ink); opacity: .9; }
+.btn.quiet { border-color: transparent; background: none; color: var(--mute); }
+.btn.quiet:hover:not(:disabled) { border-color: transparent; background: var(--fill); color: var(--ink); }
+.btn.sm { height: 28px; padding: 0 10px; border-radius: 8px; font-size: 12.5px; }
+.btn[aria-pressed="true"] { background: var(--ink); border-color: var(--ink); color: var(--panel); }
+.btn[aria-expanded="true"] { background: var(--fill2); }
+.btn:disabled { opacity: .45; cursor: default; }
+/* A plain link that is a button. */
+.link {
+  border: 0; background: none; padding: 3px 0; margin: -3px 0; cursor: pointer; justify-self: start;
+  color: var(--ink); font-size: 12.5px; font-weight: 500;
+  text-decoration: underline; text-decoration-color: var(--line2); text-underline-offset: 3px;
+}
+.link:hover { text-decoration-color: currentColor; }
+.iconbtn {
+  width: 32px; height: 32px; flex: none; display: inline-grid; place-items: center;
+  border: 0; border-radius: 9px; padding: 0; background: none; color: var(--mute); cursor: pointer;
+}
+.iconbtn:hover { background: var(--fill); color: var(--ink); }
+.iconbtn svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; }
+input[type="checkbox"], input[type="range"] { accent-color: var(--ink); }
+.tick { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--ink2); white-space: nowrap; cursor: pointer; }
+.tick input { width: 14px; height: 14px; margin: 0; flex: none; }
+.badge { display: inline-block; padding: 0 7px; border-radius: 6px; font-size: 11.5px; font-weight: 500; line-height: 20px; white-space: nowrap; }
+/* Green on the sheet itself, in a green line: on its tint it would fall
+   short of 4.5:1. */
+.badge.pass { color: var(--ok); background: var(--panel); box-shadow: inset 0 0 0 1px var(--ok); }
+.badge.warn { color: var(--wait-ink); background: var(--wait-bg); }
+.badge.fail { color: var(--bad); background: var(--bad-bg); }
+.dot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--faint); }
+.dot.warn { background: var(--wait); }
+.dot.fail { background: var(--bad); }
 
-/* Layout */
-.app { display: flex; flex-direction: column; height: 100%; }
-.app > .body { flex: 1; }
-.top {
-  display: flex; align-items: center; gap: 18px;
-  padding: 10px 16px; background: var(--ink); color: var(--paper);
-}
-.top h1 { font-size: 17px; font-weight: 700; letter-spacing: .01em; }
-.top .session { display: flex; gap: 10px; font-size: 13px; }
-.top .muted { color: color-mix(in srgb, var(--paper) 65%, transparent); }
-.conns { display: flex; gap: 6px; flex-wrap: wrap; margin-left: auto; }
-.conn {
-  font-size: 12px; padding: 2px 8px; border-radius: 999px;
-  border: 1px solid color-mix(in srgb, var(--paper) 35%, transparent);
-}
-.switch { display: flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer; }
-@media (prefers-color-scheme: dark) {
-  .top { background: #0a131b; color: var(--ink); }
-  .top .muted { color: var(--ink-soft); }
-  .conn { border-color: var(--rule); }
-}
-
-.body { display: grid; grid-template-columns: 300px 1fr; min-height: 0; }
-.work { display: grid; grid-template-rows: 1fr minmax(170px, 38%); min-height: 0; min-width: 0; }
-.map-wrap { position: relative; min-height: 0; }
+/* ---------- The page: the map, and the sheets on it ---------- */
+.app { position: fixed; inset: 0; overflow: hidden; background: var(--paper); }
+.work { position: absolute; inset: 0; }
+.map-wrap { position: absolute; inset: 0; z-index: 0; }
 /* Over MapLibre's own `.maplibregl-map { position: relative }`. */
-.map-wrap > .map { position: absolute; inset: 0; }
-.table { border-top: 1px solid var(--rule); background: var(--panel); min-height: 0; }
+.map-wrap > .map { position: absolute; inset: 0; background: var(--paper); font-family: var(--sans); }
 
-/* Approvals: the one loud thing on the screen. */
-/* Over the map, so nothing the person was about to click moves. */
-.work { position: relative; }
+/* The page's own panel (never in the app, which has its own). */
+.panel {
+  position: absolute; z-index: 3; left: 16px; top: 16px; width: var(--panel-w); height: var(--panel-h);
+  /* Its parts give way and scroll on their own; the whole scrolls only in
+     a window too small for even that. */
+  display: flex; flex-direction: column; overflow: hidden auto; scrollbar-width: thin;
+  background: var(--panel); border-radius: 20px; box-shadow: var(--shadow);
+}
+.top { flex: none; display: grid; gap: 8px; padding: 16px 20px 14px; border-bottom: 1px solid var(--line); }
+.brand { display: flex; align-items: center; gap: 10px; }
+.brand h1 { font-size: 15px; font-weight: 600; letter-spacing: -.005em; line-height: 24px; }
+.mark { width: 24px; height: 24px; flex: none; }
+.mark circle { stroke: var(--ink); }
+.mark .north { fill: var(--hit); }
+.mark .south { fill: var(--ink); }
+.session { display: flex; flex-wrap: wrap; gap: 0 10px; font-size: 12.5px; line-height: 18px; overflow-wrap: anywhere; }
+.conns { display: flex; flex-wrap: wrap; gap: 6px; }
+.conn { padding: 0 7px; border-radius: 6px; background: var(--fill); color: var(--ink2); font: 500 11px/20px var(--mono); letter-spacing: -.01em; }
+
+/* In the app: the legend, top right, clear of the app's panel. */
+.legend {
+  position: absolute; z-index: 3; top: calc(var(--it) + 16px); right: calc(var(--ir) + 16px);
+  width: min(272px, calc(100% - var(--il) - var(--ir) - 32px));
+  /* Room left under it for the zoom buttons and the attribution. */
+  max-height: calc(100% - var(--pt) - var(--pb) - 32px - 108px);
+  display: flex; flex-direction: column; overflow: hidden auto; scrollbar-width: thin;
+  background: var(--panel); border-radius: 14px; box-shadow: var(--shadow-s);
+}
+
+/* ---------- Requests waiting for a decision: the one loud thing ---------- */
 .approvals {
-  position: absolute; top: 0; left: 0; right: 0; z-index: 5;
-  display: grid; gap: 10px; padding: 12px 16px; max-height: 70%; overflow: auto;
-  background: color-mix(in srgb, var(--warn-bg) 94%, transparent); border-bottom: 1px solid var(--rule);
+  flex: 0 1 auto; min-height: 0; max-height: 66%; overflow: auto; scrollbar-width: thin;
+  display: grid; gap: 16px; align-content: start; padding: 14px 14px 10px;
+  border-bottom: 1px solid var(--line);
 }
-.review { display: flex; align-items: center; gap: 14px; max-width: 980px; }
-.review p { margin: 0; font-weight: 600; max-width: 70ch; }
-.approval {
-  display: grid; grid-template-columns: 92px 1fr;
-  background: var(--panel); border: 1px solid var(--rule); border-radius: 8px; overflow: hidden;
-  max-width: 980px;
+.review { display: grid; gap: 10px; justify-items: start; padding: 12px 14px; border-radius: 14px; background: var(--wait-bg); color: var(--wait-ink); font-size: 13px; line-height: 19px; }
+.review p { font-weight: 500; text-wrap: pretty; }
+.approval { padding: 16px 16px 14px; border-radius: 18px; background: var(--panel); box-shadow: 0 0 0 1px var(--wait), 0 0 0 4px var(--wait-bg); }
+.approval-kind { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 500; line-height: 16px; color: var(--wait-ink); }
+.approval-kind .dot { background: var(--wait); }
+.approval-summary { margin-top: 8px; font-size: 16px; font-weight: 600; line-height: 22px; letter-spacing: -.01em; white-space: pre-line; overflow-wrap: anywhere; text-wrap: pretty; }
+/* What the summary says after its first paragraph (an edit's changes). */
+.approval-more { margin-top: 8px; color: var(--ink2); font-size: 13px; line-height: 19px; white-space: pre-line; overflow-wrap: anywhere; }
+.approval-meta { margin-top: 4px; color: var(--mute); font-size: 12.5px; line-height: 18px; }
+.approval-more + .approval-meta { margin-top: 8px; }
+.approval > pre.code { margin-top: 12px; }
+.approval-facts { display: grid; gap: 7px; margin-top: 12px; font-size: 13px; line-height: 19px; }
+.approval-facts div { display: grid; grid-template-columns: 92px minmax(0, 1fr); column-gap: 12px; }
+.approval-facts dt { color: var(--mute); overflow-wrap: anywhere; }
+.approval-facts dd { min-width: 0; overflow-wrap: anywhere; }
+.approval-sub { margin: 12px 0 6px; font-size: 12.5px; font-weight: 600; line-height: 18px; }
+/* The code, in a quiet numbered box. Long lines wrap: nothing is out of
+   sight to the right. */
+pre.code, pre.request {
+  max-height: 300px; overflow: auto; scrollbar-width: thin; margin: 0; padding: 10px 12px 10px 0;
+  background: var(--fill); border-radius: 12px; color: var(--ink2);
+  font: 400 12px/1.65 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere;
 }
-.approval-band {
-  display: flex; align-items: flex-start; justify-content: center;
-  padding: 14px 8px; font-weight: 700; font-size: 13px; text-align: center;
-  background: var(--warn); color: var(--panel);
-}
-.approval.risk-script .approval-band, .approval.risk-edit .approval-band { background: var(--fail); }
-.approval.risk-download .approval-band { background: var(--hydro); color: var(--hydro-ink); }
-.approval-body { padding: 12px 16px 12px; }
-.approval-summary { font-size: 16px; font-weight: 600; margin: 0 0 2px; max-width: 70ch; white-space: pre-line; overflow-wrap: anywhere; }
-.approval-meta { margin: 0 0 8px; color: var(--ink-soft); font-size: 12.5px; }
-.approval-facts { display: grid; gap: 2px; margin: 0 0 8px; font-size: 13px; }
-.approval-facts div { display: grid; grid-template-columns: 120px 1fr; gap: 8px; }
-.approval-facts dt { color: var(--ink-soft); }
-.approval-facts dd { margin: 0; overflow-wrap: anywhere; }
-.approval-actions { display: flex; gap: 8px; margin: 10px 0 4px; flex-wrap: wrap; }
-.approval-sub { margin: 6px 0 4px; font-size: 13px; }
-.hint { margin: 0; font-size: 12px; color: var(--ink-soft); }
-pre.request, pre.code {
-  max-height: 260px; overflow: auto; margin: 6px 0; padding: 8px 10px;
-  background: var(--paper); border: 1px solid var(--rule); border-radius: 6px;
-  font: 12px/1.5 ui-monospace, "SF Mono", Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere;
-}
+pre.request { margin-top: 8px; padding-left: 12px; }
 pre.code { counter-reset: ln; }
-pre.code .ln { display: block; counter-increment: ln; padding-left: 3.2em; text-indent: -3.2em; }
-pre.code .ln::before { content: counter(ln); display: inline-block; width: 2.6em; margin-right: .6em; text-align: right; color: var(--ink-soft); }
+pre.code .ln { display: block; counter-increment: ln; padding-left: 3.4em; text-indent: -3.4em; }
+pre.code .ln::before { content: counter(ln); display: inline-block; width: 2.6em; margin-right: .8em; text-align: right; color: var(--mute); }
+.approval > .link { display: block; margin-top: 9px; }
+.approval-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+.hint { margin-top: 10px; color: var(--mute); font-size: 12px; line-height: 17px; }
 
-/* Outputs list */
-.outputs { border-right: 1px solid var(--rule); background: var(--panel); overflow: auto; padding: 14px 0; }
-.outputs h2 { font-size: 13px; font-weight: 700; padding: 0 16px 8px; }
-.outputs ul { list-style: none; margin: 0; padding: 0; }
-.outputs .empty { padding: 0 16px; color: var(--ink-soft); }
-.out { padding: 9px 16px; border-top: 1px solid var(--rule); }
-.out.active { background: var(--select); }
-.out-head { display: flex; align-items: center; gap: 8px; }
-.out-head input { width: 16px; height: 16px; margin: 0; flex: none; }
-.out-kind { font-size: 11px; color: var(--ink-soft); width: 34px; flex: none; }
+/* ---------- The session's outputs ---------- */
+.outputs { flex: 0 1 auto; min-height: 56px; overflow: auto; scrollbar-width: thin; padding: 6px; border-bottom: 1px solid var(--line); }
+/* In the page's panel the list takes the room the rest leaves. */
+.panel .outputs { flex: 1 1 0; min-height: 96px; }
+.outputs h2 { padding: 10px 10px 6px; color: var(--mute); font-size: 12px; font-weight: 500; line-height: 16px; }
+.legend .outputs h2 { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.outputs .empty { padding: 6px 10px 8px; color: var(--mute); font-size: 12.5px; line-height: 18px; text-wrap: pretty; }
+.outputs ul { display: grid; gap: 1px; }
+.out { border-radius: 9px; }
+.out.active { background: var(--fill); }
+.out-head { display: flex; align-items: center; gap: 4px; min-height: 30px; padding: 3px 10px 3px 4px; }
+/* The toggle that shows a layer on the map, drawn as its swatch: the real
+   checkbox lies over the swatch, unseen. */
+.out-show { position: relative; width: 24px; height: 24px; flex: none; display: grid; place-items: center; border-radius: 7px; cursor: pointer; }
+.out-show:hover { background: var(--fill2); }
+.out-show input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
+.out-show input:focus-visible + .swatch { outline: 2px solid var(--ink); outline-offset: 3px; border-radius: 5px; }
+.out-kind { min-width: 22px; flex: none; color: var(--mute); font-size: 11px; line-height: 16px; text-align: center; }
 .out-name {
-  border: 0; background: none; padding: 0; text-align: left; font-weight: 600;
-  overflow-wrap: anywhere; cursor: pointer;
+  flex: 1 1 auto; min-width: 0; border: 0; background: none; padding: 4px 0; text-align: left; cursor: pointer;
+  color: var(--ink); font: 500 12px/16px var(--mono); letter-spacing: -.01em; overflow-wrap: anywhere;
 }
-.out-meta { display: flex; flex-wrap: wrap; gap: 6px 10px; margin: 4px 0 0 24px; font-size: 12px; color: var(--ink-soft); align-items: center; }
-.out .note, .out .error, .out > .link, .out .details { margin-left: 24px; font-size: 12.5px; }
-.out .note { margin-top: 4px; margin-bottom: 0; color: var(--warn); }
-.badge { font-size: 11.5px; font-weight: 600; padding: 1px 7px; border-radius: 999px; }
-.badge.pass { color: var(--pass); border: 1px solid currentColor; }
-.badge.warn { color: var(--warn); background: var(--warn-bg); }
-.badge.fail { color: var(--fail); background: var(--fail-bg); }
+.out-name:hover { text-decoration: underline; text-decoration-color: var(--line2); text-underline-offset: 3px; }
+.out-count { flex: none; color: var(--mute); font-size: 12px; line-height: 16px; font-variant-numeric: tabular-nums; }
+.out-open { display: grid; gap: 8px; padding: 2px 10px 10px 32px; }
+.out-flags { display: grid; gap: 4px; justify-items: start; padding: 0 10px 8px 32px; }
+.out-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; color: var(--mute); font-size: 12px; line-height: 20px; }
+.out .note, .out .error { font-size: 12px; line-height: 17px; overflow-wrap: anywhere; }
+.out .note { color: var(--wait-ink); }
+.out-acts { display: flex; flex-wrap: wrap; gap: 6px; }
+.out-more > summary { display: inline-flex; align-items: center; gap: 6px; padding: 3px 0; margin: -3px 0; color: var(--mute); font-size: 12px; font-weight: 500; line-height: 18px; list-style: none; cursor: pointer; }
+.out-more > summary::-webkit-details-marker { display: none; }
+.out-more > summary::before { content: ""; width: 6px; height: 6px; margin: 0 2px 0 1px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(-45deg); }
+.out-more[open] > summary::before { transform: rotate(45deg); }
+.out-more > summary:hover { color: var(--ink); }
+.details { display: grid; gap: 8px; padding-top: 8px; font-size: 12px; line-height: 17px; overflow-wrap: anywhere; }
+.checks, .inputs { display: grid; gap: 6px; }
+.check { display: grid; grid-template-columns: 46px minmax(0, 1fr); gap: 6px; }
+.check-sev { font-size: 11.5px; font-weight: 600; }
+.check.fail .check-sev { color: var(--bad); }
+.check.warn .check-sev { color: var(--wait-ink); }
+.check.info .check-sev { color: var(--mute); }
+.fix { color: var(--mute); }
+.sub { font-weight: 600; }
 
-.details p { margin: 6px 0; }
-.checks, .inputs { list-style: none; margin: 6px 0; padding: 0; display: grid; gap: 6px; }
-.check { display: grid; grid-template-columns: 52px 1fr; gap: 6px; }
-.check-sev { font-weight: 700; font-size: 11.5px; }
-.check.fail .check-sev { color: var(--fail); }
-.check.warn .check-sev { color: var(--warn); }
-.check.info .check-sev { color: var(--ink-soft); }
-.fix { color: var(--ink-soft); }
-.inputs li { overflow-wrap: anywhere; }
+/* A layer's mark, in the colour it has on the map now. Off the map it is
+   hollow. */
+.swatch { width: 14px; height: 14px; flex: none; display: grid; place-items: center; }
+.swatch::before { content: ""; width: 10px; height: 10px; border-radius: 3px; background: var(--c); }
+.swatch.point::before { width: 9px; height: 9px; border-radius: 50%; box-shadow: 0 0 0 1.5px var(--panel), 0 0 0 2.5px var(--edge); }
+.swatch.line::before { width: 14px; height: 3px; border-radius: 2px; }
+.swatch.area::before { width: 14px; height: 8px; }
+.swatch.off::before { background: none; box-shadow: inset 0 0 0 1.5px var(--faint); }
+.swatch.line.off::before { height: 5px; border-radius: 3px; }
 
-/* Table */
-.table-wrap { display: grid; grid-template-rows: auto 1fr; height: 100%; }
-.table-bar { display: flex; justify-content: space-between; align-items: center; padding: 6px 12px; font-size: 12.5px; border-bottom: 1px solid var(--rule); }
+/* Under the outputs: street background, web layers, measure. The sheet
+   itself lays the three out (the foot is only their group), so the web
+   layers can give way and scroll while the two rows stay whole. */
+.foot, .web-layers { display: contents; }
+.switch { order: 1; flex: none; position: relative; display: flex; align-items: center; gap: 8px; margin: 6px 6px 0; padding: 5px 8px; border-radius: 8px; color: var(--mute); font-size: 12px; line-height: 18px; cursor: pointer; }
+.panel .switch { margin: 8px 10px 0; }
+.switch:hover { background: var(--fill); color: var(--ink2); }
+.switch input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
+.switch:has(input:focus-visible) { outline: 2px solid var(--ink); outline-offset: 1px; }
+.switch:has(input:checked) .switch-state { color: var(--ink); font-weight: 500; }
+
+/* ---------- Web map layers (T-25) ---------- */
+.web-bar { order: 2; flex: none; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 10px 10px; }
+.panel .web-bar { padding: 8px 14px 14px; }
+/* Opens under the buttons in the legend, over them in the page's panel:
+   either way the buttons stay where they were. */
+.web-panel {
+  order: 3; flex: 0 1 auto; min-height: 0; overflow: auto; scrollbar-width: thin;
+  display: grid; gap: 8px; align-content: start; padding: 10px 12px; border-top: 1px solid var(--line);
+  font-size: 12.5px; line-height: 18px;
+}
+.panel .web-panel { order: 0; max-height: 62%; padding: 12px 16px; border-top: 0; border-bottom: 1px solid var(--line); }
+.web-notice { display: flex; align-items: center; gap: 8px; padding: 8px 8px 8px 12px; border-radius: 10px; background: var(--wait-bg); color: var(--ink); }
+.web-notice span { flex: 1; font-weight: 500; }
+.web-base { display: flex; align-items: center; gap: 8px; color: var(--mute); font-size: 12px; }
+.web-base select { flex: 1; min-width: 0; height: 28px; padding: 0 6px; border: 1px solid var(--field); border-radius: 8px; background: var(--panel); color: var(--ink); font-size: 12.5px; }
+.web-list { display: grid; }
+.web-row { padding: 8px 0; border-top: 1px solid var(--line); }
+.web-head { display: flex; align-items: center; gap: 8px; }
+.web-head input { width: 14px; height: 14px; margin: 0; flex: none; }
+.web-title { flex: 1; min-width: 0; font-weight: 500; overflow-wrap: anywhere; }
+.web-kind { color: var(--mute); font-size: 11.5px; text-align: right; }
+.web-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin: 6px 0 0 22px; }
+.web-tools label { display: flex; align-items: center; gap: 6px; color: var(--mute); font-size: 12px; }
+.web-tools input[type="range"] { width: 84px; margin: 0; }
+.web-row .note, .web-row .error { margin: 4px 0 0 22px; font-size: 12px; line-height: 17px; overflow-wrap: anywhere; }
+.web-row .note { color: var(--wait-ink); }
+.web-add { display: grid; gap: 6px; justify-items: start; padding-top: 8px; border-top: 1px solid var(--line); }
+.web-attrs { border-collapse: collapse; font-size: 12px; line-height: 17px; }
+.web-attrs th { padding: 2px 12px 2px 0; color: var(--mute); font-weight: 500; text-align: left; vertical-align: top; white-space: nowrap; }
+.web-attrs td { padding: 2px 0; overflow-wrap: anywhere; }
+
+/* ---------- The table: a sheet over the map ---------- */
+.table {
+  position: absolute; z-index: 3; left: max(16px, var(--il)); right: calc(var(--ir) + 16px);
+  bottom: calc(var(--ib) + 16px); height: var(--table); overflow: hidden;
+  background: var(--panel); border-radius: 20px; box-shadow: var(--shadow);
+}
+.table-wrap { display: flex; flex-direction: column; height: 100%; }
+/* Its head wraps in a narrow sheet; the close button keeps its corner. */
+.table-bar { flex: none; position: relative; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; min-height: 54px; padding: 8px 54px 8px 22px; }
+.table-bar > .iconbtn { position: absolute; top: 11px; right: 12px; }
+.table-name { min-width: 0; max-width: 46%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 500 13px/20px var(--mono); letter-spacing: -.01em; }
+.table-count { color: var(--mute); font-size: 12px; line-height: 17px; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .pager { display: flex; gap: 6px; }
-.pager button { padding: 2px 10px; font-size: 12.5px; }
-.table-scroll { overflow: auto; min-height: 0; }
-table { border-collapse: collapse; font-size: 12.5px; font-variant-numeric: tabular-nums; }
-th, td { padding: 4px 12px; border-bottom: 1px solid var(--rule); text-align: left; white-space: nowrap; max-width: 320px; overflow: hidden; text-overflow: ellipsis; }
-th { position: sticky; top: 0; background: var(--panel); font-weight: 600; z-index: 1; }
-td.num, th.num { text-align: right; }
-td.num:first-child, th.num:first-child { color: var(--ink-soft); }
-tbody tr { cursor: pointer; }
-tbody tr:hover { background: color-mix(in srgb, var(--select) 60%, transparent); }
-tbody tr.selected { background: var(--select); box-shadow: inset 3px 0 var(--hydro); }
-.table-empty { padding: 16px; color: var(--ink-soft); }
+.table-scroll { flex: 1 1 auto; min-height: 0; overflow: auto; scrollbar-width: thin; }
+.table table { min-width: 100%; border-collapse: collapse; font-size: 12.5px; line-height: 18px; font-variant-numeric: tabular-nums; }
+.table th, .table td { max-width: 320px; padding: 8px 12px; border-bottom: 1px solid var(--line); overflow: hidden; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+.table th { position: sticky; top: 0; z-index: 1; padding: 9px 12px; background: var(--panel); color: var(--mute); font-size: 11.5px; font-weight: 500; }
+/* The row number takes only the room it needs; the columns share the rest. */
+.table th:first-child, .table td:first-child { width: 1%; padding-left: 22px; }
+.table th:last-child, .table td:last-child { padding-right: 22px; }
+.table td.num, .table th.num { text-align: right; }
+.table td.num:first-child { color: var(--mute); }
+.table td.mono { font-size: 12px; }
+.table tbody tr { cursor: pointer; }
+.table tbody tr:hover td { background: color-mix(in srgb, var(--fill) 60%, var(--panel)); }
+.table tbody tr.selected td { background: var(--fill); font-weight: 500; }
+.table tbody tr.selected td.num:first-child { color: var(--ink); }
+.table-empty { padding: 2px 22px 18px; color: var(--mute); font-size: 13px; line-height: 19px; }
+.table-empty.error { color: var(--bad); }
 
-.toast {
-  position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%);
-  background: var(--ink); color: var(--paper); padding: 8px 16px; border-radius: 6px; font-size: 13px;
+/* ---------- On the map: what the page says, the measure result ---------- */
+/* At the foot of the part of the map in view, in the middle. */
+.map-foot {
+  position: absolute; z-index: 4; bottom: calc(var(--pb) + 40px);
+  left: calc(var(--pl) + (100% - var(--pl) - var(--pr)) / 2); transform: translateX(-50%);
+  width: max-content; max-width: calc(100% - var(--pl) - var(--pr) - 32px);
+  display: flex; flex-direction: column; align-items: center; gap: 8px; pointer-events: none;
 }
-.signed-out { max-width: 560px; margin: 18vh auto 0; padding: 0 16px; }
-.signed-out h1 { font-size: 22px; margin-bottom: 10px; }
+.map-foot > * { pointer-events: auto; }
+.toast { max-width: 100%; padding: 9px 16px; border-radius: 12px; background: var(--ink); color: var(--panel); box-shadow: var(--shadow-s); font-size: 13px; line-height: 19px; }
+.measure-result { max-width: 100%; padding: 7px 14px; border-radius: 18px; background: var(--panel); box-shadow: var(--shadow-s); font-size: 12.5px; line-height: 18px; font-variant-numeric: tabular-nums; }
+.measure-result strong { font-weight: 600; }
 
-@media (max-width: 900px) {
-  .body { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
-  .outputs { max-height: 34vh; border-right: 0; border-bottom: 1px solid var(--rule); }
-  .conns { display: none; }
+/* ---------- MapLibre's own controls, to match ---------- */
+/* Zoom buttons bottom right over the attribution, the scale bottom left:
+   all inside the part of the map in view. */
+.map .maplibregl-ctrl-bottom-right {
+  right: calc(var(--pr) + 16px); bottom: calc(var(--pb) + 14px);
+  max-width: calc(100% - var(--pl) - var(--pr) - 180px);
+  display: flex; flex-direction: column; align-items: flex-end; gap: 10px;
 }
+.map .maplibregl-ctrl-bottom-left { left: calc(var(--pl) + 20px); bottom: calc(var(--pb) + 14px); }
+.map .maplibregl-ctrl-top-left { left: calc(var(--pl) + 16px); top: calc(var(--pt) + 16px); }
+.map .maplibregl-ctrl-top-right { right: calc(var(--pr) + 16px); top: calc(var(--pt) + 16px); }
+.map .maplibregl-ctrl { margin: 0; float: none; }
+.map .maplibregl-ctrl-group, .map .maplibregl-ctrl-group:not(:empty) { overflow: hidden; background: var(--panel); border-radius: 12px; box-shadow: var(--shadow-s); }
+.map .maplibregl-ctrl-group button { position: relative; width: 34px; height: 34px; color: var(--ink2); }
+.map .maplibregl-ctrl-group button + button { border-top: 1px solid var(--line); }
+.map .maplibregl-ctrl-group button:not(:disabled):hover { background-color: var(--fill); }
+.map .maplibregl-ctrl-group button:focus-visible { box-shadow: inset 0 0 0 2px var(--ink); }
+/* The plus and minus drawn here, in the page's ink: MapLibre's own are
+   dark pictures, lost on a dark sheet. */
+.map .maplibregl-ctrl button.maplibregl-ctrl-zoom-in .maplibregl-ctrl-icon,
+.map .maplibregl-ctrl button.maplibregl-ctrl-zoom-out .maplibregl-ctrl-icon { background-image: none; }
+.map .maplibregl-ctrl button.maplibregl-ctrl-zoom-in .maplibregl-ctrl-icon::before,
+.map .maplibregl-ctrl button.maplibregl-ctrl-zoom-out .maplibregl-ctrl-icon::before,
+.map .maplibregl-ctrl button.maplibregl-ctrl-zoom-in .maplibregl-ctrl-icon::after { content: ""; position: absolute; left: 50%; top: 50%; }
+.map .maplibregl-ctrl button.maplibregl-ctrl-zoom-in .maplibregl-ctrl-icon::before,
+.map .maplibregl-ctrl button.maplibregl-ctrl-zoom-out .maplibregl-ctrl-icon::before { width: 9px; margin: -.75px 0 0 -4.5px; border-top: 1.5px solid currentColor; }
+.map .maplibregl-ctrl button.maplibregl-ctrl-zoom-in .maplibregl-ctrl-icon::after { height: 9px; margin: -4.5px 0 0 -.75px; border-left: 1.5px solid currentColor; }
+/* The scale and the attribution sit on a wash of the paper: unseen on the
+   paper itself, a quiet chip over imagery, where bare text would be lost. */
+.map .maplibregl-ctrl-scale {
+  padding: 1px 5px 2px; border: 1px solid var(--mute); border-top: 0; background: var(--halo); color: var(--mute);
+  font: 400 10.5px/1.2 var(--mono);
+}
+.map .maplibregl-ctrl.maplibregl-ctrl-attrib {
+  padding: 1px 6px; border-radius: 6px; background: var(--halo); color: var(--mute);
+  font: 400 10px/1.4 var(--sans); text-align: right;
+}
+.map .maplibregl-ctrl-attrib.maplibregl-attrib-empty { display: none; }
+.map .maplibregl-ctrl-attrib a { color: inherit; text-decoration: none; }
+.map .maplibregl-ctrl-attrib a:hover { text-decoration: underline; }
+/* A web layer's feature, clicked. */
+.map .maplibregl-popup-content { padding: 10px 12px; border-radius: 14px; background: var(--panel); box-shadow: var(--shadow-s); color: var(--ink); font: 400 12px/17px var(--sans); }
+.map .maplibregl-popup-anchor-top .maplibregl-popup-tip,
+.map .maplibregl-popup-anchor-top-left .maplibregl-popup-tip,
+.map .maplibregl-popup-anchor-top-right .maplibregl-popup-tip { border-bottom-color: var(--panel); }
+.map .maplibregl-popup-anchor-bottom .maplibregl-popup-tip,
+.map .maplibregl-popup-anchor-bottom-left .maplibregl-popup-tip,
+.map .maplibregl-popup-anchor-bottom-right .maplibregl-popup-tip { border-top-color: var(--panel); }
+.map .maplibregl-popup-anchor-left .maplibregl-popup-tip { border-right-color: var(--panel); }
+.map .maplibregl-popup-anchor-right .maplibregl-popup-tip { border-left-color: var(--panel); }
+.map .maplibregl-popup-close-button { width: 24px; height: 24px; border-radius: 0 14px 0 8px; color: var(--mute); font-size: 16px; line-height: 1; }
+.map .maplibregl-popup-close-button:hover { background: var(--fill); color: var(--ink); }
+
+/* ---------- Not connected: a small sheet on the paper ---------- */
+.signed-out {
+  position: fixed; inset: 0; display: grid; place-items: center; background: var(--paper);
+  padding: calc(var(--it) + 16px) calc(var(--ir) + 16px) calc(var(--ib) + 16px) calc(var(--il) + 16px);
+}
+.signed-out .sheet { width: min(440px, 100%); display: grid; gap: 12px; padding: 24px 26px 24px; background: var(--panel); border-radius: 20px; box-shadow: var(--shadow); }
+.signed-out p { color: var(--ink2); line-height: 21px; text-wrap: pretty; }
+
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }
 }
-
-/* Inside the Columbus app's output panel: no header (the app shows the
-   session), the app's own tabs choose map, table or both. */
-.app.embedded > .top { display: none; }
-.app.embedded.v-map .table, .app.embedded.v-table .map-wrap { display: none; }
-.app.embedded.v-map .work, .app.embedded.v-table .work { grid-template-rows: 1fr; }
-
-/* The map's own controls: basemap (in the app's panel), zoom to selection,
-   measure (REQ-28). */
-.map-bar {
-  position: absolute; top: 8px; left: 8px; z-index: 4; max-width: calc(100% - 64px);
-  display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; padding: 3px 8px; font-size: 12px;
-  background: var(--panel); border: 1px solid var(--rule); border-radius: 6px;
-}
-.map-bar .switch { font-size: 12px; }
-.map-bar button { padding: 1px 9px; font-size: 12px; }
-.map-bar button[aria-pressed="true"] { background: var(--hydro); border-color: var(--hydro); color: var(--hydro-ink); }
-.measure-result { font-variant-numeric: tabular-nums; }
-
-/* Web map layers (T-25): a panel under the map's bar. */
-.web-layers { position: relative; }
-.web-layers > button[aria-expanded="true"] { background: var(--select); }
-.web-panel {
-  position: absolute; top: calc(100% + 6px); left: 0; z-index: 6; width: 330px; max-height: 60vh; overflow: auto;
-  display: grid; gap: 8px; padding: 10px 12px; font-size: 12.5px;
-  background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; box-shadow: 0 4px 14px rgb(0 0 0 / 0.12);
-}
-.web-panel p { margin: 0; }
-.web-notice { display: flex; gap: 8px; align-items: center; padding: 6px 8px; background: var(--warn-bg); color: var(--ink); border-radius: 4px; }
-.web-notice span { flex: 1; font-weight: 600; }
-.web-base { display: flex; gap: 8px; align-items: center; }
-.web-base select { flex: 1; font: inherit; padding: 2px 4px; border: 1px solid var(--rule); border-radius: 4px; background: var(--panel); color: var(--ink); }
-.web-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 0; }
-.web-row { padding: 6px 0; border-top: 1px solid var(--rule); }
-.web-head { display: flex; align-items: center; gap: 6px; }
-.web-head input { margin: 0; flex: none; }
-.web-title { font-weight: 600; overflow-wrap: anywhere; flex: 1; }
-.web-kind { color: var(--ink-soft); font-size: 11.5px; white-space: nowrap; }
-.web-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin: 4px 0 0 20px; }
-.web-tools label { display: flex; align-items: center; gap: 4px; }
-.web-tools input[type="range"] { width: 90px; }
-.web-row .note, .web-row .error { margin: 4px 0 0 20px; }
-.web-row .note { color: var(--warn); }
-.web-add { border-top: 1px solid var(--rule); padding-top: 8px; display: grid; gap: 6px; justify-items: start; }
-.web-attrs { font-size: 12px; color: #17324d; }
-.web-attrs th, .web-attrs td { padding: 1px 6px; border-bottom: 1px solid #d3dce2; position: static; background: none; }

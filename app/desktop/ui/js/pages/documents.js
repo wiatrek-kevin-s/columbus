@@ -1,8 +1,9 @@
-// Documents: your notes (drafted from your databases) to review, and the
-// organization's context pack, read only. Notes are your own files: "Mark
-// reviewed" is your decision, and once reviewed your assistant can no
-// longer change the note.
-import { h, el, invoke, button, pageHead, tabs, showError, when, plural, emptyState, coming, toast } from "../core.js";
+// Notes: your notes about your data (drafted from your databases) to
+// review, and the organization's context pack, read only. A note opens in
+// the sheet beside the panel. Notes are your own files: "Mark reviewed" is
+// your decision, and once reviewed your assistant can no longer change the
+// note.
+import { h, el, invoke, button, pageHead, tabs, showError, when, plural, emptyState, toast, openSide, closeSide } from "../core.js";
 
 const go = (hash) => { location.hash = hash; };
 
@@ -10,8 +11,8 @@ export async function render(main, rest) {
   const tab = rest[0] || "notes";
   const page = h("div", { class: "page" });
   main.append(page);
-  page.append(pageHead("Documents", "Your notes about your data, and your organization's context pack: what your assistant reads to understand the data."));
-  page.append(tabs([["notes", "My notes", "#/documents/notes"], ["pack", "Organization's pack", "#/documents/pack"], ["proposals", "Proposals", "#/documents/proposals"], ["import", "Import", "#/documents/import"]], tab, "Documents"));
+  page.append(pageHead("Notes", "Your notes about your data, and your organization's context pack: what your assistant reads to understand the data.", [], { href: "#/data", label: "Data" }));
+  page.append(tabs([["notes", "My notes", "#/documents/notes"], ["pack", "Organization's pack", "#/documents/pack"], ["proposals", "Proposals", "#/documents/proposals"], ["import", "Import", "#/documents/import"]], tab, "Notes"));
   const body = h("div", { class: "pad stack" });
   page.append(h("div", { class: "scroll" }, body));
   if (tab === "pack") return pack(body);
@@ -23,14 +24,12 @@ export async function render(main, rest) {
 async function notes(body) {
   const error = h("p", { class: "error-text", role: "alert", hidden: true });
   body.append(error);
-  const host = h("div", { class: "cols" });
-  body.append(host);
   const left = h("section", { class: "card" });
-  const right = h("section", { class: "card", "aria-live": "polite" });
-  host.append(left, right);
+  body.append(left);
   let filter = "all";
   let data;
   let open = null;
+  let shown = null; // the open note's box in the side sheet
   const draw = () => {
     const all = data.notes;
     const shown = all.filter((n) => filter === "all" || n.status === filter);
@@ -42,8 +41,8 @@ async function notes(body) {
     }
     left.replaceChildren(h("div", { class: "hd" }, h("h2", {}, "Your notes"), h("span", { class: "more" }, f)));
     if (!all.length) {
-      left.append(h("div", { class: "bd" }, emptyState("No notes yet", "Draft notes from a connection's database (Connections › Draft notes): fields, keys, relationships and the codes short fields hold. Then fill in what they mean, and mark each one reviewed.", h("a", { class: "btn", href: "#/connections" }, "Go to Connections"))));
-      right.replaceChildren(h("div", { class: "bd" }, h("p", { class: "small muted wrap-any" }, `Your notes folder: ${data.dir}`)));
+      left.append(h("div", { class: "bd" }, emptyState("No notes yet", "Draft notes from a connection's database (Data › a connection › Draft notes): fields, keys, relationships and the codes short fields hold. Then fill in what they mean, and mark each one reviewed.", h("a", { class: "btn", href: "#/data" }, "Go to Data")),
+        h("p", { class: "small muted wrap-any" }, `Your notes folder: ${data.dir}`)));
       return;
     }
     const ul = h("ul", { class: "list", id: "notes-list" });
@@ -59,11 +58,15 @@ async function notes(body) {
     }
     left.append(h("div", { class: "bd flush" }, ul), h("div", { class: "bd" }, h("p", { class: "small muted wrap-any" }, `In ${data.dir}`)));
   };
+  // A note opens in the sheet beside the panel, where there is room to read.
   const show = async (n) => {
+    const bd = h("div", { class: "stack", id: "note-open" });
+    // (Opening closes the sheet that was open first: this note is the open
+    // one only after that.)
+    openSide(n.title || n.id || n.path, bd, [h("span", { class: `badge ${n.status === "reviewed" ? "pass" : "warn"}` }, n.status || "note")],
+      () => { if (open === n && shown === bd) { open = null; shown = null; if (data) draw(); } });
     open = n;
-    right.replaceChildren(h("div", { class: "hd" }, h("h2", {}, n.title || n.id || n.path), h("span", { class: `badge ${n.status === "reviewed" ? "pass" : "warn"} more` }, n.status || "note")));
-    const bd = h("div", { class: "bd stack" });
-    right.append(bd);
+    shown = bd;
     const dl = h("dl", { class: "kv" });
     for (const [k, v] of [["Connection", n.connection], ["Owner", n.owner], ["Last confirmed", n.last_confirmed], ["Changed", when(n.modified)], ["File", n.path]]) if (v) dl.append(h("dt", {}, k), h("dd", {}, String(v)));
     bd.append(dl);
@@ -78,7 +81,7 @@ async function notes(body) {
       draw();
       return;
     }
-    if (open !== n) return;
+    if (shown !== bd) return;
     if (n.status === "draft") {
       bd.append(h("div", { class: "row wrap" },
         button("Mark reviewed", "primary", async () => {
@@ -100,7 +103,6 @@ async function notes(body) {
     try {
       data = await invoke("notes_list");
       draw();
-      if (!open) right.replaceChildren(h("div", { class: "bd" }, h("p", { class: "muted" }, data.notes.length ? "Choose a note to read it." : "")));
     } catch (e) { showError(error, e); }
   };
   await load();
@@ -109,6 +111,7 @@ async function notes(body) {
   try { want = sessionStorage.getItem("columbus.note"); sessionStorage.removeItem("columbus.note"); } catch { /* none */ }
   const n = want && data && data.notes.find((x) => x.path === want);
   if (n) show(n);
+  return () => { open = null; shown = null; closeSide(); };
 }
 
 async function pack(body) {
@@ -119,28 +122,27 @@ async function pack(body) {
       `Your organization's context pack (datasets, domains, LRS, SOPs, roles, delivery specs) is a folder IT places at ${r.dir}. Columbus works without one; your own notes still help your assistant.`));
     return;
   }
-  body.append(h("div", { class: "notice" }, h("div", {}, h("b", {}, "Read only here. "), "The pack belongs to your organization; editing it, and suggesting changes to its owners, comes later. ", h("span", { class: "mono" }, r.dir))));
-  const host = h("div", { class: "cols" });
+  body.append(h("div", { class: "notice" }, h("div", {}, h("b", {}, "Read only here. "), "The pack belongs to your organization. ", h("span", { class: "mono" }, r.dir))));
   const left = h("section", { class: "card" });
-  const right = h("section", { class: "card", "aria-live": "polite" }, h("div", { class: "bd" }, h("p", { class: "muted" }, "Choose an entry to read it.")));
-  host.append(left, right);
-  body.append(host);
+  body.append(left);
   left.append(h("div", { class: "hd" }, h("h2", {}, "Entries"), h("span", { class: "muted small more" }, plural(r.entries.length, "entry", "entries"))));
-  const ul = h("ul", { class: "list" });
+  const ul = h("ul", { class: "list", id: "pack-list" });
   for (const e of r.entries) {
     const li = h("li", { class: "clickable", tabindex: "0" }, h("div", { class: "text" }, h("b", {}, e.title || e.path), h("span", { class: "where mono" }, e.path)), e.kind ? h("span", { class: "chip" }, String(e.kind)) : null);
+    // An entry opens in the sheet beside the panel.
     const go = async () => {
-      right.replaceChildren(h("div", { class: "hd" }, h("h2", {}, e.title || e.path)));
-      const bd = h("div", { class: "bd" });
-      right.append(bd);
+      const bd = h("div", { class: "stack", id: "pack-open" });
+      for (const x of ul.children) x.classList.toggle("sel", x === li);
+      openSide(e.title || e.path, bd, [], () => li.classList.remove("sel"));
       try { bd.append(el("pre", "box", await invoke("context_read", { path: e.path }))); } catch (x) { bd.append(el("p", "error-text", String(x))); }
     };
     li.addEventListener("click", go);
-    li.addEventListener("keydown", (k) => { if (k.key === "Enter") go(); });
+    li.addEventListener("keydown", (k) => { if (k.key === "Enter" || k.key === " ") { k.preventDefault(); go(); } });
     ul.append(li);
   }
   left.append(h("div", { class: "bd flush" }, r.entries.length ? ul : h("p", { class: "pad muted" }, "The pack has no entries.")));
   if (r.pack) left.append(h("details", { class: "bd" }, h("summary", { class: "small" }, "pack.yaml"), el("pre", "box", r.pack)));
+  return () => closeSide();
 }
 
 // ---- Import: a document becomes a draft note ---------------------------
@@ -327,7 +329,7 @@ function proposals(body) {
 
   function draw(r) {
     out.replaceChildren();
-    if (!r.notes) { out.append(emptyState("No notes yet", "Draft notes from a connection (Connections › Draft notes), or import a document (the Import tab).")); return; }
+    if (!r.notes) { out.append(emptyState("No notes yet", "Draft notes from a connection (Data › a connection › Draft notes), or import a document (the Import tab).")); return; }
     for (const p of r.problems || []) out.append(h("p", { class: "notice warn small" }, `${p.connection} couldn't be checked: ${p.error}`));
     const changed = r.changed || [];
     const sec = h("section", { class: "card", id: "pr-changed" }, h("div", { class: "hd" }, h("h2", {}, `Changed since drafted (${changed.length})`)));

@@ -1,7 +1,7 @@
-// The main window: the rail, the router, Ctrl+K search, and the polling
-// that keeps counts fresh. Pages live in pages/*.js.
-import { $, h, icon, logo, invoke, store, applyTheme, toast } from "./core.js";
-import * as home from "./pages/home.js";
+// The main window: the four places, the router, Ctrl+K search, the
+// settings sheet, and the polling that keeps counts fresh. Pages live in
+// pages/*.js and draw inside the panel; a session's map shows behind it.
+import { $, h, icon, logo, iconButton, invoke, store, applyTheme, closeSide, layoutChanged } from "./core.js";
 import * as chats from "./pages/chats.js";
 import * as documents from "./pages/documents.js";
 import * as connections from "./pages/connections.js";
@@ -13,160 +13,252 @@ import * as projects from "./pages/projects.js";
 import * as datagroups from "./pages/datagroups.js";
 import * as registry from "./pages/registry.js";
 
-// The rail, as the design groups it (section 4.1).
-const RAIL = [
-  [null, [["home", "Home"], ["chats", "Chats"], ["projects", "Projects"]]],
-  ["Know", [["documents", "Documents"], ["datagroups", "Data groups"], ["skills", "Skills"]]],
-  ["Data", [["connections", "Connections"], ["registry", "Registry"]]],
-  ["Automate", [["tools", "Tools"], ["workflows", "Workflows"]]],
-  [null, [["activity", "Activity"], ["settings", "Settings"]]],
-];
-const SUBS = {
-  activity: [["approvals", "Approvals"], ["audit", "Audit log"], ["exports", "Exports"]],
-  settings: [["ai", "Models and accounts"], ["general", "General"], ["privacy", "Privacy and sandbox"], ["keyboard", "Keyboard"], ["environments", "Environments"], ["org", "Organization"]],
-};
+// The four places a person goes to.
+const PLACES = [["chats", "Chats"], ["data", "Data"], ["workflows", "Workflows"], ["activity", "Activity"]];
+// Every page: what draws it, the place it belongs to, and its name.
 const PAGES = {
-  home: home.render,
-  chats: chats.render,
-  projects: projects.render,
-  documents: documents.render,
-  datagroups: datagroups.render,
-  skills: tools.renderSkills,
-  connections: connections.render,
-  registry: registry.render,
-  tools: tools.render,
-  workflows: workflows.render,
-  activity: activity.render,
-  settings: settings.render,
+  chats: [chats.render, "chats", "Chats"],
+  projects: [projects.render, "chats", "Projects"],
+  data: [connections.render, "data", "Data"],
+  connections: [connections.render, "data", "Data"],
+  documents: [documents.render, "data", "Notes"],
+  datagroups: [datagroups.render, "data", "Data groups"],
+  registry: [registry.render, "data", "Registry"],
+  workflows: [workflows.render, "workflows", "Workflows"],
+  tools: [tools.render, "workflows", "Tools"],
+  skills: [tools.renderSkills, "workflows", "Skills"],
+  activity: [activity.render, "activity", "Activity"],
 };
-const PAGE_NAMES = Object.fromEntries(RAIL.flatMap(([, items]) => items));
+// What Ctrl+K offers besides chats (name, where, what kind).
+const GOTO = [
+  ["New chat", "#/chats/fresh", "Chats"], ["Chats", "#/chats", "Place"], ["Projects", "#/projects", "Chats"],
+  ["Data", "#/data", "Place"], ["Datasets", "#/data/datasets", "Data"], ["Notes", "#/documents", "Data"],
+  ["Organization's pack", "#/documents/pack", "Data"], ["Note proposals", "#/documents/proposals", "Data"], ["Import a document", "#/documents/import", "Data"],
+  ["Data groups", "#/datagroups", "Data"], ["Map layers", "#/data/maplayers", "Data"], ["Project databases", "#/data/projectdbs", "Data"],
+  ["Registry: open data and GIS tools", "#/registry", "Data"],
+  ["Workflows", "#/workflows", "Place"], ["Tools", "#/tools", "Workflows"], ["Skills", "#/skills", "Workflows"],
+  ["Activity", "#/activity", "Place"], ["History (the audit log)", "#/activity/audit", "Activity"], ["Exports", "#/activity/exports", "Activity"],
+  ["Settings", "#/settings", "Settings"], ...settings.SECTIONS.map(([k, t]) => [t, `#/settings/${k}`, "Settings"]),
+];
 
 function route() {
-  const parts = (location.hash.replace(/^#\/?/, "") || "home").split("/").map(decodeURIComponent);
-  return { page: PAGES[parts[0]] ? parts[0] : "home", rest: parts.slice(1) };
+  const parts = (location.hash.replace(/^#\/?/, "") || "chats/new").split("/").map(decodeURIComponent);
+  // Home is the start of a new chat now.
+  if (parts[0] === "home") return { page: "chats", rest: ["new"] };
+  if (parts[0] === "settings") return { page: "settings", rest: parts.slice(1) };
+  return PAGES[parts[0]] ? { page: parts[0], rest: parts.slice(1) } : { page: "chats", rest: ["new"] };
 }
 
 let unmount = null;
 let booted = false;
+let shown = null; // the page under the settings sheet, once one is drawn
+let underSettings = "#/chats/new";
 // Pages draw here; the live chat keeps its own host beside it (chats.js),
-// so its map frame is never reloaded when the person looks elsewhere.
-const pageHost = h("div", { class: "page", id: "page-host" });
+// so its conversation and its map are never rebuilt when the person looks
+// elsewhere.
+let pageHost = h("div", { class: "page", id: "page-host" });
 $("main").append(pageHost);
+let showSeq = 0;
+let shows = 0;
+// Whether the person has typed or chosen anything on the page that is open
+// (it is then never drawn again under them).
+let touched = false;
+for (const t of ["input", "change"]) {
+  $("main").addEventListener(t, (e) => { if (pageHost.contains(e.target)) touched = true; }, true);
+}
 
-async function show() {
-  const r = route();
+async function show(ev) {
+  const mine = ++shows;
+  let r = route();
+  if (r.page === "settings") {
+    // Settings is a sheet over whatever page is open. The address to put
+    // back when it closes is the one the person came from: a page may have
+    // rewritten its own address after it was drawn ("fresh" becomes "new").
+    const from = ev && typeof ev.oldURL === "string" && ev.oldURL.includes("#") ? ev.oldURL.slice(ev.oldURL.indexOf("#")) : "";
+    if (from && !from.startsWith("#/settings")) underSettings = from;
+    if (!shown) await showPage({ page: "chats", rest: ["new"] });
+    settings.openSheet(r.rest[0], (saved) => {
+      if (location.hash.startsWith("#/settings")) history.replaceState(null, "", underSettings);
+      drawNav();
+      // The focus goes back to where Settings is opened from (the nav was
+      // drawn again while the sheet was open, so the browser cannot do it).
+      // A moment later: until the sheet has left the screen, nothing under
+      // it can take the focus. Then the page under it is brought up to
+      // date, without moving the focus again.
+      setTimeout(() => {
+        const a = document.activeElement;
+        if ((!a || a === document.body) && !document.querySelector("dialog[open]") && $("nav-settings")) $("nav-settings").focus({ preventScroll: true });
+        if (saved) refreshUnder();
+      }, 60);
+    });
+    drawNav(r);
+    return;
+  }
+  // Left by a link to a page: that page is drawn with what was saved.
+  if (settings.closeSheet()) {
+    await settings.saves();
+    try { await refresh.info(); } catch (e) { console.error(e); }
+    // The person went on again while that was read: the later call draws.
+    if (mine !== shows) return;
+    r = route();
+  }
+  underSettings = location.hash || "#/chats/new";
+  await showPage(r);
+}
+
+// What the sheet saved shows on the page under it. The chat takes its new
+// defaults in place (the model, the thinking level, whether an AI is
+// connected). Another page is drawn again, unless the person has typed into
+// it: their words are worth more than a fresh page.
+async function refreshUnder() {
+  const r = shown;
+  // A save still on its way (a confirmation at the keyboard) lands first.
+  await settings.saves();
+  try { await refresh.info(); } catch (e) { console.error(e); }
+  if (!r || r !== shown || route().page === "settings") return;
+  if (r.page === "chats") {
+    chats.settingsSaved();
+    return;
+  }
+  // Left as it is: a page the person has typed or chosen something on, and
+  // a page with a dialog open over it (its buttons belong to the page as
+  // it was drawn).
+  if (touched || document.querySelector("dialog[open]")) return;
+  await showPage(r, { keepFocus: true });
+}
+
+async function showPage(r, { keepFocus = false } = {}) {
+  const seq = ++showSeq;
   if (unmount) {
     try { unmount(); } catch (e) { console.error(e); }
     unmount = null;
   }
-  const main = pageHost;
-  main.hidden = false;
-  main.replaceChildren();
-  drawRail(r);
-  document.title = `${PAGE_NAMES[r.page] || "Columbus"} · Columbus`;
+  // The live chat leaves the panel now, even if the page before this one
+  // was still being drawn and has handed back no clean-up yet.
+  chats.leaveLive();
+  closeSide();
+  touched = false;
+  // A fresh sheet for each page. One that is still being drawn when the
+  // person goes on keeps drawing on the sheet that was taken away, not on
+  // the next page's.
+  const main = h("div", { class: "page", id: "page-host" });
+  pageHost.replaceWith(main);
+  pageHost = main;
+  shown = r;
+  drawNav(r);
+  document.title = `${PAGES[r.page][2]} · Columbus`;
+  // A page that cannot be the start takes its place at the side at once,
+  // not when its data has come: the panel does not wait in the middle and
+  // then move while the person is reaching for something on it.
+  if (!(r.page === "chats" && ["new", "fresh", "run"].includes(r.rest[0]))) posture();
   try {
-    unmount = (await PAGES[r.page](main, r.rest)) || null;
+    const off = (await PAGES[r.page][0](main, r.rest)) || null;
+    if (seq !== showSeq) {
+      // The person went on while this page was being drawn: what it set up
+      // (its map on the stage, its listeners) is taken down at once.
+      if (off) {
+        try { off(); } catch (e) { console.error(e); }
+      }
+      // What it changed while it was drawn (the chat shown, say) no longer
+      // decides where the panel stands.
+      posture();
+      return;
+    }
+    unmount = off;
     // After following a link, a screen reader starts at the new page's title.
     const a = document.activeElement;
-    if (booted && (!a || a === document.body || $("rail").contains(a))) {
+    if (!keepFocus && booted && (!a || a === document.body || $("nav").contains(a))) {
       const t = main.hidden ? null : $("page-title");
       if (t) t.focus({ preventScroll: true });
     }
   } catch (e) {
+    if (seq !== showSeq) return;
     main.replaceChildren(h("div", { class: "pad" }, h("p", { class: "error-text", role: "alert" }, `This page could not be shown: ${e}`)));
   }
+  posture();
 }
 
-function count(n, quiet) {
-  return n ? h("span", { class: quiet ? "count quiet" : "count", "aria-hidden": "true" }, String(n)) : null;
-}
-
-let railKey = "";
-function drawRail(r = route()) {
-  const rail = $("rail");
-  const pending = chats.otherInbox().reduce((n, s) => n + (s.pending || []).length, 0) + chats.waitingCount();
-  const toolsWaiting = store.tools ? store.tools.waiting.length : 0;
-  // Workflows waiting for your approval (new ones, and changed ones).
-  const wfWaiting = store.workflows ? store.workflows.waiting.length : 0;
-  // Redrawn only when something it shows changed, keeping the focus.
-  const key = JSON.stringify([location.hash, r.page, r.rest, pending, toolsWaiting, wfWaiting, store.info && store.info.policy.source,
-    r.page === "chats" ? chats.recent(5).map((c) => [c.href, c.title]) : 0]);
-  if (key === railKey) return;
-  railKey = key;
-  const focused = rail.contains(document.activeElement) ? document.activeElement.getAttribute("href") || document.activeElement.className : null;
-  const nav = h("div", { class: "nav" });
-  for (const [head, items] of RAIL) {
-    nav.append(head ? h("div", { class: "navhead", "aria-hidden": "true" }, head) : h("div", { class: "navgap" }));
-    for (const [key, label] of items) {
-      const n = key === "activity" ? pending : key === "tools" ? toolsWaiting : key === "workflows" ? wfWaiting : 0;
-      const a = h("a", { href: `#/${key}`, title: label, "aria-label": n ? `${label}, ${n} waiting` : label },
-        icon(key), h("span", { class: "label" }, label), count(n));
-      if (r.page === key) a.setAttribute("aria-current", "page");
-      nav.append(a);
-      // Sub-pages of the open page.
-      if (r.page === key && SUBS[key]) {
-        const sub = h("div", { class: "sub" });
-        for (const [s, t] of SUBS[key]) {
-          const sa = h("a", { href: `#/${key}/${s}` }, t);
-          if ((r.rest[0] || SUBS[key][0][0]) === s) sa.setAttribute("aria-current", "page");
-          sub.append(sa);
-        }
-        nav.append(sub);
-      }
-      if (key === "chats" && r.page === "chats") {
-        const sub = h("div", { class: "sub" });
-        for (const c of chats.recent(5)) {
-          const sa = h("a", { href: c.href, title: c.title }, c.title);
-          if (location.hash === c.href) sa.setAttribute("aria-current", "page");
-          sub.append(sa);
-        }
-        if (sub.childNodes.length) nav.append(sub);
-      }
-    }
+// Nothing on the map and nothing said yet: the panel stands in the middle
+// with the question first. Anything else: it sits at the left, over the map.
+function posture() {
+  const start = !!shown && shown.page === "chats" && chats.isStart();
+  // The question is drawn first on the start: first in the document too.
+  chats.questionFirst(start);
+  if (document.body.classList.contains("start") !== start) {
+    document.body.classList.toggle("start", start);
+    layoutChanged();
+    // Once more when the panel has finished moving.
+    setTimeout(layoutChanged, 320);
   }
-  const info = store.info;
-  const src = info ? info.policy.source : "";
-  const policyText = { organization: "organization", file: "this computer's file", defaults: "Columbus defaults", unreadable: "file unreadable" }[src] || "…";
-  const foot = h("div", { class: "rail-foot" },
-    workflowsRow(),
-    h("a", { class: "row", href: "#/settings/org", title: `Policy in force: ${policyText}` },
-      h("span", { class: src === "unreadable" ? "dot bad" : src === "defaults" ? "dot warn" : "dot ok" }),
-      h("span", { class: "text" }, "Policy: ", h("b", {}, policyText))),
-    h("button", { type: "button", class: "classic", onclick: classicMenu, title: "Today's session list and settings window, kept until the main window has proved itself" }, "Classic windows…"));
-  const search = h("button", { type: "button", class: "searchbtn", onclick: openPalette, "aria-label": "Search chats, sessions and pages (Ctrl+K)", title: "Search (Ctrl+K)" },
-    icon("search"), h("span", { class: "label" }, "Search"), h("span", { class: "kbd" }, navigator.platform.startsWith("Mac") ? "⌘ K" : "Ctrl K"));
-  const brand = h("div", { class: "brand" }, logo(), h("span", { class: "word" }, "Columbus"));
-  rail.replaceChildren(brand, search, nav, h("div", { class: "spacer" }), foot);
+}
+
+/** What waits for the person: requests, and things to read before they run. */
+function waiting() {
+  const requests = chats.otherInbox().reduce((n, s) => n + (s.pending || []).length, 0) + chats.waitingCount();
+  const reviews = (store.tools ? store.tools.waiting.length : 0) + (store.workflows ? store.workflows.waiting.length : 0);
+  return { requests, reviews };
+}
+
+let navKey = "";
+function drawNav(r = route()) {
+  const nav = $("nav");
+  const place = r.page === "settings" ? (shown ? PAGES[shown.page][1] : "chats") : PAGES[r.page][1];
+  const w = waiting();
+  const n = w.requests + w.reviews;
+  // Redrawn only when something it shows changed, keeping the focus.
+  const key = JSON.stringify([place, n, r.page === "settings"]);
+  if (key === navKey) return;
+  navKey = key;
+  const focused = nav.contains(document.activeElement) ? document.activeElement.getAttribute("href") || document.activeElement.id : null;
+  const tabs = PLACES.map(([k, label]) => {
+    const count = k === "activity" ? n : 0;
+    const a = h("a", { class: "tab", href: `#/${k}`, "aria-label": count ? `${label}, ${count} waiting` : label },
+      h("span", {}, label), count ? h("span", { class: "count", "aria-hidden": "true" }, String(count)) : null);
+    if (place === k && r.page !== "settings") a.setAttribute("aria-current", "page");
+    return a;
+  });
+  const set = h("a", { class: "iconbtn", href: "#/settings", id: "nav-settings", "aria-label": "Settings", title: "Settings" }, icon("settings"));
+  if (r.page === "settings") set.setAttribute("aria-current", "page");
+  nav.replaceChildren(logo(), ...tabs, h("span", { class: "spacer" }),
+    h("a", { class: "iconbtn", href: "#/chats/fresh", id: "nav-new", "aria-label": "New chat", title: "New chat" }, icon("plus")),
+    iconButton("search", `Search chats, data, workflows and pages (${navigator.platform.startsWith("Mac") ? "⌘K" : "Ctrl+K"})`, openPalette, { id: "nav-search" }),
+    set);
   if (focused) {
-    const again = [...rail.querySelectorAll("a, button")].find((x) => x.getAttribute("href") === focused || x.className === focused);
+    const again = [...nav.querySelectorAll("a, button")].find((x) => x.getAttribute("href") === focused || x.id === focused);
     if (again) again.focus();
   }
 }
 
-function classicMenu() {
-  const d = h("dialog", { "aria-label": "Classic windows" });
-  const close = () => d.close();
-  const go = async (which) => {
-    try { await invoke("open_classic", { which }); } catch (e) { toast(String(e)); }
-    close();
-  };
-  d.append(h("div", { class: "dlg" },
-    h("h2", {}, "Classic windows"),
-    h("p", { class: "muted" }, "Today's windows, kept beside the main window until it has proved itself. They change the same settings."),
-    h("div", { class: "row wrap" },
-      h("button", { type: "button", class: "btn", onclick: () => go("sessions") }, "Session list"),
-      h("button", { type: "button", class: "btn", onclick: () => go("settings") }, "Settings window"),
-      h("span", { class: "spacer grow" }),
-      h("button", { type: "button", class: "btn", onclick: close }, "Close"))));
-  document.body.append(d);
-  d.addEventListener("close", () => d.remove());
-  d.showModal();
+// ---------- The panel put away: the map alone ----------
+function drawPill() {
+  const pill = $("pill");
+  // A request the app's own chat made, put away with the panel: the pill
+  // says so (a new one brings the panel back by itself, chats.js).
+  const waits = chats.waitingCount() > 0;
+  const held = document.activeElement && document.activeElement.id === "pill-show";
+  pill.replaceChildren(...[logo(), waits ? h("span", { class: "dot warn", "aria-hidden": "true" }) : null,
+    h("span", { class: "t" }, waits ? "Columbus needs your OK" : chats.liveTitle() || "Columbus"),
+    iconButton("panel", "Show the panel", () => setAway(false), { id: "pill-show" })].filter(Boolean));
+  if (held) $("pill-show").focus({ preventScroll: true });
 }
+function setAway(away) {
+  if (document.body.classList.contains("panel-away") === away) return;
+  document.body.classList.toggle("panel-away", away);
+  if (away) drawPill();
+  layoutChanged();
+  // The focus follows: to the pill's button, or back into the panel.
+  setTimeout(() => { const to = away ? $("pill-show") : $("main"); if (to) to.focus({ preventScroll: true }); }, 0);
+}
+store.setAway = setAway;
 
 // ---------- Ctrl+K ----------
 let paletteItems = [];
 let paletteSel = 0;
 let searchSeq = 0;
+
+// The person's connections, read when the search opens (their names are
+// searched too).
+let paletteConns = [];
 
 function openPalette() {
   const d = $("palette");
@@ -175,20 +267,33 @@ function openPalette() {
   fillPalette("");
   d.showModal();
   $("palette-q").focus();
+  invoke("settings_state").then((st) => {
+    paletteConns = (st.connections || []).filter((c) => c.id);
+    if (d.open && $("palette-q").value.trim()) fillPalette($("palette-q").value);
+  }).catch(() => {});
 }
 
 async function fillPalette(q) {
   const seq = ++searchSeq;
   const ql = q.trim().toLowerCase();
   const items = [];
-  for (const [key, name] of Object.entries(PAGE_NAMES)) {
-    if (!ql || name.toLowerCase().includes(ql)) items.push({ kind: "Page", title: name, href: `#/${key}` });
-  }
-  for (const [p, subs] of Object.entries(SUBS)) {
-    for (const [s, t] of subs) if (ql && t.toLowerCase().includes(ql)) items.push({ kind: PAGE_NAMES[p], title: t, href: `#/${p}/${s}` });
+  for (const [name, href, kind] of GOTO) {
+    if (ql ? name.toLowerCase().includes(ql) : kind === "Place" || name === "New chat") items.push({ kind, title: name, href });
   }
   for (const c of chats.recent(50)) {
     if (!ql || c.title.toLowerCase().includes(ql)) items.push({ kind: c.kind, title: c.title, sub: c.sub, href: c.href });
+  }
+  // By name, once something is typed: connections, workflows, projects.
+  if (ql) {
+    for (const c of paletteConns) {
+      if (c.id.toLowerCase().includes(ql)) items.push({ kind: "Data", title: c.id, sub: c.description || "", href: `#/data/c/${encodeURIComponent(c.id)}` });
+    }
+    for (const w of (store.workflows ? store.workflows.installed : [])) {
+      if (String(w.name).toLowerCase().includes(ql)) items.push({ kind: "Workflow", title: w.name, sub: w.purpose || "", href: `#/workflows/${encodeURIComponent(w.id)}` });
+    }
+    for (const p of (store.projects ? store.projects.projects : [])) {
+      if (String(p.name).toLowerCase().includes(ql)) items.push({ kind: "Project", title: p.name, href: `#/projects/${encodeURIComponent(p.id)}` });
+    }
   }
   render(items);
   if (ql.length >= 2) {
@@ -209,7 +314,7 @@ async function fillPalette(q) {
     ul.replaceChildren();
     paletteItems.forEach((it, i) => {
       const li = h("li", { role: "option", id: `pal-${i}`, "aria-selected": i === 0 ? "true" : "false" },
-        h("span", { class: "k" }, it.kind), h("span", {}, it.title), it.sub ? h("span", { class: "s" }, it.sub) : null);
+        h("span", {}, it.title), h("span", { class: "k" }, it.kind), it.sub ? h("span", { class: "s" }, it.sub) : null);
       li.addEventListener("click", () => choose(i));
       ul.append(li);
     });
@@ -246,6 +351,19 @@ document.addEventListener("keydown", (e) => {
     e.preventDefault();
     openPalette();
   }
+  // Esc closes the sheet beside the panel (dialogs and menus close themselves).
+  if (e.key === "Escape" && !e.defaultPrevented && !document.querySelector("dialog[open]") && $("side") && !$("side").hidden) {
+    e.preventDefault();
+    closeSide();
+  }
+});
+
+// "Skip to content" moves the focus past the nav. Its address is not a page
+// (the router would open a new chat), so it is handled here.
+document.querySelector("a.skip").addEventListener("click", (e) => {
+  e.preventDefault();
+  const to = (!pageHost.hidden && $("page-title")) || $("main");
+  to.focus();
 });
 
 // ---------- Polling ----------
@@ -269,24 +387,6 @@ async function refreshWorkflows() {
   try { store.set("workflows", await invoke("workflows_state")); } catch (e) { console.error(e); }
 }
 
-// The rail's foot: how many workflows run on a schedule here, and whether
-// one needs the person.
-function workflowsRow() {
-  const w = store.workflows;
-  let text = "…";
-  let dot = "dot";
-  let title = "Your workflows";
-  if (w) {
-    const on = w.installed.filter((x) => x.schedule_entry === "on").length;
-    const needs = w.installed.filter((x) => x.last_run && ["failed", "needs_you", "needs_reapproval", "stopped_at_limit"].includes(x.last_run.status)).length + w.waiting.length;
-    text = !w.allowed ? "off" : on ? `${on} on schedule` : "none scheduled";
-    dot = !w.allowed ? "dot" : needs ? "dot warn" : on ? "dot ok" : "dot";
-    title = needs ? `${needs} workflow${needs === 1 ? "" : "s"} need you` : title;
-  }
-  return h("a", { class: "row", href: "#/workflows", title },
-    h("span", { class: dot }), h("span", { class: "text" }, h("b", {}, "Workflows"), ` ${text}`));
-}
-
 async function refreshChats() {
   try { store.set("chats", await invoke("chats_list")); } catch (e) { console.error(e); }
 }
@@ -294,13 +394,17 @@ const refresh = { info: refreshInfo, sessions: refreshSessions, inbox: refreshIn
 store.refresh = refresh;
 chats.setRefresh(refresh);
 
-let railQueued = false;
+let navQueued = false;
 store.on((k) => {
-  if (["inbox", "tools", "info", "chats", "sessions", "waiting", "workflows"].includes(k) && !railQueued) {
-    railQueued = true;
-    requestAnimationFrame(() => { railQueued = false; drawRail(); });
+  if (["inbox", "tools", "info", "chats", "sessions", "waiting", "workflows"].includes(k) && !navQueued) {
+    navQueued = true;
+    requestAnimationFrame(() => { navQueued = false; drawNav(); });
   }
+  // The live chat started, or was cleared: the panel takes its place.
+  if (k === "chatstate") posture();
+  if ((k === "chatstate" || k === "waiting") && document.body.classList.contains("panel-away")) drawPill();
 });
+window.addEventListener("resize", layoutChanged);
 
 // Tests only: a debug build may open the window with a test page to show
 // in the same sandboxed frame as a session's page (e2e/frame_ipc.py). The

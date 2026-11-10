@@ -1,12 +1,15 @@
 // Tools: the person's own tools (ported from the Settings window), each
 // read in full before it is installed, which is confirmed at the keyboard
 // in the app's own code; and the Skills library, read only.
-import { $, h, el, invoke, store, button, pageHead, showError, when, numbered, emptyState, coming } from "../core.js";
+import { $, h, el, invoke, store, button, pageHead, sec, showError, when, numbered, emptyState } from "../core.js";
 import { switchRow } from "./settings.js";
 import { shareOut, shareIn, importedText, teamLibrary } from "./share.js";
 
 let tools = null;
 let reviewing = null;
+
+// Tools and skills are pages inside Workflows.
+const BACK = { href: "#/workflows", label: "Workflows" };
 
 function testText(t) {
   const p = t.proposal || {};
@@ -29,8 +32,8 @@ function testText(t) {
 export async function render(main) {
   const page = h("div", { class: "page" });
   main.append(page);
-  page.append(pageHead("Tools", "Tools your assistant made from scripts, for it (and any assistant you use with Columbus) to reuse. You read each one and install it here.",
-    [button("Open a shared file…", "", () => shareIn($("tools-error"), () => refresh()), { id: "tools-open-shared", title: "A tool or workflow a coworker shared: you review it here before anything is installed" })]));
+  page.append(pageHead("Tools", "Steps your assistant made from scripts, for it to reuse. You read each one and install it here.",
+    [button("Open a shared file…", "sm", () => shareIn($("tools-error"), () => refresh()), { id: "tools-open-shared", title: "A tool or workflow a coworker shared: you review it here before anything is installed" })], BACK));
   const body = h("div", { class: "pad stack" });
   page.append(h("div", { class: "scroll" }, body));
   const notice = h("p", { id: "restart", class: "notice ok", role: "status", hidden: true });
@@ -40,9 +43,16 @@ export async function render(main) {
   const installed = h("ul", { id: "tools-installed", class: "list", "aria-live": "polite" });
   const sw = h("div", {});
   const orgList = h("div", { id: "org-tools", class: "bd stack" });
-  const orgCard = h("section", { class: "card", hidden: true }, h("div", { class: "hd" }, h("h2", {}, "From your organization")), orgList);
+  const orgCard = h("section", { class: "card", hidden: true }, sec("From your organization"), orgList);
   const teamBody = h("div", { class: "bd stack" });
-  const teamCard = h("section", { class: "card", id: "team-library" }, h("div", { class: "hd" }, h("h2", {}, "Team library")), teamBody);
+  const teamCard = h("section", { class: "card", id: "team-library" }, sec("Team library"), teamBody);
+  const waitingN = h("span", { class: "n" });
+  const installedN = h("span", { class: "n" });
+  const about = h("details", { class: "card", id: "tools-about" }, h("summary", { class: "hd" }, h("h2", {}, "How tools run, and your organization's switch")),
+    h("div", { class: "bd stack" },
+      h("p", { class: "small muted" }, "An installed tool runs whenever it is needed, without asking, in the same sandbox as scripts: no network; each run starts afresh, reads only the layers it is given for that run (and the Python installation) and writes only its own folder, which is deleted when the run ends. Ask your assistant, for example: ", h("i", {}, "add the script we just made as a tool"), "."),
+      sw,
+      h("p", { class: "small muted wrap-any" }, "Stored in ", h("code", { id: "tools-dir" }), ". Built-in tools, engine plugins and connected servers are listed by your assistant (list_providers).")));
   teamLibrary(teamBody, err, () => refresh());
   invoke("org_tools_list").then((o) => {
     const list = o.tools || [];
@@ -55,18 +65,18 @@ export async function render(main) {
         t.description ? h("span", {}, t.description) : null))));
   }).catch(() => {});
   body.append(notice, err, off,
-    h("p", { class: "small muted" }, "An installed tool runs whenever it is needed, without asking, in the same sandbox as scripts: no network; each run starts afresh, reads only the layers it is given for that run (and the Python installation) and writes only its own folder, which is deleted when the run ends. Ask your assistant, for example: ", h("i", {}, "add the script we just made as a tool"), "."),
-    h("section", { class: "card" }, h("div", { class: "hd" }, h("h2", {}, "Waiting for you")), h("div", { class: "bd flush" }, waiting, h("p", { id: "no-waiting", class: "pad muted small", hidden: true }, "Nothing is waiting."))),
-    h("section", { class: "card" }, h("div", { class: "hd" }, h("h2", {}, "Installed")), h("div", { class: "bd flush" }, installed, h("p", { id: "no-installed", class: "pad muted small", hidden: true }, "No tools installed yet."))),
+    h("section", { class: "card" }, h("div", { class: "sec" }, h("h2", {}, "Waiting for you"), waitingN), h("div", { class: "bd flush" }, waiting), h("p", { id: "no-waiting", class: "muted small quiet", hidden: true }, "Nothing is waiting.")),
+    h("section", { class: "card" }, h("div", { class: "sec" }, h("h2", {}, "Installed"), installedN), h("div", { class: "bd flush" }, installed), h("p", { id: "no-installed", class: "muted small quiet", hidden: true }, "No tools installed yet.")),
     orgCard,
     teamCard,
-    h("section", { class: "card" }, h("div", { class: "hd" }, h("h2", {}, "Your organization's switch")), h("div", { class: "bd" }, sw)),
-    h("p", { class: "small muted wrap-any" }, "Stored in ", h("code", { id: "tools-dir" })),
-    h("p", { class: "small muted" }, "Built-in tools, engine plugins and connected servers are listed by your assistant (list_providers); a page for them comes later."));
+    about);
 
   const draw = () => {
     $("tools-dir").textContent = tools.dir;
     off.hidden = tools.allowed;
+    if (!tools.allowed) about.open = true;
+    waitingN.textContent = tools.waiting.length ? String(tools.waiting.length) : "";
+    installedN.textContent = tools.installed.length ? String(tools.installed.length) : "";
     waiting.replaceChildren();
     $("no-waiting").hidden = tools.waiting.length > 0;
     for (const t of tools.waiting) {
@@ -77,9 +87,9 @@ export async function render(main) {
       const info = testText(t);
       if (info) text.append(el("span", "where", info));
       if (t.problem) text.append(el("span", "where error-text", t.problem));
-      const b = button("Review", "primary sm", () => openReview(t), { title: "Read its code and manifest, then install or decline it" });
+      const b = button("Review", "sm", () => openReview(t), { title: "Read its code and manifest, then install or decline it" });
       b.disabled = !!t.problem;
-      const d = button("Decline", "danger sm", () => decline(t.id));
+      const d = button("Decline", "ghost sm", () => decline(t.id));
       li.append(text, h("div", { class: "acts" }, b, d));
       waiting.append(li);
     }
@@ -93,12 +103,12 @@ export async function render(main) {
       const state = t.state === "ready" ? (tools.allowed ? "In use" : "Off (organization)")
         : t.state === "changed" ? "Off: its files changed"
           : t.state === "invalid" ? "Off: ask your assistant to propose it again" : "Off: not installed";
-      text.append(h("div", { class: "chips" }, el("span", t.state === "ready" && tools.allowed ? "chip ro" : "chip off", state)));
+      text.append(el("span", t.state === "ready" && tools.allowed ? "where" : "where off", state));
       if (t.problem) text.append(el("span", "where error-text", `Not used: ${t.problem}. Remove it, and ask your assistant to propose it again.`));
       const v = button("Code", "sm", () => openInstalled(t));
       const sh = button("Share…", "sm", () => shareOut("tool", t.id, err), { title: "Save it as a file to send a coworker; they review and install it themselves" });
       sh.disabled = t.state !== "ready";
-      const r = button("Remove", "danger sm", () => removeTool(t.id), { title: "Remove it: your assistant cannot use it from its next request" });
+      const r = button("Remove", "ghost sm", () => removeTool(t.id), { title: "Remove it: your assistant cannot use it from its next request" });
       li.append(text, h("div", { class: "acts" }, v, sh, r));
       installed.append(li);
     }
@@ -144,8 +154,8 @@ export async function render(main) {
       h("p", { id: "review-error", class: "error-text", role: "alert", hidden: true }),
       h("div", { class: "actions" },
         h("button", { type: "button", id: "review-decline", class: "btn danger" }, "Decline"), h("span", { class: "spacer" }),
-        h("button", { type: "button", id: "review-close", class: "btn" }, "Close"),
-        h("button", { type: "button", id: "review-install", class: "btn primary" }, "Install"))));
+        h("button", { type: "button", id: "review-close", class: "btn" }, "Not now"),
+        h("button", { type: "button", id: "review-install", class: "btn primary" }, "I've read it. Install it."))));
     document.body.append(d);
     $("review-close").addEventListener("click", () => d.close());
     return d;
@@ -180,6 +190,7 @@ export async function render(main) {
     inst.disabled = !tools.allowed;
     inst.title = tools.allowed ? `Install it (asks for ${store.info ? store.info.confirm_with : "confirmation"})` : "Personal tools are turned off in your organization's settings";
     inst.onclick = install;
+    $("review-close").textContent = "Not now";
     $("review-decline").onclick = () => reviewing && decline(reviewing.id);
     d.showModal();
     $("review-code").focus();
@@ -199,6 +210,7 @@ export async function render(main) {
     $("review-warnings").replaceChildren();
     $("review-install").hidden = true;
     $("review-decline").hidden = true;
+    $("review-close").textContent = "Close";
     d.showModal();
   }
   async function install() {
@@ -227,18 +239,23 @@ export async function render(main) {
 export async function renderSkills(main) {
   const page = h("div", { class: "page" });
   main.append(page);
-  page.append(pageHead("Skills", "Advice your assistant reads for GIS work: when to use which tool, and how. Skills never grant access to anything."));
+  page.append(pageHead("Skills", "Advice your assistant reads for GIS work: when to use which tool, and how. Skills never grant access to anything.", [], BACK));
   const body = h("div", { class: "pad stack" });
   page.append(h("div", { class: "scroll" }, body));
   let r;
   try { r = await invoke("skills_list"); } catch (e) { body.append(el("p", "error-text", String(e))); return; }
-  body.append(h("div", { class: "notice" }, h("div", {}, r.from === "installed"
-    ? `The skills installed beside Columbus's server, in ${r.dir}. Your assistant gets them from Columbus itself.`
-    : "The skills that ship with this version of Columbus. (No installed copy was found beside the server.)")));
+  const from = r.from === "installed"
+    ? `Installed beside Columbus's server, in ${r.dir}. Your assistant gets them from Columbus itself.`
+    : "These ship with this version of Columbus. (No installed copy was found beside the server.)";
   if (!r.skills.length) { body.append(emptyState("No skills found", "Columbus's skills ship with the server.")); return; }
   const ul = h("ul", { class: "list" });
-  for (const s of r.skills) ul.append(h("li", {}, h("div", { class: "text" }, h("b", { class: "mono" }, String(s.name)), s.description ? h("span", { class: "where" }, String(s.description)) : null), h("span", { class: "chip ro" }, "Built in")));
-  body.append(h("section", { class: "card" }, h("div", { class: "hd" }, h("h2", {}, "Built in"), h("span", { class: "muted small" }, `${r.skills.length} skills · read only`)), h("div", { class: "bd flush" }, ul)));
-  body.append(coming("skills", "Organization and imported skills",
-    "Skills IT installs for your organization (district rules, for example) and skills you import from a file or GitHub, each with an on/off switch and marked \"not checked\" until their tool names match this server.", [], "Coming in a later stage"));
+  // A skill's description is long: two lines, and all of it on a click.
+  for (const s of r.skills) {
+    const li = h("li", { class: "clickable clamp", tabindex: "0", title: "Show all of it" }, h("div", { class: "text" }, h("b", { class: "mono" }, String(s.name)), s.description ? h("span", { class: "where" }, String(s.description)) : null));
+    const toggle = () => li.classList.toggle("clamp");
+    li.addEventListener("click", toggle);
+    li.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); } });
+    ul.append(li);
+  }
+  body.append(h("section", { class: "card" }, sec("Built in, read only", r.skills.length), h("div", { class: "bd flush" }, ul)), h("p", { class: "small muted wrap-any" }, from));
 }

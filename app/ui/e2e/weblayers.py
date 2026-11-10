@@ -40,6 +40,7 @@ from playwright.sync_api import expect, sync_playwright
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from mcp_client import Mcp, wait_file  # noqa: E402
+import a11y  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[2]
@@ -104,6 +105,18 @@ def settled(page, before=None, t=15):
             return v
         page.wait_for_timeout(100)
     raise AssertionError(f"the map did not settle (view {last}, before {before})")
+
+
+def in_view(page):
+    """The part of the map the page's panel does not cover, as west, south,
+    east, north (the panel floats over the map's left side)."""
+    w, s, e, n = view(page)
+    r = page.locator(".map canvas").bounding_box()
+    panel = page.locator(".panel").bounding_box()
+    assert panel, "the page's own panel is there"
+    left = panel["x"] + panel["width"]
+    assert r["x"] + r["width"] - left > 300, f"too little of the map is in view: {panel} over {r}"
+    return w + (left - r["x"]) / r["width"] * (e - w), s, e, n
 
 
 def row(page, sid):
@@ -230,6 +243,7 @@ def main():
                            "/Dynamic/MapServer/export", "/Elevation/ImageServer/exportImage", "/Parcels/FeatureServer/0/query"]:
                 assert any(marker.lower() in e["target"].lower() for e in log), f"no request for {marker}"
             assert any((e["host"] or "").startswith("cdn.fake.test") for e in log), "WMTS tiles on their own host"
+            assert not a11y.unnamed(page), a11y.unnamed(page)  # every control has a name, and Tab reaches it
             page.screenshot(path=str(OUT / "web-1-all-on.png"))
 
             print("weblayers: 12,000 features in view: 5,000 drawn, zoom in to see all")
@@ -272,6 +286,11 @@ def main():
             v = settled(page, before=v0)
             assert v[0] <= -97.8 + 0.01 and v[2] >= -97.6 - 0.01 and v[1] <= 30.2 + 0.01 and v[3] >= 30.4 - 0.01, v
             assert v[2] - v[0] < 1.0, f"not fitted to the parcels: {v}"
+            # And in the part of the map the panel leaves in view, in its
+            # middle.
+            vw, vs, ve, vn = in_view(page)
+            assert vw <= -97.8 + 0.01 and ve >= -97.6 - 0.01, f"the parcels are not all in view {(vw, vs, ve, vn)}"
+            assert abs((vw + ve) / 2 - -97.7) < (ve - vw) * 0.05, f"the parcels are not centred in view {(vw, vs, ve, vn)}"
             # Zoomed in further, everything in view draws.
             page.get_by_role("button", name="Zoom in").click()
             settled(page, before=v)
@@ -291,6 +310,7 @@ def main():
             settled(page, before=v1)
             for sid, *_ in kinds:
                 expect(row(page, sid).locator(".error")).to_have_count(0)
+            assert not a11y.unnamed(page), a11y.unnamed(page)  # every control has a name, and Tab reaches it
             page.screenshot(path=str(OUT / "web-2-settings.png"))
 
             print("weblayers: a direct request to a service host is blocked")
@@ -341,6 +361,7 @@ def main():
             row(page2, "dead-tiles").get_by_role("checkbox").check()
             page2.wait_for_timeout(500)
             expect(page2.locator(".web-notice")).to_have_count(0)
+            assert not a11y.unnamed(page2), a11y.unnamed(page2)  # every control has a name, and Tab reaches it
             page2.screenshot(path=str(OUT / "web-3-reloaded.png"))
             page2.close()
 

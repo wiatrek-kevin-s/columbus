@@ -96,9 +96,8 @@ export async function render(main, rest) {
   if (id) {
     const p = state.projects.find((x) => x.id === id);
     if (p) return formView(p);
-    page.append(pageHead("Project"), h("div", { class: "scroll" }, body));
-    body.append(h("p", { class: "small" }, h("a", { href: "#/projects" }, "← All projects")),
-      emptyState("Not found", "This project isn't here any more (it may have been deleted). Its chats are listed under Unfiled."));
+    page.append(pageHead("Project", null, [], { href: "#/projects", label: "All projects" }), h("div", { class: "scroll" }, body));
+    body.append(emptyState("Not found", "This project isn't here any more (it may have been deleted). Its chats are listed under Unfiled."));
     return;
   }
   return listView();
@@ -106,7 +105,7 @@ export async function render(main, rest) {
   // ---- The list --------------------------------------------------------
   function listView() {
     page.append(pageHead("Projects", "A project is a piece of work: instructions your assistant follows in every chat of it, the connections those chats may use, and where its results go. Yours alone.",
-      [button("New project", "primary", () => go("#/projects/new"), { id: "pj-new" })]));
+      [button("New project", "primary sm", () => go("#/projects/new"), { id: "pj-new" })], { href: "#/chats", label: "Chats" }));
     page.append(h("div", { class: "scroll" }, body));
     body.append(err);
     const ul = h("ul", { class: "list", id: "pj-list" });
@@ -120,7 +119,7 @@ export async function render(main, rest) {
         h("b", {}, h("a", { href: projHash(p.id) }, p.name)),
         h("span", { class: "where" }, `${plural(n, "chat")}${last ? ` · active ${ago(last)}` : ""} · ${connectionsText(p)}`),
         p.instructions ? h("span", { class: "muted small" }, p.instructions.length > 140 ? `${p.instructions.slice(0, 140)}…` : p.instructions) : null),
-        h("div", { class: "acts" }, button("New chat", "primary sm", () => go(`#/chats/fresh/${encodeURIComponent(p.id)}`), { title: `Start a chat in ${p.name}` })));
+        h("div", { class: "acts" }, button("New chat", "sm", () => go(`#/chats/fresh/${encodeURIComponent(p.id)}`), { title: `Start a chat in ${p.name}` })));
       ul.append(li);
     }
     if (state.projects.length) {
@@ -138,16 +137,16 @@ export async function render(main, rest) {
           h("p", { class: "small muted" }, "Chats can't start in these until their files are fixed or removed."))));
     }
     body.append(dbsCard(null));
-    body.append(h("p", { class: "small muted" }, "Attach data groups on a project's page. Documents and skills for each project, and sharing a project with your team, come later."));
+    body.append(h("p", { class: "small muted" }, "Attach data groups on a project's page."));
   }
 
   // ---- A project: its settings, and its chats --------------------------
   function formView(p) {
     const isNew = !p;
     page.append(pageHead(isNew ? "New project" : p.name, isNew ? "Name it, tell your assistant how to work in it, and choose what its chats may use." : null,
-      isNew ? [] : [button("New chat in this project", "primary", () => go(`#/chats/fresh/${encodeURIComponent(p.id)}`), { id: "pj-chat" })]));
+      isNew ? [] : [button("New chat in this project", "primary sm", () => go(`#/chats/fresh/${encodeURIComponent(p.id)}`), { id: "pj-chat" })], { href: "#/projects", label: "All projects" }));
     page.append(h("div", { class: "scroll" }, body));
-    body.append(h("p", { class: "small" }, h("a", { href: "#/projects" }, "← All projects")), err);
+    body.append(err);
 
     const name = h("input", { id: "pj-name", type: "text", maxlength: "80", value: p ? p.name : "", placeholder: "Roadway inventory QC, 2027", class: "grow" });
     const instr = h("textarea", { id: "pj-instructions", rows: "7", maxlength: String(MAX), placeholder: "For example: Work only on District 14. Report lengths in miles to two decimals. Leave retired segments (STATUS = 'R') out." });
@@ -171,7 +170,7 @@ export async function render(main, rest) {
       boxes.append(h("label", { class: "row", for: `pj-c-${c}` }, box, " ", c,
         missing.includes(c) ? h("span", { class: "badge warn" }, "no longer one of your connections") : null));
     }
-    if (!state.connections.length) boxes.append(h("p", { class: "small muted" }, "You have no connections yet. ", h("a", { href: "#/connections" }, "Add one"), "."));
+    if (!state.connections.length) boxes.append(h("p", { class: "small muted" }, "You have no connections yet. ", h("a", { href: "#/data" }, "Add one"), "."));
     const syncBoxes = () => { boxes.classList.toggle("muted", allR.checked); for (const b of boxes.querySelectorAll("input")) b.disabled = allR.checked; };
     allR.addEventListener("change", syncBoxes);
     someR.addEventListener("change", syncBoxes);

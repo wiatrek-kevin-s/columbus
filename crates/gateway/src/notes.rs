@@ -1553,7 +1553,7 @@ impl Gateway {
     }
 
     #[tool(
-        description = "Suggest changes to the person's notes for them to accept or dismiss later (Documents > Proposals), without asking them now: the same changes as update_notes (`changes`: one entry per note, up to 200, with title, summary, fields, labels, add_to_body), and `why`: where the information came from and why the change is right, in a sentence or two. Use it for a note the person has reviewed (you can't change those yourself), or when they'd rather look later than approve now. Nothing changes until they accept; checked now as update_notes checks.",
+        description = "Suggest changes to the person's notes for them to accept or dismiss later (Data › Notes › Proposals), without asking them now: the same changes as update_notes (`changes`: one entry per note, up to 200, with title, summary, fields, labels, add_to_body), and `why`: where the information came from and why the change is right, in a sentence or two. Use it for a note the person has reviewed (you can't change those yourself), or when they'd rather look later than approve now. Nothing changes until they accept; checked now as update_notes checks.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -1712,7 +1712,7 @@ impl Gateway {
             checks: vec![Check {
                 id: "notes.suggested".into(),
                 severity: Severity::Info,
-                message: "Nothing has changed yet: the person sees this in Documents > Proposals and accepts or dismisses it when they get to it. Don't wait for it or ask them to approve it now".into(),
+                message: "Nothing has changed yet: the person sees this in Data › Notes › Proposals and accepts or dismisses it when they get to it. Don't wait for it or ask them to approve it now".into(),
                 detail: None,
                 fix: None,
             }],

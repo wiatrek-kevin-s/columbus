@@ -767,7 +767,7 @@ fn personal_check() -> Check {
 }
 
 /// Whether a note's text came from a document imported from outside
-/// Columbus (Documents > Import).
+/// Columbus (Data › Notes › Import).
 fn imported(e: &Entry) -> bool {
     e.card.contains_key(serde_yaml::Value::from("imported"))
 }

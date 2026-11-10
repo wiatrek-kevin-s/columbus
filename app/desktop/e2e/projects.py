@@ -63,7 +63,7 @@ def main():
     d, proc = guard.driver(env, APP)
     wait = WebDriverWait(d, 30)
     try:
-        wait.until(lambda drv: drv.execute_script("return !!document.getElementById('page-title')"))
+        guard.ready(d, wait)
         d.execute_script("location.hash = '#/projects'")
         wait.until(EC.element_to_be_clickable((By.ID, "pj-new"))).click()
         name = wait.until(EC.visibility_of_element_located((By.ID, "pj-name")))
@@ -72,6 +72,7 @@ def main():
         click(d, By.ID, "pj-conn-some")
         click(d, By.ID, "pj-c-tiger")
         d.execute_script("const s = document.getElementById('pj-folder'); s.value = 'outbox'; s.dispatchEvent(new Event('change'))")
+        assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
         d.save_screenshot(str(OUT / "projects-new.png"))
         click(d, By.ID, "pj-save")
         wait.until(lambda drv: drv.execute_script("return location.hash") == "#/projects/tract-review-2027")
@@ -86,12 +87,17 @@ def main():
 
         step("A chat in the project says so")
         wait.until(EC.element_to_be_clickable((By.ID, "pj-chat"))).click()
-        wait.until(lambda drv: "Tract review 2027" in text(drv, "chat-sub"))
+        # Under the message box, the new chat's project is this one (it can
+        # still be changed until the first message).
+        wait.until(lambda drv: drv.execute_script(
+            "const s = document.getElementById('chat-project-pick'); return s ? [s.value, s.selectedOptions[0].textContent] : null") == ["tract-review-2027", "Tract review 2027"])
+        assert "Tract review 2027" in text(d, "chat-sub")
 
         step("The list shows it, with its connections")
         d.execute_script("location.hash = '#/projects'")
         wait.until(lambda drv: "Tract review 2027" in text(drv, "pj-list"))
         assert "Uses tiger" in text(d, "pj-list"), text(d, "pj-list")
+        assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
         d.save_screenshot(str(OUT / "projects-list.png"))
 
         step("A changed instruction is saved; deleting removes the file")

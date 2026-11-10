@@ -574,7 +574,7 @@ fn fix_widths(routes: &str, gaps: &str, row: &str) -> Value {
 }
 
 /// Propose a tool, approve its test run on the page, and install it as
-/// Settings › Tools does. Returns the installed hash.
+/// Workflows › Tools does. Returns the installed hash.
 async fn propose_and_install(
     env: &Env,
     c: &RunningService<RoleClient, ()>,

@@ -1,5 +1,5 @@
 //! `columbus-mcp notes check '{}'`: what in the person's notes needs them,
-//! for the app's Documents > Proposals inbox.
+//! for the app's Data › Notes › Proposals inbox.
 //!
 //! - **Changed since drafted:** for each note about a dataset, its fields as
 //!   the database lists them now (through Columbus, with the rules in force:

@@ -61,13 +61,13 @@ export async function render(main, rest) {
 
   // ---- Search ----------------------------------------------------------
   function searchView() {
-    page.append(pageHead("Registry", "Open data sources and GIS tools: who publishes them, what they cover, their licence, and how to get or install them."));
+    page.append(pageHead("Registry", "Open data sources and GIS tools: who publishes them, what they cover, their licence, and how to get or install them.", [], { href: "#/data", label: "Data" }));
     page.append(h("div", { class: "scroll" }, body));
-    const q = h("input", { type: "search", id: "rg-q", placeholder: "Words to look for: lidar texas, flood zones, geocoding library", class: "grow", value: lastQuery.query });
+    const q = h("input", { type: "search", id: "rg-q", "aria-label": "Words to look for", placeholder: "Words to look for: lidar texas, flood zones, geocoding library", class: "grow", value: lastQuery.query });
     const kind = h("select", { id: "rg-kind", "aria-label": "Kind" },
       h("option", { value: "" }, "Data and tools"), h("option", { value: "data" }, "Data sources"), h("option", { value: "tool" }, "Tools"));
     kind.value = lastQuery.kind;
-    const theme = h("input", { type: "text", id: "rg-theme", placeholder: "Theme (optional): elevation, hydrography…", value: lastQuery.theme });
+    const theme = h("input", { type: "text", id: "rg-theme", "aria-label": "Theme (optional)", placeholder: "Theme (optional): elevation, hydrography…", value: lastQuery.theme });
     const go1 = button("Search", "primary", () => search(), { id: "rg-search" });
     const results = h("div", { id: "rg-results", class: "stack" });
     body.append(h("form", { class: "row wrap", onsubmit: (e) => { e.preventDefault(); search(); } }, q, kind, theme, go1),
@@ -118,9 +118,9 @@ export async function render(main, rest) {
 
   // ---- One entry -------------------------------------------------------
   async function entryView(eid) {
-    page.append(pageHead("Registry entry"));
+    page.append(pageHead("Registry entry", null, [], { href: "#/registry", id: "rg-back", label: "Search the registry" }));
     page.append(h("div", { class: "scroll" }, body));
-    body.append(h("p", { class: "small" }, h("a", { href: "#/registry", id: "rg-back" }, "← Search")), err);
+    body.append(err);
     let r;
     try {
       r = await invoke("registry_query", { tool: "registry_get", args: { id: eid } });
@@ -132,7 +132,9 @@ export async function render(main, rest) {
     }
     const e = r.result?.entry;
     if (!e) { body.append(emptyState("Not found", "The registry has no entry with this id.")); return; }
-    document.getElementById("page-title").textContent = e.name || e.id;
+    // This page's own title (the person may have gone on while it loaded).
+    const title = page.querySelector("#page-title");
+    if (title) title.textContent = e.name || e.id;
     const rows = [];
     const add = (label, value) => { if (value != null && value !== "" && !(Array.isArray(value) && !value.length)) rows.push([label, value]); };
     add("Kind", e.kind === "data" ? "Data source" : "Tool");

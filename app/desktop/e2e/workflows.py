@@ -131,7 +131,7 @@ def env_for(root, confirm):
 def session(root, confirm):
     d, proc = guard.driver(env_for(root, confirm), APP)
     wait = WebDriverWait(d, 30)
-    wait.until(lambda drv: drv.execute_script("return !!document.getElementById('page-title')"))
+    guard.ready(d, wait)
     d.execute_script("location.hash = '#/workflows'")
     wait.until(EC.presence_of_element_located((By.ID, "wf-waiting")))
     time.sleep(0.5)
@@ -202,6 +202,7 @@ def main():
         assert "Reads only: tiger" in plain, plain
         assert "export folder outbox" in plain, plain
         assert "query_features" in text(d, "wf-review-file")
+        assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
         d.save_screenshot(str(OUT / "workflows-review.png"))
         click(d, By.ID, "wf-review-install")
         wait.until(lambda drv: not dlg.is_displayed())
@@ -211,9 +212,25 @@ def main():
         # Open a shared file is offered on the list (the file dialog itself
         # is the system's).
         assert d.find_element(By.ID, "wf-open-shared").is_displayed()
+        # A search that matches nothing says so, and no more.
+        find = d.find_element(By.CSS_SELECTOR, "input[aria-label='Search workflows']")
+        find.send_keys("zzzz")
+        wait.until(lambda drv: drv.find_element(By.ID, "wf-no-installed").is_displayed())
+        assert d.find_element(By.ID, "wf-no-installed").text == "Nothing matches.", d.find_element(By.ID, "wf-no-installed").text
+        d.execute_script("arguments[0].value = ''; arguments[0].dispatchEvent(new Event('input', {bubbles: true}))", find)
+        wait.until(lambda drv: not drv.find_element(By.ID, "wf-no-installed").is_displayed())
 
+        step("The list says when it runs; its own page says so in a sentence")
+        row = d.execute_script("return document.querySelector(\"#wf-installed li[data-id='tract-export']\").textContent")
+        assert "weekdays at 06:00" in row and "not run yet" in row, row
+        assert "Runs by itself" in text(d, "wf-installed")
+        click(d, By.XPATH, "//ul[@id='wf-installed']/li[@data-id='tract-export']//a")
+        wait.until(EC.element_to_be_clickable((By.ID, "wf-run-now")))
+        assert "Weekdays at 06:00." in text(d, "page-host"), text(d, "page-host")
+        # No scheduler on Linux: its page says so too.
+        assert "Schedules are not available on this system yet" in text(d, "wf-entry"), text(d, "wf-entry")
         step("Run now: the real server runs it, and its report shows")
-        click(d, By.XPATH, "//ul[@id='wf-installed']/li[@data-id='tract-export']//button[normalize-space()='Run now']")
+        click(d, By.ID, "wf-run-now")
         try:
             WebDriverWait(d, 120).until(lambda drv: drv.find_elements(By.ID, "wf-report") and "Succeeded" in text(drv, "wf-report"))
         except Exception:
@@ -222,6 +239,7 @@ def main():
         report = text(d, "wf-report")
         assert "exported to the outbox folder" in report, report
         assert any(p.name.startswith("tract-export-tracts-") for p in (root / "outbox").iterdir()), list((root / "outbox").iterdir())
+        assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
         d.save_screenshot(str(OUT / "workflows-run.png"))
 
         step("Open in a chat: the run's layer on the chat's map and table, its report for the assistant")
@@ -232,11 +250,11 @@ def main():
         click(d, By.ID, "wf-open-chat")
         WebDriverWait(d, 30).until(EC.presence_of_element_located((By.ID, "chat-run-note")))
         try:
-            frame = WebDriverWait(d, 90).until(EC.presence_of_element_located((By.CSS_SELECTOR, "#chatview .outpanel iframe")))
+            frame = WebDriverWait(d, 90).until(EC.presence_of_element_located((By.CSS_SELECTOR, "#stage iframe")))
         except Exception:
             d.save_screenshot(str(OUT / "workflows-open-failed.png"))
             raise SystemExit("the chat did not open with the run: " + d.execute_script(
-                "return (document.getElementById('log')||{}).textContent + ' | ' + ((document.querySelector('#chatview .outpanel')||{}).textContent || '')"))
+                "return (document.getElementById('log')||{}).textContent + ' | ' + ((document.getElementById('stage')||{}).textContent || '')"))
         assert "Tract export run" in text(d, "chat-sub"), text(d, "chat-sub")
         d.switch_to.frame(frame)
         try:
@@ -249,6 +267,7 @@ def main():
             assert on_map >= 1, "the run's layer is on the map"
         finally:
             d.switch_to.default_content()
+        assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
         d.save_screenshot(str(OUT / "workflows-open-in-chat.png"))
 
         step("The export from that chat asks for approval as usual; allowed, it lands")
@@ -272,6 +291,7 @@ def main():
         system = "".join(b["text"] for b in SEEN[0]["system"])
         assert "# Tract export" in system and "tract-export-tracts.gpkg" in system, "the report is in context"
         assert tree_hashes(*run_files) == before, "the run's files are unchanged"
+        assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
         d.save_screenshot(str(OUT / "workflows-chat-export.png"))
         d.execute_script(f"location.hash = '#/workflows/tract-export/{run_id}'")
         WebDriverWait(d, 30).until(lambda drv: drv.find_elements(By.ID, "wf-report") and "Succeeded" in text(drv, "wf-report"))
@@ -290,7 +310,8 @@ def main():
 
         step("Removing it, from its own page: off, its runs kept")
         click(d, By.XPATH, "//ul[@id='wf-installed']/li[@data-id='tract-export']//a")
-        step("Share is offered for an approved workflow")
+        step("Share is offered for an approved workflow, under More")
+        wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "#main .wf-more"))).click()
         assert wait.until(EC.presence_of_element_located((By.ID, "wf-share"))).is_enabled()
         wait.until(EC.element_to_be_clickable((By.ID, "wf-remove"))).click()
         wait.until(lambda drv: drv.find_elements(By.ID, "wf-installed") and "Tract export" not in text(drv, "wf-installed"))

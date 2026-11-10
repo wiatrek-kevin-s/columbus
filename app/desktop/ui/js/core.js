@@ -76,26 +76,43 @@ export function redraw(box, ...kids) {
   return true;
 }
 
-// The app's own icons (fixed paths, design's rail set).
+// The app's own icons (fixed paths on a 16 px grid).
 const ICONS = {
-  home: '<path d="M3 10.5 10 4l7 6.5V17H12.5v-4h-5v4H3z"/>',
-  chats: '<path d="M3 4.5h14v9H8l-4 3v-3H3z"/>',
-  projects: '<path d="M2.5 5.5h5l1.5 2h8.5v8.5h-15z"/>',
-  documents: '<path d="M5 2.5h7l3.5 3.5v11.5H5z"/><path d="M12 2.5V6h3.5M7.5 10h6M7.5 13h6"/>',
-  datagroups: '<path d="M10 3 17 6.5 10 10 3 6.5z"/><path d="M3 10l7 3.5 7-3.5M3 13.5 10 17l7-3.5"/>',
-  skills: '<path d="M10 2.5l2 5 5 .5-3.8 3.4 1.2 5.1L10 13.8l-4.4 2.7 1.2-5.1L3 8l5-.5z"/>',
-  connections: '<ellipse cx="10" cy="5" rx="6.5" ry="2.5"/><path d="M3.5 5v10c0 1.4 2.9 2.5 6.5 2.5s6.5-1.1 6.5-2.5V5M3.5 10c0 1.4 2.9 2.5 6.5 2.5s6.5-1.1 6.5-2.5"/>',
-  registry: '<circle cx="10" cy="10" r="7.5"/><path d="M2.5 10h15M10 2.5c2.2 2.3 2.2 12.7 0 15M10 2.5c-2.2 2.3-2.2 12.7 0 15"/>',
-  tools: '<path d="M12.5 3.5a4 4 0 0 0-4.6 5.3L3.5 13.2l3.3 3.3 4.4-4.4a4 4 0 0 0 5.3-4.6l-2.4 2.4-2.6-.6-.6-2.6z"/>',
-  workflows: '<circle cx="5" cy="5" r="2"/><circle cx="15" cy="10" r="2"/><circle cx="5" cy="15" r="2"/><path d="M7 5h3a3 3 0 0 1 3 3v0M7 15h3a3 3 0 0 0 3-3"/>',
-  activity: '<path d="M2.5 10h3.5l2-5 4 10 2-5h3.5"/>',
-  settings: '<circle cx="10" cy="10" r="2.6"/><path d="M10 2.5v2.2M10 15.3v2.2M2.5 10h2.2M15.3 10h2.2M4.7 4.7l1.6 1.6M13.7 13.7l1.6 1.6M4.7 15.3l1.6-1.6M13.7 6.3l1.6-1.6"/>',
-  search: '<circle cx="8.5" cy="8.5" r="5"/><path d="m12.5 12.5 4.5 4.5"/>',
-  map: '<path d="M2.5 5 7.5 3l5 2 5-2v12l-5 2-5-2-5 2z"/><path d="M7.5 3v12M12.5 5v12"/>',
-  close: '<path d="M5 5l10 10M15 5 5 15"/>',
-  plus: '<path d="M10 4v12M4 10h12"/>',
+  search: '<circle cx="7" cy="7" r="4.25"/><path d="M10.2 10.2 13.5 13.5"/>',
+  settings: '<path d="M2.5 5h5.25M11.75 5h1.75M2.5 11h1.75M8.25 11h5.25"/><circle cx="9.75" cy="5" r="1.75"/><circle cx="6.25" cy="11" r="1.75"/>',
+  plus: '<path d="M8 3.5v9M3.5 8h9"/>',
+  close: '<path d="M4 4l8 8M12 4l-8 8"/>',
+  back: '<path d="M9.75 3.5 5.25 8l4.5 4.5"/>',
+  forward: '<path d="M6.25 3.5 10.75 8l-4.5 4.5"/>',
+  down: '<path d="M3.5 6.25 8 10.75l4.5-4.5"/>',
+  more: '<circle cx="3.5" cy="8" r=".9"/><circle cx="8" cy="8" r=".9"/><circle cx="12.5" cy="8" r=".9"/>',
+  send: '<path d="M8 12.5v-9M4 7.5l4-4 4 4"/>',
+  out: '<path d="M4.5 11.5l7-7M5.5 4.5h6v6"/>',
+  check: '<path d="M3.5 8.5l3 3 6-7"/>',
+  panel: '<rect x="2.5" y="3" width="11" height="10" rx="2"/><path d="M6.5 3v10"/>',
+  map: '<path d="M2 4.5 6 3l4 1.5L14 3v8.5L10 13l-4-1.5L2 13z"/><path d="M6 3v8.5M10 4.5V13"/>',
+  files: '<path d="M2.5 5A1.5 1.5 0 0 1 4 3.5h2.3l1.4 1.5H12A1.5 1.5 0 0 1 13.5 6.5V11a1.5 1.5 0 0 1-1.5 1.5H4A1.5 1.5 0 0 1 2.5 11V5z"/>',
+  popout: '<path d="M6.5 3.5H4A1.5 1.5 0 0 0 2.5 5v7A1.5 1.5 0 0 0 4 13.500h7a1.500 1.500 0 0 0 1.500-1.500V9.500M9 2.500h4.500V7M13.500 2.500 7.500 8.500"/>',
+  doc: '<path d="M4.5 2.5h5l3 3v7A1.5 1.5 0 0 1 11 14H4.500A1.500 1.500 0 0 1 3 12.500V4a1.500 1.500 0 0 1 1.500-1.500zM9.500 2.500v3h3M5.500 8.500h5M5.500 11h3.500"/>',
+  shield: '<path d="M8 2 3 4v4c0 3 2.200 5 5 6 2.800-1 5-3 5-6V4L8 2z"/><path d="M5.900 8.200l1.500 1.500 2.800-3.100"/>',
+  lock: '<rect x="3.5" y="7" width="9" height="6.5" rx="1.5"/><path d="M5.5 7V5.250a2.500 2.500 0 0 1 5 0V7"/>',
+  eye: '<path d="M1.75 8S4 3.75 8 3.750 14.250 8 14.250 8 12 12.250 8 12.250 1.750 8 1.750 8z"/><circle cx="8" cy="8" r="1.75"/>',
+  pen: '<path d="M10.5 3 13 5.500 5.750 12.750 2.750 13.250l.5-3L10.500 3z"/>',
+  layers: '<path d="M8 2.500 13.750 5.500 8 8.500 2.250 5.500 8 2.500z"/><path d="M2.750 8.500 8 11.250l5.250-2.750"/>',
+  filter: '<path d="M2.500 3.500h11L9.500 8.250v4l-3 1.250v-5.250L2.500 3.500z"/>',
+  table: '<rect x="2.500" y="3" width="11" height="10" rx="1.750"/><path d="M2.500 6.500h11M2.500 9.750h11M6.250 6.500V13"/>',
+  play: '<path d="M5 3.250v9.500L12.500 8 5 3.250z"/>',
+  code: '<path d="M5.500 4.500 2 8l3.500 3.500M10.500 4.500 14 8l-3.500 3.500"/>',
+  clock: '<circle cx="8" cy="8" r="5.750"/><path d="M8 4.750V8l2.250 1.500"/>',
+  user: '<circle cx="8" cy="5.500" r="2.500"/><path d="M3 13.250c.6-2.300 2.600-3.500 5-3.500s4.400 1.200 5 3.500"/>',
+  cpu: '<rect x="4" y="4" width="8" height="8" rx="1.500"/><path d="M6.500 1.750V4M9.500 1.750V4M6.500 12v2.250M9.500 12v2.250M1.750 6.500H4M1.750 9.500H4M12 6.500h2.250M12 9.500h2.250"/>',
+  key: '<circle cx="5.250" cy="10.750" r="2.500"/><path d="M7.100 8.900 13 3M10.750 5.250l1.750 1.750"/>',
+  // Kept by name for the "coming" states and older callers.
+  connections: '<ellipse cx="8" cy="4.25" rx="4.75" ry="1.75"/><path d="M3.250 4.250v7.500c0 .970 2.130 1.750 4.750 1.750s4.750-.780 4.750-1.750v-7.500M3.250 8c0 .970 2.130 1.750 4.750 1.750S12.750 8.970 12.750 8"/>',
+  skills: '<path d="M8 2.200l1.700 3.800 4.100.4-3.100 2.800.9 4.100L8 11.200l-3.600 2.100.9-4.100L2.200 6.400l4.100-.4z"/>',
+  registry: '<circle cx="8" cy="8" r="5.5"/><path d="M2.500 8h11M8 2.500c1.800 1.600 2.600 3.500 2.600 5.500S9.800 11.900 8 13.500C6.200 11.900 5.400 10 5.400 8S6.200 4.100 8 2.500z"/>',
 };
-const LOGO = '<circle cx="12" cy="12" r="10" stroke="#5ca3ee" stroke-width="1.8"/><path d="M12 4.5 14.2 12 12 19.5 9.8 12z" fill="#5ca3ee"/><path d="M12 4.5 14.2 12H9.8z" fill="#e7b04f"/>';
+const LOGO = '<circle class="ring" cx="12" cy="12" r="10"/><path class="n" d="M12 5 14.4 12H9.6z"/><path class="s" d="M12 19 9.600 12h4.800z"/>';
 
 function svgFrom(viewBox, inner, attrs) {
   const ns = "http://www.w3.org/2000/svg";
@@ -112,13 +129,21 @@ function svgFrom(viewBox, inner, attrs) {
 }
 
 export function icon(name) {
-  return svgFrom("0 0 20 20", ICONS[name] || "", {
-    fill: "none", stroke: "currentColor", "stroke-width": "1.6", "stroke-linejoin": "round", "stroke-linecap": "round",
+  return svgFrom("0 0 16 16", ICONS[name] || "", {
+    class: "ic", fill: "none", stroke: "currentColor", "stroke-width": "1.5", "stroke-linejoin": "round", "stroke-linecap": "round",
   });
 }
 
+/** The Columbus mark: a compass, its north in the colour of the answer. */
 export function logo() {
-  return svgFrom("0 0 24 24", LOGO, { fill: "none" });
+  return svgFrom("0 0 24 24", LOGO, { class: "mark", fill: "none" });
+}
+
+/** A button that is only an icon, named for screen readers and on hover. */
+export function iconButton(name, label, onclick, attrs = {}) {
+  const b = h("button", { type: "button", class: "iconbtn", "aria-label": label, title: label, ...attrs }, icon(name));
+  if (onclick) b.addEventListener("click", onclick);
+  return b;
 }
 
 // ---------- Text helpers ----------
@@ -139,6 +164,47 @@ export function when(v) {
   if (v == null || v === "") return "";
   const d = typeof v === "number" ? new Date(v * 1000) : new Date(v);
   return isNaN(+d) ? String(v) : d.toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
+}
+
+const dayStart = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+const asDate = (v) => (typeof v === "number" ? new Date(v * 1000) : new Date(v));
+
+/** A time for a list: the hour today, the weekday this week, else the date. */
+export function shortWhen(v) {
+  if (v == null || v === "") return "";
+  const d = asDate(v);
+  if (isNaN(+d)) return String(v);
+  const now = new Date();
+  const days = Math.round((dayStart(now) - dayStart(d)) / 86400000);
+  if (days === 0) return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  if (days === 1) return "Yesterday";
+  if (days > 1 && days < 7) return d.toLocaleDateString([], { weekday: "short" });
+  return d.toLocaleDateString([], d.getFullYear() === now.getFullYear() ? { month: "short", day: "numeric" } : { month: "short", day: "numeric", year: "numeric" });
+}
+
+/** The hour and minute alone. */
+export function clock(v) {
+  const d = asDate(v);
+  return v == null || v === "" || isNaN(+d) ? "" : d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+
+/** The day something happened on, as a heading: Today, Yesterday, or the date. */
+export function dayName(v) {
+  const d = asDate(v);
+  if (v == null || v === "" || isNaN(+d)) return "";
+  const now = new Date();
+  const days = Math.round((dayStart(now) - dayStart(d)) / 86400000);
+  if (days === 0) return "Today";
+  if (days === 1) return "Yesterday";
+  return d.toLocaleDateString([], d.getFullYear() === now.getFullYear() ? { weekday: "long", month: "long", day: "numeric" } : { month: "long", day: "numeric", year: "numeric" });
+}
+
+/** Which part of the past a time falls in, for grouping a list. */
+export function era(v) {
+  const d = asDate(v);
+  if (v == null || v === "" || isNaN(+d)) return "Earlier";
+  const days = Math.round((dayStart(new Date()) - dayStart(d)) / 86400000);
+  return days <= 0 ? "Today" : days === 1 ? "Yesterday" : days < 7 ? "This week" : "Earlier";
 }
 
 export function ago(v) {
@@ -173,17 +239,93 @@ export function toast(text) {
   const t = $("toast");
   t.textContent = text;
   t.hidden = false;
+  // Shown above an open sheet or dialog too, where the browser can.
+  if (t.showPopover) {
+    try { t.hidePopover(); } catch { /* was not showing */ }
+    try { t.showPopover(); } catch { /* shown in place */ }
+  }
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => (t.hidden = true), 6000);
+  toastTimer = setTimeout(() => {
+    t.hidden = true;
+    if (t.hidePopover) { try { t.hidePopover(); } catch { /* was not showing */ } }
+  }, 6000);
 }
 
 // ---------- Page building blocks ----------
 
-/** The page head: title, a lede, and actions on the right. */
-export function pageHead(title, lede, actions = []) {
-  return h("header", { class: "pagehead" },
-    h("div", {}, h("h1", { id: "page-title", tabindex: "-1" }, title), lede ? h("p", { class: "lede" }, lede) : null),
+/** The page head: a way back (for a page inside another), the title, a
+ * lede, and actions on the right. `back` is {href, label, id}. */
+export function pageHead(title, lede, actions = [], back = null) {
+  const bar = h("div", { class: "bar" },
+    back ? h("a", { class: "iconbtn back", href: back.href, id: back.id || null, "aria-label": back.label, title: back.label }, icon("back")) : null,
+    h("div", { class: "titles" }, h("h1", { id: "page-title", tabindex: "-1" }, title)),
     actions.length ? h("div", { class: "actions" }, ...actions) : null);
+  return h("header", { class: back ? "pagehead has-back" : "pagehead" }, bar, lede ? h("p", { class: "lede" }, lede) : null);
+}
+
+/** The head of one of the four places: its name (for screen readers and
+ * tests; the tab above already says it), a search box and its actions. */
+export function placeHead(title, search, actions = []) {
+  return h("header", { class: "placehead" },
+    h("h1", { id: "page-title", class: "visually-hidden", tabindex: "-1" }, title),
+    search ? h("label", { class: "searchbox" }, icon("search"), search) : h("span", { class: "grow" }),
+    ...actions);
+}
+
+/** A quiet label over a group of rows, with how many there are. */
+export function sec(label, n = null, ...more) {
+  return h("div", { class: "sec" }, h("h2", {}, label), n != null && n !== "" ? h("span", { class: "n" }, String(n)) : null, ...more);
+}
+
+/** A quiet select is as wide as the choice it shows, not its longest one. */
+export function fitSelect(sel) {
+  const o = sel.selectedOptions && sel.selectedOptions[0];
+  if (!o || !sel.isConnected) return;
+  // Measured in a span drawn out of sight, in the select's own type.
+  const probe = h("span", { "aria-hidden": "true" }, o.textContent);
+  const cs = getComputedStyle(sel);
+  probe.style.position = "absolute";
+  probe.style.visibility = "hidden";
+  probe.style.whiteSpace = "nowrap";
+  probe.style.font = cs.font;
+  probe.style.letterSpacing = cs.letterSpacing;
+  document.body.append(probe);
+  const w = probe.getBoundingClientRect().width;
+  probe.remove();
+  if (w > 4) sel.style.width = `${Math.ceil(w) + 32}px`;
+}
+
+/** A "more" button: a short list of actions that opens under it. `items`
+ * is a list (or a function giving one) of {label, onclick, href, id, cls,
+ * danger, disabled, title}; empty entries are left out. */
+export function menuButton(label, items, attrs = {}) {
+  const wrap = h("span", { class: "menu-wrap" });
+  const list = h("div", { class: "menu", role: "menu", hidden: true });
+  const btn = iconButton("more", label, () => (list.hidden ? open() : close()), { "aria-haspopup": "menu", "aria-expanded": "false", ...attrs });
+  const away = (e) => { if (!wrap.contains(e.target)) close(); };
+  const esc = (e) => { if (e.key === "Escape") { e.stopPropagation(); e.preventDefault(); close(); btn.focus(); } };
+  function close() {
+    list.hidden = true;
+    btn.setAttribute("aria-expanded", "false");
+    document.removeEventListener("pointerdown", away, true);
+    document.removeEventListener("keydown", esc, true);
+  }
+  function open() {
+    const all = (typeof items === "function" ? items() : items).filter(Boolean);
+    list.replaceChildren(...all.map((it) => {
+      const cls = [it.cls, it.danger ? "danger" : ""].filter(Boolean).join(" ") || null;
+      const node = it.href ? h("a", { role: "menuitem", href: it.href, id: it.id || null, class: cls, title: it.title || null }, it.label)
+        : h("button", { type: "button", role: "menuitem", id: it.id || null, class: cls, title: it.title || null, disabled: !!it.disabled }, it.label);
+      node.addEventListener("click", () => { close(); if (it.onclick) it.onclick(); });
+      return node;
+    }));
+    list.hidden = false;
+    btn.setAttribute("aria-expanded", "true");
+    document.addEventListener("pointerdown", away, true);
+    document.addEventListener("keydown", esc, true);
+  }
+  wrap.append(btn, list);
+  return wrap;
 }
 
 /** Tabs that are links to sub-pages. */
@@ -196,17 +338,6 @@ export function tabs(items, current, label) {
     nav.append(a);
   }
   return nav;
-}
-
-/** An honest "coming" state: what the page will do, and that it is not built yet. */
-export function coming(iconName, title, what, items = [], stage = "") {
-  const box = h("section", { class: "empty", "aria-label": title });
-  const ico = icon(iconName);
-  ico.classList.add("ico");
-  box.append(ico, h("h2", {}, title), h("p", {}, what));
-  if (items.length) box.append(h("ul", {}, ...items.map((i) => h("li", {}, i))));
-  box.append(h("span", { class: "stage" }, stage || "Coming: not built yet"));
-  return box;
 }
 
 export function emptyState(title, text, ...actions) {
@@ -272,6 +403,66 @@ export function monthName(m) {
   const [y, mo] = String(m).split("-").map(Number);
   if (!y || !mo) return m;
   return new Date(y, mo - 1, 1).toLocaleString([], { month: "long", year: "numeric" });
+}
+
+// ---------- The side sheet: something long to read, beside the panel ----------
+let sideClose = null;
+
+/** Show `body` in the sheet beside the panel. `extra` nodes go in its head,
+ * before the close button. Returns a function that closes it. */
+export function openSide(title, body, extra = [], onClose = null) {
+  const side = $("side");
+  closeSide();
+  const close = () => { if (sideClose === close) closeSide(); };
+  side.replaceChildren(
+    h("div", { class: "hd" }, h("h2", { id: "side-title" }, title),
+      h("span", { class: "more" }, ...extra, iconButton("close", "Close", close, { id: "side-close" }))),
+    h("div", { class: "bd", id: "side-body" }, body));
+  side.setAttribute("aria-labelledby", "side-title");
+  side.hidden = false;
+  sideClose = close;
+  side.onClose = onClose;
+  layoutChanged();
+  return close;
+}
+
+export function closeSide() {
+  const side = $("side");
+  if (!side || side.hidden) return;
+  side.hidden = true;
+  side.replaceChildren();
+  sideClose = null;
+  const fn = side.onClose;
+  side.onClose = null;
+  if (fn) { try { fn(); } catch (e) { console.error(e); } }
+  layoutChanged();
+}
+
+// ---------- The stage: where a session's map shows, behind the panel ----------
+
+/** How much of the window the panel and the side sheet cover, in CSS
+ * pixels from each edge: a map shown on the stage keeps clear of it. */
+export function insets() {
+  const b = document.body.classList;
+  if (b.contains("start") || b.contains("panel-away")) return { left: 0, top: 0, right: 0, bottom: 0 };
+  let left = 0;
+  for (const id of ["panel", "side"]) {
+    const e = $(id);
+    if (e && !e.hidden) left = Math.max(left, Math.round(e.getBoundingClientRect().right));
+  }
+  return { left: Math.min(left, 4000), top: 0, right: 0, bottom: 0 };
+}
+
+const layoutListeners = new Set();
+export function onLayout(fn) {
+  layoutListeners.add(fn);
+  return () => layoutListeners.delete(fn);
+}
+/** The panel moved, opened or closed: maps on the stage are told. */
+export function layoutChanged() {
+  for (const fn of layoutListeners) {
+    try { fn(); } catch (e) { console.error(e); }
+  }
 }
 
 // ---------- App state shared by pages ----------

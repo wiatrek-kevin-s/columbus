@@ -1,14 +1,15 @@
-// Chats: the app's own chat (moved here from the chat window), saved
-// chats, and sessions started by other AI apps, each beside the output
-// panel (Map, Table, Chart, Document, Files). Everything the model, the
-// server or a file says is shown as text, never as markup.
-import { $, el, h, icon, invoke, listen, store, button, pageHead, when, ago, size, plural, timeLeft, clientName, toast, emptyState, askConfirm, askText } from "../core.js";
+// Chats: the app's own chat, saved chats, and sessions started by other AI
+// apps. A chat is the panel; its session's map fills the window behind it,
+// and its files open in the side sheet. Everything the model, the server
+// or a file says is shown as text, never as markup.
+import { $, el, h, icon, iconButton, menuButton, fitSelect, invoke, listen, store, button, redraw, placeHead, sec, when, ago, shortWhen, era, size, plural, timeLeft, clientName, toast, emptyState, askConfirm, askText, openSide, closeSide, insets, onLayout, savePrefs, numbered } from "../core.js";
 import { openWebLayerEditor, onChange as onWebLayersChange } from "./maplayers.js";
+import { setupState, notices, firstSteps } from "./start.js";
 
 // Model and thinking names, once the chat settings are read.
 const NAMES = new Map();
 const nameOf = (id) => NAMES.get(id) || id;
-const MODEL_NOTE = "The chat sends your messages and the results it reads to the AI service you chose (Settings › Models and accounts).";
+const MODEL_NOTE = "The chat sends your messages and the results it reads to the AI service you chose (Settings › Assistant).";
 
 // ---------- The live chat (one at a time, as before) ----------
 const live = {
@@ -24,8 +25,8 @@ const live = {
   log: null,
   renderer: null,
   cards: new Map(), // prompt id -> { row, card, title }
-  panel: null,
-  layout: "chat",
+  map: null, // its session's map, on the stage
+  shown: false, // whether the live chat is the page being looked at
 };
 
 /** The app's own chat's session, whose prompts are answered in the chat. */
@@ -44,11 +45,62 @@ export function waitingCount() {
   return n;
 }
 
-/** Recent chats and sessions, for the rail and Ctrl+K. */
+/** The titles of the requests waiting in the app's own chat. */
+export function waitingTitles() {
+  return [...live.cards.values()].filter((c) => c.row.isConnected).map((c) => c.title);
+}
+
+/** Settings were saved while the sheet lay over the live chat: it takes the
+ * new defaults (the model and thinking level a new chat starts with, and
+ * whether an AI is connected). A chat's own choice stays. */
+export function settingsSaved() {
+  if (!live.shown || !live.view) return;
+  updateChip();
+  emptyChat();
+}
+
+/** On the start the question is drawn first, above what to try. It comes
+ * first in the document then too, so Tab and a screen reader meet things in
+ * the order they are seen; in a chat it comes last, under the conversation. */
+export function questionFirst(first) {
+  if (!live.view) return;
+  const col = live.view.querySelector(".chatcol");
+  const head = col && col.querySelector(".chathead");
+  const composer = $("composer");
+  if (!head || !composer || composer.parentElement !== col) return;
+  if ((head.nextElementSibling === composer) === first) return;
+  const held = composer.contains(document.activeElement) ? document.activeElement : null;
+  const note = col.querySelector(":scope > .project-note");
+  if (first) {
+    head.after(composer);
+    if (note) col.append(note);
+  } else {
+    col.append(composer);
+    if (note) head.after(note);
+  }
+  // Moving it took the focus away: give it back.
+  if (held) held.focus({ preventScroll: true });
+}
+
+/** Whether the page shown is a chat with nothing asked yet: the start. */
+export function isStart() {
+  return live.shown && !live.started && !live.run && !!live.log && !live.log.querySelector(".msg, .ask, .error, .status");
+}
+
+/** The title of the chat being looked at, for the pill that stands in for
+ * the panel. */
+let shownTitle = null; // a saved chat's or another session's title element
+export function liveTitle() {
+  if (shownTitle && shownTitle.isConnected) return shownTitle.textContent;
+  const t = $("chat-title");
+  return live.shown && live.started && t ? t.textContent : "";
+}
+
+/** Recent chats and sessions, for the start and Ctrl+K. */
 export function recent(n) {
   const out = [];
   for (const c of store.chats) {
-    out.push({ kind: c.live ? "Chat (open)" : "Chat", title: c.title, sub: ago(c.updated), href: `#/chats/c/${encodeURIComponent(c.id)}`, t: c.updated || "" });
+    out.push({ kind: c.live ? "Chat (open)" : "Chat", title: c.title, sub: ago(c.updated), href: c.live ? "#/chats/new" : `#/chats/c/${encodeURIComponent(c.id)}`, t: c.updated || "" });
   }
   for (const s of otherSessions()) {
     out.push({ kind: clientName(s.client), title: `${clientName(s.client)} session`, sub: s.last_used ? `used ${ago(s.last_used)}` : "not used yet", href: `#/chats/s/${encodeURIComponent(s.session)}`, t: s.last_used || s.started || "" });
@@ -140,9 +192,12 @@ export function markdown(box, md) {
     const head = /^#{1,6}\s+(.*)$/.exec(line);
     if (head) {
       flush();
-      const p = el("p");
-      p.append(el("strong", null, head[1]));
-      box.append(p);
+      // A heading that opens the text is its headline; any other is a
+      // section's.
+      const big = !box.childNodes.length && /^#{1,2}\s/.test(line);
+      const hd = el(big ? "h3" : "h4", big ? "md-h" : "md-h small");
+      inline(hd, head[1]);
+      box.append(hd);
       continue;
     }
     para.push(line.trim());
@@ -194,23 +249,48 @@ export function describe(name, input) {
     case "propose_edits": return `Proposing edits${conn}`;
     case "apply_edits": return `Applying approved edits${conn}`;
     case "settings.test_connection": return `Connection test from the app${conn}`;
+    case "settings.draft_notes": return `Drafting notes from the app${conn}`;
+    case "settings.reload": return "Settings changed: read again";
+    case "window_layer": return "Showing a layer on the map";
+    case "window_rows": return "Showing rows in the table";
+    case "project_db": return "Using a project database";
+    case "open_run": return "Opening a workflow run in a chat";
+    case "email_report": return "Emailing a workflow's report";
+    case "workflow_review": return "Reviewing a workflow's results";
+    case "org_install_tool": return "Installing an organization tool";
     default: return `Running ${q(name)}`;
   }
 }
 
 /** Draws chat events into a log: live (cards can be answered) or a saved transcript. */
 class Renderer {
-  constructor(log, isLive, onProvenance) {
+  constructor(log, isLive, onProvenance, onTable = null) {
     this.log = log;
     this.live = isLive;
     this.current = null;
     this.group = null;
+    this.said = null; // words folded into the steps by the step that followed
+    this.made = null; // the last result this turn made
     this.steps = new Map();
     this.pastCards = new Map();
     this.onProvenance = onProvenance;
+    this.onTable = onTable;
   }
 
-  endTurn() { this.current = null; this.group = null; }
+  endTurn() { this.current = null; this.group = null; this.said = null; }
+
+  /** The turn is over: the last thing it made is shown as a result. */
+  finish() {
+    const m = this.made;
+    this.made = null;
+    if (!m) return;
+    const acts = h("div", { class: "acts" });
+    if (this.onTable) acts.append(h("button", { type: "button", class: "btn sm result-table", onclick: () => this.onTable(m.handle) }, icon("table"), "Table"));
+    acts.append(h("button", { type: "button", class: "btn sm result-made", title: "Inputs, steps and checks of this result", onclick: () => this.onProvenance && this.onProvenance(m.provenance) }, "How it was made"));
+    const state = m.fails ? el("span", "bad", `${plural(m.fails, "check")} failed`) : m.warns ? el("span", "warn", `${m.warns} to review`) : "checks passed";
+    this.log.append(h("div", { class: "result" }, h("span", { class: "swatch", "aria-hidden": "true" }),
+      h("div", { class: "text" }, h("b", {}, m.title), h("span", { class: "where" }, m.summary, m.summary ? " · " : null, state)), acts));
+  }
 
   assistant() {
     if (!this.current) {
@@ -226,17 +306,19 @@ class Renderer {
       const count = el("span", "count");
       const last = el("span", "last");
       const badges = el("span", "row");
-      const summary = h("summary", {}, count, last, badges);
+      const summary = h("summary", {}, h("span", { class: "state", "aria-hidden": "true" }), count, last, badges, icon("forward"));
       const ol = el("ol");
       details.append(summary, ol);
       this.log.append(details);
-      this.group = { details, count, last, badges, ol, n: 0, fails: 0, warns: 0, running: 0 };
+      this.group = { details, count, last, badges, ol, n: 0, fails: 0, warns: 0, running: 0, failed: 0 };
     }
     return this.group;
   }
 
   updateGroup(g) {
     g.count.textContent = plural(g.n, "step");
+    g.details.classList.toggle("running", g.running > 0);
+    g.details.classList.toggle("failed", g.failed > 0 || g.fails > 0);
     g.badges.replaceChildren();
     if (g.fails) g.badges.append(el("span", "badge fail", `${g.fails} failed`));
     if (g.warns) g.badges.append(el("span", "badge warn", `${g.warns} to review`));
@@ -246,15 +328,23 @@ class Renderer {
     switch (e.kind) {
       case "you":
         this.endTurn();
+        this.made = null;
         this.log.append(el("div", "msg you", e.text));
         break;
       case "text":
-        this.group = null;
+        this.said = null;
         markdown(this.assistant(), e.text);
         break;
       case "tool_started": {
-        this.current = null;
         const g = this.stepGroup();
+        // Words said on the way to a step are kept with the steps, so the
+        // turn reads as one line of work and then the answer.
+        if (this.current) {
+          const say = h("li", { class: "say" }, this.current);
+          g.ol.append(say);
+          this.said = { el: this.current, li: say };
+        } else this.said = null;
+        this.current = null;
         const li = h("li", { class: "step running" }, el("span", "what", describe(e.name, e.input)));
         const raw = h("details", {}, h("summary", {}, "Details"), el("pre", "box", `${e.name} ${JSON.stringify(e.input ?? {}, null, 2)}`));
         li.append(raw);
@@ -263,7 +353,7 @@ class Renderer {
         g.running += 1;
         g.last.textContent = `· ${describe(e.name, e.input)}…`;
         this.updateGroup(g);
-        this.steps.set(e.id, { li, g, raw });
+        this.steps.set(e.id, { li, g, raw, input: e.input });
         break;
       }
       case "tool_finished": {
@@ -278,6 +368,8 @@ class Renderer {
           s.g.running = Math.max(0, s.g.running - 1);
         }
         const { li, g } = s;
+        this.said = null;
+        if (!e.ok) g.failed += 1;
         li.classList.remove("running");
         const result = el("span", e.ok ? null : "bad", e.ok ? e.summary : `Refused or failed: ${e.summary}`);
         li.insertBefore(result, s.raw || null);
@@ -286,11 +378,14 @@ class Renderer {
           const img = h("img", { class: "snapshot", alt: "The map picture the assistant looked at" });
           img.src = e.image;
           li.insertBefore(h("figure", { class: "snapshot" }, img, h("figcaption", { class: "small muted" }, "What the assistant saw (geometry only, no basemap)")), s.raw || null);
-          g.details.open = true;
         }
         if (e.fails) li.insertBefore(el("span", "bad", `${e.fails} check${e.fails > 1 ? "s" : ""} failed`), s.raw || null);
         if (e.warns) li.insertBefore(el("span", "warn", `${e.warns} to review`), s.raw || null);
         if (e.ok && e.provenance) {
+          // Whose rows its Table shows: the layer it made, or (an export,
+          // which makes files) the layer it was given.
+          const given = s.input && typeof s.input.handle === "string" ? s.input.handle : null;
+          this.made = { title: resultName(e, s.input), summary: e.summary, provenance: e.provenance, handle: e.handle || given, fails: e.fails || 0, warns: e.warns || 0 };
           if (!e.fails && !e.warns) li.insertBefore(el("span", "badge pass", "Checks passed"), s.raw || null);
           const b = h("button", { type: "button", class: "linkbtn", title: "Inputs, steps and checks of this result" }, "Provenance");
           b.addEventListener("click", () => this.onProvenance && this.onProvenance(e.provenance));
@@ -303,6 +398,9 @@ class Renderer {
         break;
       }
       case "approval":
+        // What the assistant said about the step that is asking stays in
+        // sight, above the request.
+        if (this.said) { this.log.append(this.said.el); this.said.li.remove(); }
         this.endTurn();
         if (this.live) liveCard(this, e);
         else this.pastCard(e);
@@ -318,7 +416,7 @@ class Renderer {
         const c = this.pastCards.get(e.id);
         if (c) {
           c.answered = true;
-          c.out.textContent = { allow_once: "Allowed once.", always_this_session: "Allowed for this session.", decline: "Declined." }[e.decision] || "Answered.";
+          c.out.textContent = { allow_once: "Allowed once.", always_this_session: "Allowed for this chat.", decline: "Declined." }[e.decision] || "Answered.";
         }
         break;
       }
@@ -328,10 +426,12 @@ class Renderer {
         break;
       case "error":
         this.endTurn();
+        this.made = null;
         this.log.append(el("div", "error", e.text === "stopped" ? "Stopped." : `Could not finish: ${e.text}`));
         break;
       case "done":
         this.endTurn();
+        this.finish();
         break;
       case "model":
         this.endTurn();
@@ -344,7 +444,7 @@ class Renderer {
 
   pastCard(e) {
     const card = el("div", "ask past");
-    card.append(el("h3", null, e.title), el("p", "body", e.summary));
+    card.append(el("h3", null, askTitle(e.title)), el("p", "body", e.summary));
     if (e.code != null) {
       const lines = e.code.replace(/\r?\n$/, "").split(/\r?\n/);
       card.append(el("p", "code-label", `Code written by the AI (${lines.length} line${lines.length === 1 ? "" : "s"}):`));
@@ -359,6 +459,24 @@ class Renderer {
   }
 }
 
+// A result's name: the dataset it came from, or the file it made.
+function resultName(e, input) {
+  const i = input || {};
+  if (typeof i.name === "string" && i.name) return i.name;
+  if (typeof i.dataset === "string" && i.dataset) return i.dataset;
+  // A processing step is named for what it did: "Clip", "Buffer".
+  if (typeof i.op === "string" && i.op) return `${i.op[0].toUpperCase()}${i.op.slice(1).replace(/_/g, " ")}`;
+  const stem = String(e.handle || "").split("/").pop().replace(/\.[A-Za-z0-9]+$/, "").replace(/-p?_?[0-9a-f]{6,}$/, "");
+  return stem || describe(e.name, i);
+}
+
+// The server's title for a request, without its own name in front (the
+// card already says who is asking).
+function askTitle(t) {
+  const s = String(t || "").replace(/^Columbus:\s*/i, "");
+  return s ? s[0].toUpperCase() + s.slice(1) : "A request";
+}
+
 // An approval prompt from the chat's own session, answered here as the
 // chat window always did: buttons wait a second, scripts are once only
 // unless the server offers "Allow this script for the session" (policy).
@@ -366,19 +484,24 @@ function liveCard(r, e) {
   const card = el("div", "ask");
   card.setAttribute("role", "alertdialog");
   card.setAttribute("aria-label", e.title);
-  card.append(el("h3", null, e.title));
+  card.append(h("p", { class: "who" }, h("span", { class: "dot warn" }), "Columbus needs your OK"), el("h3", null, askTitle(e.title)));
   // The server's own words.
   card.append(el("p", "body", e.summary));
   if (e.code != null) {
     // Written by the AI: in its own box, never mixed with the server's words.
     const lines = e.code.replace(/\r?\n$/, "").split(/\r?\n/);
     const n = lines.length;
+    const beside = iconButton("popout", "Read the code beside the chat", () => {
+      const { pre: big } = numbered(e.code);
+      openSide("The script", big, [h("span", { class: "muted small" }, `Python · ${plural(n, "line")} · written by the AI`)]);
+    }, { class: "iconbtn read-beside" });
     card.append(el("p", "code-label", `Code written by the AI (${n} line${n === 1 ? "" : "s"}). Read it before allowing:`));
     const pre = el("pre", "code");
     lines.forEach((line) => pre.append(el("span", "ln", line === "" ? " " : line)));
-    card.append(pre);
+    card.append(h("div", { class: "codewrap" }, pre, beside));
   }
   const row = el("div", "row");
+  const note = el("p", "note", "Either way, it is written to Activity.");
   const answer = async (decision, label) => {
     for (const b of row.querySelectorAll("button")) b.disabled = true;
     try {
@@ -387,6 +510,9 @@ function liveCard(r, e) {
     } catch (err) {
       row.replaceWith(el("p", "error", String(err)));
     }
+    note.remove();
+    // Decided: no longer the loud thing in the panel.
+    card.classList.add("answered");
     store.set("waiting", waitingCount());
     drawTray();
   };
@@ -394,8 +520,8 @@ function liveCard(r, e) {
     ["Allow once", "allow_once", "primary", "Allowed once."],
     ...(e.offer_always
       ? [e.code != null
-          ? ["Allow this script for the session", "always_this_session", "", "Allowed this script for the session."]
-          : ["Allow for this session", "always_this_session", "", "Allowed for this session."]]
+          ? ["Allow this script for this chat", "always_this_session", "", "Allowed this script for this chat."]
+          : ["Allow for this chat", "always_this_session", "", "Allowed for this chat."]]
       : []),
     ["Decline", "decline", "danger", "Declined."],
   ];
@@ -409,13 +535,22 @@ function liveCard(r, e) {
     b.addEventListener("click", () => answer(decision, done));
     row.append(b);
   }
-  card.append(row);
+  card.append(row, note);
   r.log.append(card);
-  live.cards.set(e.id, { row, card, title: e.title });
+  live.cards.set(e.id, { row, card, title: askTitle(e.title) });
   store.set("waiting", waitingCount());
   drawTray();
-  // Show the card from its title, not its end; bring the chat forward.
-  if (!location.hash.startsWith("#/chats")) toast(`Your chat is asking: ${e.title}`);
+  // In front of the person: the panel comes back if it was put away, and a
+  // word is said when this chat is not what they are looking at.
+  if (document.body.classList.contains("panel-away") && store.setAway) {
+    store.setAway(false);
+    // The focus was on the map: it goes to the request, so Tab reaches its
+    // buttons (after the panel itself has taken it, main.js).
+    card.tabIndex = -1;
+    setTimeout(() => { if (card.isConnected && live.shown && !document.querySelector("dialog[open]")) card.focus({ preventScroll: true }); }, 0);
+  }
+  if (!live.shown || document.querySelector("dialog[open]")) toast(`Your chat is asking: ${e.title}`);
+  // Show the card from its title, not its end.
   card.scrollIntoView({ block: "start" });
 }
 
@@ -423,58 +558,34 @@ function gone(id) {
   const c = live.cards.get(id);
   live.cards.delete(id);
   if (c && c.row.isConnected) c.row.replaceWith(el("p", "done", "No longer waiting: the request was withdrawn or timed out."));
+  if (c) { c.card.classList.add("answered"); c.card.querySelector(".note")?.remove(); }
   store.set("waiting", waitingCount());
   drawTray();
 }
 
-// ---------- The output panel ----------
 
-const TABS = [["map", "Map"], ["table", "Table"], ["chart", "Chart"], ["document", "Document"], ["files", "Files"]];
+// ---------- A session's map, on the stage ----------
+
 const APP_FRAME = "allow-scripts allow-same-origin";
+let onStage = null; // the map shown now (one at a time)
 
-/** The output panel for one session: the session's own page (map and
- * table) in a sandboxed frame, and the files it made. */
-class Panel {
-  constructor(onSheetClose) {
+/** One session's own page (its map, results and table) in a sandboxed
+ * frame that fills the window behind the panel; and the files the session
+ * made, in the side sheet. */
+class SessionMap {
+  constructor() {
     this.session = null;
-    this.tab = "map";
-    this.split = false;
     this.frame = null;
     this.origin = null;
-    this.prov = null;
-    this.el = h("section", { class: "outpanel", "aria-label": "Output panel" });
-    const list = h("div", { role: "tablist", "aria-label": "Output" });
-    this.tabButtons = TABS.map(([k, label]) => {
-      const b = h("button", { type: "button", role: "tab", id: `out-tab-${k}-${Panel.n = (Panel.n || 0) + 1}`, "aria-selected": "false", tabindex: "-1" }, label);
-      b.addEventListener("click", () => this.setTab(k));
-      b.addEventListener("keydown", (e) => {
-        const i = TABS.findIndex(([x]) => x === k);
-        if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
-          e.preventDefault();
-          const n = TABS[(i + (e.key === "ArrowRight" ? 1 : TABS.length - 1)) % TABS.length][0];
-          this.setTab(n);
-          this.tabButtons[TABS.findIndex(([x]) => x === n)].focus();
-        }
-      });
-      list.append(b);
-      return b;
-    });
-    this.splitBtn = h("button", { type: "button", class: "btn sm", "aria-pressed": "false", title: "Map above table" }, "Split");
-    this.splitBtn.addEventListener("click", () => { this.split = !this.split; this.splitBtn.setAttribute("aria-pressed", String(this.split)); this.post(); });
-    this.popBtn = h("button", { type: "button", class: "btn sm", title: "Open the session's map in its own window" }, "Pop out");
-    this.popBtn.addEventListener("click", () => this.popOut());
-    const close = h("button", { type: "button", class: "btn sm sheet-close", "aria-label": "Close the map" }, icon("close"));
-    close.addEventListener("click", () => onSheetClose && onSheetClose());
-    this.el.append(h("div", { class: "outtabs" }, list, h("div", { class: "tools" }, this.splitBtn, this.popBtn, close)));
-    this.body = el("div", "outbody");
-    this.body.setAttribute("role", "tabpanel");
-    this.frameHost = el("div", "outbody");
-    this.paneHost = el("div", "pane");
-    this.body.append(this.frameHost, this.paneHost);
-    this.el.append(this.body);
+    this.loading = false;
+    this.view = null; // "table" once the person asked for the table
+    this.output = null; // whose table: a result's handle, when a card asked
+    this.ready = false; // the page said it listens
+    this.host = h("div", { class: "frame-host", hidden: true });
+    $("stage-frames").append(this.host);
     this.onMessage = (ev) => {
       if (!this.frame || ev.source !== this.frame.contentWindow || ev.origin !== this.origin) return;
-      if (ev.data && ev.data.type === "columbus-embed-ready") this.post();
+      if (ev.data && ev.data.type === "columbus-embed-ready") { this.ready = true; this.post(); }
       // The map's Add web layer: the app's own dialog (the page gets nothing
       // but word that the list changed).
       if (ev.data && ev.data.type === "columbus-add-web-layer") openWebLayerEditor(null);
@@ -484,38 +595,58 @@ class Panel {
     this.unsubLayers = onWebLayersChange(() => {
       if (this.frame && this.origin && this.frame.contentWindow) this.frame.contentWindow.postMessage({ type: "columbus-web-layers" }, this.origin);
     });
-    this.setTab("map");
+    // The panel moved or a sheet opened: the page keeps its controls clear.
+    this.unsubLayout = onLayout(() => this.post());
   }
 
   destroy() {
     window.removeEventListener("message", this.onMessage);
     this.unsub();
     this.unsubLayers();
+    this.unsubLayout();
+    if (onStage === this) onStage = null;
+    this.host.remove();
     this.frame = null;
   }
 
-  post() {
-    if (!this.frame || !this.origin || !this.frame.contentWindow) return;
-    const view = this.split ? "split" : this.tab === "table" ? "table" : "map";
-    this.frame.contentWindow.postMessage({ type: "columbus-embed", view, basemap: !!store.prefs.basemap, theme: store.prefs.theme || "system" }, this.origin);
+  /** Put this map on the stage in place of the one there, or take it off. */
+  show(on = true) {
+    if (!on) {
+      this.host.hidden = true;
+      if (onStage === this) onStage = null;
+      return;
+    }
+    if (onStage && onStage !== this) onStage.host.hidden = true;
+    onStage = this;
+    this.host.hidden = false;
+    this.ensureFrame();
+    this.post();
   }
 
-  setTab(k) {
-    this.tab = k;
-    this.tabButtons.forEach((b, i) => {
-      const on = TABS[i][0] === k;
-      b.setAttribute("aria-selected", String(on));
-      b.tabIndex = on ? 0 : -1;
-    });
-    this.body.setAttribute("aria-labelledby", this.tabButtons[TABS.findIndex(([x]) => x === k)].id);
-    const framed = k === "map" || k === "table";
-    this.frameHost.hidden = !framed;
-    this.paneHost.hidden = framed;
-    this.splitBtn.hidden = !framed;
-    if (framed) {
-      this.ensureFrame();
-      this.post();
-    } else this.drawPane();
+  // Plain values only: how the page should look, and which part of it the
+  // panel covers.
+  post() {
+    if (!this.frame || !this.origin || !this.frame.contentWindow) return;
+    const msg = { type: "columbus-embed", basemap: !!store.prefs.basemap, theme: store.prefs.theme || "system", inset: insets() };
+    // Asked once, when the page listens: after that the page keeps the
+    // table as the person leaves it.
+    if (this.view && this.ready) {
+      msg.view = this.view;
+      if (this.output) msg.output = this.output;
+      this.view = null;
+      this.output = null;
+    }
+    this.frame.contentWindow.postMessage(msg, this.origin);
+  }
+
+  /** Open the table sheet on the map: of the result named (a plain
+   * workspace handle the page checks against its own list), else of the
+   * result the page has active. */
+  table(handle) {
+    if (!this.session) return toast("The map is not open yet.");
+    this.view = "table";
+    this.output = typeof handle === "string" && /^[A-Za-z0-9_\-./:]{1,200}$/.test(handle) ? handle : null;
+    this.post();
   }
 
   setSession(session) {
@@ -523,14 +654,15 @@ class Panel {
     this.session = session;
     this.frame = null;
     this.origin = null;
-    this.prov = null;
-    this.frameHost.replaceChildren();
-    this.setTab(this.tab);
+    this.ready = false;
+    this.host.replaceChildren();
+    if (!this.host.hidden) this.ensureFrame();
   }
 
-  showProvenance(id) {
-    this.prov = id;
-    this.setTab("files");
+  /** A few words on the stage in place of a map. */
+  say(title, text, ...actions) {
+    this.host.replaceChildren(h("div", { class: "state" }, h("h3", {}, title), h("p", {}, text),
+      actions.length ? h("div", { class: "row wrap" }, ...actions) : null));
   }
 
   async popOut() {
@@ -541,15 +673,11 @@ class Panel {
 
   async ensureFrame() {
     if (this.frame || this.loading) return;
-    this.popBtn.disabled = !this.session;
-    if (!this.session) {
-      this.frameHost.replaceChildren(h("div", { class: "state" }, h("h3", {}, "No map yet"),
-        h("p", {}, "The session's layers and tables appear here once the chat has started its Columbus session.")));
-      return;
-    }
+    // No session yet: the chart paper shows.
+    if (!this.session) return;
     this.loading = true;
     const want = this.session;
-    this.frameHost.replaceChildren(h("div", { class: "state", role: "status" }, h("p", {}, "Opening the session's map…")));
+    this.host.replaceChildren(h("div", { class: "state", role: "status" }, h("p", {}, "Opening the session's map…")));
     try {
       const url = await invoke("session_page", { session: want });
       if (want !== this.session) return;
@@ -561,46 +689,38 @@ class Panel {
       this.origin = new URL(url).origin;
       f.src = url;
       this.frame = f;
-      this.frameHost.replaceChildren(f);
+      this.ready = false;
+      this.host.replaceChildren(f);
     } catch (e) {
       if (want !== this.session) return;
-      this.frameHost.replaceChildren(h("div", { class: "state" }, h("h3", {}, "The map could not be shown here"),
-        h("p", {}, String(e)),
-        h("div", { class: "row wrap" },
-          button("Try again", "", () => { this.frame = null; this.ensureFrame(); }),
-          button("Open in its own window", "", () => this.popOut()))));
+      // A session that has gone has no map to show; anything else can be tried again.
+      if (/no longer running|not running|has ended/i.test(String(e))) this.say("Its session has ended", "The map and table show a running session only. The files it made stay in its workspace.");
+      else {
+        this.say("The map could not be shown here", String(e),
+          button("Try again", "sm", () => { this.frame = null; this.ensureFrame(); }),
+          button("Open in its own window", "sm", () => this.popOut()));
+      }
     } finally {
       this.loading = false;
     }
   }
 
-  async drawPane() {
-    const pane = this.paneHost;
-    pane.replaceChildren();
-    if (this.tab === "chart") {
-      pane.append(h("div", { class: "state" }, h("h3", {}, "Charts are not here yet"),
-        h("p", {}, "Quick charts of a table (counts by code, by county) will show here. Until then, ask the chat to summarise a table, or open it in the Table tab.")));
-      return;
-    }
-    if (this.tab === "document") {
-      pane.append(h("div", { class: "state" }, h("h3", {}, "Documents are not here yet"),
-        h("p", {}, "The note or report in use will show here. Your notes are under Documents in the rail."), h("a", { class: "btn", href: "#/documents/notes" }, "Open Documents")));
-      return;
-    }
+  /** The files the session made, in the side sheet; with `prov`, that
+   * result's provenance above them. */
+  async files(prov = null) {
+    const box = h("div", { class: "stack outbody", id: "session-files" });
+    openSide(prov ? "How it was made" : "Files", box);
     if (!this.session) {
-      pane.append(h("div", { class: "state" }, h("h3", {}, "No files yet"), h("p", {}, "Files the session makes are listed here.")));
+      box.append(h("div", { class: "state" }, h("h3", {}, "No files yet"), h("p", {}, "Files the session makes are listed here.")));
       return;
     }
-    const box = h("div", { class: "pad stack" });
-    pane.append(box);
-    if (this.prov) {
-      const card = h("section", { class: "card" }, h("div", { class: "hd" }, h("h3", {}, "Provenance"), h("span", { class: "chip mono" }, this.prov),
-        h("button", { type: "button", class: "btn sm more", onclick: () => { this.prov = null; this.drawPane(); } }, "Close")));
+    if (prov) {
+      const card = h("section", { class: "card" }, h("div", { class: "hd" }, h("h3", {}, "Provenance"), h("span", { class: "chip mono" }, prov)));
       const bd = h("div", { class: "bd" }, el("p", "muted", "Reading…"));
       card.append(bd);
       box.append(card);
       try {
-        const p = await invoke("session_provenance", { session: this.session, id: this.prov });
+        const p = await invoke("session_provenance", { session: this.session, id: prov });
         bd.replaceChildren(provenanceView(p));
       } catch (e) {
         bd.replaceChildren(el("p", "error-text", String(e)));
@@ -618,7 +738,7 @@ class Panel {
       for (const x of files) {
         tbody.append(h("tr", {}, h("td", { class: "code" }, x.path), h("td", { class: "num nowrap" }, size(x.bytes)), h("td", { class: "nowrap muted" }, when(x.modified))));
       }
-      box.append(h("div", { class: "card" }, h("table", { class: "t" }, h("thead", {}, h("tr", {}, h("th", {}, "File"), h("th", { class: "num" }, "Size"), h("th", {}, "Made"))), tbody)));
+      box.append(h("table", { class: "t" }, h("thead", {}, h("tr", {}, h("th", {}, "File"), h("th", { class: "num" }, "Size"), h("th", {}, "Made"))), tbody));
       box.append(h("p", { class: "small muted" }, "Export goes through your organization's export rules: ask the chat to export a file."));
     } catch (e) {
       box.append(el("p", "error-text", String(e)));
@@ -649,6 +769,17 @@ function provenanceView(p) {
   return box;
 }
 
+// What every chat's head offers for its map, behind one button: the
+// session's files, the panel put away, and the map in its own window.
+function mapMenu(map, more = []) {
+  return menuButton("More", () => [
+    { label: "Files this chat made", cls: "chat-files", onclick: () => map.files() },
+    { label: "Show only the map", cls: "chat-away", onclick: () => store.setAway && store.setAway(true) },
+    { label: "Open the map in its own window", cls: "chat-popout", onclick: () => map.popOut() },
+    ...more,
+  ], { class: "iconbtn chat-more" });
+}
+
 // ---------- The waiting tray ----------
 let trayEl = null;
 let trayFor = null; // "live" or a session id
@@ -658,7 +789,11 @@ function drawTray() {
   trayEl.replaceChildren();
   let items = [];
   if (trayFor === "live") {
-    for (const [id, c] of live.cards) if (c.row.isConnected) items.push({ title: c.title, go: () => c.card.scrollIntoView({ block: "start" }), id });
+    // A request the person can see needs no second mention: the tray
+    // names only those scrolled out of sight.
+    const box = live.log.getBoundingClientRect();
+    const inSight = (c) => { const r = c.row.getBoundingClientRect(); return r.bottom > box.top && r.top < box.bottom; };
+    for (const [id, c] of live.cards) if (c.row.isConnected && !inSight(c)) items.push({ title: c.title, go: () => c.card.scrollIntoView({ block: "start" }), id });
     if (!items.length) { trayEl.hidden = true; return; }
     trayEl.append(h("div", { class: "hd" }, h("span", { class: "dot" }), `Waiting for you · ${items.length}`, h("span", { class: "muted small" }, "Answer in the chat below")));
     const ul = h("ul");
@@ -686,47 +821,24 @@ export async function openBrowser(session) {
   }
 }
 
-// ---------- Layout switch ----------
-function layoutKey(id) { return `columbus.layout.${id || "new"}`; }
-function getLayout(id) {
-  try { return localStorage.getItem(layoutKey(id)) === "map" ? "map" : "chat"; } catch { return "chat"; }
-}
-function setLayout(id, v) {
-  try { localStorage.setItem(layoutKey(id), v); } catch { /* not remembered */ }
-}
-
-function layoutSwitch(view, id) {
-  const a = h("button", { type: "button", "aria-pressed": "true" }, "Chat first");
-  const b = h("button", { type: "button", "aria-pressed": "false" }, "Map first");
-  const apply = (v) => {
-    view.classList.toggle("mapfirst", v === "map");
-    a.setAttribute("aria-pressed", String(v !== "map"));
-    b.setAttribute("aria-pressed", String(v === "map"));
-  };
-  a.addEventListener("click", () => { apply("chat"); setLayout(id(), "chat"); });
-  b.addEventListener("click", () => { apply("map"); setLayout(id(), "map"); });
-  const seg = h("div", { class: "seg", role: "group", "aria-label": "Layout" }, a, b);
-  seg.apply = apply;
-  return seg;
-}
-
 // ---------- The live chat view (built once, kept while the app runs) ----------
 function buildLive() {
   const view = h("div", { class: "chatview", id: "chatview" });
   const title = h("h1", { id: "chat-title" }, "New chat");
-  const sub = h("p", { class: "sub", id: "chat-sub" }, "In the Columbus app · Unfiled");
-  const seg = layoutSwitch(view, () => live.chatId);
-  const mapBtn = button("Map", "sm sheet-only", () => view.classList.add("sheet-open"), { id: "map", "aria-label": "Show the map and table" });
+  live.map = new SessionMap();
   // A new chat in the same project as this one.
-  const newBtn = button("New chat", "sm", () => newChat(live.project), { id: "new" });
-  const head = h("header", { class: "chathead" }, h("div", { class: "titlebox" }, title, sub), h("div", { class: "actions" }, seg, mapBtn, newBtn));
+  const newBtn = iconButton("plus", "New chat", () => newChat(live.project), { id: "new" });
+  const head = h("header", { class: "chathead" },
+    h("a", { class: "iconbtn back", href: "#/chats", "aria-label": "All chats", title: "All chats" }, icon("back")),
+    h("div", { class: "titlebox" }, title), h("div", { class: "actions" }, newBtn, mapMenu(live.map)));
   const tray = h("section", { class: "tray", "aria-label": "Waiting for you", hidden: true });
   const log = h("div", { id: "log", role: "log", "aria-live": "polite", "aria-label": "Conversation" });
-  const text = h("textarea", { id: "text", rows: "3", placeholder: "Ask about your data, for example: Which datasets can I use, and what CRS are they in?" });
-  const status = h("span", { id: "status" });
-  const stop = h("button", { type: "button", id: "stop", class: "btn", hidden: true }, "Stop");
-  const send = h("button", { type: "submit", id: "send", class: "btn primary" }, "Send");
-  const chip = h("span", { class: "chip", id: "model-chip", hidden: true }, "");
+  const text = h("textarea", { id: "text", rows: "1", placeholder: "What do you want to know?" });
+  const status = h("span", { id: "status", role: "status" });
+  const stop = h("button", { type: "button", id: "stop", class: "btn sm", hidden: true }, "Stop");
+  const send = h("button", { type: "submit", id: "send", class: "sendbtn", "aria-label": "Send", title: "Send (Enter)" }, icon("send"));
+  // Where this chat works (its project, a run it opened), under the box.
+  const sub = h("span", { class: "sub", id: "chat-sub" });
   // This chat's model and thinking level: from Settings for a new chat,
   // changeable between messages.
   const modelSel = h("select", { id: "chat-model", class: "pick", "aria-label": "Model for this chat" });
@@ -743,19 +855,20 @@ function buildLive() {
       await updateChip();
     }
   };
-  modelSel.addEventListener("change", onPick);
-  effortSel.addEventListener("change", onPick);
+  modelSel.addEventListener("change", () => { fitSelect(modelSel); onPick(); });
+  effortSel.addEventListener("change", () => { fitSelect(effortSel); onPick(); });
+  // The message box with its send button; under it, quietly: where the
+  // chat works, and the model it uses.
   const composer = h("form", { id: "composer" },
-    h("label", { for: "text", class: "visually-hidden" }, "Message"), text,
-    h("div", { class: "row" }, status, modelSel, effortSel, chip, stop, send));
+    h("label", { for: "text", class: "visually-hidden" }, "Message"),
+    h("div", { class: "box" }, text, stop, send),
+    h("div", { class: "under", id: "chat-foot" }, sub, status, h("span", { class: "spacer" }), modelSel, effortSel));
   const projectBox = h("details", { class: "project-note", id: "chat-project", hidden: true });
   const col = h("section", { class: "chatcol", "aria-label": "Chat" }, head, projectBox, tray, log, composer);
-  live.panel = new Panel(() => view.classList.remove("sheet-open"));
-  view.append(col, live.panel.el);
+  view.append(col);
   live.view = view;
   live.log = log;
-  live.seg = seg;
-  live.renderer = new Renderer(log, true, (id) => { live.panel.showProvenance(id); view.classList.add("sheet-open"); });
+  live.renderer = new Renderer(log, true, (id) => live.map.files(id), (handle) => live.map.table(handle));
 
   composer.addEventListener("submit", async (ev) => {
     ev.preventDefault();
@@ -766,11 +879,18 @@ function buildLive() {
     live.renderer.endTurn();
     log.append(el("div", "msg you", t));
     text.value = "";
+    fitText();
     log.scrollTop = log.scrollHeight;
     setBusy(true);
+    // Send gave way to Stop: the focus stays in the message box, for the
+    // next thing the person wants to say (unless they have moved on to
+    // something else while the chat started).
+    const at = document.activeElement;
+    if (!at || at === document.body || composer.contains(at)) text.focus({ preventScroll: true });
+    store.set("chatstate", "asked");
     try {
       await invoke("chat_send", { text: t });
-      if (!title.dataset.set) { title.textContent = t.length > 70 ? `${t.slice(0, 70)}…` : t; title.dataset.set = "1"; }
+      if (!title.dataset.set) { title.textContent = t.length > 70 ? `${t.slice(0, 70)}…` : t; title.title = t; title.dataset.set = "1"; }
       refreshFns && refreshFns.chats();
     } catch (err) {
       log.append(el("div", "error", String(err)));
@@ -783,45 +903,78 @@ function buildLive() {
       composer.requestSubmit();
     }
   });
+  text.addEventListener("input", fitText);
   stop.addEventListener("click", () => invoke("chat_stop"));
-  view.addEventListener("keydown", (e) => { if (e.key === "Escape") view.classList.remove("sheet-open"); });
+  // A waiting request scrolled out of sight is named above the conversation.
+  let trayQueued = false;
+  log.addEventListener("scroll", () => {
+    if (trayQueued || !live.cards.size) return;
+    trayQueued = true;
+    requestAnimationFrame(() => { trayQueued = false; if (trayFor === "live") drawTray(); });
+  });
   // The project's name and instructions, once projects are loaded or change.
-  store.on((k) => { if (k === "projects") drawSub(); });
+  store.on((k) => { if (k === "projects" || k === "info") drawSub(); });
   return view;
+}
+
+// The message box is as tall as what is typed (up to a limit), and the
+// send button is quiet while there is nothing to send.
+function fitText() {
+  const t = $("text");
+  if (!t) return;
+  t.style.height = "auto";
+  if (t.value) t.style.height = `${Math.min(t.scrollHeight, 180)}px`;
+  $("composer").classList.toggle("no-text", !t.value.trim());
+}
+
+/** Put words in the message box for the person to send. */
+function setText(v) {
+  const t = $("text");
+  t.value = v;
+  fitText();
+  t.focus();
 }
 
 function setBusy(b) {
   live.busy = b;
   $("send").disabled = b;
+  // While it works, Stop stands where Send was.
+  $("send").hidden = b;
   $("stop").hidden = !b;
   $("chat-model").disabled = b;
   $("chat-effort").disabled = b;
   $("status").textContent = b ? "Working…" : "";
+  $("composer").classList.toggle("busy", b);
 }
 
 async function start() {
   if (live.started) return true;
   $("status").textContent = "Starting a Columbus session…";
   try {
+    // What the two boxes under the message show is what this chat runs on:
+    // it is sent with the start and kept as the chat's own from then on. A
+    // later change of the default in Settings is for new chats.
+    const boxes = { model: $("chat-model").value, effort: $("chat-effort").value };
+    if (!live.pick && boxes.model) live.pick = boxes;
     const s = await invoke("chat_start", { ...(live.pick || {}), project: live.project, run: live.run ? { workflow: live.run.workflow, run: live.run.run } : null });
     live.started = true;
     live.session = s.session || null;
     live.chatId = s.chat || null;
-    live.panel.setSession(live.session);
-    if (live.chatId) {
-      history.replaceState(null, "", `#/chats/c/${encodeURIComponent(live.chatId)}`);
-      const l = getLayout(null);
-      setLayout(live.chatId, l);
-    }
+    live.map.setSession(live.session);
+    if (live.chatId) history.replaceState(null, "", `#/chats/c/${encodeURIComponent(live.chatId)}`);
     $("status").textContent = "";
+    $("text").placeholder = "Ask a follow-up";
+    drawSub();
+    store.set("chatstate", "started");
     refreshFns && (refreshFns.chats(), refreshFns.sessions());
     return true;
   } catch (err) {
     $("status").textContent = "";
     live.log.append(el("div", "error", String(err)));
     if (/API key|server was not found/i.test(String(err))) {
-      live.log.append(h("p", { class: "small" }, h("a", { href: "#/settings/ai" }, "Set up the AI in Settings › Models and accounts")));
+      live.log.append(h("p", { class: "small" }, h("a", { href: "#/settings/ai" }, "Set up the AI in Settings › Assistant")));
     }
+    store.set("chatstate", "failed");
     return false;
   }
 }
@@ -836,10 +989,28 @@ export function projectName(id) {
 function drawSub() {
   const sub = $("chat-sub");
   if (!sub) return;
-  sub.replaceChildren("In the Columbus app · ",
-    live.project ? h("a", { href: `#/projects/${encodeURIComponent(live.project)}` }, projectName(live.project)) : "Unfiled");
-  // A chat opened from a workflow run says which, with a way back to its report.
-  if (live.run) sub.append(" · opened from ", h("a", { id: "chat-run", href: `#/workflows/${encodeURIComponent(live.run.workflow)}/${encodeURIComponent(live.run.run)}` }, `${live.run.name || live.run.workflow} run`));
+  const projects = store.projects?.projects || [];
+  if (!live.started && !live.run) {
+    // Before the first message, the project can still be chosen.
+    const pick = h("select", { id: "chat-project-pick", class: "pick", "aria-label": "Project for this chat", title: "A project gives a chat its instructions and narrows the connections it may use." },
+      h("option", { value: "" }, "No project"), ...projects.map((p) => h("option", { value: p.id }, p.name)), h("option", { value: "+" }, "Projects…"));
+    pick.value = live.project && projects.some((p) => p.id === live.project) ? live.project : "";
+    pick.addEventListener("change", () => {
+      if (pick.value === "+") { pick.value = live.project || ""; location.hash = "#/projects"; return; }
+      live.project = pick.value || null;
+      drawSub();
+    });
+    sub.replaceChildren(pick);
+    fitSelect(pick);
+  } else {
+    // Under the message box: the project this chat works in; a chat opened
+    // from a workflow run says which, with a way back to its report.
+    const project = live.project
+      ? h("a", { href: `#/projects/${encodeURIComponent(live.project)}`, title: "This chat's project: its instructions and the connections it may use" }, projectName(live.project))
+      : live.run ? null : h("a", { href: "#/projects", title: "Not in a project. Projects give a chat instructions and narrow the connections it may use." }, "No project");
+    const run = live.run ? h("a", { id: "chat-run", href: `#/workflows/${encodeURIComponent(live.run.workflow)}/${encodeURIComponent(live.run.run)}`, title: "The run this chat opened" }, `${live.run.name || live.run.workflow} run`) : null;
+    sub.replaceChildren(...[project, project && run ? h("span", { class: "sep" }) : null, run].filter(Boolean));
+  }
   // What the assistant is following, in plain sight.
   const box = $("chat-project");
   if (!box) return;
@@ -854,6 +1025,8 @@ function drawSub() {
 
 async function newChat(project = null, run = null) {
   const was = live.chatId;
+  // What the old chat had open beside the panel goes with it.
+  closeSide();
   live.project = project || null;
   live.run = run || null;
   await invoke("chat_end");
@@ -864,11 +1037,16 @@ async function newChat(project = null, run = null) {
   live.pick = null;
   live.cards.clear();
   live.log.replaceChildren();
-  live.renderer = new Renderer(live.log, true, (id) => { live.panel.showProvenance(id); live.view.classList.add("sheet-open"); });
+  live.renderer = new Renderer(live.log, true, (id) => live.map.files(id), (handle) => live.map.table(handle));
   $("chat-title").textContent = "New chat";
+  $("chat-title").removeAttribute("title");
   delete $("chat-title").dataset.set;
+  $("text").placeholder = "What do you want to know?";
+  $("text").value = "";
+  fitText();
   drawSub();
-  live.panel.setSession(null);
+  live.map.view = null;
+  live.map.setSession(null);
   setBusy(false);
   await updateChip();
   store.set("waiting", 0);
@@ -876,41 +1054,76 @@ async function newChat(project = null, run = null) {
   // Only if the person is still looking at this chat.
   if (location.hash === "#/chats/new" || (was && location.hash === `#/chats/c/${encodeURIComponent(was)}`)) history.replaceState(null, "", "#/chats/new");
   await emptyChat();
+  store.set("chatstate", "new");
   refreshFns && refreshFns.chats();
   $("text").focus();
 }
 
+// The start of a chat: what to try, what is recent, what waits, and the
+// first steps when nothing is set up. Drawn afresh each time it is shown.
+let emptySeq = 0;
 async function emptyChat() {
-  if (live.log.childNodes.length) return;
-  const box = h("div", { class: "chat-empty" }, h("h2", {}, "Ask about your data"),
-    h("p", { class: "muted" }, "Your assistant works through Columbus: it sees only what your connections allow, every result is checked, and anything that changes data or leaves this computer asks you first."));
-  const starters = h("div", { class: "starters" });
-  box.append(starters);
-  live.log.append(box);
-  let ids = [];
-  try {
-    const st = await invoke("settings_state");
-    ids = st.connections.filter((c) => c.id).map((c) => c.id);
-  } catch { /* no starters from connections */ }
+  const old = live.log.querySelector(".chat-empty");
+  if (live.log.childNodes.length && !(old && live.log.childNodes.length === 1)) return;
+  const seq = ++emptySeq;
+  const box = h("div", { class: "chat-empty" }, h("h2", { class: "visually-hidden" }, "Ask about your data"));
+  if (old) old.replaceWith(box); else live.log.append(box);
+  const s = await setupState();
+  if (seq !== emptySeq || !box.isConnected) return;
+  box.append(...notices(s.st));
+  const c = s.chat;
+  if (c && c.has_key && c.server_found && (c.server_older || !c.engine)) {
+    box.append(h("div", { class: "notice warn" }, h("div", {},
+      c.server_older ? `The Columbus server this chat uses is version ${c.server_version}, older than this app (${c.app_version}), so the map and newer tools may not work. ` : "The GIS engine was not found, so tools that read data will fail. ",
+      h("a", { href: "#/settings/ai" }, "See Settings › Assistant"), ".")));
+  }
+  // Nothing set up yet: the first run. With no AI connected there is no
+  // question to ask, so it stands in for the message box; with one, it sits
+  // under it.
+  document.body.classList.toggle("setup", !!s.needsSetup && !s.done.ai);
+  if (s.needsSetup) {
+    box.append(firstSteps(s, () => emptyChat()));
+    return;
+  }
+  if (c && (!c.has_key || !c.server_found)) {
+    box.append(h("div", { class: "notice warn" }, h("div", {},
+      !c.has_key ? "No AI is connected yet. " : "Columbus's server was not found. ",
+      h("a", { href: "#/settings/ai" }, "Set it up in Settings › Assistant"), ".")));
+  }
+  if (document.activeElement === document.body) $("text")?.focus();
+  const ids = s.st ? s.st.connections.filter((x) => x.id).map((x) => x.id) : [];
   const prompts = ids.length
     ? [`Which datasets can I use on ${ids[0]}, and what CRS are they in?`,
       `Describe the largest dataset on ${ids[0]}: fields, codes and row count.`,
       ids[1] ? `Which datasets on ${ids[0]} and ${ids[1]} share a key field?` : `Check the datasets on ${ids[0]} for empty or invalid geometries.`]
     : ["Which connections and datasets can you use?", "What can you do with my GIS data through Columbus?"];
-  for (const p of prompts) starters.append(button(p, "", () => { $("text").value = p; $("text").focus(); }));
-  try {
-    const s = await invoke("chat_settings");
-    if (s.has_key && s.server_found && (s.server_older || !s.engine)) {
-      box.append(h("div", { class: "notice warn" }, h("div", {},
-        s.server_older ? `The Columbus server this chat uses is version ${s.server_version}, older than this app (${s.app_version}), so the map and newer tools may not work. ` : "The GIS engine was not found, so tools that read data will fail. ",
-        h("a", { href: "#/settings/ai" }, "See Settings › Models and accounts"), ".")));
-    }
-    if (!s.has_key || !s.server_found) {
-      box.append(h("div", { class: "notice warn" }, h("div", {},
-        !s.has_key ? "No AI is connected yet. " : "Columbus's server was not found. ",
-        h("a", { href: "#/settings/ai" }, "Set it up in Settings › Models and accounts"), ", or follow the first steps on ", h("a", { href: "#/home" }, "Home"), ".")));
-    }
-  } catch { /* shown when sending */ }
+  const starters = h("div", { class: "starters" });
+  for (const p of prompts) starters.append(h("button", { type: "button", onclick: () => setText(p) }, h("span", {}, p), icon("out")));
+  box.append(sec("Try"), starters);
+  const items = recent(4);
+  if (items.length) {
+    const list = h("div", { class: "starters", id: "start-recent" });
+    for (const it of items) list.append(h("a", { href: it.href }, h("span", {}, it.title), h("span", { class: "when" }, shortWhen(it.t))));
+    box.append(sec("Recent"), list);
+  }
+  if (!s.needsSetup && s.anyLeft) {
+    box.append(h("p", { class: "small muted" }, "Setup steps you skipped are in Settings. ",
+      h("button", { type: "button", class: "linkbtn", onclick: async () => { await savePrefs({ skipped: [], setup_done: false }); emptyChat(); } }, "Show the first steps again")));
+  }
+  // What waits for the person, and workflows whose last run needs them.
+  const waitLine = h("div", { class: "waitlines" });
+  box.append(waitLine);
+  const drawWait = () => {
+    const n = otherInbox().reduce((k, x) => k + (x.pending || []).length, 0) + (store.tools ? store.tools.waiting.length : 0) + (store.workflows ? store.workflows.waiting.length : 0);
+    const w = store.workflows;
+    const runs = w ? w.installed.filter((x) => x.last_run && ["failed", "needs_you", "needs_reapproval", "stopped_at_limit"].includes(x.last_run.status)).length : 0;
+    waitLine.replaceChildren(...[
+      n ? h("a", { class: "waitline", href: "#/activity", id: "start-waiting" }, h("span", { class: "dot warn" }), h("span", {}, `${plural(n, "thing")} ${n === 1 ? "is" : "are"} waiting for you`), icon("forward")) : null,
+      runs ? h("a", { class: "waitline", href: "#/workflows", id: "start-runs" }, h("span", { class: "dot bad" }), h("span", {}, `${plural(runs, "workflow")} ${runs === 1 ? "needs" : "need"} you after ${runs === 1 ? "its" : "their"} last run`), icon("forward")) : null,
+    ].filter(Boolean));
+  };
+  drawWait();
+  box.drawWait = drawWait;
 }
 
 async function updateChip() {
@@ -928,13 +1141,13 @@ async function updateChip() {
       }));
     };
     fill($("chat-model"), s.models, pick.model, (_, l) => l.replace(/ \(.*\)$/, ""));
-    fill($("chat-effort"), s.efforts, pick.effort, (id, l) => id ? `Thinking: ${l.replace(/ \(.*\)$/, "")}` : "Thinking: model's default");
-    $("chat-model").title = `${MODEL_NOTE} ${(s.models.find(([id]) => id === pick.model) || [0, ""])[1]}`;
-    $("chat-effort").title = "How much the model thinks before it answers. Higher is slower, costs more and is more thorough.";
+    fill($("chat-effort"), s.efforts, pick.effort, (id, l) => id ? `Thinking: ${l.replace(/ \(.*\)$/, "").toLowerCase()}` : "Thinking: default");
     const rows = store.info?.policy?.in_force?.return_rows;
-    const chip = $("model-chip");
-    chip.hidden = !rows;
-    chip.textContent = rows ? `AI sees at most ${Number(rows).toLocaleString()} rows per call` : "";
+    $("chat-model").title = `${MODEL_NOTE} ${(s.models.find(([id]) => id === pick.model) || [0, ""])[1]}${rows ? ` It sees at most ${Number(rows).toLocaleString()} rows per call (your organization's policy).` : ""}`;
+    $("chat-effort").title = "How much the model thinks before it answers. Higher is slower, costs more and is more thorough.";
+    fitSelect($("chat-model"));
+    fitSelect($("chat-effort"));
+    drawSub();
   } catch { /* none */ }
 }
 
@@ -945,6 +1158,13 @@ listen("chat-event", ({ payload: e }) => {
   if (e.kind === "error" || e.kind === "done") setBusy(false);
   if (e.kind === "done") refreshFns && refreshFns.chats();
   live.log.scrollTop = live.log.scrollHeight;
+});
+
+// What waits changed while the start is shown: its line follows.
+store.on((k) => {
+  if (k !== "inbox" && k !== "tools" && k !== "workflows") return;
+  const box = live.log && live.log.querySelector(".chat-empty");
+  if (box && box.drawWait) box.drawWait();
 });
 
 // ---------- Pages ----------
@@ -967,14 +1187,14 @@ export async function render(main, rest) {
     const project = id || null;
     history.replaceState(null, "", "#/chats/new");
     const r = await showLive(main);
-    if (live.started || live.chatId || live.log.childElementCount || live.project !== project) await newChat(project);
+    if (live.started || live.chatId || [...live.log.children].some((x) => !x.classList.contains("chat-empty")) || live.project !== project) await newChat(project);
     // A question another page left for the new chat (the person sends it).
     try {
       // {text, at}: only one left in the last minute, for this new chat.
       const raw = sessionStorage.getItem("columbus.prefill");
       sessionStorage.removeItem("columbus.prefill");
       const pre = raw ? JSON.parse(raw) : null;
-      if (pre && typeof pre.text === "string" && Date.now() - Number(pre.at) < 60000) { $("text").value = pre.text; $("text").focus(); }
+      if (pre && typeof pre.text === "string" && Date.now() - Number(pre.at) < 60000) setText(pre.text);
     } catch { /* none */ }
     return r;
   }
@@ -991,6 +1211,9 @@ export async function render(main, rest) {
       `Opened the results of ${run.name}'s run. Its layers are on the map and in the table, and your assistant has its report. `,
       "They are copies: the run itself, its files and its exports stay as they are. Ask, for example: ",
       h("i", {}, "check these three areas"), " or ", h("i", {}, "remove route X, then export the rest"), ".")));
+    store.set("chatstate", "run");
+    // Its layers on the map and in the table, as soon as the map opens.
+    live.map.view = "table";
     if (await start()) {
       $("chat-title").textContent = `Review: ${run.name}`;
       $("chat-title").dataset.set = "1";
@@ -1003,91 +1226,123 @@ export async function render(main, rest) {
   return showIndex(main);
 }
 
+/** The live chat leaves the panel now. (The page shown next may have been
+ * asked for while the live chat's own page was still being drawn, before
+ * its clean-up was handed back.) */
+export function leaveLive() {
+  if (!host || host.hidden) return;
+  host.hidden = true;
+  live.shown = false;
+  if (trayFor === "live") trayEl = null;
+}
+
+let liveShows = 0;
 function showLive(main) {
+  const mine = ++liveShows;
   const hostEl = liveHost();
   if (!hostEl.isConnected) main.parentElement.append(hostEl);
   main.hidden = true;
   hostEl.hidden = false;
+  live.shown = true;
   trayEl = live.view.querySelector(".tray");
   trayFor = "live";
   drawTray();
-  live.seg.apply(getLayout(live.chatId));
   updateChip();
   emptyChat();
-  if (live.session) live.panel.setSession(live.session);
-  else live.panel.setTab(live.panel.tab);
+  fitText();
+  live.map.setSession(live.session);
+  live.map.show();
   setTimeout(() => $("text")?.focus(), 0);
   return () => {
+    // Shown again since (a page drawn late is cleaned up late): it is not
+    // this showing's to hide.
+    if (mine !== liveShows) return;
     hostEl.hidden = true;
     main.hidden = false;
-    trayEl = null;
+    live.shown = false;
+    // (Only its own: a session's page shown since has its own.)
+    if (trayFor === "live") trayEl = null;
   };
+}
+
+// Leaving a saved chat or another app's session: the live chat's map, if it
+// has one, takes the stage again.
+function backToLiveMap(map) {
+  // Only if this page's map still has the stage: the page the person went
+  // on to may have put its own there already.
+  const mine = onStage === map || onStage === null;
+  map.destroy();
+  if (mine && live.map && live.session) live.map.show();
 }
 
 async function showSaved(main, id) {
   const view = h("div", { class: "chatview" });
-  const panel = new Panel(() => view.classList.remove("sheet-open"));
+  const map = new SessionMap();
   const title = h("h1", {}, "Chat");
+  shownTitle = title;
   const sub = h("p", { class: "sub" }, "");
-  const seg = layoutSwitch(view, () => id);
-  const del = button("Delete", "sm danger", async () => {
+  const del = async () => {
     if (!(await askConfirm("Delete this chat?", "Its saved conversation is deleted from this computer. Files its session made stay where they are.", "Delete", true))) return;
     try { await invoke("chat_delete", { id }); refreshFns.chats(); location.hash = "#/chats"; } catch (e) { toast(String(e)); }
-  });
-  const rename = button("Rename", "sm", async () => {
+  };
+  const rename = async () => {
     const t = await askText("Rename this chat", "Title", title.textContent);
     if (!t) return;
     try { await invoke("chat_rename", { id, title: t }); title.textContent = t; refreshFns.chats(); } catch (e) { toast(String(e)); }
-  });
-  const mapBtn = button("Map", "sm sheet-only", () => view.classList.add("sheet-open"));
-  const head = h("header", { class: "chathead" }, h("div", { class: "titlebox" }, title, sub), h("div", { class: "actions" }, seg, mapBtn, rename, del));
-  const ended = h("div", { class: "ended" }, "This chat has ended. Its conversation is kept here; Columbus cannot continue it.", button("New chat", "sm primary", () => { location.hash = "#/chats/fresh"; }));
+  };
+  const head = h("header", { class: "chathead" },
+    h("a", { class: "iconbtn back", href: "#/chats", "aria-label": "All chats", title: "All chats" }, icon("back")),
+    h("div", { class: "titlebox" }, title, sub),
+    h("div", { class: "actions" }, mapMenu(map, [{ label: "Rename", id: "chat-rename", onclick: rename }, { label: "Delete this chat", id: "chat-delete", danger: true, onclick: del }])));
+  const ended = h("div", { class: "ended" }, h("span", {}, "This chat has ended. Its conversation is kept here; Columbus cannot continue it."), button("New chat", "sm primary", () => { location.hash = "#/chats/fresh"; }));
   const logEl = h("div", { id: "saved-log", class: "log", role: "log", "aria-label": "Saved conversation" });
   const col = h("section", { class: "chatcol", "aria-label": "Saved chat" }, head, logEl);
-  view.append(col, panel.el);
+  view.append(col);
   main.append(view);
-  seg.apply(getLayout(id));
+  map.show();
   try {
     const lines = await invoke("chat_transcript", { id });
     const meta = lines.find((l) => l.kind === "meta") || {};
     const s = store.chats.find((c) => c.id === id);
     title.textContent = s ? s.title : "Chat";
-    sub.replaceChildren("In the Columbus app · ",
-      meta.project ? h("a", { href: `#/projects/${encodeURIComponent(meta.project)}` }, projectName(meta.project)) : "Unfiled",
-      ` · ${when(lines[0]?.ts)}`);
-    const r = new Renderer(logEl, false, (pid) => { panel.showProvenance(pid); view.classList.add("sheet-open"); });
+    title.title = title.textContent;
+    sub.replaceChildren(...(meta.project ? [h("a", { href: `#/projects/${encodeURIComponent(meta.project)}` }, projectName(meta.project)), " · "] : []), when(lines[0]?.ts));
+    const r = new Renderer(logEl, false, (pid) => map.files(pid), (handle) => map.table(handle));
     for (const l of lines) r.event(l);
+    r.finish();
     logEl.append(ended);
     const running = meta.session && store.sessions.some((x) => x.session === meta.session);
-    panel.setSession(running ? meta.session : null);
-    if (!running) panel.frameHost.replaceChildren(h("div", { class: "state" }, h("h3", {}, "Its session has ended"), h("p", {}, "The map and table show a running session only. The files it made stay in its workspace.")));
+    map.setSession(running ? meta.session : null);
+    if (!running) map.say("Its session has ended", "The map and table show a running session only. The files it made stay in its workspace.");
   } catch (e) {
     logEl.append(el("p", "error-text", String(e)));
   }
-  return () => panel.destroy();
+  return () => backToLiveMap(map);
 }
 
 async function showSession(main, session) {
   const view = h("div", { class: "chatview" });
-  const panel = new Panel(() => view.classList.remove("sheet-open"));
+  const map = new SessionMap();
   const s = store.sessions.find((x) => x.session === session);
   const who = clientName(s?.client);
   const title = h("h1", {}, s ? `${who} session` : "Session");
+  shownTitle = title;
   const sub = h("p", { class: "sub" }, s ? `Started ${when(s.started)} · ${s.last_used ? `used ${ago(s.last_used)}` : "not used yet"} · the conversation lives in ${who}` : "This session is not running.");
-  const seg = layoutSwitch(view, () => `s-${session}`);
-  const mapBtn = button("Map", "sm sheet-only", () => view.classList.add("sheet-open"));
-  const head = h("header", { class: "chathead" }, h("div", { class: "titlebox" }, title, sub), h("div", { class: "actions" }, seg, mapBtn));
+  const head = h("header", { class: "chathead" },
+    h("a", { class: "iconbtn back", href: "#/chats", "aria-label": "All chats", title: "All chats" }, icon("back")),
+    h("div", { class: "titlebox" }, title, sub), h("div", { class: "actions" }, mapMenu(map)));
   const tray = h("section", { class: "tray", "aria-label": "Waiting for you", hidden: true });
   const acts = h("ol", { class: "activity", "aria-label": "Tool calls in this session" });
-  const body = h("div", { class: "scroll pad stack", style: null }, h("p", { class: "muted small" }, `What ${who}'s assistant did through Columbus in this session, from the audit log. The conversation itself is in ${who}.`), acts);
+  const body = h("div", { class: "scroll pad stack" }, h("p", { class: "muted small" }, `What ${who}'s assistant did through Columbus in this session, from the audit log. The conversation itself is in ${who}.`), acts);
   const col = h("section", { class: "chatcol", "aria-label": "Session activity" }, head, tray, body);
-  view.append(col, panel.el);
+  view.append(col);
   main.append(view);
-  seg.apply(getLayout(`s-${session}`));
   trayEl = tray;
   trayFor = session;
   drawTray();
-  panel.setSession(s ? session : null);
+  map.setSession(s ? session : null);
+  map.show();
+  if (!s) map.say("This session is not running", "The map and table show a running session only.");
   let shown = -1;
   const load = async () => {
     try {
@@ -1113,16 +1368,19 @@ async function showSession(main, session) {
   load();
   const timer = setInterval(load, 5000);
   const unsub = store.on((k) => { if (k === "inbox") drawTray(); });
-  return () => { clearInterval(timer); unsub(); panel.destroy(); trayEl = null; };
+  return () => { clearInterval(timer); unsub(); if (trayEl === tray) trayEl = null; backToLiveMap(map); };
 }
 
 function showIndex(main) {
-  const search = h("input", { type: "search", placeholder: "Search titles and content", "aria-label": "Search chats", class: "grow" });
-  const head = pageHead("Chats", "Your chats in the app, by project, and sessions other AI apps run on this computer.",
-    [button("New chat", "primary", () => { location.hash = "#/chats/fresh"; })]);
-  const list = h("div", { class: "stack" });
-  const body = h("div", { class: "scroll" }, h("div", { class: "pad stack" }, h("div", { class: "row" }, search), list));
-  main.append(h("div", { class: "page" }, head, body));
+  const search = h("input", { type: "search", placeholder: "Search chats", "aria-label": "Search chats" });
+  const head = placeHead("Chats", search, [button("New chat", "primary", () => { location.hash = "#/chats/fresh"; })]);
+  const list = h("div", { class: "stack", id: "chat-list" });
+  // Which chats show: all of them, one project's, or those in no project.
+  const filter = h("select", { id: "chats-project", class: "pick", "aria-label": "Show the chats of" });
+  const count = h("span", { id: "chats-count" });
+  const foot = h("div", { class: "footline" }, filter, count, h("span", { class: "spacer" }), h("a", { href: "#/projects", id: "to-projects" }, "Projects"));
+  main.append(h("div", { class: "page" }, head, h("div", { class: "scroll" }, h("div", { class: "pad" }, list)), foot));
+  let project = "*";
   let seq = 0;
   const draw = async () => {
     const ql = search.value.trim().toLowerCase();
@@ -1132,51 +1390,63 @@ function showIndex(main) {
       try { hits = await invoke("chats_search", { query: search.value }); } catch { hits = []; }
       if (mine !== seq) return;
     }
-    list.replaceChildren();
-    const others = otherSessions();
-    if (others.length && !ql) {
-      const ul = h("ul", { class: "list" });
-      for (const s of others) {
-        const li = h("li", { class: "clickable" }, h("div", { class: "text" },
-          h("b", {}, `${clientName(s.client)} session`),
-          h("span", { class: "where" }, `Started ${when(s.started)} · ${s.last_used ? `used ${ago(s.last_used)}` : "not used yet"}`)),
-          h("span", { class: "chip blue" }, clientName(s.client)),
-          h("a", { class: "btn sm", href: `#/chats/s/${encodeURIComponent(s.session)}` }, "Open"));
-        li.addEventListener("click", (e) => { if (e.target.tagName !== "A") location.hash = `#/chats/s/${encodeURIComponent(s.session)}`; });
-        ul.append(li);
-      }
-      list.append(h("section", { class: "card" }, h("div", { class: "hd" }, h("h2", {}, "Running in other AI apps"), h("span", { class: "muted small" }, "their activity and map; the conversation is in that app")), h("div", { class: "bd flush" }, ul)));
-    }
+    const projects = store.projects?.projects || [];
+    const known = new Set(projects.map((p) => p.id));
+    if (project !== "*" && project !== "" && !known.has(project)) project = "*";
+    redraw(filter, h("option", { value: "*" }, "All chats"), ...projects.map((p) => h("option", { value: p.id }, p.name)), h("option", { value: "" }, "No project"));
+    filter.value = project;
+    filter.hidden = !projects.length;
+    fitSelect(filter);
     let chats = store.chats;
     const snippets = new Map();
     if (hits) {
       for (const f of hits) snippets.set(f.id, f.snippet);
       chats = chats.filter((c) => snippets.has(c.id) || c.title.toLowerCase().includes(ql));
     } else if (ql) chats = chats.filter((c) => c.title.toLowerCase().includes(ql));
-    // One card per project with chats (in the projects' order), then Unfiled.
-    const known = new Set((store.projects?.projects || []).map((p) => p.id));
-    const groups = [...(store.projects?.projects || []).map((p) => p.id), null];
-    for (const pid of groups) {
-      const mine = chats.filter((c) => (pid ? c.project === pid : !c.project || !known.has(c.project)));
-      if (pid && !mine.length) continue;
-      const ul = h("ul", { class: "list" });
-      for (const c of mine) {
-        const href = `#/chats/c/${encodeURIComponent(c.id)}`;
-        const li = h("li", { class: "clickable" }, h("div", { class: "text" }, h("b", {}, c.title),
-          h("span", { class: "where" }, snippets.get(c.id) || `${plural(c.messages, "message")} · ${ago(c.updated)}`)),
-          c.live ? h("span", { class: "badge info" }, "Open now") : null,
-          h("a", { class: "btn sm", href }, "Open"));
-        li.addEventListener("click", (e) => { if (e.target.tagName !== "A") location.hash = href; });
-        ul.append(li);
+    if (project !== "*") chats = chats.filter((c) => (project ? c.project === project : !c.project || !known.has(c.project)));
+    const rows = chats.map((c) => ({
+      t: c.updated || "", title: c.title, href: c.live ? "#/chats/new" : `#/chats/c/${encodeURIComponent(c.id)}`,
+      sub: snippets.get(c.id) || [project === "*" && c.project && known.has(c.project) ? projectName(c.project) : null, c.live ? "Open now" : null, plural(c.messages, "message")].filter(Boolean).join(" · "),
+      waiting: c.live && waitingCount() > 0, project: c.project && known.has(c.project) ? c.project : "",
+    }));
+    // Sessions other AI apps run: their activity and map (the conversation
+    // itself is in that app).
+    if (project === "*") {
+      for (const x of otherSessions()) {
+        const who = clientName(x.client);
+        if (ql && !`${who} session`.toLowerCase().includes(ql)) continue;
+        const pending = ((store.inbox.find((i) => i.session === x.session) || {}).pending || []).length;
+        rows.push({ t: x.last_used || x.started || "", title: `${who} session`, href: `#/chats/s/${encodeURIComponent(x.session)}`, session: x.session,
+          sub: `Running in ${who}${pending ? ". Waiting for your OK." : ". The conversation is in that app."}`, waiting: pending > 0 });
       }
-      const title = pid ? h("a", { href: `#/projects/${encodeURIComponent(pid)}` }, projectName(pid)) : "Unfiled";
-      const card = h("section", { class: "card", "data-project": pid || "" }, h("div", { class: "hd" }, h("h2", {}, title), h("span", { class: "muted small" }, plural(mine.length, "chat"))));
-      card.append(h("div", { class: "bd flush" }, mine.length ? ul : h("div", { class: "pad" }, h("p", { class: "muted" }, ql ? "No chat matches." : "No saved chats yet. Start one with New chat."))));
-      list.append(card);
     }
+    rows.sort((a, b) => String(b.t).localeCompare(String(a.t)));
+    const out = [];
+    let ul = null;
+    let last = null;
+    for (const r of rows) {
+      const e = era(r.t);
+      if (e !== last) {
+        last = e;
+        ul = h("ul", { class: "list" });
+        out.push(h("section", { class: "card" }, sec(e), h("div", { class: "bd flush" }, ul)));
+      }
+      const li = h("li", { class: "clickable", "data-href": r.href, "data-project": r.project || null },
+        h("div", { class: "text" }, h("b", {}, h("a", { href: r.href }, r.title)), h("span", { class: "where clip" }, r.sub)),
+        h("span", { class: "when" }, r.waiting ? h("span", { class: "dot warn", role: "img", "aria-label": "Waiting for you", title: "Waiting for you" }) : null, shortWhen(r.t)));
+      ul.append(li);
+    }
+    if (!rows.length) out.push(emptyState(ql ? "No chat matches" : "No chats yet", ql ? "Chats are searched by title and by what was said." : "Ask something and it is saved here, on this computer."));
+    redraw(list, ...out);
+    count.textContent = project === "*" ? "" : plural(chats.length, "chat");
   };
+  list.addEventListener("click", (e) => {
+    const li = e.target.closest("li[data-href]");
+    if (li && e.target.tagName !== "A") location.hash = li.dataset.href;
+  });
+  filter.addEventListener("change", () => { project = filter.value; draw(); });
   search.addEventListener("input", draw);
-  const unsub = store.on((k) => { if (k === "chats" || k === "sessions" || k === "projects") draw(); });
+  const unsub = store.on((k) => { if (k === "chats" || k === "sessions" || k === "projects" || k === "inbox" || k === "waiting") draw(); });
   draw();
   return () => unsub();
 }

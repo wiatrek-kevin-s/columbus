@@ -1,23 +1,36 @@
 """End-to-end test of the companion window's map tools (REQ-28, T-22) in a
 real browser, against a real session.
 
-A layer of three routes, far apart: clicking row 2 in the table fits the
-map to route 2; with **Zoom to selection** off, clicking row 3 leaves the
-view as it was, and a second window of the same session remembers the
-choice. **Measure** across a line 100 m long (geodesic, WGS 84) shows
-328 ft, within 1%; Escape clears it. Screenshots go to e2e/out/.
+The map fills the page and sheets float on it (the page's panel on the
+left, the table at the foot), so "in view" here means the part of the map
+no sheet covers. A layer of three routes, far apart, is fitted in the
+middle of that part, and again when the table opens over it. Clicking row 2
+in the table fits the map to route 2, in the middle of what is left in
+view; with **Zoom to selection** off, clicking row 3 leaves the view as it
+was, and a second window of the same session remembers the choice.
+**Measure** across a line 100 m long (geodesic, WGS 84) shows 328 ft,
+within 1%, at the foot of the part in view; Escape clears it. Once the
+person has moved the map, closing the table keeps the middle of their view
+in the middle and does not zoom. Screenshots go to e2e/out/.
+
+First it runs `unit.mjs` with Node: the checks of the map's pure parts,
+which need no browser (the street background's colours, the app's inset,
+where the sheets go).
 
     python app/ui/e2e/map.py [path/to/columbus-mcp]
 
-Needs the GIS engine (geopandas, pyogrio, shapely, pyproj) and Playwright.
-`COLUMBUS_E2E_CHROMIUM` may name a Chromium or Chrome to use instead of
-Playwright's own (for machines that cannot download it).
+Needs the GIS engine (geopandas, pyogrio, shapely, pyproj), Playwright, and
+Node 22.18 or newer (the one that built the UI). `COLUMBUS_E2E_CHROMIUM` may
+name a Chromium or Chrome to use instead of Playwright's own (for machines
+that cannot download it).
 """
 
 import json
 import math
 import os
 import re
+import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -29,6 +42,7 @@ from playwright.sync_api import expect, sync_playwright
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from mcp_client import Mcp, wait_file  # noqa: E402
+import a11y  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[2]
@@ -69,12 +83,47 @@ def merc(lat):
     return math.log(math.tan(math.pi / 4 + math.radians(lat) / 2))
 
 
+def unmerc(y):
+    return math.degrees(2 * math.atan(math.exp(y)) - math.pi / 2)
+
+
 def to_px(page, lon, lat):
     w, s, e, n = view(page)
     r = page.locator(".map canvas").bounding_box()
     x = r["x"] + (lon - w) / (e - w) * r["width"]
     y = r["y"] + (merc(n) - merc(lat)) / (merc(n) - merc(s)) * r["height"]
     return x, y
+
+
+def clear(page):
+    """The part of the map no sheet covers, in page pixels (left, top,
+    right, bottom): right of the page's panel, above the table sheet. Read
+    from the sheets themselves, not from what the page says it pads."""
+    r = page.locator(".map canvas").bounding_box()
+    left, top, right, bottom = r["x"], r["y"], r["x"] + r["width"], r["y"] + r["height"]
+    panel = page.locator(".panel").bounding_box()
+    assert panel, "the page's own panel is there"
+    left = max(left, panel["x"] + panel["width"])
+    table = page.locator("section.table")
+    if table.count():
+        bottom = min(bottom, table.bounding_box()["y"])
+    assert right - left > 300 and bottom - top > 200, f"too little of the map is in view: {(left, top, right, bottom)}"
+    return left, top, right, bottom
+
+
+def in_view(page):
+    """The same part, as west, south, east, north."""
+    w, s, e, n = view(page)
+    r = page.locator(".map canvas").bounding_box()
+    left, top, right, bottom = clear(page)
+
+    def lon(x):
+        return w + (x - r["x"]) / r["width"] * (e - w)
+
+    def lat(y):
+        return unmerc(merc(n) - (y - r["y"]) / r["height"] * (merc(n) - merc(s)))
+
+    return lon(left), lat(bottom), lon(right), lat(top)
 
 
 def open_link(port, root):
@@ -91,6 +140,14 @@ def main():
     ui = REPO / "app/ui/dist"
     assert (ui / "index.html").exists(), "build the UI first: npm run build"
     OUT.mkdir(exist_ok=True)
+    # The map's pure parts first: no browser needed.
+    node = shutil.which("node")
+    assert node, "Node is needed for app/ui/e2e/unit.mjs (the one that built the UI)"
+    unit = subprocess.run([node, str(HERE / "unit.mjs")], cwd=REPO / "app/ui", capture_output=True, text=True, timeout=300)
+    assert unit.returncode == 0, f"unit.mjs failed:\n{unit.stdout[-6000:]}\n{unit.stderr[-2000:]}"
+    passed = re.search(r"^# pass (\d+)$", unit.stdout, re.M)
+    assert passed and int(passed.group(1)) > 0 and re.search(r"^# fail 0$", unit.stdout, re.M), unit.stdout[-2000:]
+    print(f"map: unit.mjs passed ({passed.group(1)} checks)")
     root = Path(tempfile.mkdtemp())
     import geopandas as gpd
     from pyproj import Geod
@@ -127,31 +184,55 @@ def main():
             problems = []
             page.on("pageerror", lambda e: problems.append(str(e)))
             page.goto(link)
+            expect(page.locator(".map[data-layers='1']")).to_have_count(1, timeout=20000)
+            # The layer's own fit first: all three routes, in the middle of
+            # the part of the map the page's panel leaves in view.
+            layer_view = settled(page)
+            w, s, e, n = in_view(page)
+            for route in ROUTES:
+                rw, rs, re_, rn = bbox(route)
+                assert w <= rw and s <= rs and e >= re_ and n >= rn, f"route {bbox(route)} is not all in view {(w, s, e, n)}"
+            aw, as_, ae, an = bbox([c for route in ROUTES for c in route])
+            assert abs((w + e) / 2 - (aw + ae) / 2) < (e - w) * 0.05, f"the layer {(aw, as_, ae, an)} is not centred in view {(w, s, e, n)}"
+            assert abs((s + n) / 2 - (as_ + an) / 2) < (n - s) * 0.05, f"the layer {(aw, as_, ae, an)} is not centred in view {(w, s, e, n)}"
+
+            # The table: a sheet over the map, opened from the active
+            # output. The map makes room: the layer, still as it was fitted,
+            # is fitted again into the part above the sheet.
+            page.get_by_role("button", name="Table", exact=True).click()
+            expect(page.locator("section.table")).to_be_visible()
             expect(page.locator("table tbody tr")).to_have_count(3, timeout=20000)
-            expect(page.locator(".map[data-layers='1']")).to_have_count(1, timeout=15000)
             zoom = page.get_by_role("checkbox", name="Zoom to selection")
             expect(zoom).to_be_checked()
-            # The layer's own fit (all three routes) first.
-            layer_view = settled(page)
+            opened = settled(page, before=layer_view)
+            w, s, e, n = in_view(page)
+            for route in ROUTES:
+                rw, rs, re_, rn = bbox(route)
+                assert w <= rw and s <= rs and e >= re_ and n >= rn, f"route {bbox(route)} is not all in view above the table {(w, s, e, n)}"
+            assert abs((w + e) / 2 - (aw + ae) / 2) < (e - w) * 0.05, f"the layer {(aw, as_, ae, an)} is not centred above the table {(w, s, e, n)}"
+            assert abs((s + n) / 2 - (as_ + an) / 2) < (n - s) * 0.05, f"the layer {(aw, as_, ae, an)} is not centred above the table {(w, s, e, n)}"
 
-            # Row 2: the map fits route 2.
+            # Row 2: the map fits route 2, in the part still in view (right
+            # of the panel, above the table).
             page.locator("table tbody tr").nth(1).click()
-            v = settled(page, before=layer_view)
-            w, s, e, n = v
+            v = settled(page, before=opened)
+            w, s, e, n = in_view(page)
             rw, rs, re_, rn = bbox(ROUTES[1])
-            assert w <= rw and s <= rs and e >= re_ and n >= rn, f"route 2 {bbox(ROUTES[1])} is not all in view {v}"
+            assert w <= rw and s <= rs and e >= re_ and n >= rn, f"route 2 {bbox(ROUTES[1])} is not all in view {(w, s, e, n)}"
             cx, cy = (w + e) / 2, (s + n) / 2
-            assert abs(cx - (rw + re_) / 2) < (e - w) * 0.05, f"view {v} is not centred on route 2"
-            assert abs(cy - (rs + rn) / 2) < (n - s) * 0.05, f"view {v} is not centred on route 2"
-            # Fitted: route 2 fills the view across or down, less the padding.
+            assert abs(cx - (rw + re_) / 2) < (e - w) * 0.05, f"view {(w, s, e, n)} is not centred on route 2"
+            assert abs(cy - (rs + rn) / 2) < (n - s) * 0.05, f"view {(w, s, e, n)} is not centred on route 2"
+            # Fitted: route 2 fills the part in view across or down, less the padding.
             fill = max((re_ - rw) / (e - w), (rn - rs) / (n - s))
-            assert fill > 0.4, f"view {v} is not fitted to route 2 (it fills {fill:.0%})"
+            assert fill > 0.4, f"view {(w, s, e, n)} is not fitted to route 2 (it fills {fill:.0%})"
+            # Nowhere on the map, under a sheet or not, is another route.
             for other in (ROUTES[0], ROUTES[2]):
                 ow, os_, oe, on = bbox(other)
-                assert oe < w or ow > e, f"another route {bbox(other)} is in view {v}"
+                assert oe < v[0] or ow > v[2], f"another route {bbox(other)} is in view {v}"
             expect(page.locator("table tbody tr.selected")).to_have_count(1)
+            assert not a11y.unnamed(page), a11y.unnamed(page)  # every control has a name, and Tab reaches it
             page.screenshot(path=str(OUT / "map-1-row2.png"))
-            print("map: row 2 fits route 2", v)
+            print("map: row 2 fits route 2", (w, s, e, n))
 
             # Zoom to selection off: row 3 is selected, the view stays.
             zoom.uncheck()
@@ -165,6 +246,8 @@ def main():
             # Remembered for this chat: another window of the session.
             page2 = ctx.new_page()
             page2.goto(open_link(port, root))
+            expect(page2.locator(".map[data-layers='1']")).to_have_count(1, timeout=20000)
+            page2.get_by_role("button", name="Table", exact=True).click()
             expect(page2.locator("table tbody tr")).to_have_count(3, timeout=20000)
             expect(page2.get_by_role("checkbox", name="Zoom to selection")).not_to_be_checked()
             page2.close()
@@ -183,8 +266,11 @@ def main():
             x1, y1 = to_px(page, lon1, lat1)
             x2, y2 = to_px(page, lon2, lat2)
             assert x2 - x1 > 200, f"100 m is only {x2 - x1:.0f} px; zoom in further"
-            r = page.locator(".map canvas").bounding_box()
-            assert r["x"] < x1 < x2 < r["x"] + r["width"] - 60, f"the line ({x1:.0f}..{x2:.0f} px) is not all on the map {r}"
+            # The line lies on the part of the map no sheet covers, clear of
+            # the zoom buttons at its right edge and the result at its foot.
+            left, top, right, bottom = clear(page)
+            assert left < x1 < x2 < right - 60, f"the line ({x1:.0f}..{x2:.0f} px) is not all on the map in view {(left, right)}"
+            assert top + 20 < y1 < bottom - 100 and top + 20 < y2 < bottom - 100, f"the line (y {y1:.0f}, {y2:.0f}) is not on the map in view {(top, bottom)}"
             at = view(page)
             page.mouse.click(x1, y1)
             page.mouse.click(x2, y2)
@@ -197,10 +283,17 @@ def main():
             want = 100 * FT_PER_M
             assert abs(ft - want) / want < 0.01, f"measured {text!r}, want {want:.0f} ft within 1%"
             assert abs(m - 100) < 1, f"measured {text!r}, want 100 m"
+            # The result shows at the foot of the part of the map in view,
+            # in the middle, clear of the sheets.
+            pill = result.bounding_box()
+            assert left < pill["x"] and pill["x"] + pill["width"] < right, f"the result {pill} is not over the map in view {(left, right)}"
+            assert (top + bottom) / 2 < pill["y"] and pill["y"] + pill["height"] < bottom, f"the result {pill} is not at the foot of the map in view {(top, bottom)}"
+            assert abs(pill["x"] + pill["width"] / 2 - (left + right) / 2) < 20, f"the result {pill} is not in the middle of {(left, right)}"
             # Measuring never identifies: row 3 is still the selection.
             expect(page.locator("table tbody tr").nth(2)).to_have_class(re.compile("selected"))
             # The double-click finished the line without zooming.
             assert view(page) == at, f"measuring moved the map: {at} -> {view(page)}"
+            assert not a11y.unnamed(page), a11y.unnamed(page)  # every control has a name, and Tab reaches it
             page.screenshot(path=str(OUT / "map-2-measure.png"))
             print(f"map: measured {text!r}")
 
@@ -208,6 +301,21 @@ def main():
             page.keyboard.press("Escape")
             expect(result).to_have_count(0)
             expect(measure).to_have_attribute("aria-pressed", "false")
+
+            # The view is the person's own now (they zoomed in). Closing the
+            # table keeps its middle in the middle of the part in view, at
+            # the same scale: the map makes room, it does not zoom.
+            before = view(page)
+            mw, ms, me, mn = in_view(page)
+            page.get_by_role("button", name="Close the table").click()
+            expect(page.locator("section.table")).to_have_count(0)
+            settled(page, before=before)
+            w, s, e, n = in_view(page)
+            assert abs((w + e) / 2 - (mw + me) / 2) < (me - mw) * 0.01, f"closing the table moved the middle: {(mw, ms, me, mn)} -> {(w, s, e, n)}"
+            assert abs((s + n) / 2 - (ms + mn) / 2) < (mn - ms) * 0.01, f"closing the table moved the middle: {(mw, ms, me, mn)} -> {(w, s, e, n)}"
+            assert abs((e - w) - (me - mw)) < (me - mw) * 0.001, f"closing the table changed the scale: {(mw, me)} -> {(w, e)}"
+            assert n - s > (mn - ms) * 1.3, "more of the map is in view with the table closed"
+            print("map: closing the table keeps the middle of the view")
 
             assert not problems, problems
             browser.close()

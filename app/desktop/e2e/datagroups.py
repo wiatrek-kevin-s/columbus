@@ -61,7 +61,7 @@ def main():
     d, proc = guard.driver(env, APP)
     wait = WebDriverWait(d, 30)
     try:
-        wait.until(lambda drv: drv.execute_script("return !!document.getElementById('page-title')"))
+        guard.ready(d, wait)
         d.execute_script("location.hash = '#/datagroups'")
         wait.until(EC.element_to_be_clickable((By.ID, "dg-new"))).click()
         wait.until(EC.visibility_of_element_located((By.ID, "dg-name"))).send_keys("Texas tracts")
@@ -70,6 +70,7 @@ def main():
         d.find_element(By.CSS_SELECTOR, "#dg-rows tr:nth-child(1) .dg-filter").send_keys("STATEFP = '48'")
         click(d, By.ID, "dg-add")
         d.find_element(By.CSS_SELECTOR, "#dg-rows tr:nth-child(2) .dg-dataset").send_keys("counties")
+        assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
         d.save_screenshot(str(OUT / "datagroups-new.png"))
         click(d, By.ID, "dg-save")
         wait.until(lambda drv: drv.execute_script("return location.hash") == "#/datagroups/texas-tracts")
@@ -96,9 +97,12 @@ def main():
         step("The list says which project uses it; deleting removes its file")
         d.execute_script("location.hash = '#/datagroups'")
         wait.until(lambda drv: "used by Tract work" in text(drv, "dg-list"))
+        assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
         d.save_screenshot(str(OUT / "datagroups-list.png"))
         click(d, By.XPATH, "//ul[@id='dg-list']/li[@data-id='texas-tracts']//a")
-        wait.until(EC.element_to_be_clickable((By.ID, "dg-delete"))).click()
+        # (Below the fold in the panel: scrolled into view, then clicked.)
+        wait.until(EC.presence_of_element_located((By.ID, "dg-delete")))
+        click(d, By.ID, "dg-delete")
         wait.until(EC.element_to_be_clickable((By.XPATH, "//dialog//button[normalize-space()='Delete data group']"))).click()
         wait.until(lambda drv: drv.execute_script("return location.hash") == "#/datagroups")
         assert not f.exists(), "the group's file is removed"

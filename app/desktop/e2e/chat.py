@@ -6,10 +6,11 @@ A stand-in for the AI service plays a scripted conversation: whoami, a
 query, then an export of the layer the query made. The test opens a new
 chat from the main window, sends a message, waits for the approval prompt
 the server raises for the export, allows it after its one-second guard,
-and checks the export landed and the reply was shown; then a script
-(declined, its code in its own box) and a stop while a prompt waits. The
-chat is saved: it is listed and found by its content, and its transcript
-reads back. A debug build of the app reads the API key and the service
+and checks the export landed and the reply was shown (its last result as
+a card, with how it was made beside the panel); then a script (declined,
+its code in its own box) and a stop while a prompt waits. The chat is
+saved: it is listed and found by its content, and its transcript reads
+back. A debug build of the app reads the API key and the service
 address from the environment.
 
     dbus-run-session -- xvfb-run -a python app/desktop/e2e/chat.py \\
@@ -57,8 +58,14 @@ SCRIPT = [
     {"content": [{"type": "text", "text": "The script was declined."}], "stop_reason": "end_turn"},
     # Third message: a script the person stops while its prompt waits.
     tool_use("t5", "run_python", {"code": "print(3)\n"}),
+    # Fourth message: a second result, so each card's Table can be told apart.
+    tool_use("t6", "query_features", {"connection": "tiger", "dataset": "tracts", "where": "NAME = 'A'"}),
+    {"content": [{"type": "text", "text": "One tract is named A."}], "stop_reason": "end_turn"},
 ]
 SEEN = []
+# Cleared, the stand-in's next reply waits (a slow answer); set, it goes.
+HOLD = threading.Event()
+HOLD.set()
 
 
 class Stand(BaseHTTPRequestHandler):
@@ -74,6 +81,7 @@ class Stand(BaseHTTPRequestHandler):
             handle = json.loads(last)["result"]["layer"]["handle"]
             nxt = tool_use("t3", "export_output", {"handle": handle, "folder": "outbox", "name": "tracts"})
         data = json.dumps(nxt).encode()
+        HOLD.wait(60)
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))
@@ -116,8 +124,9 @@ def main():
     d, driver_proc = guard.driver(env, APP)
     try:
         wait = WebDriverWait(d, 60)
-        wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "a.btn.primary[href='#/chats/fresh']"))).click()
+        # The app opens on a new chat: the question first, in the middle.
         box = wait.until(EC.visibility_of_element_located((By.ID, "text")))
+        wait.until(lambda drv: drv.execute_script("return document.body.classList.contains('start')"))
         step("With a key and the server found, the chat says nothing about setup")
         wait.until(lambda drv: drv.execute_script("return document.querySelector('.chat-empty') !== null"))
         time.sleep(1)
@@ -129,18 +138,33 @@ def main():
         d.find_element(By.ID, "send").click()
 
         card = WebDriverWait(d, 90).until(EC.presence_of_element_located((By.CSS_SELECTOR, ".ask")))
+        assert not d.execute_script("return document.body.classList.contains('start')"), "once asked, the panel sits at the side"
+        assert d.execute_script("return !!(document.getElementById('log').compareDocumentPosition(document.getElementById('composer')) & Node.DOCUMENT_POSITION_FOLLOWING)"), "in a chat the message box comes after the conversation"
+        assert d.execute_script("return document.activeElement && document.activeElement.id") == "text", "the message box keeps the focus when the chat starts"
         assert "tracts" in card.text, card.text
+        assert "Columbus needs your OK" in card.text, card.text
         assert not card.find_elements(By.CSS_SELECTOR, "pre.code"), "an export shows no code box"
         allow = card.find_element(By.XPATH, ".//button[normalize-space()='Allow once']")
         assert not allow.is_enabled(), "the prompt's buttons wait a moment before they work"
         WebDriverWait(d, 5).until(lambda drv: allow.is_enabled())
+        assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
         d.save_screenshot(str(OUT / "chat-approval.png"))
         allow.click()
         WebDriverWait(d, 60).until(lambda drv: "Exported 2 tracts" in drv.find_element(By.ID, "log").text)
         time.sleep(1)
+        assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
         d.save_screenshot(str(OUT / "chat-done.png"))
         logtext = d.find_element(By.ID, "log").text
         assert "Allowed once." in logtext, logtext
+        step("The turn's last result is a card: how it was made opens beside the panel")
+        made = d.find_element(By.CSS_SELECTOR, "#log .result")
+        # textContent: WebKit's driver leaves clipped text out of an element's text.
+        assert "tracts" in made.get_attribute("textContent"), made.get_attribute("textContent")
+        made.find_element(By.CSS_SELECTOR, ".result-made").click()
+        WebDriverWait(d, 20).until(lambda drv: "Provenance" in drv.find_element(By.ID, "side").text and ".gpkg" in drv.find_element(By.ID, "side").text)
+        assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
+        d.save_screenshot(str(OUT / "chat-made.png"))
+        d.find_element(By.ID, "side-close").click()
         step("A table in the reply is drawn as a table, its cells as text")
         cells = d.execute_script("return [...document.querySelectorAll('#log table.md tbody tr')].map(r => [...r.cells].map(c => c.textContent))")
         assert cells == [["tracts", "2"], ["tracts.prov.json", "1"]], cells
@@ -177,11 +201,17 @@ def main():
         assert "Code written by the AI (3 lines)" in card.text, card.text
         summary = card.find_element(By.CSS_SELECTOR, "p.body").text
         assert "already approved" not in summary, summary
-        assert not [b for b in card.find_elements(By.TAG_NAME, "button") if "session" in b.text], "scripts: once only"
+        assert [b.text for b in card.find_elements(By.CSS_SELECTOR, ".row button")] == ["Allow once", "Decline"], "scripts: once only"
+        step("The code can be read beside the panel, as text")
+        card.find_element(By.CSS_SELECTOR, ".read-beside").click()
+        WebDriverWait(d, 10).until(lambda drv: len(drv.find_elements(By.CSS_SELECTOR, "#side pre .ln")) == 3)
+        assert "# Columbus already approved this." in d.find_element(By.ID, "side").text
+        d.find_element(By.ID, "side-close").click()
         assert SEEN[before][1]["model"] == "claude-opus-5-5", SEEN[before][1]["model"]
         assert SEEN[before][1].get("output_config") == {"effort": "high"}
         decline = card.find_element(By.XPATH, ".//button[normalize-space()='Decline']")
         WebDriverWait(d, 5).until(lambda drv: decline.is_enabled())
+        assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
         d.save_screenshot(str(OUT / "chat-script.png"))
         decline.click()
         WebDriverWait(d, 60).until(lambda drv: "The script was declined." in drv.find_element(By.ID, "log").text)
@@ -190,19 +220,99 @@ def main():
         step("Stop while a prompt waits: its card is withdrawn, not left live")
         box.send_keys("And one more.")
         WebDriverWait(d, 10).until(lambda drv: drv.find_element(By.ID, "send").is_enabled())
+        HOLD.clear()
         d.find_element(By.ID, "send").click()
+        # The panel is put away while the assistant works: a request that
+        # comes then brings it back (it could not be answered otherwise).
+        d.find_element(By.CSS_SELECTOR, "#main .chat-more").click()
+        d.find_element(By.CSS_SELECTOR, "#main .chat-away").click()
+        WebDriverWait(d, 10).until(lambda drv: not drv.find_element(By.ID, "panel").is_displayed())
+        assert len(d.find_elements(By.CSS_SELECTOR, ".ask")) == 2, "the request has not come yet"
+        HOLD.set()
         WebDriverWait(d, 90).until(lambda drv: len(drv.find_elements(By.CSS_SELECTOR, ".ask")) == 3)
+        WebDriverWait(d, 10).until(lambda drv: drv.find_element(By.ID, "panel").is_displayed())
         card = d.find_elements(By.CSS_SELECTOR, ".ask")[2]
+        # Put away again while it waits: the pill says something waits.
+        d.find_element(By.CSS_SELECTOR, "#main .chat-more").click()
+        d.find_element(By.CSS_SELECTOR, "#main .chat-away").click()
+        # (textContent: WebKit's driver leaves text in a clipping box out of an element's text.)
+        WebDriverWait(d, 10).until(lambda drv: "Columbus needs your OK" in drv.find_element(By.ID, "pill").get_attribute("textContent"))
+        d.find_element(By.ID, "pill-show").click()
+        WebDriverWait(d, 10).until(lambda drv: drv.find_element(By.ID, "panel").is_displayed())
         assert "Code written by the AI (1 line)" in card.text, card.text
         d.find_element(By.ID, "stop").click()
         WebDriverWait(d, 20).until(lambda drv: "No longer waiting" in card.text)
-        assert not card.find_elements(By.TAG_NAME, "button"), "no live buttons after Stop"
-        step("The output panel shows the chat's own session's page")
-        frame = WebDriverWait(d, 40).until(EC.presence_of_element_located((By.CSS_SELECTOR, "#chatview .outpanel iframe")))
+        # (Reading the code beside the panel stays; nothing that decides does.)
+        assert not [b for b in card.find_elements(By.TAG_NAME, "button") if "read-beside" not in (b.get_attribute("class") or "")], "no live buttons after Stop"
+        step("The map behind the panel is the chat's own session's page")
+        frame = WebDriverWait(d, 40).until(EC.presence_of_element_located((By.CSS_SELECTOR, "#stage iframe")))
         d.switch_to.frame(frame)
         WebDriverWait(d, 40).until(lambda drv: "tracts" in drv.execute_script("return document.body.textContent"))
         d.switch_to.default_content()
+        assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
         d.save_screenshot(str(OUT / "chat-panel.png"))
+
+        step("Table on a result card opens that card's own rows, not the newest result's")
+        box.send_keys("Which tract is named A?")
+        WebDriverWait(d, 10).until(lambda drv: drv.find_element(By.ID, "send").is_enabled())
+        d.find_element(By.ID, "send").click()
+        WebDriverWait(d, 90).until(lambda drv: len(drv.find_elements(By.CSS_SELECTOR, "#log .result")) == 2)
+
+        def rows_shown():
+            """Rows in the table sheet on the map (-1: the sheet is not open)."""
+            d.switch_to.frame(frame)
+            try:
+                return d.execute_script("return document.querySelector('section.table') ? document.querySelectorAll('section.table tbody tr').length : -1")
+            finally:
+                d.switch_to.default_content()
+
+        cards = d.find_elements(By.CSS_SELECTOR, "#log .result")
+        assert rows_shown() == -1, "the map alone until the table is asked for"
+        # The first turn exported the two tracts it read; the second read one.
+        for card, rows in [(cards[0], 2), (cards[1], 1), (cards[0], 2)]:
+            click_table = card.find_element(By.CSS_SELECTOR, ".result-table")
+            d.execute_script("arguments[0].scrollIntoView({block: 'center'})", click_table)
+            click_table.click()
+            try:
+                WebDriverWait(d, 30).until(lambda drv: rows_shown() == rows)
+                # It stays that card's: the map page reads the session's
+                # results every 2 s, and a result it lists only now (the
+                # newest, made a moment before the click) must not take the
+                # table back from the one the person asked for.
+                time.sleep(2.6)
+                assert rows_shown() == rows
+            except Exception:
+                d.save_screenshot(str(OUT / "chat-table-failed.png"))
+                raise SystemExit(f"Table on a result card showed {rows_shown()} rows, not that card's {rows}")
+        assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
+        d.save_screenshot(str(OUT / "chat-table.png"))
+
+        step("A new chat from this one: what was open beside the panel goes with the old chat")
+        made = cards[1].find_element(By.CSS_SELECTOR, ".result-made")
+        d.execute_script("arguments[0].scrollIntoView({block: 'center'})", made)
+        made.click()
+        WebDriverWait(d, 20).until(lambda drv: drv.find_element(By.ID, "side").is_displayed())
+        d.find_element(By.ID, "new").click()
+        WebDriverWait(d, 30).until(lambda drv: drv.execute_script("return document.getElementById('chat-title').textContent") == "New chat")
+        WebDriverWait(d, 10).until(lambda drv: not drv.find_element(By.ID, "side").is_displayed())
+        WebDriverWait(d, 10).until(lambda drv: drv.execute_script("return document.body.classList.contains('start')"))
+
+        step("A model chosen in Settings shows in the new chat under the sheet as soon as it closes")
+        d.find_element(By.ID, "nav-settings").click()
+        WebDriverWait(d, 10).until(lambda drv: drv.execute_script(
+            "const s = document.getElementById('set-model'); return !!s && s.options.length > 1"))
+        was = d.execute_script("return document.getElementById('set-model').value")
+        # The new chat under the sheet starts with that model (the old chat's
+        # own choice went with it).
+        WebDriverWait(d, 10).until(lambda drv: drv.execute_script("return document.getElementById('chat-model').value") == was)
+        other = d.execute_script("const s = document.getElementById('set-model'); return [...s.options].map((o) => o.value).find((v) => v !== s.value)")
+        Select(d.find_element(By.ID, "set-model")).select_by_value(other)
+        d.find_element(By.ID, "settings-close").click()
+        try:
+            WebDriverWait(d, 10).until(lambda drv: drv.execute_script("return document.getElementById('chat-model').value") == other)
+        except Exception:
+            d.save_screenshot(str(OUT / "chat-settings-failed.png"))
+            raise SystemExit(f"the new chat still shows {was}, not {other}, after Settings closed")
 
         step("The chat is saved: listed under Chats, found by what was said")
         d.execute_script("location.hash = '#/chats'")
@@ -221,7 +331,7 @@ def main():
         # From the Chats page, as the person found: New chat is a new chat,
         # never the one they had open.
         d.execute_script("location.hash = '#/chats'")
-        WebDriverWait(d, 10).until(EC.element_to_be_clickable((By.XPATH, "//header[contains(@class,'pagehead')]//button[normalize-space()='New chat']"))).click()
+        WebDriverWait(d, 10).until(EC.element_to_be_clickable((By.XPATH, "//header[contains(@class,'placehead')]//button[normalize-space()='New chat']"))).click()
         try:
             WebDriverWait(d, 30).until(lambda drv: drv.execute_script("return document.getElementById('chat-title').textContent") == "New chat")
         except Exception:
@@ -235,7 +345,32 @@ def main():
             d.save_screenshot(str(OUT / "chat-saved-failed.png"))
             raise SystemExit("the saved chat did not read back: " + d.execute_script("return location.hash + ' | ' + document.querySelector('main').textContent.slice(0, 400)"))
         assert "cannot continue" in d.find_element(By.ID, "saved-log").text
+        assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
         d.save_screenshot(str(OUT / "chat-saved.png"))
+
+        step("A started chat keeps the model it runs on when the default changes in Settings")
+        d.execute_script("location.hash = '#/chats/new'")
+        box = WebDriverWait(d, 20).until(EC.visibility_of_element_located((By.ID, "text")))
+        WebDriverWait(d, 10).until(lambda drv: drv.execute_script("return document.getElementById('chat-model').value") == other)
+        box.send_keys("Hello")
+        d.find_element(By.ID, "send").click()
+        WebDriverWait(d, 90).until(lambda drv: "(end)" in drv.find_element(By.ID, "log").text)
+        assert SEEN[-1][1]["model"] == other, f"the chat runs on what its box showed: {SEEN[-1][1]['model']}"
+        d.find_element(By.ID, "nav-settings").click()
+        WebDriverWait(d, 10).until(lambda drv: drv.execute_script(
+            "const s = document.getElementById('set-model'); return !!s && s.options.length > 1 && s.value === arguments[0]", other))
+        Select(d.find_element(By.ID, "set-model")).select_by_value(was)
+        d.find_element(By.ID, "settings-close").click()
+        WebDriverWait(d, 10).until(lambda drv: not drv.execute_script("return document.getElementById('settings').open"))
+        # The focus is back on the Settings button, save or no save.
+        WebDriverWait(d, 10).until(lambda drv: drv.execute_script("return document.activeElement && document.activeElement.id") == "nav-settings")
+        # The page under the sheet has been brought up to date by now (the
+        # new default is saved); this chat still shows, and runs on, its own.
+        WebDriverWait(d, 10).until(lambda drv: drv.execute_async_script(
+            "const done = arguments[arguments.length - 1];"
+            "window.__TAURI__.core.invoke('chat_settings').then((s) => done(s.model), () => done(''));") == was)
+        time.sleep(1.0)
+        assert d.execute_script("return document.getElementById('chat-model').value") == other, "a started chat's box follows the default"
         print("desktop chat e2e: ok")
     finally:
         guard.stop(d, driver_proc)

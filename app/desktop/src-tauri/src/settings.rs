@@ -1,7 +1,7 @@
 //! Settings: the person's connections, the organization's switches for
 //! edits, scripts and personal tools, and the person's own tools, edited
 //! in the app instead of in files (the main window's Connections, Tools
-//! and Settings › Organization pages, and the classic settings window).
+//! and Settings › Organization rules pages, and the classic settings window).
 //!
 //! The assistant has no way to change these: settings are never a tool,
 //! and only the app's own windows may call these commands
@@ -196,7 +196,7 @@ fn secret_entry(id: &str) -> Result<keyring_core::Entry, String> {
 }
 
 /// The connections whose password this app stored, by id: a note beside
-/// the connection files, so the Connections page can say "Password stored"
+/// the connection files, so the Data page can say "Password stored"
 /// without reading every password from the credential store (on a Mac each
 /// read can ask for the person's password). It holds no secret. A password
 /// stored before this note existed shows as not noted until it's saved again.

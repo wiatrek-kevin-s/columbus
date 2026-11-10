@@ -31,7 +31,7 @@ p.pitch {{ font-size: 37px; line-height: 1.28; font-weight: 500; margin: 44px 0 
 p.foot {{ font-size: 22px; color: #9fc4ea; margin: 40px 0 0; }}
 .shot {{ position: absolute; left: 650px; top: 64px; width: 700px; height: 520px; border-radius: 16px; overflow: hidden;
   box-shadow: 0 24px 60px rgba(0,0,0,.45); border: 1px solid rgba(255,255,255,.18); }}
-.shot img {{ display: block; width: 1040px; margin-left: -180px; }}
+.shot img {{ display: block; width: 920px; margin-left: -4px; margin-top: -4px; }}
 </style></head><body>
 <div class="text">
   <div class="brand"><img src="{data_url(IMAGES / 'logo.svg', 'image/svg+xml')}" alt=""><h1>Columbus</h1></div>

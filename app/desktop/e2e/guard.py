@@ -38,6 +38,7 @@ from pathlib import Path
 from selenium import webdriver
 from selenium.webdriver.common.options import ArgOptions
 from selenium.webdriver.remote.client_config import ClientConfig
+from selenium.webdriver.remote.webelement import WebElement
 from selenium.webdriver.support.ui import WebDriverWait
 
 _CONF = Path(__file__).resolve().parents[1] / "src-tauri" / "tauri.conf.json"
@@ -197,6 +198,72 @@ def driver(env, app):
     url = f"http://127.0.0.1:{DRIVER_PORT}"
     d = webdriver.Remote(url, options=opts, client_config=ClientConfig(url, timeout=COMMAND_LIMIT))
     return d, proc
+
+
+def ready(d, wait):
+    """Wait until the main window has drawn itself: its four places are in
+    the nav, and the page it opens on (a new chat) is shown."""
+    wait.until(lambda drv: drv.execute_script(
+        "return document.querySelectorAll('#nav a.tab').length === 4 && !!document.getElementById('text')"))
+
+
+
+
+AT_REST = """
+const p = document.getElementById('panel');
+if (!p) return 'none';
+if (typeof p.getAnimations === 'function' && p.getAnimations().some((a) => a.playState === 'running' || a.playState === 'pending')) return 'moving';
+const r = p.getBoundingClientRect();
+return [Math.round(r.left), Math.round(r.top), Math.round(r.width)].join(',');
+"""
+
+
+def at_rest(d, seconds=5):
+    """Wait until the main window's panel has stopped moving. It glides for a
+    moment between the middle of the window (the start) and its side, and a
+    click aimed while it moves lands where the thing was. At rest means: no
+    move under way, and the panel drawn in the same place on two looks a
+    couple of frames apart (a move ends by the clock, its last frame a
+    moment later). A window without the panel (the classic windows, a
+    browser page, a frame) is at rest."""
+    looks = []
+
+    def still(drv):
+        now = drv.execute_script(AT_REST)
+        if now == "none":
+            return True
+        looks.append(now)
+        return now != "moving" and len(looks) >= 2 and looks[-2] == now
+
+    try:
+        WebDriverWait(d, seconds, poll_frequency=0.03).until(still)
+    except Exception:
+        # Not this wait's to report: the click that follows says what is wrong.
+        pass
+
+
+# Every click a script makes waits for the panel to be at rest first, as a
+# person would.
+_click = WebElement.click
+
+
+def _click_at_rest(self):
+    at_rest(self.parent)
+    return _click(self)
+
+
+WebElement.click = _click_at_rest
+
+
+def unnamed(d):
+    """The controls on show that a screen reader could not name, or that Tab
+    cannot reach: in the dialog that is open, else in the whole window. A
+    name is an aria-label, a label, the control's own text or its title; a
+    placeholder alone is not one. (The script is shared with the map page's
+    tests: app/ui/e2e/a11y.py.)"""
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ui" / "e2e"))
+    from a11y import UNNAMED
+    return d.execute_script(UNNAMED)
 
 
 def stop(d, proc):

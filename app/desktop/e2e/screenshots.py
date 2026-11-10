@@ -57,8 +57,8 @@ APP = Path(ARGS.app).resolve()
 ROOT = Path(ARGS.root)
 
 W, H = 1600, 1000
-# The hero's window: the chat and its map, cropped, at about the size the
-# README shows them (900 pixels wide), so the words are readable.
+# The hero's window: the chat's panel over its map, at about the size the
+# README shows it (900 pixels wide), so the words are readable.
 HERO = (1240, 760)
 QUESTION = "Which fatal crashes from 2020 to 2023 happened within 150 feet of IH 35 in central Austin? Count them by year."
 EXPORT_ASK = "Export those crashes to the review folder for the safety team."
@@ -288,10 +288,10 @@ class Session:
         self.n = 0
 
     def tidy(self):
-        # Focus as after a click, and no notice only Linux shows.
+        # Focus as after a click, and no words only Linux shows.
         self.d.execute_script("""
             if (document.activeElement && document.activeElement.id === 'page-title') document.activeElement.blur();
-            for (const n of document.querySelectorAll('.notice')) if (/no Touch ID or Windows Hello|Schedules are not available|cannot be made here/.test(n.textContent)) n.remove();
+            for (const n of document.querySelectorAll('.notice, p.small, .footline')) if (/no Touch ID or Windows Hello|Schedules are not available|cannot be made here/.test(n.textContent)) n.remove();
         """)
 
     def shot(self, name, budget_kb, size=None, settle=1.2, crop=None):
@@ -338,8 +338,8 @@ class Session:
 
 
 def layers_on(d, names=None):
-    """Turn on the output panel's layers (all, or those whose name has one
-    of `names`), one at a time: the list draws itself again after each."""
+    """Turn on the map's layers in its legend (all, or those whose name has
+    one of `names`), one at a time: the list draws itself again after each."""
     for _ in range(12):
         left = d.execute_script("""
             const want = arguments[0];
@@ -377,15 +377,18 @@ def run(theme, facts, frames):
     try:
         d.set_window_size(W, H)
         wait = WebDriverWait(d, 60)
-        wait.until(lambda drv: drv.execute_script("return !!document.getElementById('page-title')"))
+        guard.ready(d, wait)
         d.execute_script("window.__TAURI__.core.invoke('prefs_set', {prefs: {theme: arguments[0], basemap: arguments[1], skipped: ['ai','engine','connection'], setup_done: true}})", theme, not ARGS.no_basemap)
         d.refresh()
-        wait.until(lambda drv: drv.execute_script("return !!document.getElementById('page-title')"))
+        guard.ready(d, wait)
 
-        step(f"{theme}: the chat")
-        wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "a.btn.primary[href='#/chats/fresh']"))).click()
+        step(f"{theme}: the start, then the chat")
+        # The app opens on a question: a new chat, its panel in the middle.
         box = wait.until(EC.visibility_of_element_located((By.ID, "text")))
+        wait.until(lambda drv: drv.execute_script("return !!document.querySelector('.chat-empty .starters')"))
         time.sleep(2)
+        if theme == "light":
+            s.shot("start", 250, size=(1280, 800))
         s.frame(1.0)
         words = QUESTION.split(" ")
         for i in range(0, len(words), 6):
@@ -393,7 +396,7 @@ def run(theme, facts, frames):
             s.frame(0.35)
         s.frame(1.0)
         d.find_element(By.ID, "send").click()
-        frame_el = WebDriverWait(d, 60).until(EC.presence_of_element_located((By.CSS_SELECTOR, "#chatview .outpanel iframe")))
+        frame_el = WebDriverWait(d, 60).until(EC.presence_of_element_located((By.CSS_SELECTOR, "#stage iframe")))
 
         def in_map(fn):
             d.switch_to.frame(frame_el)
@@ -417,60 +420,63 @@ def run(theme, facts, frames):
         in_map(lambda: layers_on(d))
 
         def show(first_name_part, zoom):
-            """Make a layer the active one (its checks and record open), and
-            zoom to it if asked."""
+            """Make a layer the active one (drawn in the colour of the
+            answer, its row open in the legend), and zoom to it if asked."""
             d.execute_script("""
                 const want = arguments[0];
                 const b = [...document.querySelectorAll('li.out .out-name')].find((x) => x.textContent.includes(want));
-                if (b) b.click();""", first_name_part)
+                if (b && b.getAttribute('aria-current') !== 'true') b.click();""", first_name_part)
             time.sleep(0.8)
             if zoom:
                 d.execute_script("""
-                    const l = [...document.querySelectorAll('li.out.active button.link')].find((x) => /Zoom to layer/.test(x.textContent));
+                    const l = [...document.querySelectorAll('li.out.active button')].find((x) => /Zoom to layer/.test(x.textContent));
                     if (l) l.click();""")
                 time.sleep(2)
 
-        # The checks and provenance: chat first, the counted crashes' record open.
-        in_map(lambda: show(CRASHES, True))
-        in_map(lambda: show("clip-", False))
-        time.sleep(3)  # basemap tiles
-        d.execute_script("const l = document.getElementById('log'); l.scrollTop = l.scrollHeight;")
-        s.shot(f"tour-checks{sfx}", 250, size=(1280, 800), settle=1.5)
-        # The animation opens (and loops back) on this finished result, so a
-        # reader who sees only its first frame still sees the answer.
-        s.poster()
-
-        step(f"{theme}: the hero (map first)")
-        d.find_element(By.XPATH, "//button[normalize-space()='Map first']").click()
-        time.sleep(1.5)
-        in_map(lambda: show(CRASHES, True))
-        in_map(lambda: show("clip-", False))
-        time.sleep(3)
         scroll_to_answer = """
             const l = document.getElementById('log');
             const answers = [...l.querySelectorAll('table')];
             const t = answers.length ? answers[answers.length - 1] : null;
             if (t) { t.scrollIntoView({block: 'center'}); } else { l.scrollTop = l.scrollHeight; }"""
-        d.execute_script(scroll_to_answer)
-        if theme == "light":
-            s.shot("chat-map-first", 250, size=(1280, 800), settle=2)
-        # The hero: the same chat in a smaller window, cropped to the chat
-        # and its map (no menu bar), so its words read at the README's 900
-        # pixels. The map page puts the layer list, with its checks, above
-        # the map at this width.
+
+        # The whole corridor in view, the counted crashes the active layer.
+        in_map(lambda: show(CRASHES, True))
+        in_map(lambda: show("clip-", False))
+        time.sleep(3)  # basemap tiles
+        d.execute_script("const l = document.getElementById('log'); l.scrollTop = l.scrollHeight;")
+        # The animation opens (and loops back) on this finished result, so a
+        # reader who sees only its first frame still sees the answer.
+        s.poster()
+
+        step(f"{theme}: how the result was made, beside the chat")
+        d.find_element(By.CSS_SELECTOR, "#log .result .result-made").click()
+        WebDriverWait(d, 20).until(lambda drv: "Provenance" in drv.find_element(By.ID, "side").text)
+        s.shot(f"tour-checks{sfx}", 250, size=(1280, 800), settle=1.5)
+        d.find_element(By.ID, "side-close").click()
+
+        step(f"{theme}: the hero, and the map alone")
+        # The hero: the same chat in a smaller window, so its words read at
+        # the README's 900 pixels.
         d.set_window_size(*HERO)
         time.sleep(2)
-        # The last layer open (its details below the fold), so the list
-        # shows each layer's name, rows and checks.
         in_map(lambda: show(CRASHES, True))
-        in_map(lambda: d.execute_script("const o = document.querySelector('.outputs'); if (o) o.scrollTop = 0;"))
+        in_map(lambda: show("clip-", False))
         time.sleep(3)
         d.execute_script(scroll_to_answer)
-        s.shot(f"hero{sfx}", 400, settle=2, crop="#chatview")
+        s.shot(f"hero{sfx}", 400, settle=2)
         d.set_window_size(W, H)
         time.sleep(1.5)
-        d.find_element(By.XPATH, "//button[normalize-space()='Chat first']").click()
-        time.sleep(1)
+        if theme == "light":
+            # The panel put away: only the map, and a pill to bring it back.
+            d.find_element(By.CSS_SELECTOR, "#main .chat-more").click()
+            d.find_element(By.CSS_SELECTOR, "#main .chat-away").click()
+            time.sleep(1.5)
+            in_map(lambda: show(CRASHES, True))
+            in_map(lambda: show("clip-", False))
+            time.sleep(3)
+            s.shot("map-only", 250, size=(1280, 800), settle=2)
+            d.find_element(By.ID, "pill-show").click()
+            time.sleep(1.5)
 
         step(f"{theme}: an export waits for the person")
         box.send_keys(EXPORT_ASK)
@@ -500,12 +506,13 @@ def run(theme, facts, frames):
             s.shot("workflow-review", 250, size=(1280, 800))
         d.find_element(By.ID, "wf-review-install").click()
         WebDriverWait(d, 20).until(lambda drv: "Weekly IH 35" in drv.find_element(By.ID, "wf-installed").text)
-        d.find_element(By.XPATH, "//ul[@id='wf-installed']//button[normalize-space()='Run now']").click()
+        d.find_element(By.XPATH, "//ul[@id='wf-installed']//li[@data-id='weekly-ih35-crash-check']//a").click()
+        WebDriverWait(d, 20).until(EC.element_to_be_clickable((By.ID, "wf-run-now"))).click()
         WebDriverWait(d, 180).until(lambda drv: drv.find_elements(By.ID, "wf-report") and "Succeeded" in drv.find_element(By.ID, "wf-report").text)
         s.shot(f"tour-workflow-run{sfx}", 250, size=(1280, 800))
 
-        step(f"{theme}: connections")
-        d.execute_script("location.hash = '#/connections'")
+        step(f"{theme}: data")
+        d.execute_script("location.hash = '#/data'")
         WebDriverWait(d, 30).until(lambda drv: drv.find_elements(By.CSS_SELECTOR, "#connections li.conn") and len(drv.find_elements(By.CSS_SELECTOR, "#connections li.conn")) >= 5)
         s.shot(f"tour-connections{sfx}", 250, size=(1280, 800))
 
@@ -517,8 +524,7 @@ def run(theme, facts, frames):
             wait.until(EC.visibility_of_element_located((By.ID, "tool-review")))
             s.shot("tool-review", 250, size=(1280, 800))
             d.find_element(By.ID, "review-close").click()
-            for page, name in [("#/home", "home"), ("#/activity/audit", "audit"),
-                               ("#/settings/ai", "settings")]:
+            for page, name in [("#/activity", "activity"), ("#/settings", "settings")]:
                 d.execute_script("location.hash = arguments[0]", page)
                 time.sleep(1.5)
                 s.shot(name, 250, size=(1280, 800))
