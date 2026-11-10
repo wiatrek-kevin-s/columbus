@@ -120,16 +120,23 @@ button:disabled { opacity: .5; cursor: default; }
     }
     if (dl.childNodes.length) c.appendChild(dl);
     if (Array.isArray(d.changes)) {
-      // Every note change, in full, as text.
-      d.changes.forEach(function (n) {
-        c.appendChild(el("p", "sub", String(n.id) + ":"));
+      // Every change, in full, as text. A note change comes as {id,
+      // changes: [lines]}; an edit's changes come as the lines themselves.
+      var box = function (lines) {
         var pre = el("pre", "code", "");
-        (Array.isArray(n.changes) ? n.changes : []).forEach(function (line) {
+        lines.forEach(function (line) {
           String(line).split("\n").forEach(function (part) {
             pre.appendChild(el("span", "ln", part === "" ? " " : part));
           });
         });
         c.appendChild(pre);
+      };
+      var plain = d.changes.filter(function (n) { return typeof n === "string"; });
+      if (plain.length) box(plain);
+      d.changes.forEach(function (n) {
+        if (!n || typeof n !== "object") return;
+        c.appendChild(el("p", "sub", String(n.id) + ":"));
+        box(Array.isArray(n.changes) ? n.changes : []);
       });
     }
     if (typeof d.code === "string") {

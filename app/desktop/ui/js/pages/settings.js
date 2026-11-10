@@ -111,7 +111,7 @@ function classicMenu() {
 
 // What the chat's server and engine are, in plain words.
 export function serverLines(s) {
-  if (!s.server_found) return ["No Columbus server was found: unpack the Columbus folder, or enter where columbus-mcp is."];
+  if (!s.server_found) return ["No Columbus server was found: unpack the Columbus folder as the install guide shows."];
   const v = s.server_version ? `version ${s.server_version}` : "version unknown";
   const out = [s.server_bundled ? `New chats use the Columbus server that comes with the app (${v}).` : `New chats use ${s.server_in_use} (${v}).`];
   if (s.server_older) out.push(`It is older than this app (${s.app_version}): the map beside a chat and newer tools may not work. Install this version's app again.`);
@@ -253,7 +253,7 @@ async function overview(body, foot) {
     engineLine.replaceChildren(...(s.engine ? [h("span", { class: "mono" }, s.engine)] : ["The GIS engine was not found. Set where its Python is."]));
     engineLine.className = s.engine && s.server_found && !s.server_older ? "" : "error-text";
     if (s.server_found && s.server_older) engineLine.append(` The Columbus server is older than this app (${s.app_version}).`);
-    if (!s.server_found) engineLine.replaceChildren("No Columbus server was found: unpack the Columbus folder, or enter where columbus-mcp is.");
+    if (!s.server_found) engineLine.replaceChildren("No Columbus server was found: unpack the Columbus folder as the install guide shows.");
   }).catch((e) => { keyLine.textContent = String(e); });
   invoke("settings_environments").then((st) => {
     const n = st.environments.length;

@@ -24,7 +24,7 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/hero-dark.png">
-    <img src="docs/images/hero-light.png" width="900" alt="The Columbus app. A street map of central Austin fills the window, with the IH 35 corridor and the 36 counted crashes highlighted. A panel on the left holds the chat about which fatal crashes from 2020 to 2023 happened within 150 feet of IH 35 in central Austin. The answer reads: 36 of the 122 fatal crashes were within 150 feet of IH 35, taking 39 lives, with a table of crashes and deaths by year.">
+    <img src="docs/images/hero-light.png" width="900" alt="The Columbus app. The map fills the window: the fatal crashes of central Austin as points, with the IH 35 corridor and the 36 counted crashes highlighted, and a legend of the layers the assistant made, the active one marked Checks passed. A panel on the left holds the chat about which fatal crashes from 2020 to 2023 happened within 150 feet of IH 35 in central Austin. The answer reads: 36 of the 122 fatal crashes were within 150 feet of IH 35, taking 39 lives, with a table of crashes and deaths by year.">
   </picture>
   <br><sub>A real question about public Austin crash data, answered in the app. Each layer is checked, and the map shows what was counted.</sub>
 </p>

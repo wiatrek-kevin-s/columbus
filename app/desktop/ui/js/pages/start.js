@@ -61,7 +61,7 @@ export function firstSteps(s, again) {
   const key = h("input", { type: "password", id: "fr-key", autocomplete: "off", spellcheck: "false", placeholder: "sk-ant-…", "aria-label": "Anthropic API key", class: "grow" });
   const ai = h("div", { class: "text" });
   if (done.ai) ai.append(h("b", {}, "An AI is connected for the chat."), h("span", { class: "where" }, "Change it in ", h("a", { href: "#/settings/ai" }, "Settings › Assistant"), "."));
-  else if (chat && chat.has_key && !chat.server_found) ai.append(h("b", {}, "A key is saved, but Columbus's server was not found."), h("span", { class: "where" }, "Set where it is in ", h("a", { href: "#/settings/ai" }, "Settings › Assistant"), "."));
+  else if (chat && chat.has_key && !chat.server_found) ai.append(h("b", {}, "A key is saved, but Columbus's server was not found."), h("span", { class: "where" }, "See the check below."));
   else {
     ai.append(h("b", {}, "Connect an AI for the chat"),
       h("form", { class: "row", onsubmit: async (e) => {
@@ -81,7 +81,7 @@ export function firstSteps(s, again) {
     if (!engine.engine_found) eng.append(h("div", { class: "row" }, button("Check again", "sm", () => again()), skipped.has("engine") ? null : skip("engine")));
   } else {
     eng.append(h("b", {}, "Columbus's server was not found"),
-      h("span", { class: "where" }, "Unpack the Columbus folder as the install guide shows, or set where columbus-mcp is in ", h("a", { href: "#/settings/ai" }, "Settings › Assistant"), "."),
+      h("span", { class: "where" }, "Unpack the Columbus folder as the install guide shows, then check again."),
       h("div", { class: "row" }, button("Check again", "sm", () => again()), skipped.has("engine") ? null : skip("engine")));
   }
   checks.append(h("li", {}, mark("engine"), eng));
