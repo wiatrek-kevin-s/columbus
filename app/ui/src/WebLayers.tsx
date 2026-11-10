@@ -1,9 +1,9 @@
-// Web map layers in the map's bar (T-25, REQ-33): the saved web layers
-// (Connections › Map layers in the Columbus app, or the organization's),
-// each off until the person turns it on in this chat, with opacity, order,
-// zoom to extent and choose as basemap, all remembered per chat. The
-// assistant never sees any of this.
-import { useState } from "react";
+// Web map layers (T-25, REQ-33), opened from the foot of the outputs list:
+// the saved web layers (Connections › Map layers in the Columbus app, or
+// the organization's), each off until the person turns it on in this chat,
+// with opacity, order, zoom to extent and choose as basemap, all remembered
+// per chat. The assistant never sees any of this.
+import { useState, type ReactNode } from "react";
 import type { WebSource } from "./api";
 import type { WebState } from "./MapView";
 
@@ -57,6 +57,8 @@ export function WebLayers(props: {
   onBasemap: (choice: "streets" | "none" | { web: string }) => void;
   onDismissNotice: () => void;
   onAdd: () => void;
+  /** What shares the button's row (Measure). */
+  beside?: ReactNode;
 }) {
   const [open, setOpen] = useState(false);
   const [addHint, setAddHint] = useState(false);
@@ -66,15 +68,18 @@ export function WebLayers(props: {
   const onCount = props.prefs.on.filter((id) => list.some((s) => s.id === id)).length;
   return (
     <div className="web-layers">
-      <button type="button" aria-expanded={open} aria-controls="web-panel" onClick={() => setOpen(!open)}>
-        Web layers{onCount ? ` (${onCount})` : ""}
-      </button>
+      <div className="web-bar">
+        <button type="button" className="btn sm" aria-expanded={open} aria-controls="web-panel" onClick={() => setOpen(!open)}>
+          Web layers{onCount ? ` (${onCount})` : ""}
+        </button>
+        {props.beside}
+      </div>
       {open && (
         <section id="web-panel" className="web-panel" aria-label="Web layers">
           {props.notice && (
             <div className="web-notice" role="status">
               <span>{PRIVACY_NOTICE}.</span>
-              <button type="button" onClick={props.onDismissNotice}>
+              <button type="button" className="btn sm" onClick={props.onDismissNotice}>
                 OK
               </button>
             </div>
@@ -139,11 +144,12 @@ export function WebLayers(props: {
                           onChange={(e) => props.onOpacity(s.id, Number(e.target.value) / 100)}
                         />
                       </label>
-                      <button type="button" aria-label={`Move ${s.title} up`} disabled={i === 0} onClick={() => props.onMove(s.id, -1)}>
+                      <button type="button" className="btn sm" aria-label={`Move ${s.title} up`} disabled={i === 0} onClick={() => props.onMove(s.id, -1)}>
                         Up
                       </button>
                       <button
                         type="button"
+                        className="btn sm"
                         aria-label={`Move ${s.title} down`}
                         disabled={i === list.length - 1}
                         onClick={() => props.onMove(s.id, 1)}
@@ -166,7 +172,7 @@ export function WebLayers(props: {
             })}
           </ul>
           <div className="web-add">
-            <button type="button" onClick={() => (props.framed ? props.onAdd() : setAddHint(true))}>
+            <button type="button" className="btn sm" onClick={() => (props.framed ? props.onAdd() : setAddHint(true))}>
               Add web layer
             </button>
             {addHint && (

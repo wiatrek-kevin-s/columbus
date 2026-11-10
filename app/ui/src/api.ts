@@ -60,9 +60,13 @@ export interface Approval {
   offer_always?: boolean;
   always_covers?: string;
   detail?: {
-    changes?: { id: string; changes: string[] }[];
+    /** An edit lists its changes as lines; notes come one by one, each
+     * with its own lines. */
+    changes?: (string | { id: string; changes: string[] })[];
     destination?: string;
-    files?: { name: string; rows?: number | null }[];
+    /** Exports name the files they write (paths); scripts and edits give a
+     * name and its rows. */
+    files?: (string | { name: string; rows?: number | null })[];
     labels?: string[];
     flow_rule?: string;
     arguments?: Record<string, unknown>;

@@ -1,8 +1,7 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import "@fontsource/public-sans/400.css";
-import "@fontsource/public-sans/600.css";
-import "@fontsource/public-sans/700.css";
+// MapLibre's own sheet first: the page's sheet restyles its controls.
+import "maplibre-gl/dist/maplibre-gl.css";
 import "./styles.css";
 import { App } from "./App";
 
