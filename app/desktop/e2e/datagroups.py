@@ -61,7 +61,7 @@ def main():
     d, proc = guard.driver(env, APP)
     wait = WebDriverWait(d, 30)
     try:
-        wait.until(lambda drv: drv.execute_script("return !!document.getElementById('page-title')"))
+        guard.ready(d, wait)
         d.execute_script("location.hash = '#/datagroups'")
         wait.until(EC.element_to_be_clickable((By.ID, "dg-new"))).click()
         wait.until(EC.visibility_of_element_located((By.ID, "dg-name"))).send_keys("Texas tracts")

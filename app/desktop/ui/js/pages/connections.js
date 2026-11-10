@@ -1,10 +1,11 @@
-// Connections: the person's connections (ported from the Settings
-// window), what each lets the assistant see, Test and Draft notes; the
-// datasets known per connection; and project databases. Changes that give
-// the assistant more access are confirmed at the keyboard in the app's own
-// code (Touch ID, the account password or Windows Hello); nothing here can
-// skip that.
-import { $, h, el, invoke, store, button, pageHead, tabs, showError, size, when, plural, emptyState, coming, toast } from "../core.js";
+// Data: what the assistant can reach (the person's connections, ported
+// from the Settings window), what each lets it see, and where results can
+// go; one connection's own page with its rules in plain words, Test, Draft
+// notes and Sign in; the datasets known per connection; project databases
+// and map layers. Changes that give the assistant more access are confirmed
+// at the keyboard in the app's own code (Touch ID, the account password or
+// Windows Hello); nothing here can skip that.
+import { $, h, el, icon, invoke, store, button, pageHead, placeHead, sec, showError, size, when, plural, emptyState, coming, toast } from "../core.js";
 import * as maplayers from "./maplayers.js";
 
 const KIND_NAMES = {
@@ -28,16 +29,6 @@ function where(c) {
   return [c.user && `${c.user}@`, host, c.database && `/${c.database}`, c.dsn && ` (${c.dsn})`].filter(Boolean).join("");
 }
 
-function sees(c) {
-  const allow = (c.datasets && c.datasets.allow) || [];
-  const deny = (c.datasets && c.datasets.deny) || [];
-  const parts = [allow.length === 1 && allow[0] === "*" ? "every dataset" : `datasets ${allow.join(", ")}`];
-  if (deny.length) parts.push(`except ${deny.join(", ")}`);
-  parts.push(c.row_filter ? `only rows where ${c.row_filter}` : "every row");
-  parts.push(c.mode === "read-write" ? "and may propose edits you approve" : "read only");
-  return `Your assistant may see ${parts.join(", ")}.`;
-}
-
 export async function loadState() {
   state = await invoke("settings_state");
   return state;
@@ -50,47 +41,115 @@ function confirmNote() {
     : `Changes that give your assistant more access (a new connection, read and write, more datasets, a changed row filter) ask for ${state.confirm_with} first. Your assistant cannot change anything here.`;
 }
 
+const BACK = { href: "#/data", label: "Data" };
+const FILE_KINDS = ["gpkg", "sqlite", "rasters", "shapefile", "filegdb", "files"];
+const connHash = (id) => `#/data/c/${encodeURIComponent(id)}`;
+
+/** What a connection is drawn with: a file, a service or a database. */
+function glyph(c) {
+  return h("span", { class: "glyph" }, icon(c.type === "arcgis" ? "registry" : FILE_KINDS.includes(c.type) ? "files" : "connections"));
+}
+
+/** A connection's rules as short facts (the words its chips carried). */
+function facts(c) {
+  const out = [c.mode === "read-write" ? "Read and write" : "Read only"];
+  const allow = (c.datasets && c.datasets.allow) || [];
+  out.push(allow.length === 1 && allow[0] === "*" ? "All datasets" : `Datasets: ${allow.join(", ")}`);
+  if (c.datasets && c.datasets.deny && c.datasets.deny.length) out.push(`Refused: ${c.datasets.deny.join(", ")}`);
+  if (c.row_filter) out.push(`Rows: ${c.row_filter}`);
+  if (c.has_password) out.push("Password stored");
+  if (c.expires) out.push(`Expires ${when(c.expires)}`);
+  if (c.recursive) out.push("With subfolders");
+  if (c.crs) out.push(c.crs);
+  if (c.type === "arcgis") out.push(oauthPortal(c) ? `Signs in at ${oauthPortal(c)}` : "Public (no sign-in)");
+  return out;
+}
+
+/** One line for a connection's row: what it is, and the rule that matters. */
+function brief(c) {
+  const allow = (c.datasets && c.datasets.allow) || [];
+  const every = allow.length === 1 && allow[0] === "*";
+  return [KIND_NAMES[c.type] || c.type, c.mode === "read-write" ? "read and write" : "read only",
+    c.row_filter ? `rows where ${c.row_filter}` : null, every ? null : `only ${allow.join(", ")}`].filter(Boolean).join(" · ");
+}
+
+/** A saved connection as the Test command takes it (nothing is saved). */
+function testForm(c) {
+  return { existing: true, id: c.id, kind: c.type, path: c.path, host: c.host, port: c.port, database: c.database, dsn: c.dsn, user: c.user, sslmode: c.sslmode,
+    search_path: c.search_path, mode: c.mode, allow: c.datasets.allow, deny: c.datasets.deny, row_filter: c.row_filter, description: c.description, password: null,
+    recursive: !!c.recursive, crs: c.crs, x: c.x, y: c.y, url: c.url, auth: oauthPortal(c) ? "oauth" : "none", portal: oauthPortal(c), client_id: c.auth && c.auth.client_id, page_size: c.page_size };
+}
+
 export async function render(main, rest) {
   const tab = rest[0] || "databases";
   const page = h("div", { class: "page" });
   main.append(page);
-  const add = tab === "maplayers"
-    ? button("Add web layer", "primary", () => maplayers.openWebLayerEditor(null), { id: "add-web-layer" })
-    : button("Add connection", "primary", () => openEditor(null), { id: "add" });
-  page.append(pageHead("Connections", "Databases and files your assistant may use through Columbus, and what each lets it see.", [add]));
-  page.append(tabs([
-    ["databases", "Databases and files", "#/connections/databases"],
-    ["datasets", "Datasets", "#/connections/datasets"],
-    ["projectdbs", "Project databases", "#/connections/projectdbs"],
-    ["maplayers", "Map layers", "#/connections/maplayers"],
-    ["accounts", "Accounts and services", "#/connections/accounts"],
-  ], tab, "Connections"));
   const body = h("div", { class: "pad stack" });
-  page.append(h("div", { class: "scroll" }, body));
-  if (tab === "maplayers") return maplayers.render(body);
-  if (tab === "datasets") return datasets(body);
-  if (tab === "projectdbs") return projectDbs(body);
+  const scroll = h("div", { class: "scroll" }, body);
+  if (tab === "c" && rest[1]) return source(page, scroll, body, rest[1]);
+  if (tab === "maplayers") {
+    page.append(pageHead("Map layers", null,
+      [button("Add web layer", "sm", () => maplayers.openWebLayerEditor(null), { id: "add-web-layer" })], BACK), scroll);
+    return maplayers.render(body);
+  }
+  if (tab === "datasets") {
+    page.append(pageHead("Datasets", null, [], BACK), scroll);
+    return datasets(body);
+  }
+  if (tab === "projectdbs") {
+    page.append(pageHead("Project databases", null, [], BACK), scroll);
+    return projectDbs(body);
+  }
   if (tab === "accounts") {
+    page.append(pageHead("Accounts and services", null, [], BACK), scroll);
     body.append(coming("connections", "Accounts and services",
       "ArcGIS Online and Enterprise, GitHub, Microsoft 365 (SharePoint, OneDrive) and Google Drive, each signed in through your browser with its token kept in your computer's credential store, and each a connected server under Columbus's rules.",
-      ["Today, connected servers are set up by your organization (server manifests).", "AI accounts will be under Settings › Models and accounts."], "Coming in a later stage"));
+      ["Today, connected servers are set up by your organization (server manifests).", "AI accounts will be under Settings › Assistant."], "Coming in a later stage"));
     return;
   }
-  return databases(body);
+  const search = h("input", { type: "search", placeholder: "Search sources", "aria-label": "Search sources" });
+  const notes = h("a", { class: "footline", href: "#/documents", id: "data-notes" }, icon("doc"), h("span", { class: "grow" }, "Notes on what your data means"), icon("forward"));
+  page.append(placeHead("Data", search, [button("Add data", "primary", () => openEditor(null), { id: "add" })]), scroll, notes);
+  return databases(body, search, notes);
 }
 
-async function databases(body) {
+// The words shown after a save, here and on a connection's own page.
+function savedText() {
+  return state && state.restart_needed
+    ? "Saved. The Columbus running in your AI app is an older version: quit your AI app (in Claude desktop: Cmd+Q or Quit) and open it again for your assistant to use the change."
+    : "Saved. Your assistant uses the change from its next request; there is no need to restart anything. If you narrowed what a connection allows, files your assistant already made from it are removed, and anything waiting for your approval is asked again.";
+}
+
+async function databases(body, search, notesLink) {
   const notice = h("p", { id: "restart", class: "notice ok", role: "status", hidden: true });
-  const error = h("p", { id: "error", class: "error-text", role: "alert", hidden: true });
-  const conf = h("div", { class: "notice" }, h("div", { id: "confirm-note" }, confirmNote()));
+  const error = h("p", { id: "conn-error", class: "error-text", role: "alert", hidden: true });
   const list = h("ul", { id: "connections", class: "list", "aria-live": "polite" });
-  const none = h("div", { id: "no-conn", class: "pad", hidden: true }, h("p", { class: "muted" }, "No connections yet. Add a GeoPackage, a file geodatabase, a folder of shapefiles, rasters or other files (CSV, Excel, GeoJSON, KML), an ArcGIS service, or a database."));
-  const other = h("p", { id: "other-folders", class: "error-text", hidden: true });
-  const foot = h("p", { class: "small muted wrap-any" }, "Stored in ", h("code", { id: "conn-dir" }), ". Passwords are kept in your computer's credential store, never in a file, and never shown again.");
-  body.append(notice, error, conf, h("section", { class: "card" }, h("div", { class: "hd" }, h("h2", {}, "Databases and files")), h("div", { class: "bd flush" }, list, none)), other,
-    h("p", { class: "small muted" }, h("b", {}, "Draft notes"), " writes notes about a connection's datasets from the database itself (fields, keys, relationships, the codes short fields hold) into your notes folder, so your assistant knows the data. Review them under ", h("a", { href: "#/documents/notes" }, "Documents › My notes"), "."), foot);
+  const none = h("p", { id: "no-conn", class: "muted small", hidden: true }, "Nothing yet. Add a GeoPackage, a file geodatabase, a folder of shapefiles, rasters or other files (CSV, Excel, GeoJSON, KML), an ArcGIS service, or a database.");
+  const other = h("p", { id: "other-folders", class: "notice warn", hidden: true });
+  const count = h("span", { class: "n" });
+  const out = h("ul", { class: "list", id: "export-folders" });
+  const outCount = h("span", { class: "n" });
+  const outCard = h("section", { class: "card", hidden: true }, h("div", { class: "sec" }, h("h2", {}, "Where results can go"), outCount), h("div", { class: "bd flush" }, out));
+  const more = h("ul", { class: "list compact", id: "data-more" });
+  const link = (href, title, sub) => {
+    const li = h("li", { class: "clickable", "data-href": href }, h("div", { class: "text" }, h("b", {}, h("a", { href }, title))), h("span", { class: "when" }, sub), icon("forward"));
+    li.addEventListener("click", (e) => { if (e.target.tagName !== "A") location.hash = href; });
+    return li;
+  };
+  more.append(
+    link("#/data/datasets", "Datasets", "what each source has notes for"),
+    link("#/datagroups", "Data groups", "named sets, to keep a project to"),
+    link("#/data/maplayers", "Map layers", "imagery and web maps"),
+    link("#/data/projectdbs", "Project databases", "working tables"),
+    link("#/registry", "Registry", "open data sources and GIS tools"),
+    link("#/data/accounts", "Accounts and services", "coming"));
+  const moreCard = h("section", { class: "card" }, sec("More"), h("div", { class: "bd flush" }, more));
+  body.append(notice, error, other,
+    h("section", { class: "card" }, h("div", { class: "sec" }, h("h2", {}, "What your assistant can reach"), count), h("div", { class: "bd flush" }, list), none), outCard, moreCard,
+    h("p", { class: "small muted wrap-any" }, h("span", { id: "confirm-note" }, confirmNote()), " Kept in ", h("code", { id: "conn-dir" }), "; passwords in your computer's credential store, never in a file."));
 
   const draw = () => {
+    const q = search.value.trim().toLowerCase();
     $("confirm-note").textContent = confirmNote();
     $("conn-dir").textContent = state.connections_dir;
     const o = state.other_folders || [];
@@ -98,59 +157,164 @@ async function databases(body) {
     other.textContent = o.length ? `A running Columbus session reads its connections from ${o.join(", ")}, not from this folder, so changes here do not reach it. Clear the Connections folder setting of the Columbus extension in Claude desktop to use this one.` : "";
     list.replaceChildren();
     none.hidden = state.connections.length > 0;
+    count.textContent = state.connections.length ? String(state.connections.length) : "";
     for (const c of state.connections) {
-      const li = el("li", c.problem ? "conn bad" : "conn");
+      const li = el("li", c.problem ? "conn bad" : "conn clickable");
       const text = el("div", "text");
       if (c.problem) {
+        if (q) continue;
         text.append(el("b", null, "A connection file Columbus cannot read"), el("span", "where", `${c.file}: ${c.problem}`));
-        li.append(text);
+        li.append(h("span", { class: "glyph" }, icon("files")), text);
         list.append(li);
         continue;
       }
-      text.append(h("div", { class: "row wrap" }, el("b", null, c.id), el("span", "where", `${KIND_NAMES[c.type] || c.type} · ${where(c)}`)));
-      const chips = el("div", "chips");
-      chips.append(el("span", c.mode === "read-write" ? "chip rw" : "chip ro", c.mode === "read-write" ? "Read and write" : "Read only"));
-      const allow = (c.datasets && c.datasets.allow) || [];
-      chips.append(el("span", "chip", allow.length === 1 && allow[0] === "*" ? "All datasets" : `Datasets: ${allow.join(", ")}`));
-      if (c.datasets && c.datasets.deny && c.datasets.deny.length) chips.append(el("span", "chip", `Refused: ${c.datasets.deny.join(", ")}`));
-      if (c.row_filter) chips.append(el("span", "chip mono", `Rows: ${c.row_filter}`));
-      if (c.has_password) chips.append(el("span", "chip", "Password stored"));
-      if (c.expires) chips.append(el("span", "chip", `Expires ${when(c.expires)}`));
-      if (c.recursive) chips.append(el("span", "chip", "With subfolders"));
-      if (c.crs) chips.append(el("span", "chip mono", c.crs));
-      if (c.type === "arcgis") chips.append(el("span", "chip", oauthPortal(c) ? `Signs in at ${oauthPortal(c)}` : "Public (no sign-in)"));
-      text.append(chips, el("span", "where", sees(c)));
-      if (c.description) text.append(el("span", "where", c.description));
-      const status = el("span", "where draft-status");
-      status.setAttribute("role", "status");
-      text.append(status);
-      const acts = h("div", { class: "acts" });
-      // Drafted notes don't apply to ArcGIS services.
-      if (c.type !== "arcgis") {
-        const d = button("Draft notes", "sm", () => draftNotes(c.id, d, status), { title: "Write notes about this connection's datasets from the database itself (fields, keys, relationships, codes), for you to fill in" });
-        acts.append(d);
-      }
-      if (c.type === "arcgis" && oauthPortal(c)) {
-        const s = button("Sign in", "sm", () => signIn(c.id, s, status), { title: `Sign in to ArcGIS at ${oauthPortal(c)} in your browser` });
-        acts.append(s);
-      }
-      acts.append(button("Edit", "sm", () => openEditor(c)));
-      li.append(text, acts);
+      if (q && ![c.id, KIND_NAMES[c.type] || c.type, where(c), c.description || ""].some((x) => String(x).toLowerCase().includes(q))) continue;
+      li.dataset.id = c.id;
+      li.title = `${where(c)}\n${facts(c).join(" · ")}`;
+      text.append(h("b", {}, h("a", { href: connHash(c.id) }, c.id)), el("span", "where clip", brief(c)));
+      li.addEventListener("click", (e) => { if (e.target.tagName !== "A") location.hash = connHash(c.id); });
+      li.append(...[glyph(c), text, c.mode === "read-write" ? el("span", "badge warn", "Edits") : null, icon("forward")].filter(Boolean));
       list.append(li);
     }
+    if (q && !list.children.length && state.connections.length) list.append(h("li", {}, el("span", "where", "No source matches.")));
+    outCard.hidden = !!q || !out.children.length;
+    moreCard.hidden = !!q;
+  };
+  const drawOut = () => {
+    const folders = (store.projects && store.projects.export_folders) || [];
+    outCount.textContent = folders.length ? String(folders.length) : "";
+    out.replaceChildren(...folders.map((f) => {
+      const li = h("li", {}, h("span", { class: "glyph" }, icon("out")),
+        h("div", { class: "text" }, h("b", {}, f.id), h("span", { class: "where" }, f.granted ? "Saves without asking" : "Asks you each time")), h("span", { class: "when mono clip" }, f.path));
+      li.title = f.path;
+      return li;
+    }));
+    outCard.hidden = !folders.length || !!search.value.trim();
   };
   afterSave = async () => {
     await refresh();
-    notice.textContent = state && state.restart_needed
-      ? "Saved. The Columbus running in your AI app is an older version: quit your AI app (in Claude desktop: Cmd+Q or Quit) and open it again for your assistant to use the change."
-      : "Saved. Your assistant uses the change from its next request; there is no need to restart anything. If you narrowed what a connection allows, files your assistant already made from it are removed, and anything waiting for your approval is asked again.";
+    notice.textContent = savedText();
     notice.hidden = false;
     showError(error, null);
   };
   const refresh = async () => {
     try { await loadState(); draw(); } catch (e) { showError(error, e); }
   };
+  search.addEventListener("input", () => { if (state) draw(); });
   await refresh();
+  drawOut();
+  if (store.refresh) store.refresh.projects().then(drawOut);
+  invoke("notes_list").then((n) => {
+    const drafts = n.notes.filter((x) => x.status === "draft").length;
+    notesLink.querySelector(".grow").textContent = n.notes.length
+      ? `${plural(n.notes.length, "note")} on what your data means.${drafts ? ` ${drafts === 1 ? "1 is a draft" : `${drafts} are drafts`}.` : ""}`
+      : "Notes on what your data means. None yet.";
+  }).catch(() => {});
+  return () => { afterSave = null; };
+}
+
+// ---------- One connection: its rules in plain words, and what to do with it ----------
+async function source(page, scroll, body, id) {
+  const error = h("p", { id: "conn-error", class: "error-text", role: "alert", hidden: true });
+  const notice = h("p", { id: "restart", class: "notice ok", role: "status", hidden: true });
+  const box = h("div", { class: "stack", id: "source" });
+  // Its datasets with notes, drawn apart: they change when notes are drafted.
+  const notesBox = h("div", { class: "stack" });
+  const head = h("div", {});
+  const foot = h("div", { class: "footline" }, icon("lock"), h("span", { class: "grow", id: "confirm-note" }, confirmNote()));
+  page.append(head, scroll, foot);
+  body.append(notice, error, box, notesBox);
+  let notes = null;
+  const loadNotes = () => invoke("notes_list").then((n) => { notes = n.notes; if (state) drawNotes(); }).catch(() => {});
+  const drawNotes = () => {
+    const c = state.connections.find((x) => x.id === id);
+    notesBox.replaceChildren();
+    if (!c) return;
+    // The datasets it has notes for; a note opens under Notes.
+    const mine = notes ? notes.filter((n) => n.connection === c.id || n.path.startsWith(`datasets/${c.id}/`)) : [];
+    if (mine.length) {
+      const ul = h("ul", { class: "list", id: "source-datasets" });
+      for (const n of mine) {
+        const li = h("li", { class: "clickable", tabindex: "0" }, h("div", { class: "text" }, h("b", { class: "mono" }, n.title || n.id || n.path)),
+          h("span", { class: `badge ${n.status === "reviewed" ? "mute" : "warn"}` }, n.status === "reviewed" ? "Note reviewed" : "Draft note"));
+        const open = () => { try { sessionStorage.setItem("columbus.note", n.path); } catch { /* none */ } location.hash = "#/documents/notes"; };
+        li.addEventListener("click", open);
+        li.addEventListener("keydown", (e) => { if (e.key === "Enter") open(); });
+        ul.append(li);
+      }
+      notesBox.append(h("section", { class: "card" }, sec("Datasets with notes", mine.length), h("div", { class: "bd flush" }, ul)));
+    } else if (c.type !== "arcgis") {
+      notesBox.append(h("p", { class: "small muted" }, h("b", {}, "Draft notes"), " writes what Columbus finds in the data (fields, keys, relationships, the codes short fields hold) into your notes folder, so your assistant knows the data. Review them under ", h("a", { href: "#/documents/notes" }, "Notes"), "."));
+    }
+  };
+  const draw = () => {
+    const c = state.connections.find((x) => x.id === id);
+    head.replaceChildren(pageHead(c ? c.id : "Connection", null, [], BACK));
+    $("confirm-note").textContent = confirmNote();
+    box.replaceChildren();
+    if (!c) { box.append(emptyState("Not found", "This connection isn't here any more (it may have been removed).")); return; }
+    const rw = c.mode === "read-write";
+    const allow = (c.datasets && c.datasets.allow) || [];
+    const deny = (c.datasets && c.datasets.deny) || [];
+    const every = allow.length === 1 && allow[0] === "*";
+    const rule = (name, ...words) => h("li", {}, icon(name), h("span", {}, ...words));
+    const status = el("span", "small draft-status");
+    status.setAttribute("role", "status");
+    const result = h("p", { id: "source-test", role: "status", hidden: true });
+    // Test opens it as Columbus would: nothing is saved, the assistant sees none of it.
+    const testBtn = button("Test", "", async () => {
+      testBtn.disabled = true;
+      testBtn.textContent = "Testing…";
+      result.hidden = true;
+      try {
+        const r = await invoke("settings_test_connection", { form: testForm(c) });
+        result.textContent = r.message;
+        result.className = r.ok ? "test-ok" : "test-bad";
+      } catch (e) {
+        result.textContent = String(e);
+        result.className = "test-bad";
+      } finally {
+        result.hidden = false;
+        testBtn.disabled = false;
+        testBtn.textContent = "Test";
+      }
+    }, { id: "source-test-btn", title: "Open it as Columbus would and say what it finds. Nothing is saved, and your assistant sees none of it." });
+    const acts = h("div", { class: "row wrap" }, button("Change the rules", "", () => openEditor(c), { id: "source-edit" }), testBtn);
+    // Drafted notes don't apply to ArcGIS services.
+    if (c.type !== "arcgis") {
+      const d = button("Draft notes", "", async () => { await draftNotes(c.id, d, status); loadNotes(); }, { title: "Write notes about this connection's datasets from the database itself (fields, keys, relationships, codes), for you to fill in" });
+      acts.append(d);
+    }
+    if (c.type === "arcgis" && oauthPortal(c)) {
+      const s = button("Sign in", "", () => signIn(c.id, s, status), { title: `Sign in to ArcGIS at ${oauthPortal(c)} in your browser` });
+      acts.append(s);
+    }
+    const rules = h("ul", { class: "rules" },
+      rule(rw ? "pen" : "eye", h("b", {}, rw ? "Read and write." : "Read only."), rw ? " Each change set is shown to you first." : " No edits and no deletes."),
+      rule("layers", every ? "Every dataset" : ["Only ", h("b", {}, allow.join(", "))], deny.length ? [", never ", h("b", {}, deny.join(", "))] : null, "."),
+      rule("filter", c.row_filter ? ["Only rows where ", h("b", { class: "mono" }, c.row_filter), "."] : "Every row."));
+    if (c.type === "arcgis") rules.append(rule("user", oauthPortal(c) ? `Signs in at ${oauthPortal(c)}.` : "Public (no sign-in)."));
+    if (c.has_password) rules.append(rule("key", "Password stored in your computer's credential store."));
+    if (c.recursive) rules.append(rule("files", "With subfolders."));
+    if (c.crs) rules.append(rule("registry", `Coordinates in ${c.crs}${c.x && c.y ? ` (columns ${c.x}, ${c.y})` : ""}.`));
+    if (c.expires) rules.append(rule("clock", `Expires ${when(c.expires)}.`));
+    box.append(...[
+      h("p", { class: "small muted wrap-any" }, `${KIND_NAMES[c.type] || c.type} · ${where(c)}`),
+      h("h2", { class: "big" }, rw ? "Your assistant can read it, and propose edits you approve." : `Your assistant can read ${every && !deny.length && !c.row_filter ? "it" : "part of it"}, and change nothing.`),
+      c.description ? h("p", { class: "small" }, c.description) : null,
+      rules, acts, status, result].filter(Boolean));
+    drawNotes();
+  };
+  afterSave = async () => {
+    try { await loadState(); } catch (e) { showError(error, e); return; }
+    if (!state.connections.some((x) => x.id === id)) { location.hash = "#/data"; return; }
+    draw();
+    notice.textContent = savedText();
+    notice.hidden = false;
+    showError(error, null);
+  };
+  try { await loadState(); draw(); } catch (e) { showError(error, e); }
+  loadNotes();
   return () => { afterSave = null; };
 }
 
@@ -426,7 +590,7 @@ async function datasets(body) {
   }
   const conns = st.connections.filter((c) => c.id);
   if (!conns.length) {
-    body.append(emptyState("No connections yet", "Add a GeoPackage, a folder of rasters, or a database first.", h("a", { class: "btn primary", href: "#/connections" }, "Go to Connections")));
+    body.append(emptyState("No connections yet", "Add a GeoPackage, a folder of rasters, or a database first.", h("a", { class: "btn primary", href: "#/data" }, "Go to Data")));
     return;
   }
   for (const c of conns) {
@@ -438,8 +602,7 @@ async function datasets(body) {
       result.className = "small muted";
       result.textContent = "Opening…";
       try {
-        const r = await invoke("settings_test_connection", { form: { existing: true, id: c.id, kind: c.type, path: c.path, host: c.host, port: c.port, database: c.database, dsn: c.dsn, user: c.user, sslmode: c.sslmode, search_path: c.search_path, mode: c.mode, allow: c.datasets.allow, deny: c.datasets.deny, row_filter: c.row_filter, description: c.description, password: null,
-          recursive: !!c.recursive, crs: c.crs, x: c.x, y: c.y, url: c.url, auth: oauthPortal(c) ? "oauth" : "none", portal: oauthPortal(c), client_id: c.auth && c.auth.client_id, page_size: c.page_size } });
+        const r = await invoke("settings_test_connection", { form: testForm(c) });
         result.textContent = r.message;
         result.className = r.ok ? "small" : "small error-text";
       } catch (e) {
@@ -457,7 +620,7 @@ async function datasets(body) {
       h("div", { class: "hd" }, h("h2", {}, c.id), h("span", { class: "muted small" }, `${KIND_NAMES[c.type] || c.type} · ${plural(mine.length, "dataset")} with notes`), h("span", { class: "more" }, listBtn)),
       h("div", { class: "bd stack" }, result,
         mine.length ? h("table", { class: "t" }, h("thead", {}, h("tr", {}, h("th", {}, "Dataset"), h("th", {}, "Notes"), h("th", {}, "Last confirmed"))), tbody)
-          : h("p", { class: "muted small" }, "No notes yet for this connection. Use Draft notes on the Databases and files tab, or List with Test to see what it allows."))));
+          : h("p", { class: "muted small" }, "No notes yet for this connection. Use Draft notes on the connection's own page, or List with Test to see what it allows."))));
   }
 }
 

@@ -199,6 +199,13 @@ def driver(env, app):
     return d, proc
 
 
+def ready(d, wait):
+    """Wait until the main window has drawn itself: its four places are in
+    the nav, and the page it opens on (a new chat) is shown."""
+    wait.until(lambda drv: drv.execute_script(
+        "return document.querySelectorAll('#nav a.tab').length === 4 && !!document.getElementById('text')"))
+
+
 def stop(d, proc):
     """End the session, the app and the driver (bounded).
 

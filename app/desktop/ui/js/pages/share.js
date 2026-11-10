@@ -39,7 +39,7 @@ function signerBlock(info, onTrusted) {
     }, { id: "share-trust" });
     wrap.append(
       h("p", {}, `Signed with a key you don't trust yet: ${sg.fingerprint}.`),
-      h("p", { class: "small" }, "Trust it only if the sender read you this same fingerprint themselves (by phone or in person; Tools › Team library › Show my sharing key). Then files they sign show as theirs."),
+      h("p", { class: "small" }, "Trust it only if the sender read you this same fingerprint themselves (by phone or in person; Workflows › Tools › Show my sharing key). Then files they sign show as theirs."),
       h("div", { class: "row" }, name, trust), err);
     return wrap;
   }
@@ -62,11 +62,11 @@ export async function shareIn(err, done, from = null) {
     signerBlock(info, () => { d.close(); shareIn(err, done, from); }),
     h("p", { class: "notice" }, "Opening it files it for you to review, as your own assistant's proposals are: nothing is installed or run until you read it and approve it. A shared tool was not test-run on your computer, so read its code before you install it."));
   if (!info.allowed) {
-    body.append(h("p", { class: "notice warn" }, "Opening shared tools and workflows is off in your organization's settings (Tools, Your organization's switch)."));
+    body.append(h("p", { class: "notice warn" }, "Opening shared tools and workflows is off in your organization's settings (Workflows › Tools, under How tools run)."));
   }
   if (info.workflow) {
     const w = info.workflow;
-    body.append(h("h3", {}, "What it does"), w.purpose ? h("p", {}, w.purpose) : null,
+    body.append(h("h3", {}, "What it does"), ...(w.purpose ? [h("p", {}, w.purpose)] : []),
       h("ul", { class: "small" }, ...(w.plain || []).map((l) => el("li", null, l))));
     if (w.review) body.append(h("p", { class: "small" }, h("b", {}, "Its AI review looks for: "), w.review));
   }
@@ -187,6 +187,6 @@ export function teamLibrary(card, err, done) {
       h("p", { class: "small muted" }, "Files you share are signed with your own key, so coworkers can tell they're from you and unchanged. They trust your key once, after you read them its fingerprint."),
       h("div", { class: "row small" }, show, mine),
       h("p", { class: "small" }, h("b", {}, "People you trust: "), trusted.length || org.length ? "" : "none yet"), ...trusted, ...org,
-      st.require_signed ? h("p", { class: "small notice" }, "Your organization opens only signed files from people it or you trust.") : null);
+      ...(st.require_signed ? [h("p", { class: "small notice" }, "Your organization opens only signed files from people it or you trust.")] : []));
   }
 }

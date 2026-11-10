@@ -61,7 +61,7 @@ export async function render(main, rest) {
 
   // ---- Search ----------------------------------------------------------
   function searchView() {
-    page.append(pageHead("Registry", "Open data sources and GIS tools: who publishes them, what they cover, their licence, and how to get or install them."));
+    page.append(pageHead("Registry", "Open data sources and GIS tools: who publishes them, what they cover, their licence, and how to get or install them.", [], { href: "#/data", label: "Data" }));
     page.append(h("div", { class: "scroll" }, body));
     const q = h("input", { type: "search", id: "rg-q", placeholder: "Words to look for: lidar texas, flood zones, geocoding library", class: "grow", value: lastQuery.query });
     const kind = h("select", { id: "rg-kind", "aria-label": "Kind" },
@@ -118,9 +118,9 @@ export async function render(main, rest) {
 
   // ---- One entry -------------------------------------------------------
   async function entryView(eid) {
-    page.append(pageHead("Registry entry"));
+    page.append(pageHead("Registry entry", null, [], { href: "#/registry", id: "rg-back", label: "Search the registry" }));
     page.append(h("div", { class: "scroll" }, body));
-    body.append(h("p", { class: "small" }, h("a", { href: "#/registry", id: "rg-back" }, "← Search")), err);
+    body.append(err);
     let r;
     try {
       r = await invoke("registry_query", { tool: "registry_get", args: { id: eid } });

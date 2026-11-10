@@ -9,10 +9,19 @@
   <body>
     <a class="skip" href="#main">Skip to content</a>
     <div class="app">
-      <nav class="rail" id="rail" aria-label="Columbus"></nav>
-      <main class="main" id="main" tabindex="-1"></main>
+      <!-- The map's place: chart paper until a session's map is shown. -->
+      <div class="stage" id="stage"><div class="frames" id="stage-frames"></div></div>
+      <!-- The panel: the four places, and the page of the one that is open. -->
+      <div class="panel" id="panel">
+        <nav class="nav" id="nav" aria-label="Columbus"></nav>
+        <main class="main" id="main" tabindex="-1"></main>
+      </div>
+      <!-- A sheet beside the panel, for something long to read. -->
+      <aside class="side" id="side" hidden></aside>
+      <!-- The panel put away: the map alone. -->
+      <div class="pill" id="pill"></div>
     </div>
-    <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+    <div id="toast" class="toast" popover="manual" role="status" aria-live="polite" hidden></div>
     <dialog id="palette" class="palette" aria-label="Search chats and pages">
       <input id="palette-q" type="search" placeholder="Search chats, sessions and pages" aria-label="Search chats, sessions and pages" autocomplete="off" spellcheck="false" role="combobox" aria-expanded="true" aria-controls="palette-list" />
       <ul id="palette-list" role="listbox" aria-label="Results"></ul>

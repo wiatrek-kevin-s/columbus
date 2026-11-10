@@ -131,7 +131,7 @@ def env_for(root, confirm):
 def session(root, confirm):
     d, proc = guard.driver(env_for(root, confirm), APP)
     wait = WebDriverWait(d, 30)
-    wait.until(lambda drv: drv.execute_script("return !!document.getElementById('page-title')"))
+    guard.ready(d, wait)
     d.execute_script("location.hash = '#/workflows'")
     wait.until(EC.presence_of_element_located((By.ID, "wf-waiting")))
     time.sleep(0.5)

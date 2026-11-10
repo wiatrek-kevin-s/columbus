@@ -123,7 +123,7 @@ def session(root, confirm):
     env = dict(files(root), COLUMBUS_APP_TEST_CONFIRM=confirm)
     d, proc = guard.driver(env, APP)
     wait = WebDriverWait(d, 60)
-    wait.until(lambda drv: drv.execute_script("return !!document.getElementById('page-title')"))
+    guard.ready(d, wait)
     nav(d, wait, "#/connections", "add")
     return d, proc, wait
 

@@ -251,7 +251,7 @@ def main():
         d, proc = guard.driver(dict(env, COLUMBUS_APP_TEST_CONFIRM="deny"), APP)
         try:
             wait = WebDriverWait(d, 60)
-            wait.until(lambda drv: drv.execute_script("return !!document.getElementById('page-title')"))
+            guard.ready(d, wait)
             nav(d, wait, "#/connections/maplayers", "add-web-layer")
             js_click(d, d.find_element(By.ID, "add-web-layer"))
             said = fill_layer(d, wait, kinds[0][2], kinds[0][3], kinds[0][1], kinds[0][0])
@@ -267,7 +267,7 @@ def main():
         d, proc = guard.driver(dict(env, COLUMBUS_APP_TEST_CONFIRM="allow"), APP)
         try:
             wait = WebDriverWait(d, 60)
-            wait.until(lambda drv: drv.execute_script("return !!document.getElementById('page-title')"))
+            guard.ready(d, wait)
             nav(d, wait, "#/connections/maplayers", "add-web-layer")
             for sid, title, url, layer in kinds:
                 step(f"add {sid}")
@@ -323,7 +323,7 @@ def main():
         d, proc = guard.driver(dict(env, COLUMBUS_APP_TEST_CONFIRM="allow"), APP)
         try:
             wait = WebDriverWait(d, 60)
-            wait.until(lambda drv: drv.execute_script("return !!document.getElementById('page-title')"))
+            guard.ready(d, wait)
             nav(d, wait, "#/connections/maplayers", "add-web-layer")
             wait.until(lambda drv: dict(listed(drv)) == want)
             chat_hash = start_chat(d, wait)

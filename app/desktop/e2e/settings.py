@@ -101,8 +101,8 @@ def session(root, confirm):
     env = dict(files(root), COLUMBUS_APP_TEST_CONFIRM=confirm)
     d, proc = guard.driver(env, APP)
     wait = WebDriverWait(d, 30)
-    wait.until(lambda drv: drv.execute_script("return !!document.getElementById('page-title')"))
-    nav(d, wait, "#/connections", "add")
+    guard.ready(d, wait)
+    nav(d, wait, "#/data", "add")
     return d, proc, wait
 
 
@@ -119,6 +119,15 @@ def click(d, how, what):
     e = d.find_element(how, what)
     d.execute_script("arguments[0].scrollIntoView({block: 'center'})", e)
     e.click()
+
+
+def open_source(d, wait, conn_id):
+    """A connection's own page, from its row on Data."""
+    nav(d, wait, "#/data", "add")
+    wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, f"#connections li[data-id='{conn_id}'] a")))
+    click(d, By.CSS_SELECTOR, f"#connections li[data-id='{conn_id}'] a")
+    wait.until(lambda drv: drv.find_elements(By.ID, "source-edit"))
+    time.sleep(0.3)
 
 
 def fill(d, name, value):
@@ -186,8 +195,19 @@ gpd.GeoDataFrame({"RTE": ["IH0035", "US0183"], "district": [14, 12]}, geometry=[
         wait.until(lambda drv: "roads" in drv.execute_script("return document.getElementById('connections').textContent"))
 
         # Draft notes from the database: the running session writes them.
+        step("the list says what it is in a line; its own page says its rules in plain words")
+        row = d.execute_script("return document.querySelector(\"#connections li[data-id='roads']\").textContent")
+        assert "GeoPackage" in row and "read only" in row and "rows where district = 14" in row, row
+        open_source(d, wait, "roads")
+        page = d.execute_script("return document.getElementById('source').textContent")
+        assert "Read only." in page and "never *audit*" in page and "Only rows where district = 14" in page, page
+        assert "can read part of it, and change nothing" in page, page
+        step("connections: Test on its page opens it as Columbus would")
+        click(d, By.ID, "source-test-btn")
+        wait.until(lambda drv: drv.find_element(By.ID, "source-test").is_displayed() and "Opened" in drv.find_element(By.ID, "source-test").text)
+        assert "routes" in d.find_element(By.ID, "source-test").text
         step("connections: draft notes")
-        d.find_element(By.XPATH, "//ul[@id='connections']//button[normalize-space()='Draft notes']").click()
+        d.find_element(By.XPATH, "//*[@id='source']//button[normalize-space()='Draft notes']").click()
         try:
             WebDriverWait(d, 60).until(lambda drv: "Drafted" in drv.find_element(By.CSS_SELECTOR, ".draft-status").text)
         except Exception:
@@ -200,13 +220,18 @@ gpd.GeoDataFrame({"RTE": ["IH0035", "US0183"], "district": [14, 12]}, geometry=[
         d.save_screenshot(str(OUT / "settings-notes.png"))
 
         # Make it read-write, and turn edits on: the rest of the policy file stays.
+        step("its notes are listed on its page")
+        wait.until(lambda drv: "routes" in (drv.execute_script("const e = document.getElementById('source-datasets'); return e ? e.textContent : ''")))
         step("settings: read-write and edits on")
-        d.find_element(By.XPATH, "//ul[@id='connections']//button[normalize-space()='Edit']").click()
+        click(d, By.ID, "source-edit")
         wait.until(EC.visibility_of_element_located((By.NAME, "mode")))
         d.execute_script("const s = document.querySelector('[name=mode]'); s.value = 'read-write';")
         click(d, By.ID, "save")
-        wait.until(lambda drv: "Read and write" in drv.execute_script("return document.getElementById('connections').textContent"))
+        wait.until(lambda drv: "Read and write." in drv.execute_script("return document.getElementById('source').textContent"))
+        assert "propose edits you approve" in d.execute_script("return document.getElementById('source').textContent")
         assert yaml.safe_load((root / "connections" / "roads.yaml").read_text())["mode"] == "read-write"
+        nav(d, wait, "#/data", "add")
+        wait.until(lambda drv: "read and write" in drv.execute_script("return document.getElementById('connections').textContent"))
         nav(d, wait, "#/settings/org", "allow_edits")
         d.find_element(By.ID, "allow_edits").click()
         wait.until(lambda drv: "allow_edits: true" in (root / "policy.yaml").read_text())
@@ -250,11 +275,15 @@ gpd.GeoDataFrame({"RTE": ["IH0035", "US0183"], "district": [14, 12]}, geometry=[
         assert yaml.safe_load((root / "tools" / "approved.yaml").read_text()) in (None, {})
 
         # Removing needs no confirmation.
-        nav(d, wait, "#/connections", "add")
-        d.find_element(By.XPATH, "//ul[@id='connections']//button[normalize-space()='Edit']").click()
+        open_source(d, wait, "roads")
+        click(d, By.ID, "source-edit")
         wait.until(EC.presence_of_element_located((By.ID, "delete")))
         click(d, By.ID, "delete")
         wait.until(lambda drv: not (root / "connections" / "roads.yaml").exists())
+        step("removed: back on Data, without it")
+        wait.until(lambda drv: drv.execute_script("return location.hash") == "#/data")
+        wait.until(lambda drv: drv.find_elements(By.ID, "no-conn") and drv.find_element(By.ID, "no-conn").is_displayed())
+        assert not d.find_elements(By.CSS_SELECTOR, "#connections li[data-id='roads']")
     finally:
         try:
             d.save_screenshot(str(OUT / "settings-last.png"))

@@ -45,9 +45,8 @@ export async function render(main, rest) {
   if (parts[0]) {
     const g = state.groups.find((x) => x.id === parts[0]);
     if (g) return formView(g);
-    page.append(pageHead("Data group"), h("div", { class: "scroll" }, body));
-    body.append(h("p", { class: "small" }, h("a", { href: "#/datagroups" }, "← All data groups")),
-      emptyState("Not found", "This data group isn't here any more (it may have been deleted)."));
+    page.append(pageHead("Data group", null, [], { href: "#/datagroups", label: "All data groups" }), h("div", { class: "scroll" }, body));
+    body.append(emptyState("Not found", "This data group isn't here any more (it may have been deleted)."));
     return;
   }
   return listView();
@@ -55,7 +54,7 @@ export async function render(main, rest) {
   // ---- The list --------------------------------------------------------
   function listView() {
     page.append(pageHead("Data groups", "Named sets of datasets across your connections, each with an optional filter on its rows. Attach one to a project and its chats see only those datasets, and only those rows.",
-      [button("New data group", "primary", () => go("#/datagroups/new"), { id: "dg-new" })]));
+      [button("New data group", "primary sm", () => go("#/datagroups/new"), { id: "dg-new" })], { href: "#/data", label: "Data" }));
     page.append(h("div", { class: "scroll" }, body));
     body.append(err);
     const ul = h("ul", { class: "list", id: "dg-list" });
@@ -97,9 +96,8 @@ export async function render(main, rest) {
   // ---- One of the organization's, read only ----------------------------
   function orgView(id) {
     const g = state.organization.find((x) => x.id === id);
-    page.append(pageHead(g ? (g.title || g.id) : "Data group", g ? g.summary : null));
+    page.append(pageHead(g ? (g.title || g.id) : "Data group", g ? g.summary : null, [], { href: "#/datagroups", label: "All data groups" }));
     page.append(h("div", { class: "scroll" }, body));
-    body.append(h("p", { class: "small" }, h("a", { href: "#/datagroups" }, "← All data groups")));
     if (!g) { body.append(emptyState("Not found", "Your organization's context pack doesn't have this group.")); return; }
     body.append(h("section", { class: "card" }, h("div", { class: "bd stack" },
       h("p", { class: "small muted" }, `Id: ${g.id} · from your organization's context pack: read only here; its owners change it.`),
@@ -113,9 +111,9 @@ export async function render(main, rest) {
   // ---- One of yours: made or edited here --------------------------------
   function formView(g) {
     const isNew = !g;
-    page.append(pageHead(isNew ? "New data group" : g.name, isNew ? "Name it, then list the datasets it holds and, for any of them, which rows." : null));
+    page.append(pageHead(isNew ? "New data group" : g.name, isNew ? "Name it, then list the datasets it holds and, for any of them, which rows." : null, [], { href: "#/datagroups", label: "All data groups" }));
     page.append(h("div", { class: "scroll" }, body));
-    body.append(h("p", { class: "small" }, h("a", { href: "#/datagroups" }, "← All data groups")), err);
+    body.append(err);
     const name = h("input", { id: "dg-name", type: "text", maxlength: "80", value: g ? g.name : "", placeholder: "District 14 roadway core", class: "grow" });
     const desc = h("textarea", { id: "dg-description", rows: "2", maxlength: "2000", placeholder: "What it's for (optional)" });
     desc.value = g ? g.description || "" : "";
@@ -146,7 +144,7 @@ export async function render(main, rest) {
       h("div", { class: "field" }, "Datasets",
         h("table", { class: "t dg-table" }, h("thead", {}, h("tr", {}, h("th", {}, "Connection"), h("th", {}, "Dataset"), h("th", {}, "Rows (filter)"), h("th", {}, ""))), rows),
         h("div", { class: "row" }, add)),
-      conns.length ? null : h("p", { class: "small muted" }, "You have no connections yet. ", h("a", { href: "#/connections" }, "Add one"), " first."),
+      conns.length ? null : h("p", { class: "small muted" }, "You have no connections yet. ", h("a", { href: "#/data" }, "Add one"), " first."),
       h("p", { class: "small muted" }, "A filter is a condition on the dataset's own fields (=, <>, <, >, IN, LIKE, AND, OR, IS NULL). It is added to the connection's own row filter, never instead of it. A dataset the connection doesn't allow stays unreadable."),
       h("div", { class: "row wrap" }, save, isNew ? button("Cancel", "", () => go("#/datagroups")) : null, h("span", { class: "spacer" }),
         isNew ? null : button("Delete data group", "danger", onDelete, { id: "dg-delete" })))));
