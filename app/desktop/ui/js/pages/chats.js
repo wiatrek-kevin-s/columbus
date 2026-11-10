@@ -524,11 +524,12 @@ class SessionMap {
     this.origin = null;
     this.loading = false;
     this.view = null; // "table" once the person asked for the table
+    this.ready = false; // the page said it listens
     this.host = h("div", { class: "frame-host", hidden: true });
     $("stage-frames").append(this.host);
     this.onMessage = (ev) => {
       if (!this.frame || ev.source !== this.frame.contentWindow || ev.origin !== this.origin) return;
-      if (ev.data && ev.data.type === "columbus-embed-ready") this.post();
+      if (ev.data && ev.data.type === "columbus-embed-ready") { this.ready = true; this.post(); }
       // The map's Add web layer: the app's own dialog (the page gets nothing
       // but word that the list changed).
       if (ev.data && ev.data.type === "columbus-add-web-layer") openWebLayerEditor(null);
@@ -571,15 +572,15 @@ class SessionMap {
   post() {
     if (!this.frame || !this.origin || !this.frame.contentWindow) return;
     const msg = { type: "columbus-embed", basemap: !!store.prefs.basemap, theme: store.prefs.theme || "system", inset: insets() };
-    if (this.view) msg.view = this.view;
+    // Asked once, when the page listens: after that the page keeps the
+    // table as the person leaves it.
+    if (this.view && this.ready) { msg.view = this.view; this.view = null; }
     this.frame.contentWindow.postMessage(msg, this.origin);
-    // Asked once: the page keeps the table as the person leaves it.
-    this.view = null;
   }
 
   /** Open the table sheet on the map (the page shows its active result). */
   table() {
-    if (!this.frame) return toast("The map is not open yet.");
+    if (!this.session) return toast("The map is not open yet.");
     this.view = "table";
     this.post();
   }
@@ -589,7 +590,7 @@ class SessionMap {
     this.session = session;
     this.frame = null;
     this.origin = null;
-    this.view = null;
+    this.ready = false;
     this.host.replaceChildren();
     if (!this.host.hidden) this.ensureFrame();
   }
@@ -624,6 +625,7 @@ class SessionMap {
       this.origin = new URL(url).origin;
       f.src = url;
       this.frame = f;
+      this.ready = false;
       this.host.replaceChildren(f);
     } catch (e) {
       if (want !== this.session) return;
@@ -965,6 +967,7 @@ async function newChat(project = null, run = null) {
   $("text").value = "";
   fitText();
   drawSub();
+  live.map.view = null;
   live.map.setSession(null);
   setBusy(false);
   await updateChip();
@@ -1129,6 +1132,8 @@ export async function render(main, rest) {
       "They are copies: the run itself, its files and its exports stay as they are. Ask, for example: ",
       h("i", {}, "check these three areas"), " or ", h("i", {}, "remove route X, then export the rest"), ".")));
     store.set("chatstate", "run");
+    // Its layers on the map and in the table, as soon as the map opens.
+    live.map.view = "table";
     if (await start()) {
       $("chat-title").textContent = `Review: ${run.name}`;
       $("chat-title").dataset.set = "1";

@@ -224,8 +224,11 @@ gpd.GeoDataFrame({"RTE": ["IH0035", "US0183"], "district": [14, 12]}, geometry=[
         wait.until(lambda drv: "routes" in (drv.execute_script("const e = document.getElementById('source-datasets'); return e ? e.textContent : ''")))
         step("settings: read-write and edits on")
         click(d, By.ID, "source-edit")
-        wait.until(EC.visibility_of_element_located((By.NAME, "mode")))
-        d.execute_script("const s = document.querySelector('[name=mode]'); s.value = 'read-write';")
+        # What the assistant may do is a choice between two cards.
+        wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, "#editor .choice[data-mode='read-write']")))
+        assert d.execute_script("return document.querySelector('#editor input[name=mode_pick]:checked').value") == "read"
+        click(d, By.CSS_SELECTOR, "#editor .choice[data-mode='read-write']")
+        assert d.execute_script("return document.querySelector('#editor [name=mode]').value") == "read-write"
         click(d, By.ID, "save")
         wait.until(lambda drv: "Read and write." in drv.execute_script("return document.getElementById('source').textContent"))
         assert "propose edits you approve" in d.execute_script("return document.getElementById('source').textContent")

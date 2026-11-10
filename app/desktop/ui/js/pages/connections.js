@@ -378,15 +378,27 @@ function buildEditor() {
     ...Object.entries({ gpkg: "GeoPackage file", filegdb: "File geodatabase (.gdb)", shapefile: "Folder of shapefiles", files: "Folder of files (CSV, Excel, GeoJSON, KML…)", sqlite: "SQLite file", rasters: "Folder of rasters (GeoTIFF)", arcgis: "ArcGIS Online, Portal or Server service", postgis: "PostgreSQL / PostGIS", sqlserver: "SQL Server", oracle: "Oracle" })
       .map(([v, t]) => h("option", { value: v }, t)));
   const ssl = h("select", { name: "sslmode" }, h("option", { value: "" }, "Default (prefer)"), ...["disable", "prefer", "require", "verify-full"].map((v) => h("option", { value: v }, v)));
-  const mode = h("select", { name: "mode" }, h("option", { value: "read" }, "Read only"), h("option", { value: "read-write" }, "Read and write (needs edits allowed)"));
+  // What the assistant may do with it: two cards the person chooses
+  // between. The select they drive holds the value the form saves.
+  const mode = h("select", { name: "mode", class: "visually-hidden", "aria-hidden": "true", tabindex: "-1" }, h("option", { value: "read" }, "Read only"), h("option", { value: "read-write" }, "Read and write (needs edits allowed)"));
+  const choice = (value, title, text) => {
+    const r = h("input", { type: "radio", name: "mode_pick", value });
+    r.addEventListener("change", () => { if (r.checked) mode.value = value; });
+    return h("label", { class: "choice", "data-mode": value }, r, h("span", { class: "text" }, h("b", {}, title), h("span", {}, text)));
+  };
+  const choices = h("div", { class: "choices wide", role: "radiogroup", "aria-label": "What your assistant may do with it" },
+    choice("read", "Read only", "Look, count and measure. Nothing in it can change."),
+    choice("read-write", "Read and write", "Your assistant can propose changes to the original. Columbus shows you each change set first. Needs edits allowed by your organization."), mode);
   const browse = h("button", { type: "button", id: "browse", class: "btn" }, "Browse…");
   const auth = h("select", { name: "auth" }, h("option", { value: "none" }, "None (a public service)"), h("option", { value: "oauth" }, "Sign in with ArcGIS (OAuth)"));
   const recursive = h("input", { type: "checkbox", name: "recursive" });
   const form = h("form", { id: "form", method: "dialog", class: "dlg" },
-    h("h2", { id: "editor-h" }, "Add connection"),
+    h("h2", { id: "editor-h" }, "Add data"),
     h("div", { class: "grid2" },
+      h("h3", { class: "wide" }, "What is it?"),
       field("Name", inp("conn_id", { required: true, maxlength: "40" }), { help: "How your assistant refers to it, e.g. roads or parcels-pg." }),
       field("Type", kind),
+      h("h3", { class: "wide" }, "Where is it?"),
       field("Location", h("span", { class: "pick" }, inp("path"), browse), { wide: true, for: "gpkg sqlite shapefile filegdb rasters files" }),
       h("label", { class: "switch-row wide", "data-for": "files" }, recursive, h("span", {}, h("b", {}, "Read subfolders too."), " Files in the folder's subfolders are datasets as well, named by their path.")),
       field("Coordinate system", inp("crs", { placeholder: "e.g. EPSG:4326" }), { for: "files", help: "For CSV and Excel geometry, and files without one of their own." }),
@@ -405,7 +417,9 @@ function buildEditor() {
       field("Password", inp("password", { type: "password", autocomplete: "new-password" }), { for: "postgis sqlserver oracle", help: "Kept in your computer's credential store, never in a file.", helpId: "pw-note" }),
       field("SSL", ssl, { for: "postgis" }),
       field("Schemas", inp("search_path", { placeholder: "public" }), { for: "postgis" }),
-      field("Access", mode),
+      h("h3", { class: "wide" }, "What may your assistant do with it?"),
+      choices,
+      h("h3", { class: "wide" }, "Narrow it, if you want"),
       field("Datasets allowed", inp("allow", { value: "*" }), { wide: true, help: "Names or patterns, separated by commas. * means all." }),
       field("Datasets refused", inp("deny"), { wide: true, help: "Wins over allowed, e.g. *audit*." }),
       field("Row filter", inp("row_filter", { placeholder: "e.g. district_nbr = 14" }), { wide: true, help: "Added to every query: your assistant sees only the rows it keeps." }),
@@ -448,6 +462,20 @@ function setKind(kind) {
   const mode = $("form").mode;
   if (ro) mode.value = "read";
   for (const o of mode.options) if (o.value === "read-write") o.disabled = ro;
+  syncMode();
+}
+
+// The two access cards show what the form will save.
+function syncMode() {
+  const form = $("form");
+  const ro = [...form.mode.options].some((o) => o.value === "read-write" && o.disabled);
+  for (const r of form.querySelectorAll("input[name=mode_pick]")) {
+    r.checked = r.value === form.mode.value;
+    if (r.value === "read-write") {
+      r.disabled = ro;
+      r.closest(".choice").title = ro ? "Shapefiles, file geodatabases, folders of files and ArcGIS services are read only here." : "";
+    }
+  }
 }
 
 function showTest(result) {
@@ -468,7 +496,7 @@ export async function openEditor(c, onSaved) {
   form.reset();
   showError($("form-error"), null);
   showTest(null);
-  $("editor-h").textContent = c ? `Edit ${c.id}` : "Add connection";
+  $("editor-h").textContent = c ? `Edit ${c.id}` : "Add data";
   $("confirm-hint").textContent = confirmNote();
   form.conn_id.readOnly = !!c;
   $("delete").hidden = !c;
@@ -488,6 +516,7 @@ export async function openEditor(c, onSaved) {
   form.deny.value = ((v.datasets && v.datasets.deny) || []).join(", ");
   $("pw-note").textContent = c && c.has_password ? "A password is stored. Leave this empty to keep it." : "Kept in your computer's credential store, never in a file.";
   setKind(form.kind.value);
+  syncMode();
   dlg.showModal();
   (c ? form.mode : form.conn_id).focus();
 }

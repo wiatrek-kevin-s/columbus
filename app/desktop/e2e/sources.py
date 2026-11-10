@@ -262,6 +262,8 @@ def main():
         assert d.find_element(By.NAME, "recursive").is_displayed()
         assert not d.find_element(By.NAME, "url").is_displayed()
         assert d.find_element(By.ID, "browse").text == "Choose folder…"
+        assert d.execute_script("return document.querySelector(\"#editor input[name=mode_pick][value='read-write']\").disabled"), "a folder of files is read only here"
+        assert d.execute_script("return document.querySelector('#editor input[name=mode_pick]:checked').value") == "read"
         fill(d, "path", str(drops))
         d.execute_script("document.querySelector('[name=recursive]').checked = true;")
         fill(d, "crs", "EPSG:3081")
