@@ -106,6 +106,18 @@ def settled(page, before=None, t=15):
     raise AssertionError(f"the map did not settle (view {last}, before {before})")
 
 
+def in_view(page):
+    """The part of the map the page's panel does not cover, as west, south,
+    east, north (the panel floats over the map's left side)."""
+    w, s, e, n = view(page)
+    r = page.locator(".map canvas").bounding_box()
+    panel = page.locator(".panel").bounding_box()
+    assert panel, "the page's own panel is there"
+    left = panel["x"] + panel["width"]
+    assert r["x"] + r["width"] - left > 300, f"too little of the map is in view: {panel} over {r}"
+    return w + (left - r["x"]) / r["width"] * (e - w), s, e, n
+
+
 def row(page, sid):
     return page.locator(f".web-row[data-id='{sid}']")
 
@@ -272,6 +284,11 @@ def main():
             v = settled(page, before=v0)
             assert v[0] <= -97.8 + 0.01 and v[2] >= -97.6 - 0.01 and v[1] <= 30.2 + 0.01 and v[3] >= 30.4 - 0.01, v
             assert v[2] - v[0] < 1.0, f"not fitted to the parcels: {v}"
+            # And in the part of the map the panel leaves in view, in its
+            # middle.
+            vw, vs, ve, vn = in_view(page)
+            assert vw <= -97.8 + 0.01 and ve >= -97.6 - 0.01, f"the parcels are not all in view {(vw, vs, ve, vn)}"
+            assert abs((vw + ve) / 2 - -97.7) < (ve - vw) * 0.05, f"the parcels are not centred in view {(vw, vs, ve, vn)}"
             # Zoomed in further, everything in view draws.
             page.get_by_role("button", name="Zoom in").click()
             settled(page, before=v)

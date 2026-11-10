@@ -1,19 +1,31 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import * as maplibregl from "maplibre-gl";
-import type { ExpressionSpecification, GeoJSONSource, StyleSpecification } from "maplibre-gl";
-import "maplibre-gl/dist/maplibre-gl.css";
+import type {
+  CircleLayerSpecification,
+  ExpressionSpecification,
+  FillLayerSpecification,
+  GeoJSONSource,
+  LineLayerSpecification,
+  StyleSpecification,
+} from "maplibre-gl";
 // MapLibre finds its worker next to its own file, which a bundle does not
 // have; give it the built copy, served from this server like the rest.
 import workerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?url";
 
 maplibregl.setWorkerUrl(workerUrl);
 import { authorization, isWebLayerUrl, webApi, WebLayerError, type FeatureCollection, type WebSourceInfo } from "./api";
+import { BASEMAP_URL, blankStyle, isStyle, restyle } from "./basemap";
+import type { Inset } from "./layout";
 import { formatLength, lineMetres } from "./measure";
+import { LAYER_TONES, type Theme } from "./theme";
 
 export interface MapLayer {
   handle: string;
   name: string;
+  /** The colour it has on the map now: the "hit" colour while it is the
+   * active output, its own quiet colour otherwise. */
   color: string;
+  active: boolean;
   data: FeatureCollection;
 }
 
@@ -41,6 +53,7 @@ const webSid = (d: WebDraw, base: boolean) => `${base ? "wb" : "w"}~${d.id}~${d.
 const isWeb = (sid: string | undefined) => !!sid && (sid.startsWith("w~") || sid.startsWith("wb~"));
 const webIdOf = (sid: string) => sid.split("~")[1] || "";
 const FEATURE_PARTS = ["-fill", "-line", "-point"];
+// Web layers keep a colour of their own, apart from the session's.
 const WEB_COLOR = "#7b3fa0";
 
 /** A feature's attributes as a small table (text only). */
@@ -57,14 +70,30 @@ function attributeTable(props: Record<string, unknown>): HTMLElement {
   return t;
 }
 
-// OpenFreeMap: free vector basemaps, no key. The page's policy allows this
-// one host and nothing else on the internet; without it the map is blank.
-const BASEMAP = "https://tiles.openfreemap.org/styles/positron";
-const BLANK: StyleSpecification = {
-  version: 8,
-  sources: {},
-  layers: [{ id: "background", type: "background", paint: { "background-color": "#eef2f4" } }],
-};
+// The street style as OpenFreeMap sent it, kept while the page lives: a
+// change of theme, or switching it on again, asks for nothing more. A
+// failure is not kept, so the next try asks again.
+let streets: Promise<StyleSpecification> | null = null;
+function loadStreets(): Promise<StyleSpecification> {
+  if (streets) return streets;
+  const stop = new AbortController();
+  const timer = window.setTimeout(() => stop.abort(), 20000);
+  const asked = fetch(BASEMAP_URL, { credentials: "omit", signal: stop.signal })
+    .then((r) => {
+      if (!r.ok) throw new Error(`openfreemap answered ${r.status}`);
+      return r.json() as Promise<unknown>;
+    })
+    .then((style) => {
+      if (!isStyle(style)) throw new Error("openfreemap did not send a map style");
+      return style;
+    })
+    .finally(() => window.clearTimeout(timer));
+  asked.catch(() => {
+    if (streets === asked) streets = null;
+  });
+  streets = asked;
+  return asked;
+}
 
 // Map ids by order of appearance: handles can differ only in characters
 // an id cannot hold.
@@ -98,20 +127,52 @@ function eachPosition(g: GeoJSON.Geometry | null | undefined, out: LngLat[]): Ln
 const MEASURE = "measure";
 const EMPTY: GeoJSON.FeatureCollection = { type: "FeatureCollection", features: [] };
 
-/** The session's layers on a MapLibre map, with identify on click, the
- * table's selected row highlighted (and zoomed to, when asked), and a
- * geodesic measure tool. */
+// The clicked row or shape.
+const SELECTED: ExpressionSpecification = ["boolean", ["feature-state", "selected"], false];
+
+/** How one of the session's layers is drawn. The active output: stronger
+ * fills, thicker lines, larger points with a ring. The selected feature:
+ * larger again, as a highlight. */
+function looks(l: MapLayer, ring: string) {
+  const a = l.active;
+  const fill: FillLayerSpecification["paint"] = {
+    "fill-color": l.color,
+    "fill-opacity": ["case", SELECTED, a ? 0.6 : 0.46, a ? 0.32 : 0.14],
+  };
+  const line: LineLayerSpecification["paint"] = {
+    "line-color": l.color,
+    "line-width": ["case", SELECTED, a ? 4.5 : 3.5, a ? 2.4 : 1.4],
+  };
+  const point: CircleLayerSpecification["paint"] = {
+    "circle-color": l.color,
+    "circle-radius": ["case", SELECTED, a ? 8 : 7, a ? 5 : 3.5],
+    "circle-stroke-color": ring,
+    "circle-stroke-width": ["case", SELECTED, 2.5, a ? 1.5 : 0.75],
+  };
+  return { "-fill": fill, "-line": line, "-point": point } as Record<string, Record<string, unknown>>;
+}
+
+/** The session's layers on a MapLibre map that fills the page, with
+ * identify on click, the table's selected row highlighted (and zoomed to,
+ * when asked), and a geodesic measure tool. */
 export function MapView(props: {
+  /** The session's layers on the map, bottom first. */
   layers: MapLayer[];
+  theme: Theme;
+  /** The street background, when the person turned it on. */
   basemap: boolean;
+  /** How much of the map is covered at each edge (the app's panel or the
+   * page's own, the table sheet): every "zoom to" centres in the rest. */
+  padding: Inset;
   fitTo: string | null;
   selected: { handle: string; feature: number } | null;
   /** A table row to zoom to; `n` changes for each click. */
   zoomTo: { handle: string; feature: number; n: number } | null;
-  zoomToSelection: boolean;
-  onZoomToSelection: (on: boolean) => void;
-  /** Controls the page puts first in the map's bar. */
-  tools?: ReactNode;
+  measuring: boolean;
+  onMeasuring: (on: boolean) => void;
+  /** What the page has to say, shown with the measure result at the foot
+   * of the part of the map in view. */
+  notice?: ReactNode;
   onIdentify: (handle: string, feature: number) => void;
   onBasemapFailed: () => void;
   /** Web layers turned on, bottom first. */
@@ -131,12 +192,38 @@ export function MapView(props: {
   // added. Not `isStyleLoaded()`: with a basemap that stays false while its
   // icons and tiles load, long after the style itself is ready.
   const styled = useRef(false);
+  // The style the map holds or is loading: `blank:<theme>` or
+  // `streets:<theme>`.
+  const styleKey = useRef(`blank:${props.theme}`);
+  // Changes of style asked for, and the one the map's style answers. Until
+  // they agree, `data-layers` stays at 0.
+  const asked = useRef(0);
+  const held = useRef(0);
   const onBasemapFailed = useRef(props.onBasemapFailed);
   onBasemapFailed.current = props.onBasemapFailed;
   const onIdentify = useRef(props.onIdentify);
   onIdentify.current = props.onIdentify;
   const onWebState = useRef(props.onWebState);
   onWebState.current = props.onWebState;
+  const onMeasuring = useRef(props.onMeasuring);
+  onMeasuring.current = props.onMeasuring;
+  const padding = useRef(props.padding);
+  padding.current = props.padding;
+  const layersNow = useRef(props.layers);
+  layersNow.current = props.layers;
+  // The last "zoom to" (a layer, a row, a web layer), to do again when a
+  // sheet opens or closes: what was asked for stays fitted in the part of
+  // the map in view. Forgotten once the person moves the map themselves.
+  const again = useRef<(() => void) | null>(null);
+  const fit = (m: maplibregl.Map, bounds: [[number, number], [number, number]], options: maplibregl.FitBoundsOptions) => {
+    again.current = () => m.fitBounds(bounds, options);
+    again.current();
+  };
+  // The padding the map is to take, and whether it has had one yet.
+  const padWanted = useRef<Inset | null>(null);
+  const padSet = useRef(false);
+  // The data each of the session's sources was last given.
+  const given = useRef(new Map<string, FeatureCollection>());
   // Feature layers drawn now, and their requests in flight.
   const webFeatures = useRef<{ sid: string; d: WebDraw }[]>([]);
   const inFlight = useRef(new Map<string, AbortController>());
@@ -146,23 +233,32 @@ export function MapView(props: {
   // Measure: one line at a time. While measuring, clicks add points
   // instead of identifying; a double-click finishes the line, the next
   // click starts a new one, and Escape clears it.
-  const [measuring, setMeasuring] = useState(false);
   const [points, setPoints] = useState<LngLat[]>([]);
   const [finished, setFinished] = useState(false);
   const measuringRef = useRef(false);
-  measuringRef.current = measuring;
+  measuringRef.current = props.measuring;
   const finishedRef = useRef(false);
   finishedRef.current = finished;
 
-  // One map; its style changes with the basemap switch.
+  // How many of the session's layers the map holds, for the window's own
+  // tests: 0 from a change of style until the map shows it.
+  const count = () => {
+    const m = map.current;
+    if (!m || !box.current || held.current !== asked.current) return;
+    box.current.dataset.layers = String(layersNow.current.filter((l) => m.getSource(id(l.handle))).length);
+  };
+
+  // One map; its style changes with the basemap switch and the theme.
   useEffect(() => {
     if (!box.current) return;
     const m = new maplibregl.Map({
       container: box.current,
-      style: props.basemap ? BASEMAP : BLANK,
+      style: blankStyle(props.theme),
       center: [-98.5, 39.5],
       zoom: 3,
-      attributionControl: { compact: true },
+      // In view at the foot of the map, not folded away: the map is the
+      // whole page now.
+      attributionControl: { compact: false },
       // Web layers come from this server only (D-14), with the window's
       // session token in a header, never in the address. Nothing else gets
       // it.
@@ -172,14 +268,22 @@ export function MapView(props: {
         return a ? { url, headers: { Authorization: a } } : { url };
       },
     });
-    m.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
+    // Bottom right, above the attribution; the scale bottom left.
+    m.addControl(new maplibregl.NavigationControl({ showCompass: false }), "bottom-right");
     m.addControl(new maplibregl.ScaleControl({ unit: "imperial" }), "bottom-left");
     m.on("style.load", () => {
-      // A new style holds none of the web layers' sources yet.
+      // A new style holds none of the session's or the web layers' sources
+      // yet.
+      given.current.clear();
       drawnOnce.current.clear();
       failedOnce.current.clear();
       styled.current = true;
       setReady((n) => n + 1);
+    });
+    // The person moved the map (a drag, the wheel, the keyboard, the zoom
+    // buttons: moves that carry their event): the view is theirs now.
+    m.on("movestart", (e: maplibregl.MapLibreEvent<unknown>) => {
+      if (e.originalEvent) again.current = null;
     });
     // Where the map is looking, for the window's own tests.
     m.on("moveend", () => {
@@ -234,14 +338,16 @@ export function MapView(props: {
         } else say(err?.message || "Some of this layer's tiles could not be loaded.");
         return;
       }
-      // Offline, or the basemap host blocked: carry on with a plain
-      // background, so the session's own layers still show.
-      if (failed.current) return;
+      // Offline, or the basemap host blocked: carry on with the paper
+      // alone, so the session's own layers still show.
+      if (failed.current || !styleKey.current.startsWith("streets:")) return;
       const fromBasemap = String(e.error?.message || "").includes("openfreemap");
       if (fromBasemap || !m.isStyleLoaded()) {
         failed.current = true;
         styled.current = false;
-        m.setStyle(BLANK);
+        const theme: Theme = styleKey.current.endsWith(":dark") ? "dark" : "light";
+        styleKey.current = `blank:${theme}`;
+        m.setStyle(blankStyle(theme), { diff: false });
         onBasemapFailed.current();
       }
     });
@@ -251,71 +357,151 @@ export function MapView(props: {
       window.clearTimeout(refreshTimer.current);
       m.remove();
       map.current = null;
+      // Nothing of this map is left for another (React makes two in
+      // development).
+      again.current = null;
+      padSet.current = false;
+      styled.current = false;
+      styleKey.current = `blank:${props.theme}`;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const first = useRef(true);
+  // The map's padding: what covers its edges (the app's panel or the page's
+  // own, the table sheet). When it changes, the map makes room: what it was
+  // last asked to zoom to is fitted again into the part now in view; and if
+  // the person has moved the map since, the middle of their view stays the
+  // middle of that part, as when a table opens under a map in a GIS.
+  const pad = props.padding;
   useEffect(() => {
-    if (first.current) {
-      first.current = false;
+    const m = map.current;
+    if (!m) return;
+    padWanted.current = { left: pad.left, top: pad.top, right: pad.right, bottom: pad.bottom };
+    const apply = () => {
+      const p = padWanted.current;
+      if (!p || map.current !== m) return;
+      const refit = again.current;
+      // Their own move under way (a drag): after it.
+      if (!refit && m.isMoving()) {
+        m.once("moveend", apply);
+        return;
+      }
+      padWanted.current = null;
+      if (!padSet.current) {
+        padSet.current = true;
+        m.jumpTo({ padding: p });
+      } else if (refit) {
+        // Without a jump: first the new padding with everything drawn left
+        // where it is, then the fit, from there.
+        const c = m.getContainer();
+        const middle: [number, number] = [
+          p.left + (c.clientWidth - p.left - p.right) / 2,
+          p.top + (c.clientHeight - p.top - p.bottom) / 2,
+        ];
+        m.jumpTo({ padding: p, center: m.unproject(middle) });
+        refit();
+      } else m.easeTo({ padding: p, duration: 300 });
+    };
+    apply();
+  }, [pad.left, pad.top, pad.right, pad.bottom]);
+
+  // The style: the paper alone, or the street background in the page's
+  // colours. The street style is fetched here and recoloured before the map
+  // gets it; if it cannot be had, the paper stays and the page is told.
+  const wanted = `${props.basemap ? "streets" : "blank"}:${props.theme}`;
+  useEffect(() => {
+    const m = map.current;
+    if (!m || (wanted === styleKey.current && asked.current === held.current)) return;
+    const turn = ++asked.current;
+    if (box.current) box.current.dataset.layers = "0";
+    const show = (style: StyleSpecification) => {
+      held.current = turn;
+      failed.current = false;
+      if (wanted === styleKey.current) {
+        // The map already holds it (a street style that never arrived).
+        if (styled.current) count();
+        return;
+      }
+      styleKey.current = wanted;
+      styled.current = false;
+      // From scratch, not as a difference: the session's layers are put
+      // back when it has loaded.
+      m.setStyle(style, { diff: false });
+    };
+    if (!props.basemap) {
+      show(blankStyle(props.theme));
       return;
     }
-    failed.current = false;
-    styled.current = false;
-    if (box.current) box.current.dataset.layers = "0";
-    map.current?.setStyle(props.basemap ? BASEMAP : BLANK);
-  }, [props.basemap]);
+    loadStreets().then(
+      (style) => {
+        if (turn === asked.current && map.current === m) show(restyle(style, props.theme));
+      },
+      () => {
+        if (turn !== asked.current || map.current !== m) return;
+        failed.current = true;
+        onBasemapFailed.current();
+      },
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wanted]);
 
-  // Keep the map's sources and layers in step with the list.
+  // Keep the map's sources and layers in step with the list, each in the
+  // colour it has now.
   useEffect(() => {
     const m = map.current;
     if (!m || !styled.current) return;
+    const ring = LAYER_TONES[props.theme].ring;
+    // By name, as `looks` lists them (the same value again changes nothing).
+    const repaint = m.setPaintProperty.bind(m) as (layer: string, name: string, value: unknown) => unknown;
     const want = new Set(props.layers.map((l) => id(l.handle)));
     for (const s of Object.keys(m.getStyle().sources || {})) {
       if (s.startsWith("l-") && !want.has(s)) {
-        for (const suffix of ["-fill", "-line", "-point"]) {
+        for (const suffix of FEATURE_PARTS) {
           if (m.getLayer(s + suffix)) m.removeLayer(s + suffix);
         }
         m.removeSource(s);
+        given.current.delete(s);
       }
     }
     for (const l of props.layers) {
       const sid = id(l.handle);
+      const look = looks(l, ring);
       const src = m.getSource(sid) as GeoJSONSource | undefined;
       if (src) {
-        src.setData(l.data as unknown as GeoJSON.FeatureCollection);
+        if (given.current.get(sid) !== l.data) {
+          src.setData(l.data as unknown as GeoJSON.FeatureCollection);
+          given.current.set(sid, l.data);
+        }
+        for (const suffix of FEATURE_PARTS) {
+          for (const [k, v] of Object.entries(look[suffix])) repaint(sid + suffix, k, v);
+        }
         continue;
       }
       m.addSource(sid, { type: "geojson", data: l.data as unknown as GeoJSON.FeatureCollection });
-      const hi: ExpressionSpecification = ["boolean", ["feature-state", "selected"], false];
+      given.current.set(sid, l.data);
       m.addLayer({
         id: `${sid}-fill`,
         source: sid,
         type: "fill",
         filter: ["in", ["geometry-type"], ["literal", ["Polygon", "MultiPolygon"]]],
-        paint: { "fill-color": l.color, "fill-opacity": ["case", hi, 0.55, 0.22] },
+        paint: look["-fill"] as FillLayerSpecification["paint"],
       });
       m.addLayer({
         id: `${sid}-line`,
         source: sid,
         type: "line",
         filter: ["in", ["geometry-type"], ["literal", ["Polygon", "MultiPolygon", "LineString", "MultiLineString"]]],
-        paint: { "line-color": l.color, "line-width": ["case", hi, 3.5, 1.4] },
+        layout: { "line-cap": "round", "line-join": "round" },
+        paint: look["-line"] as LineLayerSpecification["paint"],
       });
       m.addLayer({
         id: `${sid}-point`,
         source: sid,
         type: "circle",
         filter: ["in", ["geometry-type"], ["literal", ["Point", "MultiPoint"]]],
-        paint: {
-          "circle-color": l.color,
-          "circle-radius": ["case", hi, 7, 4],
-          "circle-stroke-color": "#ffffff",
-          "circle-stroke-width": 1,
-        },
+        paint: look["-point"] as CircleLayerSpecification["paint"],
       });
-      for (const suffix of ["-fill", "-line", "-point"]) {
+      for (const suffix of FEATURE_PARTS) {
         // Handlers belong to the map, not the style: bind once per layer.
         if (bound.current.has(sid + suffix)) continue;
         bound.current.add(sid + suffix);
@@ -332,10 +518,17 @@ export function MapView(props: {
         });
       }
     }
-    // How many of the session's layers the map holds, for the window's own
-    // tests.
-    if (box.current) box.current.dataset.layers = String(props.layers.filter((l) => m.getSource(id(l.handle))).length);
-  }, [props.layers, ready]);
+    // Fills under lines under points, whichever output they belong to, in
+    // the list's order with the active output on top of its kind.
+    const stack = [...props.layers].sort((a, b) => Number(a.active) - Number(b.active));
+    const order = FEATURE_PARTS.flatMap((suffix) => stack.map((l) => id(l.handle) + suffix));
+    const have = m.getLayersOrder().filter((x) => x.startsWith("l-"));
+    if (order.length !== have.length || order.some((x, i) => x !== have[i])) {
+      for (const layer of order) if (m.getLayer(layer)) m.moveLayer(layer);
+    }
+    count();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [props.layers, props.theme, ready]);
 
   // Feature layers: the view's features, at most the server's limit, again
   // after each move (a moment after it stops).
@@ -454,7 +647,12 @@ export function MapView(props: {
               if (measuringRef.current) return;
               const f = e.features?.[0];
               if (!f) return;
-              new maplibregl.Popup({ maxWidth: "320px" })
+              // Clear of whatever covers the map's edges.
+              const p = padding.current;
+              new maplibregl.Popup({
+                maxWidth: "320px",
+                padding: { left: p.left + 8, top: p.top + 8, right: p.right + 8, bottom: p.bottom + 8 },
+              })
                 .setLngLat(e.lngLat)
                 .setDOMContent(attributeTable((f.properties || {}) as Record<string, unknown>))
                 .addTo(m);
@@ -507,7 +705,8 @@ export function MapView(props: {
     const d = [...(props.webLayers || []), ...(props.webBase ? [props.webBase] : [])].find((x) => x.id === f.id);
     const ex = d?.info.extent;
     if (!ex) return;
-    m.fitBounds(
+    fit(
+      m,
       [
         [Math.max(-180, ex[0]), Math.max(-85, ex[1])],
         [Math.min(180, ex[2]), Math.min(85, ex[3])],
@@ -528,7 +727,8 @@ export function MapView(props: {
     const b = l?.data.bbox;
     if (m && b) {
       fitted.current = props.fitTo;
-      m.fitBounds(
+      fit(
+        m,
         [
           [b[0], b[1]],
           [b[2], b[3]],
@@ -536,6 +736,7 @@ export function MapView(props: {
         { padding: 40, maxZoom: 16, duration: 600 },
       );
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [props.fitTo, props.layers]);
 
   // Highlight the selected feature.
@@ -576,7 +777,8 @@ export function MapView(props: {
       e = Math.max(e, x);
       n = Math.max(n, y);
     }
-    m.fitBounds(
+    fit(
+      m,
       [
         [w, s],
         [e, n],
@@ -586,10 +788,11 @@ export function MapView(props: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [props.zoomTo]);
 
-  // The measured line, drawn over the session's layers.
+  // The measured line, drawn over the session's layers in the page's ink.
   useEffect(() => {
     const m = map.current;
     if (!m || !styled.current) return;
+    const tones = LAYER_TONES[props.theme];
     const data: GeoJSON.FeatureCollection = points.length
       ? {
           type: "FeatureCollection",
@@ -602,75 +805,69 @@ export function MapView(props: {
         }
       : EMPTY;
     const src = m.getSource(MEASURE) as GeoJSONSource | undefined;
-    if (src) src.setData(data);
-    else {
+    if (src) {
+      src.setData(data);
+      m.setPaintProperty(`${MEASURE}-line`, "line-color", tones.ink);
+      m.setPaintProperty(`${MEASURE}-point`, "circle-color", tones.panel);
+      m.setPaintProperty(`${MEASURE}-point`, "circle-stroke-color", tones.ink);
+    } else {
       m.addSource(MEASURE, { type: "geojson", data });
       m.addLayer({
         id: `${MEASURE}-line`,
         source: MEASURE,
         type: "line",
         filter: ["==", ["geometry-type"], "LineString"],
-        paint: { "line-color": "#17324d", "line-width": 2.5, "line-dasharray": [2, 1.5] },
+        paint: { "line-color": tones.ink, "line-width": 2.5, "line-dasharray": [2, 1.5] },
       });
       m.addLayer({
         id: `${MEASURE}-point`,
         source: MEASURE,
         type: "circle",
         filter: ["==", ["geometry-type"], "Point"],
-        paint: { "circle-color": "#ffffff", "circle-radius": 4, "circle-stroke-color": "#17324d", "circle-stroke-width": 2 },
+        paint: { "circle-color": tones.panel, "circle-radius": 4, "circle-stroke-color": tones.ink, "circle-stroke-width": 2 },
       });
     }
     // Keep it on top of layers added since.
     m.moveLayer(`${MEASURE}-line`);
     m.moveLayer(`${MEASURE}-point`);
-  }, [points, ready, props.layers]);
+  }, [points, ready, props.layers, props.theme]);
+
+  // Each measurement starts clean; ending one clears its line.
+  useEffect(() => {
+    setPoints((ps) => (ps.length ? [] : ps));
+    setFinished(false);
+  }, [props.measuring]);
 
   // Measuring: a crosshair, no double-click zoom, and Escape clears.
   useEffect(() => {
     const m = map.current;
     if (!m) return;
-    if (measuring) {
+    if (props.measuring) {
       m.doubleClickZoom.disable();
       m.getCanvas().style.cursor = "crosshair";
     } else {
       m.doubleClickZoom.enable();
       m.getCanvas().style.cursor = "";
     }
-    if (!measuring && !points.length) return;
+    if (!props.measuring && !points.length) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
-      setMeasuring(false);
+      onMeasuring.current(false);
       setPoints([]);
       setFinished(false);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [measuring, points.length]);
+  }, [props.measuring, points.length]);
 
-  const toggleMeasure = () => {
-    setMeasuring(!measuring);
-    setPoints([]);
-    setFinished(false);
-  };
   const length = points.length > 1 ? formatLength(lineMetres(points)) : null;
 
   return (
     <div className="map-wrap">
       <div className="map" ref={box} role="region" aria-label="Map of the session's layers" />
-      <div className="map-bar">
-        {props.tools}
-        <label className="switch" title="Clicking a row in the table zooms the map to that feature">
-          <input
-            type="checkbox"
-            checked={props.zoomToSelection}
-            onChange={(e) => props.onZoomToSelection(e.target.checked)}
-          />
-          Zoom to selection
-        </label>
-        <button type="button" aria-pressed={measuring} onClick={toggleMeasure}>
-          Measure
-        </button>
-        {(measuring || length) && (
+      <div className="map-foot">
+        {props.notice}
+        {(props.measuring || length) && (
           <span className="measure-result" role="status">
             {length ? (
               <>

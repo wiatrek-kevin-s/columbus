@@ -3,11 +3,12 @@
 Starts columbus-mcp (a debug build: launch links are handed off to a file
 instead of opening a browser) with the built UI, speaks MCP to it over stdio
 as an AI client would, and drives the window with Playwright: the layer the
-agent queried appears in the list, on the map and in the table; an export
-that needs approval shows a card. The window the app opens may only look:
-its card offers "Review in your browser", which opens the page that can
-decide (a second browser page here); allowing it there lets the export
-finish. Screenshots go to e2e/out/.
+agent queried appears in the list and on the map, and in the table once its
+sheet is opened; the street background loads over it; an export that needs
+approval shows a card. The window the app opens may only look: its card
+offers "Review in your browser", which opens the page that can decide (a
+second browser page here); allowing it there lets the export finish.
+Screenshots go to e2e/out/.
 
     python app/ui/e2e/companion.py [path/to/columbus-mcp]
 
@@ -90,6 +91,7 @@ def main():
             # policy before a request is made, so a refused tile never
             # reaches this route.
             tiles = []
+            styles = []
             ofm = "https://tiles.openfreemap.org"
             # Vector tiles, as OpenFreeMap's: the map's worker fetches them.
             style = {"version": 8, "sprite": ofm + "/sprites/test", "sources": {"t": {"type": "vector",
@@ -109,6 +111,7 @@ def main():
                                       headers={"access-control-allow-origin": "*"})
                     return
                 if "/styles/" in url:
+                    styles.append(url)
                     route.fulfill(status=200, content_type="application/json", body=json.dumps(style),
                                   headers={"access-control-allow-origin": "*"})
                 else:
@@ -126,37 +129,63 @@ def main():
             assert "#t=" not in page.url, "the launch token leaves the address bar"
             expect(page.get_by_text("12 rows").first).to_be_visible()
             expect(page.get_by_role("checkbox", name="Show")).to_be_checked()
+            # The new layer is the active one: its swatch, and so the layer
+            # on the map, is in the "hit" colour.
+            swatch = page.locator("li.out.active .swatch")
+            assert swatch.evaluate("e => getComputedStyle(e).getPropertyValue('--c').trim()") == "#ef4b23"
+            expect(page.locator(".map[data-layers='1']")).to_have_count(1, timeout=15000)
+            # The map alone at first; the table is a sheet over it, opened
+            # from the active output.
+            expect(page.locator("section.table")).to_have_count(0)
+            table = page.get_by_role("button", name="Table", exact=True)
+            expect(table).to_have_attribute("aria-pressed", "false")
+            table.click()
+            expect(table).to_have_attribute("aria-pressed", "true")
+            expect(page.locator("section.table")).to_be_visible()
             expect(page.locator("table tbody tr")).to_have_count(12, timeout=15000)
             expect(page.locator("table")).to_contain_text("Tract 3")
+            expect(page.locator("section.table")).to_contain_text("Rows 1–12 of 12")
             page.wait_for_timeout(1500)
             page.screenshot(path=str(OUT / "1-layer.png"))
 
-            # The basemap: its tiles load (through the map's worker).
-            page.get_by_role("checkbox", name="Basemap").check()
+            # The street background (the basemap): its tiles load (through
+            # the map's worker).
+            streets = page.get_by_role("checkbox", name="Street background")
+            expect(streets).not_to_be_checked()
+            streets.check()
             deadline = time.time() + 20
             while not tiles and time.time() < deadline:
                 page.wait_for_timeout(250)
             assert tiles, "no basemap tile was requested"
             expect(page.get_by_text("could not be loaded")).to_have_count(0)
-            expect(page.get_by_role("checkbox", name="Basemap")).to_be_checked()
+            expect(streets).to_be_checked()
             # The session's layer is still on the map over the basemap, and
             # after switching it off again.
             expect(page.locator(".map[data-layers='1']")).to_have_count(1, timeout=10000)
             page.wait_for_timeout(1500)
             page.screenshot(path=str(OUT / "1-basemap.png"))
-            page.get_by_role("checkbox", name="Basemap").uncheck()
+            streets.uncheck()
             expect(page.locator(".map[data-layers='1']")).to_have_count(1, timeout=10000)
-            page.get_by_role("checkbox", name="Basemap").check()
+            streets.check()
             expect(page.locator(".map[data-layers='1']")).to_have_count(1, timeout=10000)
+            # The page fetched the street style itself (to recolour it), once:
+            # switching it on again asked for nothing more.
+            assert styles == [ofm + "/styles/positron"], styles
             # Off again for the rest: the slow icons above hold up the
             # browser's other requests while they wait.
-            page.get_by_role("checkbox", name="Basemap").uncheck()
+            streets.uncheck()
             expect(page.locator(".map[data-layers='1']")).to_have_count(1, timeout=10000)
             page.wait_for_timeout(1000)
 
             # Click a row: it is selected.
             page.locator("table tbody tr").nth(2).click()
             expect(page.locator("table tbody tr.selected")).to_have_count(1)
+            # Closing the sheet returns to the map alone, the layer still
+            # on it.
+            page.get_by_role("button", name="Close the table").click()
+            expect(page.locator("section.table")).to_have_count(0)
+            expect(table).to_have_attribute("aria-pressed", "false")
+            expect(page.locator(".map[data-layers='1']")).to_have_count(1)
 
             # The agent exports; the window shows the request, but this
             # window (opened for the app) cannot decide it.
