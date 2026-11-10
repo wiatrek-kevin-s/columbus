@@ -5,7 +5,7 @@
 // and map layers. Changes that give the assistant more access are confirmed
 // at the keyboard in the app's own code (Touch ID, the account password or
 // Windows Hello); nothing here can skip that.
-import { $, h, el, icon, invoke, store, button, pageHead, placeHead, sec, showError, size, when, plural, emptyState, coming, toast } from "../core.js";
+import { $, h, el, icon, invoke, store, button, pageHead, placeHead, sec, showError, size, when, plural, emptyState, toast } from "../core.js";
 import * as maplayers from "./maplayers.js";
 
 const KIND_NAMES = {
@@ -108,13 +108,6 @@ export async function render(main, rest) {
     page.append(pageHead("Project databases", null, [], BACK), scroll);
     return projectDbs(body);
   }
-  if (tab === "accounts") {
-    page.append(pageHead("Accounts and services", null, [], BACK), scroll);
-    body.append(coming("connections", "Accounts and services",
-      "ArcGIS Online and Enterprise, GitHub, Microsoft 365 (SharePoint, OneDrive) and Google Drive, each signed in through your browser with its token kept in your computer's credential store, and each a connected server under Columbus's rules.",
-      ["Today, connected servers are set up by your organization (server manifests).", "AI accounts will be under Settings › Assistant."], "Coming in a later stage"));
-    return;
-  }
   const search = h("input", { type: "search", placeholder: "Search sources", "aria-label": "Search sources" });
   const notes = h("a", { class: "footline", href: "#/documents", id: "data-notes" }, icon("doc"), h("span", { class: "grow" }, "Notes on what your data means"), icon("forward"));
   page.append(placeHead("Data", search, [button("Add data", "primary", () => openEditor(null), { id: "add" })]), scroll, notes);
@@ -149,8 +142,7 @@ async function databases(body, search, notesLink) {
     link("#/datagroups", "Data groups", "named sets, to keep a project to"),
     link("#/data/maplayers", "Map layers", "imagery and web maps"),
     link("#/data/projectdbs", "Project databases", "working tables"),
-    link("#/registry", "Registry", "open data sources and GIS tools"),
-    link("#/data/accounts", "Accounts and services", "coming"));
+    link("#/registry", "Registry", "open data sources and GIS tools"));
   const moreCard = h("section", { class: "card" }, sec("More"), h("div", { class: "bd flush" }, more));
   body.append(notice, error, other,
     h("section", { class: "card" }, h("div", { class: "sec" }, h("h2", {}, "What your assistant can reach"), count), h("div", { class: "bd flush" }, list), none), outCard, moreCard,

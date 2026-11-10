@@ -3,12 +3,6 @@
    white; colour belongs to the data, to what waits for the person (amber)
    and to what passed or failed a check (green, red). Text colours are
    checked for WCAG 2.2 AA in both themes. */
-@font-face { font-family: "Geist"; font-style: normal; font-weight: 400; font-display: swap; src: url("fonts/geist-sans-latin-400-normal.woff2") format("woff2"); }
-@font-face { font-family: "Geist"; font-style: normal; font-weight: 500; font-display: swap; src: url("fonts/geist-sans-latin-500-normal.woff2") format("woff2"); }
-@font-face { font-family: "Geist"; font-style: normal; font-weight: 600; font-display: swap; src: url("fonts/geist-sans-latin-600-normal.woff2") format("woff2"); }
-@font-face { font-family: "Geist Mono"; font-style: normal; font-weight: 400; font-display: swap; src: url("fonts/geist-mono-latin-400-normal.woff2") format("woff2"); }
-@font-face { font-family: "Geist Mono"; font-style: normal; font-weight: 500; font-display: swap; src: url("fonts/geist-mono-latin-500-normal.woff2") format("woff2"); }
-
 :root {
   --paper: #efede8; --panel: #ffffff; --ink: #17181a; --ink2: #3f4044; --mute: #66676b; --faint: #a6a7aa;
   --line: #edece9; --line2: #dfdeda; --fill: #f6f5f3; --fill2: #eeedea;
@@ -17,8 +11,9 @@
   --grid: rgba(23, 24, 26, .07); --veil: rgba(239, 237, 232, .66);
   --shadow: 0 0 0 1px rgba(23, 24, 26, .05), 0 2px 5px rgba(23, 24, 26, .04), 0 20px 54px rgba(23, 24, 26, .14);
   --shadow-s: 0 0 0 1px rgba(23, 24, 26, .06), 0 6px 20px rgba(23, 24, 26, .10);
-  --sans: "Geist", "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
-  --mono: "Geist Mono", ui-monospace, "Cascadia Mono", "SF Mono", Consolas, monospace;
+  /* The system's own typeface: nothing is bundled. */
+  --sans: "Segoe UI Variable Text", "Segoe UI", "Inter", system-ui, -apple-system, sans-serif;
+  --mono: ui-monospace, "Cascadia Mono", "SF Mono", Consolas, "DejaVu Sans Mono", monospace;
   --focus: #17181a;
   --panel-w: 456px; --gap: 16px;
   color-scheme: light;
@@ -286,13 +281,10 @@ pre.numbered { counter-reset: line; }
 pre.numbered span.ln { display: block; padding-left: 3.6em; text-indent: -3.6em; }
 pre.numbered span.ln::before { counter-increment: line; content: counter(line); display: inline-block; width: 3em; margin-right: .6em; text-align: right; color: var(--mute); user-select: none; }
 
-/* Empty and "coming" states */
+/* Empty states */
 .empty { display: grid; justify-items: start; gap: 8px; padding: 18px 0; }
-.empty .ico { width: 28px; height: 28px; color: var(--mute); }
 .empty h2 { font-size: 15px; font-weight: 600; }
 .empty p { color: var(--mute); font-size: 13px; line-height: 19px; text-wrap: pretty; }
-.empty ul { margin: 2px 0 0; padding-left: 18px; color: var(--mute); display: grid; gap: 3px; font-size: 13px; }
-.empty .stage { position: static; background: var(--fill); font-size: 11.5px; font-weight: 500; color: var(--mute); border-radius: 6px; padding: 0 7px; line-height: 20px; }
 
 /* ---------- Dialogs are sheets; the search; the toast ---------- */
 dialog { border: 0; border-radius: 20px; padding: 0; width: min(640px, calc(100vw - 32px)); max-height: calc(100vh - 32px); background: var(--panel); color: var(--ink); box-shadow: var(--shadow); overflow: hidden; }
@@ -432,7 +424,7 @@ body.start.setup #log { padding: 30px 40px 22px; }
 .result .swatch { width: 10px; height: 10px; border-radius: 50%; background: var(--hit); box-shadow: 0 0 0 3px var(--panel), 0 0 0 4px var(--line2); flex: none; margin: 0 4px; }
 .result .text { display: grid; gap: 1px; min-width: 0; flex: 1 1 auto; }
 .result .text b { font-weight: 600; font-size: 13.5px; line-height: 19px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.result .where { font-size: 12px; line-height: 17px; color: var(--mute); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.result .where { font-size: 12px; line-height: 17px; color: var(--mute); overflow-wrap: anywhere; }
 .result .where .bad { color: var(--bad); } .result .where .warn { color: var(--wait-ink); }
 .result .acts { display: flex; gap: 6px; flex: none; }
 /* A decision: the one loud thing in the panel */

@@ -3,7 +3,7 @@
 // the sheet beside the panel. Notes are your own files: "Mark reviewed" is
 // your decision, and once reviewed your assistant can no longer change the
 // note.
-import { h, el, invoke, button, pageHead, tabs, showError, when, plural, emptyState, coming, toast, openSide, closeSide } from "../core.js";
+import { h, el, invoke, button, pageHead, tabs, showError, when, plural, emptyState, toast, openSide, closeSide } from "../core.js";
 
 const go = (hash) => { location.hash = hash; };
 

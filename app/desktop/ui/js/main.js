@@ -1,7 +1,7 @@
 // The main window: the four places, the router, Ctrl+K search, the
 // settings sheet, and the polling that keeps counts fresh. Pages live in
 // pages/*.js and draw inside the panel; a session's map shows behind it.
-import { $, h, icon, logo, iconButton, invoke, store, applyTheme, toast, closeSide, layoutChanged } from "./core.js";
+import { $, h, icon, logo, iconButton, invoke, store, applyTheme, closeSide, layoutChanged } from "./core.js";
 import * as chats from "./pages/chats.js";
 import * as documents from "./pages/documents.js";
 import * as connections from "./pages/connections.js";
@@ -35,7 +35,7 @@ const GOTO = [
   ["Data", "#/data", "Place"], ["Datasets", "#/data/datasets", "Data"], ["Notes", "#/documents", "Data"],
   ["Organization's pack", "#/documents/pack", "Data"], ["Note proposals", "#/documents/proposals", "Data"], ["Import a document", "#/documents/import", "Data"],
   ["Data groups", "#/datagroups", "Data"], ["Map layers", "#/data/maplayers", "Data"], ["Project databases", "#/data/projectdbs", "Data"],
-  ["Accounts and services", "#/data/accounts", "Data"], ["Registry: open data and GIS tools", "#/registry", "Data"],
+  ["Registry: open data and GIS tools", "#/registry", "Data"],
   ["Workflows", "#/workflows", "Place"], ["Tools", "#/tools", "Workflows"], ["Skills", "#/skills", "Workflows"],
   ["Activity", "#/activity", "Place"], ["History (the audit log)", "#/activity/audit", "Activity"], ["Exports", "#/activity/exports", "Activity"],
   ["Settings", "#/settings", "Settings"], ...settings.SECTIONS.map(([k, t]) => [t, `#/settings/${k}`, "Settings"]),

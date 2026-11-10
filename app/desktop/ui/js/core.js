@@ -340,17 +340,6 @@ export function tabs(items, current, label) {
   return nav;
 }
 
-/** An honest "coming" state: what the page will do, and that it is not built yet. */
-export function coming(iconName, title, what, items = [], stage = "") {
-  const box = h("section", { class: "empty", "aria-label": title });
-  const ico = icon(iconName);
-  ico.classList.add("ico");
-  box.append(ico, h("h2", {}, title), h("p", {}, what));
-  if (items.length) box.append(h("ul", {}, ...items.map((i) => h("li", {}, i))));
-  box.append(h("span", { class: "stage" }, stage || "Coming: not built yet"));
-  return box;
-}
-
 export function emptyState(title, text, ...actions) {
   return h("section", { class: "empty" }, h("h2", {}, title), h("p", {}, text), actions.length ? h("div", { class: "row wrap" }, ...actions) : null);
 }

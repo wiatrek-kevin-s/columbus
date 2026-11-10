@@ -145,10 +145,7 @@ async function ai(body) {
       h("div", { class: "bd stack" },
         h("p", { class: "small muted" }, "The chat uses an Anthropic API key, billed by Anthropic per use, separately from a Claude subscription. Create one at console.anthropic.com. It is kept in your computer's credential store, never in a file, and this window can set or remove it but never read it back."),
         keyForm, prefs)),
-    h("section", { class: "card" }, sec("Work account", null, h("span", { class: "badge mute more" }, "Coming")),
-      h("div", { class: "bd" }, h("p", { class: "small muted" }, "GitHub Copilot, ChatGPT Enterprise, Azure OpenAI or a company AI gateway, signed in with your work identity and pre-filled by your organization's org.json."))),
-    h("section", { class: "card" }, sec("Agent app", null, h("span", { class: "badge mute more" }, "Coming")),
-      h("div", { class: "bd" }, h("p", { class: "small muted" }, "Claude Code, Gemini CLI, GitHub Copilot CLI or Codex as the chat's brain, with Columbus's tools and their own file and shell tools turned off. Today you can already use Columbus from Claude desktop and other AI apps directly; their sessions show under Chats."))));
+    h("p", { class: "small muted" }, "You can also use Columbus from Claude desktop and other AI apps directly, without a key here; their sessions show under Chats."));
 
   const load = async () => {
     const s = await invoke("chat_settings");

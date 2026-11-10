@@ -821,7 +821,7 @@ function buildLive() {
     store.set("chatstate", "asked");
     try {
       await invoke("chat_send", { text: t });
-      if (!title.dataset.set) { title.textContent = t.length > 70 ? `${t.slice(0, 70)}…` : t; title.dataset.set = "1"; }
+      if (!title.dataset.set) { title.textContent = t.length > 70 ? `${t.slice(0, 70)}…` : t; title.title = t; title.dataset.set = "1"; }
       refreshFns && refreshFns.chats();
     } catch (err) {
       log.append(el("div", "error", String(err)));
@@ -962,6 +962,7 @@ async function newChat(project = null, run = null) {
   live.log.replaceChildren();
   live.renderer = new Renderer(live.log, true, (id) => live.map.files(id));
   $("chat-title").textContent = "New chat";
+  $("chat-title").removeAttribute("title");
   delete $("chat-title").dataset.set;
   $("text").placeholder = "What do you want to know?";
   $("text").value = "";
@@ -1206,6 +1207,7 @@ async function showSaved(main, id) {
     const meta = lines.find((l) => l.kind === "meta") || {};
     const s = store.chats.find((c) => c.id === id);
     title.textContent = s ? s.title : "Chat";
+    title.title = title.textContent;
     sub.replaceChildren(...(meta.project ? [h("a", { href: `#/projects/${encodeURIComponent(meta.project)}` }, projectName(meta.project)), " · "] : []), when(lines[0]?.ts));
     const r = new Renderer(logEl, false, (pid) => map.files(pid));
     for (const l of lines) r.event(l);

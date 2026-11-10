@@ -1,7 +1,7 @@
 // Tools: the person's own tools (ported from the Settings window), each
 // read in full before it is installed, which is confirmed at the keyboard
 // in the app's own code; and the Skills library, read only.
-import { $, h, el, invoke, store, button, pageHead, sec, showError, when, numbered, emptyState, coming } from "../core.js";
+import { $, h, el, invoke, store, button, pageHead, sec, showError, when, numbered, emptyState } from "../core.js";
 import { switchRow } from "./settings.js";
 import { shareOut, shareIn, importedText, teamLibrary } from "./share.js";
 
@@ -258,6 +258,4 @@ export async function renderSkills(main) {
     ul.append(li);
   }
   body.append(h("section", { class: "card" }, sec("Built in, read only", r.skills.length), h("div", { class: "bd flush" }, ul)), h("p", { class: "small muted wrap-any" }, from));
-  body.append(coming("skills", "Organization and imported skills",
-    "Skills IT installs for your organization (district rules, for example) and skills you import from a file or GitHub, each with an on/off switch and marked \"not checked\" until their tool names match this server.", [], "Coming in a later stage"));
 }

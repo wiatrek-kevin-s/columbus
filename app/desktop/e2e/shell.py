@@ -129,9 +129,19 @@ def main():
     exporter = None
     try:
         wait = WebDriverWait(d, 30)
+        step("Nothing is set up for the app's own chat: the first run stands in for the question")
+        guard.ready(d, wait)
+        wait.until(lambda drv: drv.find_elements(By.ID, "first-steps"))
+        first = text(d, "#first-steps")
+        assert "Start with your data." in first and "Connect an AI for the chat" in first, first
+        assert "Your first connection is added" in first, first
+        assert not d.find_element(By.ID, "text").is_displayed(), "no question to ask before an AI is connected"
+        d.save_screenshot(str(OUT / "shell-first-run.png"))
+        click(d, By.ID, "fr-skip")
         step("The app opens on a question: a new chat, its panel in the middle")
         wait.until(EC.visibility_of_element_located((By.ID, "text")))
         wait.until(lambda drv: drv.execute_script("return document.body.classList.contains('start')"))
+        wait.until(lambda drv: drv.execute_script("return document.activeElement && document.activeElement.id") == "text")
         assert d.execute_script("return document.activeElement && document.activeElement.id") == "text", "the question has the focus"
         main_window = d.current_window_handle
         d.save_screenshot(str(OUT / "shell-start.png"))
@@ -150,10 +160,9 @@ def main():
         inside(d, wait, "#/registry", "Registry")
         wait.until(lambda drv: drv.find_elements(By.ID, "rg-q"))
         back(d, wait, "Data")
-        step("A part with no backend says it is coming")
-        inside(d, wait, "#/data/accounts", "Accounts and services")
-        wait.until(lambda drv: "Coming" in text(drv, "main"))
-        back(d, wait, "Data")
+        step("Nothing unbuilt is offered: no part of Data says it is coming")
+        assert "oming" not in text(d, "#page-host"), text(d, "#page-host")
+        assert not d.find_elements(By.CSS_SELECTOR, "#main a[href='#/data/accounts']")
         step("Notes: the organization's pack, proposals and import are tabs of it")
         inside(d, wait, "#/documents", "Notes")
         click(d, By.CSS_SELECTOR, "#main nav.tabs a[href='#/documents/import']")
