@@ -24,7 +24,7 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/hero-dark.png">
-    <img src="docs/images/hero-light.png" width="900" alt="Part of the Columbus app. On the right, the chat: the analyst asked which fatal crashes from 2020 to 2023 happened within 150 feet of IH 35 in central Austin, and the answer reads: 36 of the 122 fatal crashes were within 150 feet of IH 35, taking 39 lives, with a table of crashes and deaths by year. On the left, the layers the assistant made, each marked Checks passed, above a street map of central Austin with the IH 35 corridor and the 36 counted crashes highlighted.">
+    <img src="docs/images/hero-light.png" width="900" alt="The Columbus app. A street map of central Austin fills the window, with the IH 35 corridor and the 36 counted crashes highlighted. A panel on the left holds the chat about which fatal crashes from 2020 to 2023 happened within 150 feet of IH 35 in central Austin. The answer reads: 36 of the 122 fatal crashes were within 150 feet of IH 35, taking 39 lives, with a table of crashes and deaths by year.">
   </picture>
   <br><sub>A real question about public Austin crash data, answered in the app. Each layer is checked, and the map shows what was counted.</sub>
 </p>
@@ -43,7 +43,7 @@
 <p align="center">
   <picture>
     <source type="image/webp" srcset="docs/images/demo.webp">
-    <img src="docs/images/demo.gif" width="900" alt="A short animation of the Columbus app. It opens on the finished answer: a table of fatal crashes by year beside a map of the IH 35 corridor with the counted crashes highlighted. Then it replays how it got there: the analyst types the question; the assistant reads two layers, which appear on the map; the checks pass and it answers with a table; asked to export, Columbus shows a request with exactly what will be written and where; the analyst allows it once and the export is done.">
+    <img src="docs/images/demo.gif" width="900" alt="A short animation of the Columbus app. It opens on the finished answer: a table of fatal crashes by year in the chat's panel, on a map of the IH 35 corridor with the counted crashes highlighted. Then it replays how it got there: the analyst types the question; the assistant reads two layers, which appear on the map; the checks pass and it answers with a table; asked to export, Columbus shows a request with exactly what will be written and where; the analyst allows it once and the export is done.">
   </picture>
   <br><sub>Ask, read, map, check. The export waits until you allow it.</sub>
 </p>
@@ -65,8 +65,8 @@ Your AI app never touches your data. It asks Columbus for each step, and Columbu
 
 1. **Download** the [latest release](https://github.com/wiatrek-kevin-s/columbus/releases/latest): the Columbus app, the Claude desktop extension and the server folder.
 2. **Set up Columbus's Python** once, from the server folder: `sh engine/setup-engine.sh` on a Mac, `engine\setup-engine.ps1` on Windows. It installs the GIS tools Columbus uses.
-3. **Connect an AI.** Install the extension in Claude desktop, or add your Anthropic API key in the app under **Settings › Models and accounts**.
-4. **Add a connection and ask.** In the app, **Connections › Add connection** (a GeoPackage or a file geodatabase is the quickest start). Then ask, for example: *Check the parcels layer for invalid geometries and show me where they are.*
+3. **Connect an AI.** Install the extension in Claude desktop, or add your Anthropic API key in the app under **Settings › Assistant**.
+4. **Add your data and ask.** In the app, **Data › Add data** (a GeoPackage or a file geodatabase is the quickest start). Then ask, for example: *Check the parcels layer for invalid geometries and show me where they are.*
 
 Step by step: [Windows](docs/install.md) · [Mac](docs/install-macos.md). The app is not code-signed yet, so Windows and macOS warn the first time; the guides say what to do.
 
@@ -74,12 +74,12 @@ Step by step: [Windows](docs/install.md) · [Mac](docs/install-macos.md). The ap
 
 <table>
   <tr>
-    <td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/tour-connections-dark.png"><img src="docs/images/tour-connections-light.png" alt="The Connections page listing an Oracle enterprise geodatabase, a file geodatabase, a folder of crash records, a GeoPackage of streets and an ArcGIS Online layer, each read only, with what the assistant may see in plain words."></picture><br><b>Connections.</b> What the AI may see, in plain words.</td>
-    <td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/tour-approval-dark.png"><img src="docs/images/tour-approval-light.png" alt="An export request in the chat, showing the layer, the folder and the file it will write, with Allow once and Deny buttons."></picture><br><b>Approvals.</b> What an export will write, and where.</td>
+    <td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/tour-connections-dark.png"><img src="docs/images/tour-connections-light.png" alt="The Data place, in the panel on the left: what the assistant can reach, one row each for an Oracle enterprise geodatabase, a file geodatabase, a folder of crash records, a GeoPackage of streets and an ArcGIS Online layer, each read only with the rule that matters; under them, where results can go."></picture><br><b>Data.</b> What the AI may reach, in plain words.</td>
+    <td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/tour-approval-dark.png"><img src="docs/images/tour-approval-light.png" alt="A request in the chat that says Columbus needs your OK: an export, with the layer, the folder and the file it will write, and Allow once and Decline buttons."></picture><br><b>Approvals.</b> What an export will write, and where.</td>
   </tr>
   <tr>
-    <td><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/tour-workflow-run-dark.png"><img src="docs/images/tour-workflow-run-light.png" alt="The Workflows page with a weekly crash check and the report of its last run: steps, row counts, checks and the exported files."></picture><br><b>Workflows.</b> Repeated jobs, with a report each run.</td>
-    <td><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/tour-checks-dark.png"><img src="docs/images/tour-checks-light.png" alt="The map in front, with a layer's details open: its checks, the datasets it was made from and its provenance record."></picture><br><b>Checks and provenance.</b> What each result was made from.</td>
+    <td><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/tour-workflow-run-dark.png"><img src="docs/images/tour-workflow-run-light.png" alt="Under Workflows, the report of a weekly crash check's last run, on its own page: steps, row counts, checks and the exported files."></picture><br><b>Workflows.</b> Repeated jobs, with a report each run.</td>
+    <td><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/tour-checks-dark.png"><img src="docs/images/tour-checks-light.png" alt="The chat with a result's How it was made open in a sheet beside the panel: its checks, the datasets it was made from and its full record."></picture><br><b>How it was made.</b> Each result's checks, and what it was made from.</td>
   </tr>
 </table>
 

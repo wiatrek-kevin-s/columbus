@@ -217,6 +217,15 @@ export function describe(name, input) {
     case "propose_edits": return `Proposing edits${conn}`;
     case "apply_edits": return `Applying approved edits${conn}`;
     case "settings.test_connection": return `Connection test from the app${conn}`;
+    case "settings.draft_notes": return `Drafting notes from the app${conn}`;
+    case "settings.reload": return "Settings changed: read again";
+    case "window_layer": return "Showing a layer on the map";
+    case "window_rows": return "Showing rows in the table";
+    case "project_db": return "Using a project database";
+    case "open_run": return "Opening a workflow run in a chat";
+    case "email_report": return "Emailing a workflow's report";
+    case "workflow_review": return "Reviewing a workflow's results";
+    case "org_install_tool": return "Installing an organization tool";
     default: return `Running ${q(name)}`;
   }
 }
@@ -337,7 +346,6 @@ class Renderer {
           const img = h("img", { class: "snapshot", alt: "The map picture the assistant looked at" });
           img.src = e.image;
           li.insertBefore(h("figure", { class: "snapshot" }, img, h("figcaption", { class: "small muted" }, "What the assistant saw (geometry only, no basemap)")), s.raw || null);
-          g.details.open = true;
         }
         if (e.fails) li.insertBefore(el("span", "bad", `${e.fails} check${e.fails > 1 ? "s" : ""} failed`), s.raw || null);
         if (e.warns) li.insertBefore(el("span", "warn", `${e.warns} to review`), s.raw || null);
@@ -421,6 +429,8 @@ function resultName(e, input) {
   const i = input || {};
   if (typeof i.name === "string" && i.name) return i.name;
   if (typeof i.dataset === "string" && i.dataset) return i.dataset;
+  // A processing step is named for what it did: "Clip", "Buffer".
+  if (typeof i.op === "string" && i.op) return `${i.op[0].toUpperCase()}${i.op.slice(1).replace(/_/g, " ")}`;
   const stem = String(e.handle || "").split("/").pop().replace(/\.[A-Za-z0-9]+$/, "").replace(/-p?_?[0-9a-f]{6,}$/, "");
   return stem || describe(e.name, i);
 }
