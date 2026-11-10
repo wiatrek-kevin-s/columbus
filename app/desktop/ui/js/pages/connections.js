@@ -41,6 +41,14 @@ function confirmNote() {
     : `Changes that give your assistant more access (a new connection, read and write, more datasets, a changed row filter) ask for ${state.confirm_with} first. Your assistant cannot change anything here.`;
 }
 
+// The same, in a line, for the foot of a connection's page.
+function confirmShort() {
+  if (!state) return "Loosening a rule asks you to confirm first.";
+  return state.confirm_with === "not available on this system"
+    ? "Here, loosening a rule is done in the settings files: there is no Touch ID or Windows Hello to confirm it."
+    : `Loosening a rule asks for ${state.confirm_with} first. Your assistant cannot change these.`;
+}
+
 const BACK = { href: "#/data", label: "Data" };
 const FILE_KINDS = ["gpkg", "sqlite", "rasters", "shapefile", "filegdb", "files"];
 const connHash = (id) => `#/data/c/${encodeURIComponent(id)}`;
@@ -221,7 +229,7 @@ async function source(page, scroll, body, id) {
   // Its datasets with notes, drawn apart: they change when notes are drafted.
   const notesBox = h("div", { class: "stack" });
   const head = h("div", {});
-  const foot = h("div", { class: "footline" }, icon("lock"), h("span", { class: "grow", id: "confirm-note" }, confirmNote()));
+  const foot = h("div", { class: "footline" }, icon("lock"), h("span", { class: "grow", id: "confirm-note" }, confirmShort()));
   page.append(head, scroll, foot);
   body.append(notice, error, box, notesBox);
   let notes = null;
@@ -250,7 +258,8 @@ async function source(page, scroll, body, id) {
   const draw = () => {
     const c = state.connections.find((x) => x.id === id);
     head.replaceChildren(pageHead(c ? c.id : "Connection", null, [], BACK));
-    $("confirm-note").textContent = confirmNote();
+    $("confirm-note").textContent = confirmShort();
+    $("confirm-note").title = confirmNote();
     box.replaceChildren();
     if (!c) { box.append(emptyState("Not found", "This connection isn't here any more (it may have been removed).")); return; }
     const rw = c.mode === "read-write";

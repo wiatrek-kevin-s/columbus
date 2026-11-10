@@ -212,8 +212,15 @@ def main():
         # is the system's).
         assert d.find_element(By.ID, "wf-open-shared").is_displayed()
 
+        step("The list says when it runs; its own page says so in a sentence")
+        row = d.execute_script("return document.querySelector(\"#wf-installed li[data-id='tract-export']\").textContent")
+        assert "weekdays at 06:00" in row and "not run yet" in row, row
+        assert "Runs by itself" in text(d, "wf-installed")
+        click(d, By.XPATH, "//ul[@id='wf-installed']/li[@data-id='tract-export']//a")
+        wait.until(EC.element_to_be_clickable((By.ID, "wf-run-now")))
+        assert "Weekdays at 06:00." in text(d, "main"), text(d, "main")
         step("Run now: the real server runs it, and its report shows")
-        click(d, By.XPATH, "//ul[@id='wf-installed']/li[@data-id='tract-export']//button[normalize-space()='Run now']")
+        click(d, By.ID, "wf-run-now")
         try:
             WebDriverWait(d, 120).until(lambda drv: drv.find_elements(By.ID, "wf-report") and "Succeeded" in text(drv, "wf-report"))
         except Exception:
@@ -232,11 +239,11 @@ def main():
         click(d, By.ID, "wf-open-chat")
         WebDriverWait(d, 30).until(EC.presence_of_element_located((By.ID, "chat-run-note")))
         try:
-            frame = WebDriverWait(d, 90).until(EC.presence_of_element_located((By.CSS_SELECTOR, "#chatview .outpanel iframe")))
+            frame = WebDriverWait(d, 90).until(EC.presence_of_element_located((By.CSS_SELECTOR, "#stage iframe")))
         except Exception:
             d.save_screenshot(str(OUT / "workflows-open-failed.png"))
             raise SystemExit("the chat did not open with the run: " + d.execute_script(
-                "return (document.getElementById('log')||{}).textContent + ' | ' + ((document.querySelector('#chatview .outpanel')||{}).textContent || '')"))
+                "return (document.getElementById('log')||{}).textContent + ' | ' + ((document.getElementById('stage')||{}).textContent || '')"))
         assert "Tract export run" in text(d, "chat-sub"), text(d, "chat-sub")
         d.switch_to.frame(frame)
         try:
@@ -290,7 +297,8 @@ def main():
 
         step("Removing it, from its own page: off, its runs kept")
         click(d, By.XPATH, "//ul[@id='wf-installed']/li[@data-id='tract-export']//a")
-        step("Share is offered for an approved workflow")
+        step("Share is offered for an approved workflow, under More")
+        wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "#main .wf-more"))).click()
         assert wait.until(EC.presence_of_element_located((By.ID, "wf-share"))).is_enabled()
         wait.until(EC.element_to_be_clickable((By.ID, "wf-remove"))).click()
         wait.until(lambda drv: drv.find_elements(By.ID, "wf-installed") and "Tract export" not in text(drv, "wf-installed"))

@@ -86,7 +86,11 @@ def main():
 
         step("A chat in the project says so")
         wait.until(EC.element_to_be_clickable((By.ID, "pj-chat"))).click()
-        wait.until(lambda drv: "Tract review 2027" in text(drv, "chat-sub"))
+        # Under the message box, the new chat's project is this one (it can
+        # still be changed until the first message).
+        wait.until(lambda drv: drv.execute_script(
+            "const s = document.getElementById('chat-project-pick'); return s ? [s.value, s.selectedOptions[0].textContent] : null") == ["tract-review-2027", "Tract review 2027"])
+        assert "Tract review 2027" in text(d, "chat-sub")
 
         step("The list shows it, with its connections")
         d.execute_script("location.hash = '#/projects'")

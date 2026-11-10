@@ -996,15 +996,18 @@ async function emptyChat() {
       c.server_older ? `The Columbus server this chat uses is version ${c.server_version}, older than this app (${c.app_version}), so the map and newer tools may not work. ` : "The GIS engine was not found, so tools that read data will fail. ",
       h("a", { href: "#/settings/ai" }, "See Settings › Assistant"), ".")));
   }
+  // Nothing set up yet: the first run stands in for the question.
+  document.body.classList.toggle("setup", !!s.needsSetup);
+  if (s.needsSetup) {
+    box.append(firstSteps(s, () => emptyChat()));
+    return;
+  }
   if (c && (!c.has_key || !c.server_found)) {
     box.append(h("div", { class: "notice warn" }, h("div", {},
       !c.has_key ? "No AI is connected yet. " : "Columbus's server was not found. ",
-      h("a", { href: "#/settings/ai" }, "Set it up in Settings › Assistant"), s.needsSetup ? ", or follow the first steps below." : ".")));
+      h("a", { href: "#/settings/ai" }, "Set it up in Settings › Assistant"), ".")));
   }
-  if (s.needsSetup) {
-    box.append(firstSteps(s, () => emptyChat()),
-      h("p", { class: "small muted" }, "Your assistant works through Columbus: it sees only what your connections allow, every result is checked, and anything that changes data or leaves this computer asks you first."));
-  }
+  if (document.activeElement === document.body) $("text")?.focus();
   const ids = s.st ? s.st.connections.filter((x) => x.id).map((x) => x.id) : [];
   const prompts = ids.length
     ? [`Which datasets can I use on ${ids[0]}, and what CRS are they in?`,

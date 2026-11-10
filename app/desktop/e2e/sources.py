@@ -124,7 +124,7 @@ def session(root, confirm):
     d, proc = guard.driver(env, APP)
     wait = WebDriverWait(d, 60)
     guard.ready(d, wait)
-    nav(d, wait, "#/connections", "add")
+    nav(d, wait, "#/data", "add")
     return d, proc, wait
 
 
@@ -169,14 +169,29 @@ def test_says(d, wait, *words):
 
 
 def new_connection(d, wait, kind, conn_id):
+    nav(d, wait, "#/data", "add")
     d.find_element(By.ID, "add").click()
     wait.until(EC.visibility_of_element_located((By.NAME, "conn_id")))
     choose(d, "kind", kind)
     fill(d, "conn_id", conn_id)
 
 
-def row_button(d, conn_id, label):
-    return d.find_element(By.XPATH, f"//ul[@id='connections']/li[.//b[normalize-space()='{conn_id}']]//button[normalize-space()='{label}']")
+def open_source(d, wait, conn_id):
+    """A connection's own page, from its row on Data."""
+    nav(d, wait, "#/data", "add")
+    wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, f"#connections li[data-id='{conn_id}'] a")))
+    click(d, By.CSS_SELECTOR, f"#connections li[data-id='{conn_id}'] a")
+    wait.until(lambda drv: drv.find_elements(By.ID, "source-edit") and text(drv, "page-title") == conn_id)
+    time.sleep(0.3)
+
+
+def page_button(d, label):
+    """A button on the connection's page that is open."""
+    return d.find_element(By.XPATH, f"//*[@id='source']//button[normalize-space()='{label}']")
+
+
+# The words a connection's page says after Draft notes or Sign in.
+STATUS = "//*[@id='source']//span[contains(@class, 'draft-status')]"
 
 
 def portal_log(base):
@@ -261,10 +276,12 @@ def main():
         assert c["type"] == "files" and c["path"] == str(drops) and c["mode"] == "read", c
         assert c["recursive"] is True and c["crs"] == "EPSG:3081" and (c["x"], c["y"]) == ("EASTING", "NORTHING"), c
         wait.until(lambda drv: "drops" in text(drv, "connections"))
-        assert "With subfolders" in text(d, "connections")
+        assert "Folder of files" in text(d, "connections") and "read only" in text(d, "connections"), text(d, "connections")
+        open_source(d, wait, "drops")
+        assert "With subfolders" in text(d, "source") and "EPSG:3081" in text(d, "source"), text(d, "source")
         # Editing keeps recursive, crs, x and y (T-2's loose end).
         step("files: edit again")
-        row_button(d, "drops", "Edit").click()
+        click(d, By.ID, "source-edit")
         wait.until(EC.visibility_of_element_located((By.NAME, "crs")))
         assert d.execute_script("return document.querySelector('[name=recursive]').checked")
         assert d.find_element(By.NAME, "crs").get_attribute("value") == "EPSG:3081"
@@ -288,8 +305,11 @@ def main():
         wait.until(lambda drv: (root / "connections" / "assets.yaml").exists())
         c = yaml.safe_load((root / "connections" / "assets.yaml").read_text())
         assert c["type"] == "arcgis" and c["url"] == public and "auth" not in c and "path" not in c, c
-        wait.until(lambda drv: "Public (no sign-in)" in text(drv, "connections"))
-        assert not d.find_elements(By.XPATH, "//ul[@id='connections']/li[.//b[normalize-space()='assets']]//button[normalize-space()='Sign in']")
+        wait.until(lambda drv: "assets" in text(drv, "connections"))
+        open_source(d, wait, "assets")
+        assert "Public (no sign-in)" in text(d, "source"), text(d, "source")
+        assert not d.find_elements(By.XPATH, "//*[@id='source']//button[normalize-space()='Sign in']")
+        assert not d.find_elements(By.XPATH, "//*[@id='source']//button[normalize-space()='Draft notes']"), "drafted notes don't apply to a service"
 
         # ---- A service that does not answer: the plain R-14 message. ----
         step("arcgis: a service that does not answer")
@@ -315,13 +335,15 @@ def main():
         wait.until(lambda drv: (root / "connections" / "secure.yaml").exists())
         c = yaml.safe_load((root / "connections" / "secure.yaml").read_text())
         assert c["auth"] == {"type": "oauth", "portal": base, "client_id": "FakeClientId123"} and c["page_size"] == 500, c
-        wait.until(lambda drv: "Signs in at" in text(drv, "connections"))
+        wait.until(lambda drv: "secure" in text(drv, "connections"))
+        open_source(d, wait, "secure")
+        assert "Signs in at" in text(d, "source"), text(d, "source")
         assert authorize_requests(base) == []
         step("arcgis: Sign in, through the stand-in browser")
-        btn = row_button(d, "secure", "Sign in")
+        btn = page_button(d, "Sign in")
         d.execute_script("arguments[0].scrollIntoView({block: 'center'})", btn)
         btn.click()
-        status = "//ul[@id='connections']/li[.//b[normalize-space()='secure']]//span[contains(@class, 'draft-status')]"
+        status = STATUS
         try:
             WebDriverWait(d, 90).until(lambda drv: "Signed in" in drv.find_element(By.XPATH, status).text
                                        or "error-text" in drv.find_element(By.XPATH, status).get_attribute("class"))
@@ -339,8 +361,12 @@ def main():
         assert (root / "secrets" / "COLUMBUS_SECRET_ARCGIS_SECURE").exists(), list((root / "secrets").iterdir())
         assert MARK not in d.page_source
         # Signed in, the service tests.
-        step("arcgis: the signed-in service tests")
-        row_button(d, "secure", "Edit").click()
+        step("arcgis: the signed-in service tests, on its page and in its editor")
+        click(d, By.ID, "source-test-btn")
+        wait.until(lambda drv: drv.find_element(By.ID, "source-test").is_displayed() and "Testing" not in drv.find_element(By.ID, "source-test-btn").text)
+        said = d.find_element(By.ID, "source-test").text
+        assert "Opened" in said and "Assets" in said and MARK not in said, said
+        click(d, By.ID, "source-edit")
         wait.until(EC.visibility_of_element_located((By.NAME, "portal")))
         test_says(d, wait, "Opened", "Assets")
         click(d, By.ID, "cancel")
@@ -417,11 +443,11 @@ def main():
     try:
         step("denied: Sign in")
         before = len(authorize_requests(base))
-        btn = row_button(d, "secure", "Sign in")
+        open_source(d, wait, "secure")
+        btn = page_button(d, "Sign in")
         d.execute_script("arguments[0].scrollIntoView({block: 'center'})", btn)
         btn.click()
-        status = "//ul[@id='connections']/li[.//b[normalize-space()='secure']]//span[contains(@class, 'draft-status')]"
-        wait.until(lambda drv: "not confirmed" in drv.find_element(By.XPATH, status).text)
+        wait.until(lambda drv: "not confirmed" in drv.find_element(By.XPATH, STATUS).text)
         assert len(authorize_requests(base)) == before, "no sign-in page without confirmation"
         step("denied: save a connection")
         new_connection(d, wait, "arcgis", "assets2")

@@ -98,7 +98,9 @@ def main():
         wait.until(lambda drv: "used by Tract work" in text(drv, "dg-list"))
         d.save_screenshot(str(OUT / "datagroups-list.png"))
         click(d, By.XPATH, "//ul[@id='dg-list']/li[@data-id='texas-tracts']//a")
-        wait.until(EC.element_to_be_clickable((By.ID, "dg-delete"))).click()
+        # (Below the fold in the panel: scrolled into view, then clicked.)
+        wait.until(EC.presence_of_element_located((By.ID, "dg-delete")))
+        click(d, By.ID, "dg-delete")
         wait.until(EC.element_to_be_clickable((By.XPATH, "//dialog//button[normalize-space()='Delete data group']"))).click()
         wait.until(lambda drv: drv.execute_script("return location.hash") == "#/datagroups")
         assert not f.exists(), "the group's file is removed"

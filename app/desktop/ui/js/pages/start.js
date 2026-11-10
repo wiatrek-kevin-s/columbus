@@ -1,7 +1,7 @@
 // What a new chat shows before anything is asked: the first steps when
 // nothing is set up, and what changed that the person should know. (Home's
 // parts, moved here: the app opens on a question now.)
-import { h, invoke, store, button, savePrefs, showError } from "../core.js";
+import { h, icon, invoke, store, button, savePrefs, showError } from "../core.js";
 import { openEditor } from "./connections.js";
 
 const STEPS = ["ai", "engine", "connection"];
@@ -37,51 +37,56 @@ export function notices(st) {
   return out;
 }
 
-/** The first steps, every one skippable (design 5.1). `again` draws the
- * start afresh after a step is done or skipped. */
+/** The first run: start with your data, and two checks under it (an AI for
+ * the chat, the GIS engine). Every step can be skipped (design 5.1).
+ * `again` draws the start afresh after a step is done or skipped. */
 export function firstSteps(s, again) {
   const { done, skipped, chat, engine } = s;
-  const card = h("section", { class: "card", id: "first-steps", "aria-labelledby": "h-setup" });
-  card.append(h("div", { class: "hd" }, h("h2", { id: "h-setup" }, "Welcome to Columbus: first steps"),
-    button("Skip setup", "sm ghost more", async () => { await savePrefs({ setup_done: true }); again(); })));
-  const ol = h("ol", { class: "steps-list" });
-  const skip = (k) => button("Skip", "sm", async () => { await savePrefs({ skipped: [...new Set([...(store.prefs.skipped || []), k])] }); again(); });
-  const state = (k) => (done[k] ? "done" : skipped.has(k) ? "skipped" : "");
+  const box = h("section", { class: "welcome", id: "first-steps", "aria-labelledby": "h-setup" });
+  const skip = (k) => button("Skip", "ghost sm", async () => { await savePrefs({ skipped: [...new Set([...(store.prefs.skipped || []), k])] }); again(); });
+  const mark = (k) => h("span", { class: done[k] ? "check done" : skipped.has(k) ? "check skipped" : "check", "aria-hidden": "true" }, done[k] ? icon("check") : null);
 
-  // 1. Connect an AI (run by the app itself: no AI is connected yet).
-  const err1 = h("p", { class: "error-text", role: "alert", hidden: true });
-  const key = h("input", { type: "password", id: "fr-key", autocomplete: "off", spellcheck: "false", placeholder: "sk-ant-…", "aria-label": "Anthropic API key", class: "grow" });
-  const s1 = h("div", { class: "body" }, h("h3", {}, "Connect an AI"),
-    h("p", { class: "small muted" }, "The app's chat uses an Anthropic API key, billed by Anthropic per use (separately from a Claude subscription). It is kept in your computer's credential store, never in a file, and this app can never read it back. Work accounts and agent apps come later. You can also keep using Columbus from Claude desktop without this."));
-  if (done.ai) s1.append(h("p", { class: "small" }, "Connected. Change it in ", h("a", { href: "#/settings/ai" }, "Settings › Assistant"), "."));
-  else if (chat && chat.has_key && !chat.server_found) s1.append(h("p", { class: "small" }, "A key is saved, but Columbus's server was not found. Set where it is in ", h("a", { href: "#/settings/ai" }, "Settings › Assistant"), "."));
+  // Your data first: a read-only connection, tested before it is saved.
+  box.append(h("h2", { id: "h-setup", class: "hero" }, "Start with your data."),
+    h("p", { class: "lead" }, "Point Columbus at a file, a folder, a database or an ArcGIS layer. You decide what your assistant may do with it before anything is read."));
+  if (done.connection) box.append(h("p", { class: "small" }, "Your first connection is added. See ", h("a", { href: "#/data" }, "Data"), "."));
   else {
-    s1.append(h("form", { class: "row wrap", onsubmit: async (e) => {
-      e.preventDefault();
-      showError(err1, null);
-      try { await invoke("chat_set_key", { key: key.value }); key.value = ""; again(); } catch (x) { showError(err1, x); }
-    } }, key, h("button", { type: "submit", class: "btn primary" }, "Save key"), skip("ai")), err1);
+    box.append(h("div", { class: "row wrap" }, button("Add data", "primary", () => openEditor(null, () => again()), { id: "fr-add" }), skipped.has("connection") ? null : skip("connection")),
+      h("p", { class: "small muted" }, "Test opens it as Columbus would and saves nothing. Adding one asks you to confirm at the keyboard."));
   }
-  ol.append(h("li", { class: state("ai") }, h("span", { class: "n", "aria-hidden": "true" }, done.ai ? "✓" : "1"), s1));
 
-  // 2. The GIS engine: checked, nothing run.
-  const s2 = h("div", { class: "body" }, h("h3", {}, "A ready GIS engine"));
+  const checks = h("ul", { class: "checks" });
+  // An AI for the chat (run by the app itself: no AI is connected yet).
+  const err1 = h("p", { class: "error-text small", role: "alert", hidden: true });
+  const key = h("input", { type: "password", id: "fr-key", autocomplete: "off", spellcheck: "false", placeholder: "sk-ant-…", "aria-label": "Anthropic API key", class: "grow" });
+  const ai = h("div", { class: "text" });
+  if (done.ai) ai.append(h("b", {}, "An AI is connected for the chat."), h("span", { class: "where" }, "Change it in ", h("a", { href: "#/settings/ai" }, "Settings › Assistant"), "."));
+  else if (chat && chat.has_key && !chat.server_found) ai.append(h("b", {}, "A key is saved, but Columbus's server was not found."), h("span", { class: "where" }, "Set where it is in ", h("a", { href: "#/settings/ai" }, "Settings › Assistant"), "."));
+  else {
+    ai.append(h("b", {}, "Connect an AI for the chat"),
+      h("form", { class: "row", onsubmit: async (e) => {
+        e.preventDefault();
+        showError(err1, null);
+        try { await invoke("chat_set_key", { key: key.value }); key.value = ""; again(); } catch (x) { showError(err1, x); }
+      } }, key, h("button", { type: "submit", class: "btn" }, "Save key"), skipped.has("ai") ? null : skip("ai")), err1,
+      h("span", { class: "where" }, "An Anthropic API key, billed by Anthropic per use (separately from a Claude subscription). It is kept in your computer's credential store, never in a file, and this app can never read it back. You can also keep using Columbus from Claude desktop without it."));
+  }
+  checks.append(h("li", {}, mark("ai"), ai));
+
+  // The GIS engine: checked, nothing run.
+  const eng = h("div", { class: "text" });
   if (engine && engine.server_found) {
-    s2.append(h("p", { class: "small" }, `Columbus's server is at ${engine.server}. `, engine.engine_found ? `Its Python engine is at ${engine.engine}.` : "Its Python engine environment was not found beside it: run engine\\setup-engine.ps1 (Windows) or follow the install guide, then check again."));
+    eng.append(h("b", {}, engine.engine_found ? "Found Columbus's server and its Python engine." : "Found Columbus's server, but not its Python engine."),
+      h("span", { class: "where wrap-any" }, engine.engine_found ? `${engine.server} · ${engine.engine}` : "Run engine\\setup-engine.ps1 (Windows) or follow the install guide, then check again."));
+    if (!engine.engine_found) eng.append(h("div", { class: "row" }, button("Check again", "sm", () => again()), skipped.has("engine") ? null : skip("engine")));
   } else {
-    s2.append(h("p", { class: "small muted" }, "Columbus's server (columbus-mcp) was not found in the usual places. Unpack the Columbus folder as the install guide shows, or set where it is in Settings › Assistant."));
+    eng.append(h("b", {}, "Columbus's server was not found"),
+      h("span", { class: "where" }, "Unpack the Columbus folder as the install guide shows, or set where columbus-mcp is in ", h("a", { href: "#/settings/ai" }, "Settings › Assistant"), "."),
+      h("div", { class: "row" }, button("Check again", "sm", () => again()), skipped.has("engine") ? null : skip("engine")));
   }
-  s2.append(h("div", { class: "row wrap" }, button("Check again", "sm", () => again()), done.engine ? null : skip("engine")));
-  ol.append(h("li", { class: state("engine") }, h("span", { class: "n", "aria-hidden": "true" }, done.engine ? "✓" : "2"), s2));
-
-  // 3. A first read-only connection, tested before saving.
-  const s3 = h("div", { class: "body" }, h("h3", {}, "A first read-only connection"),
-    h("p", { class: "small muted" }, "A GeoPackage, a folder of rasters or a database. Test it before saving: Test opens it as Columbus would and saves nothing. Adding one asks you to confirm at the keyboard."));
-  if (!done.connection) s3.append(h("div", { class: "row wrap" }, button("Add a read-only connection", "sm primary", () => openEditor(null, () => again())), skip("connection")));
-  else s3.append(h("p", { class: "small" }, "Done. See ", h("a", { href: "#/data" }, "Data"), "."));
-  ol.append(h("li", { class: state("connection") }, h("span", { class: "n", "aria-hidden": "true" }, done.connection ? "✓" : "3"), s3));
-
-  card.append(h("div", { class: "bd" }, ol));
-  card.append(h("div", { class: "bd" }, h("p", { class: "small muted" }, "Coming later in setup: offering the ArcPy worker when ArcGIS Pro is found, an inventory of the GIS engines installed here, and importing your SOPs.")));
-  return card;
+  checks.append(h("li", {}, mark("engine"), eng));
+  box.append(checks,
+    h("div", { class: "row welcome-foot" }, h("span", { class: "small muted grow" }, "Your assistant sees only what your connections allow; anything that changes data or leaves this computer asks you first."),
+      button("Skip setup", "ghost sm", async () => { await savePrefs({ setup_done: true }); again(); }, { id: "fr-skip" })));
+  return box;
 }
