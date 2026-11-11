@@ -517,7 +517,8 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    const KEY: &str = "sk-test-51Hq8ZpL0vXn3TdRy7WbQe2MfUaKc9Gj";
+    // Made up for these tests: no service ever issued it.
+    const KEY: &str = "tk51Hq8ZpL0vXn3TdRy7WbQe2MfUaKc9Gj4sVhN6";
 
     #[test]
     fn a_key_and_its_long_pieces_are_taken_out_of_text() {
@@ -525,9 +526,9 @@ mod tests {
         let t = scrub(&format!("Incorrect API key provided: {KEY}."), KEY).into_owned();
         assert_eq!(t, format!("Incorrect API key provided: {REMOVED}."));
         // Quoted in part, as services do: the start, stars, the end.
-        let t = scrub("Incorrect API key provided: sk-test-51Hq8Z***************************9Gj. Find yours at the site.", KEY);
+        let t = scrub("Incorrect API key provided: tk51Hq8ZpL0vXn***************************hN6. Find yours at the site.", KEY);
         assert!(
-            !t.contains("sk-test-51Hq8Z") && !t.contains("51Hq8Z"),
+            !t.contains("tk51Hq8ZpL0vXn") && !t.contains("51Hq8Z"),
             "{t}"
         );
         assert!(
@@ -544,8 +545,8 @@ mod tests {
         let t = scrub(&format!("{KEY}{KEY} and {}", &KEY[10..30]), KEY).into_owned();
         assert!(!t.contains("Hq8ZpL0v") && !t.contains(&KEY[10..30]), "{t}");
         // Seven characters are not a long piece; the last four are shown anyway.
-        let t = scrub("ends in c9Gj, starts sk-test", KEY);
-        assert_eq!(t, "ends in c9Gj, starts sk-test");
+        let t = scrub("ends in VhN6, starts tk51Hq8", KEY);
+        assert_eq!(t, "ends in VhN6, starts tk51Hq8");
         // Text beside it keeps its letters, accents included.
         let t = scrub(&format!("clé refusée : {KEY} — voilà"), KEY).into_owned();
         assert_eq!(t, format!("clé refusée : {REMOVED} — voilà"));
