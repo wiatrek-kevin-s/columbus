@@ -54,6 +54,7 @@ mod env_tools;
 mod export_tools;
 mod fetch_tools;
 mod gis_tools;
+mod map_view;
 mod note_suggestions;
 mod notes;
 mod notes_check;

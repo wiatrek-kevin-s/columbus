@@ -75,8 +75,8 @@ each with `id`, `trust`, `status` (`ready`, `changed`, `invalid`), `python_versi
 
 The person can add imagery and other web services (XYZ, WMTS, WMS, ArcGIS map, image and
 feature services) to their map, in the app. These are **display only**: you can't add,
-turn on or read them, they are not workspace layers, `list_outputs` and `map_snapshot`
-don't include them, and `whoami` gives only their titles (`web_layers`). To analyse an
+turn on or read them, they are not workspace layers, `list_outputs`, `map_snapshot` and
+`map_view` don't include them, and `whoami` gives only their titles (`web_layers`). To analyse an
 ArcGIS layer, use an `arcgis` connection. If the person asks you to "add imagery to the
 map", tell them to use **Add web layer** on the map or **Data › Map layers**.
 

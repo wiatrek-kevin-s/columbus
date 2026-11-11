@@ -30,7 +30,9 @@
 //! shows the session's outputs on a map and in a table, and the approvals.
 //! Its data calls (`/api/overview`, `/api/outputs`, `/api/layer`,
 //! `/api/rows`, `/api/provenance/<id>`, `/api/state`) need a session token,
-//! are read-only, and are written to the audit log.
+//! are read-only, and are written to the audit log. With the same token the
+//! page also says what its map shows (`POST /api/view`, see `map_view`):
+//! plain values this server checks, for the assistant to read.
 //!
 //! Two kinds of launch token, and of the session each becomes:
 //! * **Approve:** only ever in an `http://127.0.0.1` link opened in the
@@ -543,6 +545,7 @@ impl ApprovalsPage {
                     .route("/api/layer", get(layer))
                     .route("/api/rows", get(rows))
                     .route("/api/provenance/{id}", get(provenance))
+                    .route("/api/view", post(view_report))
                     .route("/api/web/sources", get(web_sources))
                     .route("/api/web/source/{id}", get(web_source))
                     .route("/api/web/tile/{id}/{z}/{x}/{y}", get(web_tile))
@@ -798,6 +801,10 @@ async fn exchange(
         .lock()
         .expect("sessions")
         .insert(sid.clone(), (now, scope));
+    // A page has signed in: its map will be on show in a moment (`map_view`).
+    if let Some(c) = &s.companion {
+        c.page_opening();
+    }
     json_response(
         StatusCode::OK,
         json!({"token": sid, "idle_minutes": SESSION_IDLE.as_secs() / 60, "scope": scope.as_str()}),
@@ -1231,10 +1238,16 @@ async fn app_view(
         );
     }
     match s.view_token() {
-        Ok(t) => json_response(
-            StatusCode::OK,
-            json!({"url": format!("{}/embed#t={t}", s.origin())}),
-        ),
+        Ok(t) => {
+            // The app is opening its panel on this session's map (`map_view`).
+            if let Some(c) = &s.companion {
+                c.page_opening();
+            }
+            json_response(
+                StatusCode::OK,
+                json!({"url": format!("{}/embed#t={t}", s.origin())}),
+            )
+        }
         Err(e) => status(StatusCode::TOO_MANY_REQUESTS, &e),
     }
 }
@@ -1519,6 +1532,39 @@ async fn provenance(
     }
     match companion(&s) {
         Ok(c) => answer(c.provenance(&id)),
+        Err(r) => *r,
+    }
+}
+
+/// `POST /api/view`: the page says what its map shows (the extent, the
+/// session's layers that are on, the selection), for the assistant's
+/// `map_view`; the answer carries the change the page is to apply, if one
+/// waits. With the page's session token and from the page itself, like a
+/// decision. The token is checked before the body is read; the report is
+/// checked part by part in `map_view`, and one with anything else in it is
+/// refused whole. Reports come every second, so they are not written to
+/// the audit log one by one: each `map_view` call is.
+async fn view_report(State(s): State<Arc<Shared>>, req: axum::extract::Request) -> Response<Body> {
+    let (parts, body) = req.into_parts();
+    let h = &parts.headers;
+    if let Err(r) = guard(h, &s) {
+        return *r;
+    }
+    if !same_origin(h, &s) {
+        return status(StatusCode::FORBIDDEN, "cross-origin request refused");
+    }
+    // The page's session stands for the page, without keeping its token.
+    let page = {
+        use sha2::Digest as _;
+        let d = sha2::Sha256::digest(bearer(h).unwrap_or_default().as_bytes());
+        d.iter().map(|b| format!("{b:02x}")).collect::<String>()
+    };
+    let Ok(body) = axum::body::to_bytes(body, crate::map_view::MAX_REPORT).await else {
+        return status(StatusCode::PAYLOAD_TOO_LARGE, "the report is too large");
+    };
+    match companion(&s).map(|c| c.view_report(&page, &body)) {
+        Ok(Ok(v)) => json_response(StatusCode::OK, v),
+        Ok(Err(e)) => status(StatusCode::BAD_REQUEST, &e),
         Err(r) => *r,
     }
 }

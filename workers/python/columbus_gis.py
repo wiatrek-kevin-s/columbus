@@ -2145,9 +2145,84 @@ def _draw_labels(data, placed: list[tuple[float, float, str, int]], frame_color)
     return np.asarray(img), drawn
 
 
+# Web Mercator (EPSG:3857), as web maps draw: the sphere's radius, and the
+# latitude where its square world ends.
+WEB_MERCATOR_RADIUS = 6378137.0
+WEB_MERCATOR_MAX_LAT = 85.0511287798066
+
+
+def _web_mercator(xy):
+    """Longitude and latitude in degrees to Web Mercator metres. Latitudes
+    past the projection's edge are held at it; longitudes past 180 carry on
+    east (a view across the 180th meridian)."""
+    import numpy as np
+
+    lat = np.clip(xy[:, 1], -WEB_MERCATOR_MAX_LAT, WEB_MERCATOR_MAX_LAT)
+    out = np.empty((len(xy), 2), dtype=np.float64)
+    out[:, 0] = WEB_MERCATOR_RADIUS * np.radians(xy[:, 0])
+    out[:, 1] = WEB_MERCATOR_RADIUS * np.log(np.tan(np.pi / 4 + np.radians(lat) / 2))
+    return out
+
+
+def _snapshot_view(frames: list, view: list[float]) -> tuple[list, list[float], list[float], list[int]]:
+    """Layers as a web map shows them, for a view [west, south, east, north]
+    in degrees (EPSG:4326; east may pass 180 when the view crosses the 180th
+    meridian): each layer in Web Mercator, with a copy one world east or
+    west where the view reaches it. Returns the layers, the view's box in
+    Web Mercator metres, the view in degrees as drawn (its latitudes held to
+    the projection's), and how many features of each layer reach the view."""
+    import numpy as np
+
+    try:
+        w, s, e, n = (float(v) for v in view)
+    except (TypeError, ValueError):
+        raise GISError("params", "view is [west, south, east, north] in degrees") from None
+    if not (all(math.isfinite(v) for v in (w, s, e, n)) and -180 <= w < e <= w + 360 and -90 <= s < n <= 90):
+        raise GISError("params", "view is [west, south, east, north] in degrees")
+    s, n = max(s, -WEB_MERCATOR_MAX_LAT), min(n, WEB_MERCATOR_MAX_LAT)
+    if not s < n:
+        raise GISError("params", "the view is beyond the edge of the map")
+    out, seen = [], []
+    for f in frames:
+        if f.crs is None:
+            raise GISError("crs.present", "a layer has no coordinate reference system, so it cannot be placed on the person's view")
+        g = f if f.crs.to_epsg() == 4326 else f.to_crs(4326)
+        parts = []
+        reach = np.zeros(len(g), dtype=bool)
+        if len(g):
+            b = shapely.bounds(g.geometry.values)
+            for k in (-1, 0, 1):
+                # This copy of the world, where the view reaches the layer.
+                hit = ((b[:, 0] + 360.0 * k <= e) & (b[:, 2] + 360.0 * k >= w)
+                       & (b[:, 1] <= n) & (b[:, 3] >= s))
+                if not hit.any():
+                    continue
+                sub = g[hit]
+                geoms = sub.geometry.values
+                if k:
+                    geoms = shapely.transform(geoms, lambda xy, k=k: xy + [360.0 * k, 0.0])
+                # Exactly: the shapes that meet the view, not only their boxes.
+                try:
+                    meets = shapely.intersects(geoms, shapely.box(w, s, e, n))
+                except shapely.errors.GEOSException:
+                    meets = np.ones(len(sub), dtype=bool)
+                reach[np.flatnonzero(hit)[meets]] = True
+                parts.append(sub.set_geometry(shapely.transform(geoms, _web_mercator), crs=3857))
+        if parts:
+            out.append(pd.concat(parts) if len(parts) > 1 else parts[0])
+        else:
+            out.append(gpd.GeoDataFrame({c: g[c].iloc[0:0] for c in g.columns if c != g.geometry.name},
+                                        geometry=gpd.GeoSeries([], crs=3857)))
+        seen.append(int(reach.sum()))
+    corners = _web_mercator(np.array([[w, s], [e, n]], dtype=np.float64))
+    box = [float(corners[0, 0]), float(corners[0, 1]), float(corners[1, 0]), float(corners[1, 1])]
+    return out, box, [w, s, e, n], seen
+
+
 def map_snapshot(paths: list[str], out_path: str, width: int = 1000, height: int = 700,
                  bbox: list[float] | None = None, imagery: str | None = None,
-                 labels: list[str | None] | None = None) -> dict[str, Any]:
+                 labels: list[str | None] | None = None,
+                 view: list[float] | None = None) -> dict[str, Any]:
     """Draw layers as a PNG, each layer its own colour, polygons filled
     lightly with an outline, lines and points solid, on a plain background
     with no basemap. Geometry only, unless `labels` names a field for a
@@ -2155,7 +2230,9 @@ def map_snapshot(paths: list[str], out_path: str, width: int = 1000, height: int
     field's values (plain text, cut to 40 characters, at most 400 in all,
     none overlapping). Layers are drawn in the first layer's CRS; a
     geographic one is drawn with its longitude scaled for its latitude, in
-    one piece across the 180th meridian."""
+    one piece across the 180th meridian. With `view` ([west, south, east,
+    north] in EPSG:4326) the layers are drawn as a web map shows that view:
+    in Web Mercator, at exactly that extent."""
     import numpy as np
     import rasterio
     from rasterio.features import rasterize
@@ -2185,9 +2262,18 @@ def map_snapshot(paths: list[str], out_path: str, width: int = 1000, height: int
         frames.append(g)
     if not frames:
         raise GISError("params", "give 1 to 8 layers")
-    crs = next((f.crs for f in frames if f.crs is not None), None)
-    if crs is not None:
-        frames = [f.to_crs(crs) if f.crs is not None and f.crs != crs else f for f in frames]
+    # What each layer holds, whatever part of it is drawn.
+    counts = [(int(len(f)), sorted(set(f.geometry.geom_type))) for f in frames]
+    in_view = view_drawn = None
+    if view is not None:
+        if bbox is not None:
+            raise GISError("params", "give bbox or view, not both")
+        frames, bbox, view_drawn, in_view = _snapshot_view(frames, view)
+        crs = CRS.from_epsg(3857)
+    else:
+        crs = next((f.crs for f in frames if f.crs is not None), None)
+        if crs is not None:
+            frames = [f.to_crs(crs) if f.crs is not None and f.crs != crs else f for f in frames]
     geographic = bool(crs is not None and crs.is_geographic)
     if geographic:
         lons = [f.total_bounds for f in frames if len(f)]
@@ -2224,7 +2310,7 @@ def map_snapshot(paths: list[str], out_path: str, width: int = 1000, height: int
     if imagery:
         if crs is None:
             raise GISError("params", "the layers have no CRS, so imagery cannot be placed under them")
-        if geographic and maxx > 180:
+        if (geographic and maxx > 180) or (view_drawn is not None and view_drawn[2] > 180):
             raise GISError("params", "imagery cannot be drawn across the 180th meridian; leave it out or draw one side")
         under, have, imagery_info = _snapshot_imagery(imagery, crs, transform, shape)
         img[have] = under[have]
@@ -2291,8 +2377,10 @@ def map_snapshot(paths: list[str], out_path: str, width: int = 1000, height: int
             dots = disc(centres, 3)
             img[disc(centres, 4) & ~dots] = SNAPSHOT_FRAME
             img[dots] = color
-        layers.append({"features": int(len(f)), "geometry_types": sorted(set(types)),
+        layers.append({"features": counts[i][0], "geometry_types": counts[i][1],
                        "color": "#%02x%02x%02x" % tuple(int(v) for v in color)})
+        if in_view is not None:
+            layers[i]["in_view"] = in_view[i]
     img[0, :] = img[-1, :] = SNAPSHOT_FRAME
     img[:, 0] = img[:, -1] = SNAPSHOT_FRAME
     data = np.clip(img, 0, 255).astype(np.uint8)
@@ -2327,4 +2415,5 @@ def map_snapshot(paths: list[str], out_path: str, width: int = 1000, height: int
             "extent": [float(minx), float(miny), float(maxx), float(maxy)],
             "wrapped_antimeridian": bool(geographic and maxx > 180),
             "imagery": imagery_info,
+            "view": view_drawn,
             "layers": layers}

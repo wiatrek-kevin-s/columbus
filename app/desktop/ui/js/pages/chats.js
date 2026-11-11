@@ -212,6 +212,14 @@ function q(v) {
   return `"${t.length > 60 ? `${t.slice(0, 60)}…` : t}"`;
 }
 
+/** Whether a map_view call asks to change what the map shows (anything
+ * but a plain read of it). */
+export function changesMap(input) {
+  const i = input || {};
+  const given = (v) => (Array.isArray(v) ? v.length > 0 : v != null && v !== "");
+  return given(i.show) || given(i.hide) || given(i.active) || given(i.zoom_to);
+}
+
 /** What a tool call is doing, in plain words. */
 export function describe(name, input) {
   const i = input || {};
@@ -230,6 +238,8 @@ export function describe(name, input) {
     case "verify": return "Running checks";
     case "read_output": return "Reading a result";
     case "map_snapshot": return `Looking at ${Array.isArray(i.layers) && i.layers.length > 1 ? `${i.layers.length} layers` : "a layer"} on a map`;
+    // (From the audit log there is no input: its reason says which it was.)
+    case "map_view": return changesMap(i) || /^(changed|the map took)|nothing was changed/.test(String(i.reason || "")) ? "Changing what your map shows" : "Looking at what your map shows";
     case "propose_workflow": return "Proposing a workflow";
     case "export_output": return `Exporting${i.folder ? ` to ${q(i.folder)}` : ""}`;
     case "registry_search": return `Searching open data${i.query ? ` for ${q(i.query)}` : ""}`;
@@ -355,6 +365,7 @@ class Renderer {
         g.last.textContent = `· ${describe(e.name, e.input)}…`;
         this.updateGroup(g);
         this.steps.set(e.id, { li, g, raw, input: e.input });
+        if (this.onTool) this.onTool(e);
         break;
       }
       case "tool_finished": {
@@ -621,10 +632,11 @@ class SessionMap {
   show(on = true) {
     if (!on) {
       this.host.hidden = true;
+      this.post();
       if (onStage === this) onStage = null;
       return;
     }
-    if (onStage && onStage !== this) onStage.host.hidden = true;
+    if (onStage && onStage !== this) { onStage.host.hidden = true; onStage.post(); }
     onStage = this;
     this.host.hidden = false;
     this.head();
@@ -671,6 +683,16 @@ class SessionMap {
     if (this.onOpenChange) this.onOpenChange();
   }
 
+  /** The assistant is changing what the map shows (map_view): the panel
+   * opens so the person sees it, even where they closed it in this chat.
+   * Their choice still stands for the results that follow. */
+  showChange() {
+    if (this.open) return;
+    this.open = true;
+    if (onStage === this) this.unfold();
+    if (this.onOpenChange) this.onOpenChange();
+  }
+
   /** As new: for a new chat. */
   reset() {
     this.open = false;
@@ -681,11 +703,12 @@ class SessionMap {
     if (this.onOpenChange) this.onOpenChange();
   }
 
-  // Plain values only: how the page should look, and which part of it the
-  // panel covers.
+  // Plain values only: how the page should look, which part of it the
+  // panel covers, and whether the person can see it now (its panel open
+  // and this map in it): a page in a closed panel is not their map.
   post() {
     if (!this.frame || !this.origin || !this.frame.contentWindow) return;
-    const msg = { type: "columbus-embed", basemap: !!store.prefs.basemap, theme: store.prefs.theme || "system", inset: insets() };
+    const msg = { type: "columbus-embed", basemap: !!store.prefs.basemap, theme: store.prefs.theme || "system", inset: insets(), shown: onStage === this && !this.host.hidden && outputsOpen() };
     // Asked once, when the page listens: after that the page keeps the
     // table as the person leaves it.
     if (this.view && this.ready) {
@@ -894,6 +917,8 @@ export async function openBrowser(session) {
 function liveRenderer(log) {
   const r = new Renderer(log, true, (id) => live.map.files(id), (handle) => live.map.table(handle));
   r.onResult = () => live.map.reveal();
+  // A change to the map is shown; a plain read leaves the panel as it is.
+  r.onTool = (e) => { if (e.name === "map_view" && changesMap(e.input)) live.map.showChange(); };
   return r;
 }
 
@@ -1422,7 +1447,7 @@ async function showSession(main, session) {
       if (!lines.length) acts.append(h("li", {}, h("span", { class: "t" }, ""), h("span", { class: "d muted" }, "No tool calls yet.")));
       for (const l of lines) {
         const t = new Date(l.ts);
-        const bits = [describe(l.tool, { dataset: l.dataset, connection: l.connection })];
+        const bits = [describe(l.tool, { dataset: l.dataset, connection: l.connection, reason: l.reason })];
         if (l.rows != null) bits.push(`${Number(l.rows).toLocaleString()} rows`);
         const dec = l.decision === "allowed" ? null : l.decision;
         acts.append(h("li", {}, h("span", { class: "t" }, isNaN(+t) ? "" : t.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })),

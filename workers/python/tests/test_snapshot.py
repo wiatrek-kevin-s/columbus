@@ -131,6 +131,104 @@ class SnapshotTest(unittest.TestCase):
         self.assertLessEqual(r["width"], 1600)
         self.assertEqual(r["height"], 400)
 
+    @staticmethod
+    def mercator(lon, lat):
+        import math
+        r = 6378137.0
+        return r * math.radians(lon), r * math.log(math.tan(math.pi / 4 + math.radians(lat) / 2))
+
+    def pixel(self, r, lon, lat):
+        """Where a place falls in a picture of a view (column, row)."""
+        x, y = self.mercator(lon, lat)
+        minx, miny, maxx, maxy = r["extent"]
+        return (int((x - minx) / (maxx - minx) * r["width"]), int((maxy - y) / (maxy - miny) * r["height"]))
+
+    def test_a_view_is_drawn_as_a_web_map_shows_it(self):
+        # The person's view (degrees) over Austin; a layer in a Texas CRS in
+        # metres, one square inside the view and one far outside it.
+        from pyproj import Transformer
+        to_tx = Transformer.from_crs(4326, 3081, always_xy=True)
+        inside = box(*to_tx.transform(-97.76, 30.26), *to_tx.transform(-97.74, 30.28))
+        outside = box(*to_tx.transform(-95.0, 29.0), *to_tx.transform(-94.9, 29.1))
+        a = self.layer("a", [inside, outside], crs="EPSG:3081")
+        out = os.path.join(self.d, "s.png")
+        view = [-97.80, 30.24, -97.70, 30.30]
+        r = g.map_snapshot([a], out, 1000, 700, view=view)
+        # Exactly the view: its extent in degrees, and the same box in Web
+        # Mercator, the CRS drawn.
+        self.assertEqual(r["view"], view)
+        self.assertEqual(r["crs"], "EPSG:3857")
+        want = [*self.mercator(view[0], view[1]), *self.mercator(view[2], view[3])]
+        for got, w in zip(r["extent"], want):
+            self.assertAlmostEqual(got, w, places=3)
+        self.assertFalse(r["wrapped_antimeridian"])
+        # The picture has the view's shape (as the map has it).
+        shape = (want[2] - want[0]) / (want[3] - want[1])
+        self.assertAlmostEqual(r["width"] / r["height"], shape, delta=0.01)
+        # The whole layer is counted; one of its two features is in view.
+        self.assertEqual(r["layers"][0]["features"], 2)
+        self.assertEqual(r["layers"][0]["in_view"], 1)
+        with rasterio.open(out) as src:
+            px = src.read()
+        paper = (246, 243, 236)
+        col, row = self.pixel(r, -97.75, 30.27)
+        self.assertNotEqual(tuple(int(v) for v in px[:, row, col]), paper, "the square is drawn where it is")
+        col, row = self.pixel(r, -97.79, 30.25)
+        self.assertEqual(tuple(int(v) for v in px[:, row, col]), paper, "nothing is drawn beside it")
+        # A view with none of the layer in it is still that view, empty.
+        r = g.map_snapshot([a], out, 1000, 700, view=[10.0, 10.0, 11.0, 11.0])
+        self.assertEqual(r["layers"][0]["in_view"], 0)
+        self.assertEqual(r["layers"][0]["features"], 2)
+
+    def test_a_view_across_the_180th_meridian_shows_both_sides(self):
+        a = self.layer("a", [box(172, 51, 179.9, 53), box(-179.9, 51, -170, 53)])
+        out = os.path.join(self.d, "s.png")
+        # As a web map reports it: east past 180.
+        r = g.map_snapshot([a], out, 900, 600, view=[170.0, 50.0, 192.0, 54.0])
+        self.assertEqual(r["view"], [170.0, 50.0, 192.0, 54.0])
+        self.assertEqual(r["layers"][0]["in_view"], 2)
+        with rasterio.open(out) as src:
+            px = src.read()
+        paper = (246, 243, 236)
+        for lon in (176.0, 185.0):  # 185 is -175, one world on
+            col, row = self.pixel(r, lon, 52.0)
+            self.assertNotEqual(tuple(int(v) for v in px[:, row, col]), paper, f"drawn at {lon}")
+        col, row = self.pixel(r, 191.0, 52.0)
+        self.assertEqual(tuple(int(v) for v in px[:, row, col]), paper)
+        # The same layer seen from the other side of the line.
+        r = g.map_snapshot([a], out, 900, 600, view=[-179.0, 50.0, -168.0, 54.0])
+        self.assertEqual(r["layers"][0]["in_view"], 1)
+
+    def test_a_view_reaches_the_edge_of_the_projection_not_past_it(self):
+        # A layer that goes to the pole: drawn, with its latitudes held at
+        # the edge of a web map's world.
+        a = self.layer("a", [box(-180, -90, 180, 90)], crs="EPSG:4326")
+        out = os.path.join(self.d, "s.png")
+        r = g.map_snapshot([a], out, 800, 800, view=[-180.0, -90.0, 180.0, 90.0])
+        self.assertAlmostEqual(r["view"][1], -85.0511287798066)
+        self.assertAlmostEqual(r["view"][3], 85.0511287798066)
+        self.assertAlmostEqual(r["extent"][0], -r["extent"][2], places=3)
+        self.assertAlmostEqual(r["extent"][1], -r["extent"][3], places=3)
+        self.assertEqual(r["layers"][0]["in_view"], 1)
+
+    def test_what_a_view_refuses(self):
+        a = self.layer("a", [box(-97.76, 30.26, -97.74, 30.28)], crs="EPSG:4326")
+        out = os.path.join(self.d, "s.png")
+        for bad in ([-97.7, 30.2, -97.8, 30.3], [-97.8, 30.3, -97.7, 30.2], [-200, 30, -97, 31],
+                    [-97.8, 30.2, 400, 30.3], [-97.8, 30.2, -97.7], ["a", 1, 2, 3], [float("nan"), 1, 2, 3]):
+            with self.assertRaises(g.GISError, msg=str(bad)):
+                g.map_snapshot([a], out, view=bad)
+        with self.assertRaises(g.GISError):
+            g.map_snapshot([a], out, bbox=[-97.8, 30.2, -97.7, 30.3], view=[-97.8, 30.2, -97.7, 30.3])
+        # A layer with no CRS cannot be placed on a view.
+        nocrs = os.path.join(self.d, "n.gpkg")
+        gpd.GeoDataFrame({"A": [1]}, geometry=[box(0, 0, 1, 1)]).to_file(nocrs, layer="n", driver="GPKG", engine="pyogrio")
+        with self.assertRaises(g.GISError):
+            g.map_snapshot([nocrs], out, view=[-97.8, 30.2, -97.7, 30.3])
+        # Labels follow the layer onto the view.
+        r = g.map_snapshot([a], out, 800, 600, labels=["SECRET"], view=[-97.80, 30.24, -97.70, 30.30])
+        self.assertEqual(r["layers"][0]["labels"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

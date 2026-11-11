@@ -2138,8 +2138,12 @@ def map_snapshot(params: dict[str, Any]) -> dict[str, Any]:
     if labels is not None and (not isinstance(labels, list) or len(labels) != len(paths)
                                or not all(x is None or isinstance(x, str) for x in labels)):
         raise WorkerError(INVALID_PARAMS, "labels is one field name (or null) per layer")
+    view = params.get("view")
+    if view is not None and (not isinstance(view, list) or len(view) != 4
+                             or not all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in view)):
+        raise WorkerError(INVALID_PARAMS, "view is [west, south, east, north] in degrees")
     try:
-        return g.map_snapshot(paths, out, w, h, bbox, imagery, labels)
+        return g.map_snapshot(paths, out, w, h, bbox, imagery, labels, view)
     except g.GISError as e:
         raise _refused(e) from None
 
