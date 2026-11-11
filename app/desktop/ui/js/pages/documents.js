@@ -11,7 +11,7 @@ export async function render(main, rest) {
   const tab = rest[0] || "notes";
   const page = h("div", { class: "page" });
   main.append(page);
-  page.append(pageHead("Notes", "Your notes about your data, and your organization's context pack: what your assistant reads to understand the data.", [], { href: "#/data", label: "Data" }));
+  page.append(pageHead("Documentation", "Your notes about your data, and your organization's context pack: what your assistant reads to understand the data."));
   page.append(tabs([["notes", "My notes", "#/documents/notes"], ["pack", "Organization's pack", "#/documents/pack"], ["proposals", "Proposals", "#/documents/proposals"], ["import", "Import", "#/documents/import"]], tab, "Notes"));
   const body = h("div", { class: "pad stack" });
   page.append(h("div", { class: "scroll" }, body));

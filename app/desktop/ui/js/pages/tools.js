@@ -9,7 +9,7 @@ let tools = null;
 let reviewing = null;
 
 // Tools and skills are pages inside Workflows.
-const BACK = { href: "#/workflows", label: "Workflows" };
+const BACK = { href: "#/tools", label: "Tools" };
 
 function testText(t) {
   const p = t.proposal || {};
@@ -33,7 +33,8 @@ export async function render(main) {
   const page = h("div", { class: "page" });
   main.append(page);
   page.append(pageHead("Tools", "Steps your assistant made from scripts, for it to reuse. You read each one and install it here.",
-    [button("Open a shared file…", "sm", () => shareIn($("tools-error"), () => refresh()), { id: "tools-open-shared", title: "A tool or workflow a coworker shared: you review it here before anything is installed" })], BACK));
+    [h("a", { class: "btn sm", href: "#/skills", id: "to-skills", title: "Advice your assistant reads for GIS work" }, "Skills"),
+      button("Open a shared file…", "sm", () => shareIn($("tools-error"), () => refresh()), { id: "tools-open-shared", title: "A tool or workflow a coworker shared: you review it here before anything is installed" })]));
   const body = h("div", { class: "pad stack" });
   page.append(h("div", { class: "scroll" }, body));
   const notice = h("p", { id: "restart", class: "notice ok", role: "status", hidden: true });

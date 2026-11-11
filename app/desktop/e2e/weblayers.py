@@ -215,6 +215,11 @@ def start_chat(d, wait):
     box.send_keys("Show me the map.")
     js_click(d, d.find_element(By.ID, "send"))
     WebDriverWait(d, 90).until(lambda drv: "Ready when you are." in drv.find_element(By.ID, "log").text)
+    # Nothing was made, so the panel on the right is closed: the person
+    # opens the chat's map.
+    show = d.find_element(By.CSS_SELECTOR, "#main .chat-map")
+    if show.get_attribute("aria-pressed") != "true":
+        js_click(d, show)
     WebDriverWait(d, 40).until(EC.presence_of_element_located((By.CSS_SELECTOR, "#stage iframe")))
     return d.execute_script("return location.hash")
 

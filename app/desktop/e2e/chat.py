@@ -138,7 +138,7 @@ def main():
         d.find_element(By.ID, "send").click()
 
         card = WebDriverWait(d, 90).until(EC.presence_of_element_located((By.CSS_SELECTOR, ".ask")))
-        assert not d.execute_script("return document.body.classList.contains('start')"), "once asked, the panel sits at the side"
+        assert not d.execute_script("return document.body.classList.contains('start')"), "once asked, it is a chat, not the start"
         assert d.execute_script("return !!(document.getElementById('log').compareDocumentPosition(document.getElementById('composer')) & Node.DOCUMENT_POSITION_FOLLOWING)"), "in a chat the message box comes after the conversation"
         assert d.execute_script("return document.activeElement && document.activeElement.id") == "text", "the message box keeps the focus when the chat starts"
         assert "tracts" in card.text, card.text
@@ -222,29 +222,34 @@ def main():
         WebDriverWait(d, 10).until(lambda drv: drv.find_element(By.ID, "send").is_enabled())
         HOLD.clear()
         d.find_element(By.ID, "send").click()
-        # The panel is put away while the assistant works: a request that
-        # comes then brings it back (it could not be answered otherwise).
+        # The map is given the window while the assistant works (the chat is
+        # put away): a request that comes then brings the chat back (it could
+        # not be answered otherwise).
         d.find_element(By.CSS_SELECTOR, "#main .chat-more").click()
         d.find_element(By.CSS_SELECTOR, "#main .chat-away").click()
-        WebDriverWait(d, 10).until(lambda drv: not drv.find_element(By.ID, "panel").is_displayed())
+        WebDriverWait(d, 10).until(lambda drv: not drv.find_element(By.ID, "main").is_displayed())
         assert len(d.find_elements(By.CSS_SELECTOR, ".ask")) == 2, "the request has not come yet"
         HOLD.set()
         WebDriverWait(d, 90).until(lambda drv: len(drv.find_elements(By.CSS_SELECTOR, ".ask")) == 3)
-        WebDriverWait(d, 10).until(lambda drv: drv.find_element(By.ID, "panel").is_displayed())
+        WebDriverWait(d, 10).until(lambda drv: drv.find_element(By.ID, "main").is_displayed())
         card = d.find_elements(By.CSS_SELECTOR, ".ask")[2]
-        # Put away again while it waits: the pill says something waits.
+        # Given the window again while it waits: the sidebar still says that
+        # something waits, on the chat's own row and on Activity.
         d.find_element(By.CSS_SELECTOR, "#main .chat-more").click()
         d.find_element(By.CSS_SELECTOR, "#main .chat-away").click()
-        # (textContent: WebKit's driver leaves text in a clipping box out of an element's text.)
-        WebDriverWait(d, 10).until(lambda drv: "Columbus needs your OK" in drv.find_element(By.ID, "pill").get_attribute("textContent"))
-        d.find_element(By.ID, "pill-show").click()
-        WebDriverWait(d, 10).until(lambda drv: drv.find_element(By.ID, "panel").is_displayed())
+        WebDriverWait(d, 10).until(lambda drv: not drv.find_element(By.ID, "main").is_displayed())
+        WebDriverWait(d, 10).until(lambda drv: drv.find_elements(By.CSS_SELECTOR, "#recents a[aria-current='page'] .dot.warn"))
+        assert "waiting" in d.find_element(By.CSS_SELECTOR, "#nav a[href='#/activity']").get_attribute("aria-label")
+        d.find_element(By.ID, "out-full").click()
+        WebDriverWait(d, 10).until(lambda drv: drv.find_element(By.ID, "main").is_displayed())
         assert "Code written by the AI (1 line)" in card.text, card.text
         d.find_element(By.ID, "stop").click()
         WebDriverWait(d, 20).until(lambda drv: "No longer waiting" in card.text)
         # (Reading the code beside the panel stays; nothing that decides does.)
         assert not [b for b in card.find_elements(By.TAG_NAME, "button") if "read-beside" not in (b.get_attribute("class") or "")], "no live buttons after Stop"
-        step("The map behind the panel is the chat's own session's page")
+        step("The map in the panel on the right is the chat's own session's page")
+        # (The panel opened by itself when the chat first made something.)
+        assert d.find_element(By.ID, "outputs").is_displayed() and d.find_element(By.CSS_SELECTOR, "#main .chat-map").get_attribute("aria-pressed") == "true"
         frame = WebDriverWait(d, 40).until(EC.presence_of_element_located((By.CSS_SELECTOR, "#stage iframe")))
         d.switch_to.frame(frame)
         WebDriverWait(d, 40).until(lambda drv: "tracts" in drv.execute_script("return document.body.textContent"))
@@ -292,10 +297,12 @@ def main():
         d.execute_script("arguments[0].scrollIntoView({block: 'center'})", made)
         made.click()
         WebDriverWait(d, 20).until(lambda drv: drv.find_element(By.ID, "side").is_displayed())
+        d.find_element(By.CSS_SELECTOR, "#main .chat-more").click()
         d.find_element(By.ID, "new").click()
         WebDriverWait(d, 30).until(lambda drv: drv.execute_script("return document.getElementById('chat-title').textContent") == "New chat")
         WebDriverWait(d, 10).until(lambda drv: not drv.find_element(By.ID, "side").is_displayed())
         WebDriverWait(d, 10).until(lambda drv: drv.execute_script("return document.body.classList.contains('start')"))
+        assert not d.find_element(By.ID, "outputs").is_displayed(), "a new chat has made nothing: no panel on the right"
 
         step("A model chosen in Settings shows in the new chat under the sheet as soon as it closes")
         d.find_element(By.ID, "nav-settings").click()

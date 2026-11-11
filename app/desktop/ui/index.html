@@ -8,20 +8,28 @@
   </head>
   <body>
     <a class="skip" href="#main">Skip to content</a>
-    <div class="app">
-      <!-- The panel: the four places, and the page of the one that is open. -->
-      <div class="panel" id="panel">
-        <nav class="nav" id="nav" aria-label="Columbus"></nav>
-        <main class="main" id="main" tabindex="-1"></main>
-      </div>
-      <!-- A sheet beside the panel, for something long to read. -->
-      <aside class="side" id="side" hidden></aside>
-      <!-- The panel put away: the map alone. -->
-      <div class="pill" id="pill"></div>
-      <!-- The map's place: chart paper until a session's map is shown. It is
-           drawn under everything else, and comes last here so that Tab and a
-           screen reader reach the panel before the map's own controls. -->
-      <div class="stage" id="stage"><div class="frames" id="stage-frames"></div></div>
+    <div class="app" id="app">
+      <!-- The sidebar: a new chat, the search, the places, and recent chats. -->
+      <aside class="sidebar" id="sidebar" aria-label="Columbus">
+        <div class="sb-top" id="sb-top"></div>
+        <nav class="sb-nav" id="nav" aria-label="Places"></nav>
+        <div class="sb-recents" id="recents"></div>
+        <div class="sb-foot" id="sb-foot"></div>
+      </aside>
+      <!-- The middle: the conversation, or the page of a place. -->
+      <main class="main" id="main" tabindex="-1"></main>
+      <!-- The right: what the assistant made (the map, the table, files, a
+           script, a note). It opens when there is something to show. -->
+      <aside class="outputs" id="outputs" aria-label="What the assistant made" hidden>
+        <div class="splitter" id="splitter" role="separator" aria-orientation="vertical" aria-label="Width of the panel on the right" tabindex="0"></div>
+        <header class="out-head" id="out-head"></header>
+        <div class="out-body">
+          <!-- A session's map and table: chart paper until one is shown. -->
+          <div class="stage" id="stage"><div class="frames" id="stage-frames"></div></div>
+          <!-- Something to read over it: files, how a result was made, a script, a note. -->
+          <section class="side" id="side" hidden></section>
+        </div>
+      </aside>
     </div>
     <div id="toast" class="toast" popover="manual" role="status" aria-live="polite" hidden></div>
     <dialog id="palette" class="palette" aria-label="Search chats, data, workflows and pages">

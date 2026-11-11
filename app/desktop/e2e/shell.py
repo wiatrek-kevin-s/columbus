@@ -167,31 +167,38 @@ def main():
         named(d)
         d.save_screenshot(str(OUT / "shell-first-run.png"))
         click(d, By.ID, "fr-skip")
-        step("The app opens on a question: a new chat, its panel in the middle")
+        step("The app opens on a question: a new chat, the question in the middle of the window")
         wait.until(EC.visibility_of_element_located((By.ID, "text")))
         wait.until(lambda drv: drv.execute_script("return document.body.classList.contains('start')"))
         wait.until(lambda drv: drv.execute_script("return document.activeElement && document.activeElement.id") == "text")
         assert d.execute_script("return document.activeElement && document.activeElement.id") == "text", "the question has the focus"
         main_window = d.current_window_handle
         named(d)
-        # Tab and a screen reader follow the document: the question comes
-        # first on the start, as it is drawn, and the panel before the map.
+        # Tab and a screen reader follow the document: the sidebar, then the
+        # middle (on the start the question first, as it is drawn), then the
+        # panel on the right.
         follows = "return !!(document.getElementById(arguments[0]).compareDocumentPosition(document.getElementById(arguments[1])) & Node.DOCUMENT_POSITION_FOLLOWING)"
         assert d.execute_script(follows, "composer", "log"), "on the start the question is first in the document"
-        assert d.execute_script(follows, "panel", "stage"), "the panel comes before the map"
+        assert d.execute_script(follows, "sidebar", "main") and d.execute_script(follows, "main", "outputs"), "the sidebar, the middle, the panel on the right"
+        assert not d.find_element(By.ID, "outputs").is_displayed(), "nothing made yet: no panel on the right"
         d.save_screenshot(str(OUT / "shell-start.png"))
 
-        step("The four places, and the pages inside them: each says what it is")
-        assert [a.get_attribute("href").split("#")[1] for a in d.find_elements(By.CSS_SELECTOR, "#nav a.tab")] == ["/chats", "/data", "/workflows", "/activity"]
+        step("The places in the sidebar, and the pages inside them: each says what it is")
+        assert [a.get_attribute("href").split("#")[1] for a in d.find_elements(By.CSS_SELECTOR, "#nav a.tab")] == \
+            ["/chats", "/projects", "/data", "/documents", "/workflows", "/tools", "/activity"]
         place(d, wait, "#/chats", "Chats")
-        assert not d.execute_script("return document.body.classList.contains('start')"), "a list sits at the side, over the map"
-        inside(d, wait, "#/projects", "Projects")
-        back(d, wait, "Chats")
+        assert not d.execute_script("return document.body.classList.contains('start')"), "a page is not the start"
+        assert d.find_element(By.CSS_SELECTOR, "#nav a[href='#/chats']").get_attribute("aria-current") == "page", "the sidebar says where the person is"
+        place(d, wait, "#/projects", "Projects")
+        place(d, wait, "#/documents", "Documentation")
         place(d, wait, "#/data", "Data")
-        for href, title in [("#/documents", "Notes"), ("#/data/datasets", "Datasets"), ("#/datagroups", "Data groups"),
+        for href, title in [("#/data/datasets", "Datasets"), ("#/datagroups", "Data groups"),
                             ("#/data/maplayers", "Map layers"), ("#/data/projectdbs", "Project databases")]:
             inside(d, wait, href, title)
             back(d, wait, "Data")
+        # Documentation is a place of its own, and Data points to it.
+        inside(d, wait, "#/documents", "Documentation")
+        place(d, wait, "#/data", "Data")
         inside(d, wait, "#/registry", "Registry")
         wait.until(lambda drv: drv.find_elements(By.ID, "rg-q"))
         back(d, wait, "Data")
@@ -226,22 +233,21 @@ def main():
         step("Nothing unbuilt is offered: no part of Data says it is coming")
         assert "oming" not in text(d, "#page-host"), text(d, "#page-host")
         assert not d.find_elements(By.CSS_SELECTOR, "#main a[href='#/data/accounts']")
-        step("Notes: the organization's pack, proposals and import are tabs of it")
-        inside(d, wait, "#/documents", "Notes")
+        step("Documentation: the organization's pack, proposals and import are tabs of it")
+        place(d, wait, "#/documents", "Documentation")
         click(d, By.CSS_SELECTOR, "#main nav.tabs a[href='#/documents/import']")
         wait.until(lambda drv: drv.find_elements(By.ID, "imp-choose"))
         click(d, By.CSS_SELECTOR, "#main nav.tabs a[href='#/documents/proposals']")
         wait.until(lambda drv: drv.find_elements(By.ID, "pr-check"))
         wait.until(lambda drv: drv.find_elements(By.ID, "sg-list"))
-        step("Workflows holds tools and skills; it says workflows are off here")
+        step("Workflows says workflows are off here; Tools holds the skills")
         place(d, wait, "#/workflows", "Workflows")
         wait.until(lambda drv: drv.find_element(By.ID, "wf-off").is_displayed())
-        inside(d, wait, "#/tools", "Tools")
+        place(d, wait, "#/tools", "Tools")
         wait.until(lambda drv: drv.find_elements(By.ID, "team-choose"))
-        back(d, wait, "Workflows")
         inside(d, wait, "#/skills", "Skills")
         wait.until(lambda drv: "working-with-columbus" in text(drv, "main"))
-        back(d, wait, "Workflows")
+        back(d, wait, "Tools")
         place(d, wait, "#/activity", "Activity")
         step("Settings is one sheet over the page: it names the policy's source, and its parts open inside it")
         click(d, By.ID, "nav-settings")
@@ -299,22 +305,29 @@ def main():
         time.sleep(1.0)  # past the moment the page under would have been drawn again
         assert d.execute_script(mark) == "typed on" and d.find_element(By.ID, "pj-name").get_attribute("value") == "Roadway QC"
 
-        step("The session another AI app runs, under Chats: its activity and its map")
+        step("The session another AI app runs: in the sidebar and under Chats; its activity in the middle, its map on the right")
+        wait.until(lambda drv: drv.find_elements(By.CSS_SELECTOR, f"#recents a[href='#/chats/s/{session}']"))
         place(d, wait, "#/chats", "Chats")
         wait.until(lambda drv: drv.find_elements(By.CSS_SELECTOR, f"#chat-list a[href='#/chats/s/{session}']"))
         assert "The conversation is in that app" in text(d, "#chat-list")
         click(d, By.CSS_SELECTOR, f"#chat-list a[href='#/chats/s/{session}']")
         wait.until(lambda drv: 'Querying "tracts" on "tiger"' in text(drv, ".activity"))
+        # Its row in the sidebar is the one that is lit now.
+        wait.until(lambda drv: drv.find_element(By.CSS_SELECTOR, f"#recents a[href='#/chats/s/{session}']").get_attribute("aria-current") == "page")
         frame = WebDriverWait(d, 40).until(EC.presence_of_element_located((By.CSS_SELECTOR, "#stage iframe")))
         assert frame.get_attribute("sandbox") == "allow-scripts allow-same-origin", frame.get_attribute("sandbox")
         src = frame.get_attribute("src")
         assert src.startswith(f"http://127.0.0.1:{port}/embed#t="), src
-        size = d.execute_script("const r = arguments[0].getBoundingClientRect(); return [r.left, r.top, r.width, r.height, innerWidth, innerHeight]", frame)
-        assert size[:2] == [0, 0] and size[2:4] == size[4:], f"the map fills the window behind the panel: {size}"
-        # Beside the panel, a click lands on the map; on the panel, it does not.
-        hit = "const e = document.elementFromPoint(arguments[0], arguments[1]); return e === arguments[2] ? 'map' : e && e.closest('#panel') ? 'panel' : String(e && e.tagName)"
-        assert d.execute_script(hit, size[4] - 40, size[5] - 40, frame) == "map"
-        assert d.execute_script(hit, 60, size[5] / 2, frame) == "panel"
+        # The map has the body of the panel on the right to itself; the panel
+        # stands beside the middle, not over it.
+        box = "const r = document.querySelector(arguments[0]).getBoundingClientRect(); return [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)]"
+        fr = d.execute_script("const r = arguments[0].getBoundingClientRect(); return [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)]", frame)
+        assert fr == d.execute_script(box, "#outputs .out-body"), f"the map fills the panel's body: {fr}"
+        mid = d.execute_script(box, "#main")
+        assert mid[0] + mid[2] <= fr[0] + 1 and fr[2] >= 380, f"the middle {mid} and the map {fr} stand side by side"
+        hit = "const e = document.elementFromPoint(arguments[0], arguments[1]); return e === arguments[2] ? 'map' : e && e.closest('#main') ? 'middle' : String(e && e.tagName)"
+        assert d.execute_script(hit, fr[0] + fr[2] - 40, fr[1] + fr[3] - 40, frame) == "map"
+        assert d.execute_script(hit, mid[0] + 60, mid[1] + mid[3] / 2, frame) == "middle"
         d.switch_to.frame(frame)
         step("The companion page signed in with its view link and shows the layer")
         WebDriverWait(d, 40).until(lambda drv: "tracts" in drv.execute_script("return document.body.textContent"))
@@ -325,21 +338,37 @@ def main():
         time.sleep(2)
         named(d)
         d.save_screenshot(str(OUT / "shell-session.png"))
-        step("Its files, in the sheet beside the panel")
+        step("Its files, to read in the panel on the right, over the map")
         click(d, By.CSS_SELECTOR, "#main .chat-more")
         click(d, By.CSS_SELECTOR, "#main .chat-files")
         wait.until(lambda drv: ".gpkg" in text(drv, "#side"))
         named(d)
         d.save_screenshot(str(OUT / "shell-files.png"))
         click(d, By.ID, "side-close")
-        step("The panel put away leaves the map alone, and comes back")
+        assert d.find_element(By.ID, "outputs").is_displayed(), "closing what was read leaves the map"
+        step("The map can fill the window; the chat comes back; the panel closes and opens")
         click(d, By.CSS_SELECTOR, "#main .chat-more")
         click(d, By.CSS_SELECTOR, "#main .chat-away")
-        wait.until(lambda drv: not drv.find_element(By.ID, "panel").is_displayed())
+        wait.until(lambda drv: not drv.find_element(By.ID, "main").is_displayed())
+        wide = d.execute_script(box, "#outputs")
+        side = d.execute_script(box, "#sidebar")
+        assert wide[0] <= side[0] + side[2] + 1 and wide[0] + wide[2] >= d.execute_script("return innerWidth") - 1, f"the map has the window beside the sidebar: {wide}"
         named(d)
         d.save_screenshot(str(OUT / "shell-map-only.png"))
-        click(d, By.ID, "pill-show")
-        wait.until(lambda drv: drv.find_element(By.ID, "panel").is_displayed())
+        click(d, By.ID, "out-full")
+        wait.until(lambda drv: drv.find_element(By.ID, "main").is_displayed())
+        click(d, By.ID, "out-close")
+        wait.until(lambda drv: not drv.find_element(By.ID, "outputs").is_displayed())
+        assert d.find_element(By.CSS_SELECTOR, "#main .chat-map").get_attribute("aria-pressed") == "false"
+        click(d, By.CSS_SELECTOR, "#main .chat-map")
+        wait.until(lambda drv: drv.find_element(By.ID, "outputs").is_displayed() and drv.find_elements(By.CSS_SELECTOR, "#stage iframe"))
+        step("The sidebar can be put away, and comes back")
+        click(d, By.ID, "sb-toggle")
+        wait.until(lambda drv: drv.execute_script("return document.body.classList.contains('sb-closed')"))
+        assert d.execute_script(box, "#sidebar")[2] <= 60
+        named(d)
+        click(d, By.ID, "sb-toggle")
+        wait.until(lambda drv: not drv.execute_script("return document.body.classList.contains('sb-closed')"))
 
         step("A request waiting in that session: listed, view only; decided in the browser")
         result = {}
@@ -406,11 +435,11 @@ def main():
         click(d, By.CSS_SELECTOR, "#main .histhead button[data-view='exports']")
         wait.until(lambda drv: drv.find_element(By.ID, "exports").is_displayed() and "No exports yet" in text(drv, "#exports"))
 
-        step("The person's note: read beside the panel, then marked reviewed (their own file)")
+        step("The person's note: read in the panel on the right, then marked reviewed (their own file)")
         place(d, wait, "#/data", "Data")
         wait.until(lambda drv: "1 is a draft" in text(drv, "#data-notes"))
         click(d, By.ID, "data-notes")
-        wait.until(lambda drv: "Notes" == text(drv, "#page-title"))
+        wait.until(lambda drv: "Documentation" == text(drv, "#page-title"))
         wait.until(lambda drv: "tracts" in text(drv, "#notes-list"))
         click(d, By.CSS_SELECTOR, "#notes-list li")
         wait.until(lambda drv: "NAME: the tract's name" in text(drv, "#side"))
@@ -429,10 +458,11 @@ def main():
         want = NOTE.replace("the tract's name", "changed behind your back").replace("status: draft", "status: reviewed")
         assert note.read_text() == want, note.read_text()
 
-        step("Esc closes the sheet beside the panel")
+        step("Esc closes what is read on the right")
         assert d.find_element(By.ID, "side").is_displayed()
         d.execute_script("document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true, cancelable: true}))")
         wait.until(lambda drv: not drv.find_element(By.ID, "side").is_displayed())
+        assert not d.find_element(By.ID, "outputs").is_displayed(), "the panel was open only for the note: it closes with it"
 
         step("Ctrl+K opens the search; a connection is found by its name and opens its page")
         d.execute_script("document.dispatchEvent(new KeyboardEvent('keydown', {key: 'k', ctrlKey: true}))")

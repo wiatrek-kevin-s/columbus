@@ -1,5 +1,5 @@
 {
-  "project": "Columbus 0.14.0: data-reach rework (kit 1.1)",
+  "project": "Columbus 0.14.0: data-reach rework (kit 1.1); from T-26: the open workbench, 0.15.0 (build-brief-3)",
   "tasks": [
     {
       "id": "T-1",
@@ -618,6 +618,282 @@
       ],
       "status": "blocked",
       "evidence": "Done: Pillow 12.3.0 -> 13.0.0 (commit e393259); pip-audit finds no known vulnerabilities in all five pinned engine files (fresh re-check confirmed); Engine requirements workflow ran once (run https://github.com/wiatrek-kevin-s/columbus/actions/runs/42698196436, branch deps/engine-requirements-20261109). Blocked: RUSTSEC-2026-0462 (rmcp) and RUSTSEC-2026-0459 (libsqlite3-sys, plugin SDK only) clear only when the owner merges the green Dependabot PRs #9, #13 and #11; the session's safety check refuses merging pull requests it didn't author. Both advisories predate the rework."
+    },
+    {
+      "id": "T-26",
+      "title": "The new window: a sidebar (New chat, Search, seven places, recent chats, Settings), the chat in the middle, and a panel on the right that opens with what the assistant made (map and table, files, how it was made); the panel resizes, fills the window and closes (REQ-35, D-15)",
+      "session": "S9",
+      "depends_on": [],
+      "done_by": "claude",
+      "acceptance": [
+        {
+          "how": "Claude moves the eight desktop WebDriver scripts and the map page's scripts to the new window with every check kept, and runs them locally and in CI",
+          "expected": "all pass on Linux; every CI job green on the pull request"
+        },
+        {
+          "how": "Claude checks in the shell script: the seven places; the panel opening on a first result, resizing, filling the window, closing; a request for approval bringing the chat back; a name on every control",
+          "expected": "each holds"
+        },
+        {
+          "how": "Claude retakes the pictures from the real app and updates the docs that describe the window; the link check runs",
+          "expected": "pictures and words match the new window; no broken link"
+        }
+      ],
+      "status": "todo",
+      "evidence": ""
+    },
+    {
+      "id": "T-27",
+      "title": "One boundary in place of approving each script: policy key scripts.approval (each, session, none); with none, run_python in a governed level A environment runs without an approval, level B and trusted runs still ask; the app offers Work freely on copies in setup and Settings, confirmed at the keyboard (REQ-36, REQ-37, D-16, F-15)",
+      "session": "S10",
+      "depends_on": [
+        "T-26"
+      ],
+      "done_by": "claude",
+      "acceptance": [
+        {
+          "how": "Claude adds policy tests: the three values, the scripts.session_approval alias, an unknown value",
+          "expected": "parsed as F-15 says; an unknown value is refused with a message naming the key"
+        },
+        {
+          "how": "Claude extends the gateway e2e: scripts.approval none with a governed level A environment; the same with each; a level B run and a trusted run under none",
+          "expected": "no approval is asked under none and the audit line says which rule allowed it; each asks as before; level B and trusted still ask every time"
+        },
+        {
+          "how": "Claude adds a confinement test that runs on Linux in CI (and on Windows and macOS where the CI runner can set the sandbox up): a script tries to read the connections folder, the policy file, another session's workspace and a file in the person's home, to open a socket, and to write outside its run folder",
+          "expected": "every attempt fails, and the script's own run folder still works"
+        },
+        {
+          "how": "Claude extends the app e2e: turn Work freely on copies on through the test confirmation path, then off",
+          "expected": "the policy file gains then loses exactly the keys F-15 lists; the page shows the mode in force; with an organization policy that forbids it the choice is shown as not available"
+        },
+        {
+          "how": "Claude updates docs/reference.md (Scripts, Python environments, policy keys), SECURITY.md, README and examples/policy.yaml",
+          "expected": "they describe the boundary B1 to B5 and no line still promises an approval per script by default"
+        }
+      ],
+      "status": "todo",
+      "evidence": ""
+    },
+    {
+      "id": "T-28",
+      "title": "Toolboxes in the gateway: toolboxes/<id>/toolbox.yaml (F-16) with kinds geolibre and described (qgis only if its output is confirmed from QGIS's source, marked experimental); a built-in catalogue with GeoLibre 1.8.1 pinned by hash for five systems; columbus-mcp toolbox install, add, list, remove; tools found, described and run through search_tools, describe_tool and run_tool, confined at level A (REQ-38, REQ-39, D-17, R-22, R-23)",
+      "session": "S10",
+      "depends_on": [
+        "T-27"
+      ],
+      "done_by": "claude",
+      "acceptance": [
+        {
+          "how": "Claude writes a stand-in toolbox program that follows the GeoLibre runner's contract as read from its source (manifests, <tool> --key=value, outputs as a last JSON line, exit codes 0, 1, 2) and a gateway e2e that installs it",
+          "expected": "search_tools finds its tools by words; describe_tool shows each parameter with its role and kind; run_tool runs one with a workspace layer as input and the output is a workspace layer with provenance and the input's labels"
+        },
+        {
+          "how": "Claude adds e2e cases: a tool that tries the network, one that reads outside its inputs, one that writes outside its run folder, a program changed after install, output text longer than the cap, toolboxes.allow false",
+          "expected": "the three attempts fail under level A; the changed program is refused until installed again; long text is cut and marked untrusted; with the policy off no toolbox tool is offered"
+        },
+        {
+          "how": "Claude tests the catalogue install against a local fake download server: the right file, a file with a wrong hash, toolboxes.catalogue false",
+          "expected": "the right file installs and lists its tools; the wrong hash is refused and nothing is left installed; the policy refusal names the key"
+        },
+        {
+          "how": "Claude checks the five pinned hashes against the publisher's release (archives downloaded and hashed, never run)",
+          "expected": "each pinned hash equals the hash of the downloaded archive and the publisher's .sha256 file"
+        },
+        {
+          "how": "Claude tests a described toolbox: a tools.json with one tool wrapping a small program",
+          "expected": "found, described and run like the others"
+        }
+      ],
+      "status": "todo",
+      "evidence": ""
+    },
+    {
+      "id": "T-29",
+      "title": "Toolboxes in the app: the Tools page lists installed toolboxes with their tool counts, offers Add tools (GeoLibre from the catalogue with what will be downloaded shown first; a program with a description file), lets the person search a toolbox's tools, and removes one (REQ-38, D-17)",
+      "session": "S10",
+      "depends_on": [
+        "T-28"
+      ],
+      "done_by": "claude",
+      "acceptance": [
+        {
+          "how": "Claude extends the desktop e2e with the fake download server and the stand-in program: install from the catalogue, search its tools, run one from a chat with the scripted assistant, remove it",
+          "expected": "each step works; the install shows name, version, source, licence and size before it starts; after removal the assistant is no longer offered its tools"
+        },
+        {
+          "how": "Claude runs the accessibility checks the other pages have on the new parts",
+          "expected": "every control has a name and is reached by Tab"
+        }
+      ],
+      "status": "todo",
+      "evidence": ""
+    },
+    {
+      "id": "T-30",
+      "title": "The assistant reads and steers the map: a map_view tool returns what the person's map shows (extent, layers on, the active layer, the selected feature) and can turn layers on or off and zoom to a layer or an extent; map_snapshot can draw that same view; web layers stay out of reach (REQ-40, D-18)",
+      "session": "S10",
+      "depends_on": [
+        "T-26"
+      ],
+      "done_by": "claude",
+      "acceptance": [
+        {
+          "how": "Claude extends the gateway and map page tests: read the view after the person pans and picks a feature; ask for layers on and a zoom, and watch the page follow; snapshot the view",
+          "expected": "the view read matches the page; the page follows within a few seconds; the snapshot's extent is the view's"
+        },
+        {
+          "how": "Claude checks map_view with no map open, and with web layers on",
+          "expected": "with no map open it says so and changes nothing; no web layer's source, URL or data appears (D-14, REQ-34)"
+        }
+      ],
+      "status": "todo",
+      "evidence": ""
+    },
+    {
+      "id": "T-31",
+      "title": "A project has files: projects/<id>/files/ (F-17); the assistant lists, reads and writes text files there and runs a script from there (run_python with a script path), under policy projects.files; the project's page shows the files and opens the folder (REQ-41, D-19)",
+      "session": "S10",
+      "depends_on": [
+        "T-27"
+      ],
+      "done_by": "claude",
+      "acceptance": [
+        {
+          "how": "Claude adds gateway e2e: write a script into the project's files, list it, read it, run it by path, change it, remove it; the same in a chat with no project",
+          "expected": "each works in a project and is audited; with no project the answer says to start the chat in a project; with projects.files false none is offered"
+        },
+        {
+          "how": "Claude adds path tests: absolute paths, .., .git, .columbus, Windows reserved names, names that differ only by case, a link, a file over the size cap, a binary file",
+          "expected": "each is refused with a plain message and nothing outside the files folder is read or written"
+        },
+        {
+          "how": "Claude extends the desktop e2e: the project's page lists a file the assistant wrote",
+          "expected": "it is listed with its size and time"
+        }
+      ],
+      "status": "todo",
+      "evidence": ""
+    },
+    {
+      "id": "T-32",
+      "title": "Sync engine: a new crate that syncs a folder with a repository through the server's web API, for GitHub (and GitHub Enterprise Server) and Gitea (and Forgejo): check for changes, get the server's changes, send the person's as one commit, keep both versions on a conflict, ignore data and secrets, never force (REQ-42, REQ-43, D-20, F-18, R-24)",
+      "session": "S11",
+      "depends_on": [
+        "T-26"
+      ],
+      "done_by": "claude",
+      "acceptance": [
+        {
+          "how": "Claude writes an in-memory fake host and a test with two simulated people making random edits, deletions and renames over many rounds",
+          "expected": "no changed file is ever lost; after both sync twice with no new edits their folders are equal"
+        },
+        {
+          "how": "Claude writes two fake servers (GitHub's and Gitea's API shapes as read from their API descriptions) and runs the adapters against them: a first sync into an empty repository, a normal sync, a branch that moved during the sync, a wrong token, a server that redirects to another host, 50 items a page",
+          "expected": "each behaves as D-20 and R-24 say; the token is never sent to another host; a moved branch is retried, never forced"
+        },
+        {
+          "how": "Claude tests the safety rules: the ignore list, the 5 MB cap, text that looks like a token or private key, refused paths (F-17), symlinks, a conflict on the same file, a file deleted on one side and changed on the other, line-ending-only differences",
+          "expected": "ignored and oversized files are skipped and named; a secret stops the sync before anything is sent; a conflict keeps both versions; a line-ending-only difference is not a conflict"
+        },
+        {
+          "how": "Claude checks new dependencies against security baseline item 5",
+          "expected": "only licences on the list"
+        }
+      ],
+      "status": "todo",
+      "evidence": ""
+    },
+    {
+      "id": "T-33",
+      "title": "Sync in the app: Settings › Git servers (connect GitHub, GitHub Enterprise Server, Gitea or Forgejo with a token entered in the app and kept in the credential store); on a project's page: link to a repository (pick one or create a private one), Check for changes, Sync with an optional note, What changed, Needs a look, History, Disconnect; an arriving change to the project's shared settings is shown before it is used; policy sync.allow and sync.hosts (REQ-42, REQ-43, D-20)",
+      "session": "S11",
+      "depends_on": [
+        "T-32",
+        "T-31"
+      ],
+      "done_by": "claude",
+      "acceptance": [
+        {
+          "how": "Claude extends the desktop e2e against the fake servers: connect a server, link a project to a new private repository, add a file, Sync, change the file on the server, Check for changes, Sync, make a conflict, resolve it with each of the three choices, read History, Disconnect",
+          "expected": "each step works and the repository on the fake server holds what the page says; the token never appears in a file, a log or the page"
+        },
+        {
+          "how": "Claude tests the policy: sync.allow false, and sync.hosts naming another host",
+          "expected": "sync is not offered; connecting a host not on the list is refused with a message naming the key"
+        },
+        {
+          "how": "Claude tests an arriving change to columbus-project.yaml",
+          "expected": "the page shows the old and new instructions and the project keeps the old ones until the person accepts"
+        }
+      ],
+      "status": "todo",
+      "evidence": ""
+    },
+    {
+      "id": "T-34",
+      "title": "Docs, README and pictures for 0.15: README (what Columbus is now, the window, the boundary, toolboxes, sync), app tour, install guides, reference kept true, SECURITY.md, examples; pictures and the animation retaken from the real app; version 0.15.0 everywhere it is written (REQ-45, D-21)",
+      "session": "S12",
+      "depends_on": [
+        "T-27",
+        "T-28",
+        "T-29",
+        "T-30",
+        "T-31",
+        "T-32",
+        "T-33"
+      ],
+      "done_by": "claude",
+      "acceptance": [
+        {
+          "how": "Claude retakes every picture and the animation with the picture script and reads the README as GitHub shows it",
+          "expected": "every picture shows the new app; the README renders; a fresh reader can say in ten seconds what Columbus does"
+        },
+        {
+          "how": "Claude runs the link check and greps the docs for words of the old window and the old rule (an approval for each script)",
+          "expected": "no broken link; no stale line"
+        },
+        {
+          "how": "Claude sets the version to 0.15.0 and builds",
+          "expected": "every place that states the version agrees; the build and all tests pass"
+        }
+      ],
+      "status": "todo",
+      "evidence": ""
+    },
+    {
+      "id": "T-35",
+      "title": "Final review of part 3 in a fresh subagent (docs/final-review.md, applied to build-brief-3), fix-now findings added as R-103 onward and fixed, then one re-check in another fresh subagent",
+      "session": "S12",
+      "depends_on": [
+        "T-34"
+      ],
+      "done_by": "claude",
+      "acceptance": [
+        {
+          "how": "Claude runs the review, then the re-check after the fixes",
+          "expected": "no fix-now finding is open; the others are logged"
+        }
+      ],
+      "status": "todo",
+      "evidence": ""
+    },
+    {
+      "id": "T-36",
+      "title": "Hand-over: every CI job green on main, the handoff note written, and one message to the owner (what changed, what was decided and why, what could not be checked, the optional checks H-3 to H-5). Nothing is published (D-21)",
+      "session": "S12",
+      "depends_on": [
+        "T-35"
+      ],
+      "done_by": "claude",
+      "acceptance": [
+        {
+          "how": "Claude reads the Actions runs on main and writes the note",
+          "expected": "all jobs green; the note is the newest in docs/progress-log.md"
+        }
+      ],
+      "status": "todo",
+      "evidence": ""
     }
   ]
 }

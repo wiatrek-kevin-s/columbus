@@ -201,48 +201,35 @@ def driver(env, app):
 
 
 def ready(d, wait):
-    """Wait until the main window has drawn itself: its four places are in
-    the nav, and the page it opens on (a new chat) is shown."""
+    """Wait until the main window has drawn itself: its places are in the
+    sidebar, and the page it opens on (a new chat) is shown."""
     wait.until(lambda drv: drv.execute_script(
-        "return document.querySelectorAll('#nav a.tab').length === 4 && !!document.getElementById('text')"))
+        "return document.querySelectorAll('#nav a.tab').length === 7 && !!document.getElementById('text')"))
 
 
 
 
 AT_REST = """
-const p = document.getElementById('panel');
-if (!p) return 'none';
-if (typeof p.getAnimations === 'function' && p.getAnimations().some((a) => a.playState === 'running' || a.playState === 'pending')) return 'moving';
-const r = p.getBoundingClientRect();
-return [Math.round(r.left), Math.round(r.top), Math.round(r.width)].join(',');
+const parts = ['sidebar', 'main', 'outputs'].map((id) => document.getElementById(id)).filter(Boolean);
+if (!parts.length) return 'none';
+return parts.some((p) => typeof p.getAnimations === 'function' && p.getAnimations().some((a) => a.playState === 'running' || a.playState === 'pending')) ? 'moving' : 'still';
 """
 
 
 def at_rest(d, seconds=5):
-    """Wait until the main window's panel has stopped moving. It glides for a
-    moment between the middle of the window (the start) and its side, and a
-    click aimed while it moves lands where the thing was. At rest means: no
-    move under way, and the panel drawn in the same place on two looks a
-    couple of frames apart (a move ends by the clock, its last frame a
-    moment later). A window without the panel (the classic windows, a
-    browser page, a frame) is at rest."""
-    looks = []
-
-    def still(drv):
-        now = drv.execute_script(AT_REST)
-        if now == "none":
-            return True
-        looks.append(now)
-        return now != "moving" and len(looks) >= 2 and looks[-2] == now
-
+    """Wait until the main window's columns (the sidebar, the middle and the
+    panel on the right) are not in the middle of a move: a click aimed while
+    one glides lands where the thing was. They change at once today, so this
+    is one look; it waits only if a move is ever given a transition. A window
+    without them (the classic windows, a browser page, a frame) is at rest."""
     try:
-        WebDriverWait(d, seconds, poll_frequency=0.03).until(still)
+        WebDriverWait(d, seconds, poll_frequency=0.03).until(lambda drv: drv.execute_script(AT_REST) != "moving")
     except Exception:
         # Not this wait's to report: the click that follows says what is wrong.
         pass
 
 
-# Every click a script makes waits for the panel to be at rest first, as a
+# Every click a script makes waits for the columns to be at rest first, as a
 # person would.
 _click = WebElement.click
 
