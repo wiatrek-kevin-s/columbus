@@ -380,7 +380,15 @@ gpd.GeoDataFrame({"RTE": ["IH0035", "US0183"], "district": [14, 12]}, geometry=[
         words = d.find_element(By.ID, "work").text
         assert "Work freely on copies (recommended)" in words and "Ask me before each script" in words, words
         assert "cannot reach your connections, your passwords, your other files or the internet" in words, words
-        assert "still asks you before anything leaves the workspace or changes a source" in words, words
+        # R-104: the cards say what the first choice turns on besides
+        # scripts, that the second changes scripts only, and exactly what
+        # still asks when something leaves the workspace.
+        assert "Choosing this also turns on Python environments you register, your own tools, toolboxes, project files and sync" in words, words
+        assert "This changes scripts only: tools from a toolbox and your own installed tools still run without asking" in words, words
+        assert "Columbus asks you before it changes a source" in words, words
+        assert ("An export to a folder that is not pre-approved asks; an export to a pre-approved folder, and what your "
+                "assistant writes into a project's files, do not") in words, words
+        assert "before anything leaves the workspace" not in words, words
         assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
         d.save_screenshot(str(OUT / "settings-work-mode.png"))
         step("work freely on copies: on, after one confirmation, writes the seven settings")

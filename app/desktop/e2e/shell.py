@@ -166,6 +166,9 @@ def main():
         # How the assistant works is chosen here too (T-27, REQ-37).
         assert "How should your assistant work?" in first and "Work freely on copies (recommended)" in first, first
         assert "Ask me before each script" in first and d.find_element(By.ID, "fr-work-free").is_enabled(), first
+        # R-104: the first run's cards carry the same exact words as Settings.
+        assert "Choosing this also turns on Python environments you register, your own tools, toolboxes, project files and sync" in first, first
+        assert "This changes scripts only" in first and "An export to a folder that is not pre-approved asks" in first, first
         assert not d.find_element(By.ID, "text").is_displayed(), "no question to ask before an AI is connected"
         named(d)
         d.save_screenshot(str(OUT / "shell-first-run.png"))
