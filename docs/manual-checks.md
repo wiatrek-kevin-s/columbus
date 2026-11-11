@@ -1,16 +1,17 @@
 # Manual checks for Columbus 0.15.0
 
-Optional checks that only a person with the real systems can do. Columbus is tested with fake ArcGIS servers, a stand-in arcpy, a stand-in for the GeoLibre program and stand-in Git servers, never against a real portal, a real ArcGIS Pro, the real GeoLibre program or a real GitHub or Gitea. None of these checks is needed to use Columbus. H-1 and H-2 take about 30 minutes each, H-3 and H-4 about 20, and the two short looks at the end about 5. H-3, H-4 and the two short looks need Columbus 0.15.0: if the newest release is still 0.14.0, they wait for 0.15.0. H-1 and H-2 can be done on 0.14.0 too.
+Optional checks that only a person with the real systems can do. Columbus is tested with fake ArcGIS servers, a stand-in arcpy, a stand-in for the GeoLibre program, stand-in Git servers and stand-in AI services, never against a real portal, a real ArcGIS Pro, the real GeoLibre program or a real GitHub or Gitea; and of the AI services for the app's own chat, every one except Anthropic is untried on the real thing. None of these checks is needed to use Columbus. H-1 and H-2 take about 30 minutes each, H-3 and H-4 about 20, H-6 about 15, and the three short looks at the end about 5 each. H-3, H-4, H-6 and the three short looks need Columbus 0.15.0: if the newest release is still 0.14.0, they wait for 0.15.0. H-1 and H-2 can be done on 0.14.0 too.
 
 - **H-1: ArcGIS sign-in.** Your organization registers its own ArcGIS OAuth app for Columbus, and you sign in to a layer shared only inside your organization. It also settles which of the two sign-in routes your portal accepts (A-2, below).
 - **H-2: arcpy on a real ArcGIS Pro computer.** You register an ArcGIS Pro environment and run one small arcpy script. Until this passes, arcpy and trusted environments stay marked **experimental** (D-13). (The plan for 0.15 lists arcpy again as H-5: it is this same check, still open.)
 - **H-3: GeoLibre.** You install the GeoLibre toolbox and have your assistant run one of its tools. This is the first real run of that program with Columbus (A-7).
 - **H-4: sync with a real server.** You connect your GitHub or your organization's Gitea, link a project to a new private repository, and sync.
-- **Two short looks on Windows and on a Mac:** the map panel when your assistant reads and moves the map, and the choice **Work freely on copies** with Windows Hello or Touch ID. The app's pages are tested on Linux only.
+- **H-6: another AI service in the app's chat.** You choose an AI service other than Anthropic for the app's own chat (OpenAI, xAI, Google Gemini, OpenRouter, or a model on your own computer), save its key, and ask for a layer on the map. It is that service's first meeting with the real thing (A-11).
+- **Three short looks on Windows and on a Mac:** the map panel when your assistant reads and moves the map, the choice **Work freely on copies** with Windows Hello or Touch ID, and the keys of AI services and a service added by its address, kept when the app is opened again. The app's pages are tested on Linux only.
 
-When you finish, write down what you saw for each numbered step marked **Record**, and give it to whoever maintains your Columbus (for this repository: open an issue on GitHub with the results). Leave out tokens, codes, passwords and client ids of private apps.
+When you finish, write down what you saw for each numbered step marked **Record**, and give it to whoever maintains your Columbus (for this repository: open an issue on GitHub with the results). Leave out tokens, keys (and the last four characters the app shows of one), codes, passwords and client ids of private apps.
 
-Don't use production data you can't afford to have read. H-1 and H-2 only read your data. H-3 downloads and installs a program. H-4 makes a private repository on your Git server and sends two small text files to it.
+Don't use production data you can't afford to have read. H-1 and H-2 only read your data. H-3 downloads and installs a program. H-4 makes a private repository on your Git server and sends two small text files to it. H-6 sends what your assistant reads to the AI service you choose, and that service bills your key for the requests.
 
 ## Before you start
 
@@ -197,9 +198,34 @@ Sync was built and tested against stand-in servers written from GitHub's and Git
 
 **What the result means.** If every step works, the note "tested against stand-in servers only" can come out of the docs for that kind of server. If a step fails, the maintainers need the server's kind and version and the message: the real server answered differently from its published description.
 
-## Two short looks on Windows and on a Mac
+## H-6: another AI service in the app's chat
 
-The app's pages are tested on Linux only. These two take about five minutes each, in the Columbus app, with an AI connected for the chat.
+The app's own chat talks to the AI service you choose. Columbus's side of every service except Anthropic was built from that service's published description and tested against stand-in services; no key of any service was used (A-11). This check is the first meeting of one of them with the real thing. It works on Windows and on a Mac (on Linux no key can be saved yet). You need a connection with a small layer (here `local-roads`, as in H-2), and either a key for OpenAI, xAI, Google Gemini or OpenRouter, or Ollama or LM Studio running on your computer with a model that can call tools.
+
+The service bills your key for these few requests. What your assistant reads in this check is sent to the service you choose, so use data you may send there.
+
+1. Open **Settings › Assistant**. Under **Service for new chats**, choose the service, for example **OpenAI**.
+
+   **Record (H-6.1):** the service, and the line under the list that says where its key comes from. If the list says "(not allowed by your organization)" beside it, your `policy.yaml` names other hosts under `assistant.hosts`, and the app refuses the choice with a sentence that names that rule: record the sentence and stop here.
+2. Paste the key into the key box and press **Save key**. (Ollama takes no key: skip this step. LM Studio takes one only if you turned on its sign-in.)
+
+   **Record (H-6.2):** whether the line under the box says "Key saved". Leave out the key, and the four characters the app shows of it.
+3. Choose the model under **Model for new chats**. If the list is empty or lacks the one you want, press **Load the list from the service**, or type the model's id in **Another model's id**. Then press **Save settings**.
+
+   **Record (H-6.3):** the model. If you loaded the list: what the app said ("… models listed by the service"), or the error, word for word.
+4. Press **New chat**. Under the message box the chat should name the service and the model. Ask: *"Read 100 roads from local-roads and show them on my map."*
+
+   **Record (H-6.4):** whether the steps ran (the line "… steps" above the answer), whether the panel on the right opened with the roads on the map, and the answer in a sentence. If the chat stopped, the message word for word: it names the service. If the chat said the service "refused a setting Columbus sends by choice … and took the request without it", record that line too.
+5. Change the model in the chat: under the message box, choose another one (if only one is offered, skip this step). The chat should say "From here on: …" with the model's name. Then ask: *"How many roads did you read, and in which coordinate system?"*
+
+   **Record (H-6.5):** the "From here on" line, and whether the answer came. The service under the message box should not have changed: a chat keeps its service.
+6. To go back, choose your usual service under **Settings › Assistant**. To take the test key off this computer, choose the tested service once more and press **Remove key**.
+
+**What the result means.** If every step works, the note "untried on the real thing" can come out of the docs for that service. If a step fails, the maintainers need the service, the model and the message, word for word: the real service answered differently from its published description. Small models on your own computer often call tools unreliably; a failure there may be the model's, not Columbus's, so say which model it was.
+
+## Three short looks on Windows and on a Mac
+
+The app's pages are tested on Linux only. These three take about five minutes each, in the Columbus app, with an AI connected for the chat.
 
 **The map panel.** Your assistant can read what your map shows and point it at a result.
 
@@ -220,3 +246,16 @@ The app's pages are tested on Linux only. These two take about five minutes each
 3. Choose **Ask me before each script**. Nothing should ask you to confirm, and only `scripts.approval` should change, to `each`.
 
    **Record:** whether both were so.
+
+**Keys and an added service, kept when the app is opened again.** The tests keep keys in memory and use a stand-in for the confirmation; this look uses your computer's real credential store and the real Windows Hello or Touch ID.
+
+1. Open **Settings › Assistant**. Under **Service for new chats**, choose a second service, one you have a key for besides the one you use. Paste its key and press **Save key**. (With a key for one service only, go on to step 2.)
+
+   **Record:** whether the line under the key box says "Key saved". Leave out the key, and the four characters the app shows of it.
+2. Under **Other services**, press **Add another service**. Give it a name, such as `Test service`, and the address of a service you really have (your Azure OpenAI, your organization's gateway). With none, `https://example.org/v1` will do for this look: adding a service sends nothing to its address. Press **Add**.
+
+   **Record:** what asked you to confirm (Windows Hello, Touch ID or your Mac password), and whether its words named the service and the host of its address. Cancel the prompt once first: nothing should be added.
+3. Quit Columbus and open it again. Open **Settings › Assistant**.
+
+   **Record:** whether the added service is still listed under **Other services**, with its address and no line in red under it; and whether each service of step 1, chosen in turn under **Service for new chats**, still says "Key saved". (On a Mac, macOS may ask for your password when the app reads a key.)
+4. Tidy up: press **Remove** beside the added service, and choose your usual service again under **Service for new chats**.
