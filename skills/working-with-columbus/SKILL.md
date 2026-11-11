@@ -53,7 +53,9 @@ every check id is in [references/check-ids.md](references/check-ids.md).
 Call `whoami` once, first, with no arguments. Read and keep:
 
 - `policy.edits_allowed`, `policy.scripts_allowed`: phase 1 is read-only by default.
+  `policy.script_approval`: a script that stays in the sandbox asks first (`each`, `session`) or runs at once (`none`); one with network or outside the sandbox always asks.
   `policy.personal_tools_allowed`: whether the person's own tools (section 13) are on.
+  `policy.project_files_allowed`: in a project's chat `project_files` keeps scripts and notes in its folder, and `run_python` runs one by its path (`script`).
 - `policy.rows_returned_per_call` (at most 500), `policy.rows_read_per_query` (default
   200,000; an organization may raise it, up to 20,000,000), `policy.query_seconds`
   (default 120, at most 3,600), `policy.limits_raised`, and `policy.project_db` (whether
@@ -245,10 +247,9 @@ a raster of the session's as `imagery` (aerial imagery or a DEM from a rasters c
 clipped or reprojected with `raster_op` first); it is drawn underneath.
 
 The person's own map (the app's panel beside the chat) is `map_view`: with no arguments it
-returns what they are looking at (extent, this session's layers that are on, the active one,
-the feature they selected), for questions about "this" or "here"; with `show`, `active` or
-`zoom_to` it shows them a result (no approval; it says when no map is open).
-`map_snapshot {"extent": "view"}` is a picture of that same view.
+returns what they look at (extent, layers on, the active one, the selected feature), for
+"this" or "here"; `show`, `active` or `zoom_to` shows them a result (no approval; it says
+when no map is open). `map_snapshot {"extent": "view"}` is a picture of that same view.
 
 ### 7. Approvals
 
@@ -443,6 +444,10 @@ The person can keep scripts as their own tools. `search_tools` lists installed o
 and their outputs carry the inputs' labels and checks. Prefer an installed tool that fits
 over writing a new script, and read its `describe_tool` (inputs' geometry, CRS and fields,
 units, `not_for`) before calling it.
+
+Toolboxes the person installed (`whoami` names them; kind `toolbox`) hold many more GIS tools:
+`search_tools`, `describe_tool`, then `run_tool` as `<toolbox>.<tool>` (inputs are `ws://`
+handles; no approval). Check its results yourself.
 
 When the person asks to save a script as a tool ("add the script we just made as a tool"),
 or the same script keeps being written, use `propose_tool`. Read

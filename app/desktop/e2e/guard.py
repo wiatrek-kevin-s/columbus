@@ -36,6 +36,7 @@ import time
 from pathlib import Path
 
 from selenium import webdriver
+from selenium.common.exceptions import StaleElementReferenceException
 from selenium.webdriver.common.options import ArgOptions
 from selenium.webdriver.remote.client_config import ClientConfig
 from selenium.webdriver.remote.webelement import WebElement
@@ -145,7 +146,14 @@ def kill_all():
 
 
 class Wait(WebDriverWait):
-    """WebDriverWait whose time-out says which step was waiting."""
+    """WebDriverWait whose time-out says which step was waiting. A condition
+    that reads an element just as the page draws it again is asked again:
+    the element it found is gone, and the next look finds the new one. (The
+    condition must still come true within the time.)"""
+
+    def __init__(self, driver, timeout, poll_frequency=0.5, ignored_exceptions=None):
+        ignored = [StaleElementReferenceException, *(ignored_exceptions or [])]
+        super().__init__(driver, timeout, poll_frequency=poll_frequency, ignored_exceptions=ignored)
 
     def until(self, method, message=""):
         return super().until(method, message or f"step '{last()}' waited {self._timeout}s in vain")

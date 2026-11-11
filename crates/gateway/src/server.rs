@@ -362,6 +362,9 @@ pub struct PolicySummary {
     pub edits_allowed: bool,
     /// Personal tools (propose_tool, and tools the person installed) are on.
     pub personal_tools_allowed: bool,
+    /// Toolboxes (programs that describe their own tools, installed by the
+    /// person) are on; their tools are found with search_tools.
+    pub toolboxes_allowed: bool,
     /// Workflows (propose_workflow, and workflows the person approved) are on.
     pub workflows_allowed: bool,
     pub rows_returned_per_call: u64,
@@ -381,6 +384,24 @@ pub struct PolicySummary {
     pub trusted_environments_allowed: bool,
     /// Governed environments may have network access (level B).
     pub environment_network_allowed: bool,
+    /// When a script that runs in the sandbox with no network (the engine's
+    /// Python, or a governed level A environment) asks the person first:
+    /// `each` run, once per `session` for the same code, or `none` (the
+    /// sandbox is the boundary). A run with network (level B) or in a
+    /// trusted environment asks every time, whatever this says.
+    pub script_approval: String,
+    /// The same, in a sentence.
+    pub script_approval_means: String,
+    /// The built-in catalogue may download a toolbox the person installs.
+    pub toolbox_catalogue: bool,
+    /// The assistant may list, read and write text files in its project's
+    /// own folder (project_files), and run scripts kept there.
+    pub project_files_allowed: bool,
+    /// A project's files may sync with a Git server, on the person's click.
+    pub sync_allowed: bool,
+    /// Git servers a project may sync with; empty means any the person
+    /// connects.
+    pub sync_hosts: Vec<String>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -428,7 +449,10 @@ pub struct ToolCard {
     /// `read`, `write` or `destructive`, as reviewed (connected tools).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub risk: Option<columbus_broker::manifest::Risk>,
-    /// `no`, `yes`, or `if_labelled` (only while governed data is in the session).
+    /// `no`, `yes`, `if_labelled` (only while governed data is in the
+    /// session), or, for run_python where policy says scripts.approval:
+    /// none, `if_outside_sandbox` (only a run with network or in a trusted
+    /// environment asks).
     pub approval: String,
 }
 
@@ -1450,7 +1474,8 @@ impl Gateway {
                 + Self::workflow_router()
                 + Self::env_router()
                 + Self::snapshot_router()
-                + Self::project_db_router(),
+                + Self::project_db_router()
+                + Self::project_files_router(),
         }
     }
 
@@ -1962,6 +1987,8 @@ impl Gateway {
                 approval_tools,
             });
         }
+        // The toolboxes the person installed (toolbox.rs).
+        out.extend(self.toolbox_cards().await);
         out
     }
 
@@ -2059,6 +2086,7 @@ impl Gateway {
                 scripts_allowed: p.allow_scripts,
                 edits_allowed: p.allow_edits,
                 personal_tools_allowed: p.allow_personal_tools,
+                toolboxes_allowed: p.allow_toolboxes,
                 workflows_allowed: p.allow_workflows,
                 rows_returned_per_call: p.return_rows.unwrap_or(500).min(500),
                 rows_read_per_query: Some(limits.max_rows()),
@@ -2072,6 +2100,12 @@ impl Gateway {
                 environments_allowed: p.environments.allow,
                 trusted_environments_allowed: p.environments.allow_trusted,
                 environment_network_allowed: p.environments.allow_network,
+                script_approval: crate::script_tools::approval_name(p).into(),
+                script_approval_means: crate::script_tools::approval_words(p),
+                toolbox_catalogue: p.toolboxes.catalogue,
+                project_files_allowed: p.allow_project_files,
+                sync_allowed: p.allow_sync,
+                sync_hosts: p.sync.hosts.clone(),
             },
             connections: self.connection_cards(),
             connections_folder: self.state.paths.connections.display().to_string(),
@@ -2122,6 +2156,7 @@ impl Gateway {
                     notes.insert(0, why);
                 }
                 notes.extend(p.limits.ignored());
+                notes.extend(self.toolbox_notes().await);
                 notes.push("Changes the person makes in the Columbus app's Settings (connections, edits, scripts, personal tools, tools they install or remove) apply to this session within a second, from the next call: no restart is needed. Call whoami again to see them. When a change narrows what a connection allows, workspace files made from its data are removed, and every approval not yet used is withdrawn.".into());
                 notes
             },
@@ -2131,7 +2166,7 @@ impl Gateway {
     }
 
     #[tool(
-        description = "Find the right tool for a job by describing it in plain words. Returns tool names with one-line summaries; call describe_tool for the full description and arguments.",
+        description = "Find the right tool for a job by describing it in plain words. Returns tool names with one-line summaries; call describe_tool for the full description and arguments. A name with a dot (<provider>.<tool>: a connected server's tool, one of the person's own, or one of an installed toolbox's many GIS tools) is run with run_tool.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn search_tools(
@@ -2164,6 +2199,10 @@ impl Gateway {
                 if !self.state.policy().tool_allowed(&t.name) {
                     continue;
                 }
+                // Not offered while organization policy turns it off.
+                if t.name == "project_files" && !self.state.policy().allow_project_files {
+                    continue;
+                }
                 let desc = t.description.as_deref().unwrap_or("").to_string();
                 candidates.push((
                     format!("{} {}", t.name.replace('_', " "), desc),
@@ -2172,7 +2211,18 @@ impl Gateway {
                         summary: summary_of(&desc),
                         provider: "columbus".into(),
                         risk: None,
-                        approval: if t.name == "run_python" { "yes" } else { "no" }.into(),
+                        approval: if t.name == "run_python" {
+                            // What is true under the policy in force (D-16).
+                            match self.state.policy().scripts.approval_rule() {
+                                columbus_shared::policy::ScriptApproval::None => {
+                                    "if_outside_sandbox"
+                                }
+                                _ => "yes",
+                            }
+                        } else {
+                            "no"
+                        }
+                        .into(),
                     },
                 ));
             }
@@ -2265,8 +2315,17 @@ impl Gateway {
             .filter(|(score, _)| words.is_empty() || *score > 0)
             .collect();
         scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.name.cmp(&b.1.name)));
+        // The tools of the toolboxes the person installed, best matches
+        // only (toolbox.rs).
+        let (cards, checks) = self
+            .toolbox_search(args.provider.as_deref(), &words, scored)
+            .await;
         self.audit(&ctx, rec)?;
-        Ok(out(scored.into_iter().map(|(_, c)| c).collect()))
+        Ok(Json(Output {
+            result: cards,
+            checks,
+            provenance: None,
+        }))
     }
 
     #[tool(
@@ -2280,6 +2339,12 @@ impl Gateway {
     ) -> Result<Json<Output<ToolDetail>>, String> {
         let rec = self.gate(&ctx, "describe_tool", &json!({"name": args.name}))?;
         if let Some((ns, tool_name)) = args.name.rsplit_once('.') {
+            // A tool of a toolbox the person installed (toolbox.rs).
+            if self.is_toolbox(ns) {
+                return self
+                    .describe_toolbox_tool(&ctx, rec, ns, tool_name, &args.name)
+                    .await;
+            }
             if let Some((host, pl)) = self.find_plugin(ns) {
                 if !self.state.policy().tool_allowed(&args.name) {
                     return Err(self.deny(&ctx, rec, Denied::Tool(args.name.clone())));
@@ -2386,10 +2451,19 @@ impl Gateway {
                 ))
             }
         };
+        if tool.name == "project_files" && !self.state.policy().allow_project_files {
+            return Err(self.deny(&ctx, rec, crate::project_files::POLICY_OFF));
+        }
         self.audit(&ctx, rec)?;
+        let mut description = tool.description.as_deref().unwrap_or("").to_string();
+        if tool.name == "run_python" {
+            // When it asks the person, under the policy in force now.
+            description.push_str("\n\nIn force now: ");
+            description.push_str(&crate::script_tools::approval_words(&self.state.policy()));
+        }
         Ok(out(ToolDetail {
             name: tool.name.to_string(),
-            description: tool.description.as_deref().unwrap_or("").to_string(),
+            description,
             input_schema: Value::Object((*tool.input_schema).clone()),
             read_only: tool
                 .annotations
@@ -2618,7 +2692,7 @@ impl Gateway {
     }
 
     #[tool(
-        description = "List the providers available in this session: Columbus's own engines and any connected MCP servers (Drive, notes, vendor APIs), with each one's trust level, state and how many tools it enables, plus the data labels in force. Use it to plan which provider to use and whether a step will need approval.",
+        description = "List the providers available in this session: Columbus's own engines, any connected MCP servers (Drive, notes, vendor APIs) and the toolboxes the person installed (programs with many GIS tools, found with search_tools), with each one's trust level, state and how many tools it enables, plus the data labels in force. Use it to plan which provider to use and whether a step will need approval.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn list_providers(
@@ -2675,6 +2749,11 @@ impl Gateway {
         rec.provider = Some(ns.to_string());
         if !self.state.policy().tool_allowed(&args.name) {
             return Err(self.deny(&ctx, rec, Denied::Tool(args.name.clone())));
+        }
+        // A tool of a toolbox the person installed: confined at level A,
+        // no approval (toolbox.rs).
+        if self.is_toolbox(ns) {
+            return self.run_toolbox_tool(&ctx, rec, ns, tool, &args).await;
         }
         if let Some((host, pl)) = self.find_plugin(ns) {
             return self

@@ -14,11 +14,13 @@ pub mod map_sources;
 pub mod paths;
 pub mod policy;
 pub mod proctree;
+pub mod project_files;
 pub mod projects;
 pub mod proof;
 pub mod sandbox;
 pub mod share;
 pub mod sqlcheck;
+pub mod toolboxes;
 pub mod tools;
 pub mod workflows;
 

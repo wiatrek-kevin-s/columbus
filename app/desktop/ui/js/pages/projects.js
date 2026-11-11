@@ -3,7 +3,9 @@
 // server enforces the connections (a project only narrows what you have);
 // the instructions go to the assistant in every chat of the project. Your
 // projects are yours alone: nothing here is shared.
+import { mount as mountSync } from "./project_sync.js";
 import { h, el, invoke, store, button, pageHead, showError, toast, emptyState, askConfirm, ago, plural, size } from "../core.js";
+import { filesCard } from "./project_files.js";
 
 const go = (hash) => { location.hash = hash; };
 const projHash = (id) => `#/projects/${encodeURIComponent(id)}`;
@@ -218,6 +220,7 @@ export async function render(main, rest) {
         groups),
       h("label", { class: "field", for: "pj-folder" }, "Default export folder", folder),
       acts)));
+    if (!isNew) mountSync(body, p);
 
     if (!isNew) {
       const chats = chatsOf(p.id);
@@ -232,6 +235,7 @@ export async function render(main, rest) {
       }
       body.append(h("section", { class: "card" }, h("div", { class: "hd" }, h("h2", {}, `Chats (${chats.length})`)),
         h("div", { class: "bd flush" }, chats.length ? ul : h("p", { class: "pad muted small" }, "No chats yet. Start one with New chat in this project."))));
+      body.append(filesCard(p));
       body.append(dbsCard(p.id));
     }
     name.focus();
@@ -260,7 +264,7 @@ export async function render(main, rest) {
       }
     }
     async function onDelete() {
-      const ok = await askConfirm(`Delete ${p.name}?`, "The project's settings are deleted. Its chats are kept, under Unfiled, and its project databases stay in your workspaces folder.", "Delete project", true);
+      const ok = await askConfirm(`Delete ${p.name}?`, "The project's settings are deleted. Its chats are kept, under Unfiled; its files stay in its folder on this computer, and its project databases stay in your workspaces folder.", "Delete project", true);
       if (!ok) return;
       try {
         await invoke("project_remove", { id: p.id });

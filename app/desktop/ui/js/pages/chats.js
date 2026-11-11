@@ -249,7 +249,8 @@ export function describe(name, input) {
     case "draft_notes": return `Drafting notes${conn}`;
     case "update_notes": return "Changing your notes";
     case "suggest_note_changes": return "Suggesting a change to your notes";
-    case "run_python": return "Running a Python script";
+    case "run_python": return i.script ? `Running the project's script ${i.script}` : "Running a Python script";
+    case "project_files": return i.action === "write" ? `Writing ${i.path || "a file"} in the project's files` : i.action === "delete" ? `Removing ${i.path || "a file"} from the project's files` : i.action === "read" ? `Reading ${i.path || "a file"} from the project's files` : "Looking at the project's files";
     case "propose_tool": return `Testing a tool to save${i.title ? `: ${q(i.title)}` : ""}`;
     case "run_tool": return `Running ${i.name ? q(i.name) : "a tool"}`;
     case "search_tools": return "Looking up tools";

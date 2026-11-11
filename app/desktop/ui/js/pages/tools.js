@@ -4,6 +4,7 @@
 import { $, h, el, invoke, store, button, pageHead, sec, showError, when, numbered, emptyState } from "../core.js";
 import { switchRow } from "./settings.js";
 import { shareOut, shareIn, importedText, teamLibrary } from "./share.js";
+import { toolboxSection } from "./toolboxes.js";
 
 let tools = null;
 let reviewing = null;
@@ -32,7 +33,7 @@ function testText(t) {
 export async function render(main) {
   const page = h("div", { class: "page" });
   main.append(page);
-  page.append(pageHead("Tools", "Steps your assistant made from scripts, for it to reuse. You read each one and install it here.",
+  page.append(pageHead("Tools", "Toolboxes that bring many tools at once, and steps your assistant made from scripts, for it to reuse. You install each one here.",
     [h("a", { class: "btn sm", href: "#/skills", id: "to-skills", title: "Advice your assistant reads for GIS work" }, "Skills"),
       button("Open a shared file…", "sm", () => shareIn($("tools-error"), () => refresh()), { id: "tools-open-shared", title: "A tool or workflow a coworker shared: you review it here before anything is installed" })]));
   const body = h("div", { class: "pad stack" });
@@ -65,7 +66,9 @@ export async function render(main) {
         h("span", { class: "where" }, `${t.tool} · version ${t.version || "?"} · ${t.state === "ready" ? "ready" : "not approved"}`),
         t.description ? h("span", {}, t.description) : null))));
   }).catch(() => {});
-  body.append(notice, err, off,
+  // Toolboxes first (their own module): programs that bring many tools.
+  const boxes = toolboxSection();
+  body.append(boxes.card, notice, err, off,
     h("section", { class: "card" }, h("div", { class: "sec" }, h("h2", {}, "Waiting for you"), waitingN), h("div", { class: "bd flush" }, waiting), h("p", { id: "no-waiting", class: "muted small quiet", hidden: true }, "Nothing is waiting.")),
     h("section", { class: "card" }, h("div", { class: "sec" }, h("h2", {}, "Installed"), installedN), h("div", { class: "bd flush" }, installed), h("p", { id: "no-installed", class: "muted small quiet", hidden: true }, "No tools installed yet.")),
     orgCard,
@@ -231,10 +234,10 @@ export async function render(main) {
       btn.disabled = !tools || !tools.allowed;
     }
   }
-  await Promise.all([refresh(), drawSwitch()]);
-  const onFocus = () => refresh();
+  await Promise.all([refresh(), drawSwitch(), boxes.refresh()]);
+  const onFocus = () => { refresh(); boxes.refresh(); };
   window.addEventListener("focus", onFocus);
-  return () => window.removeEventListener("focus", onFocus);
+  return () => { window.removeEventListener("focus", onFocus); boxes.close(); };
 }
 
 export async function renderSkills(main) {

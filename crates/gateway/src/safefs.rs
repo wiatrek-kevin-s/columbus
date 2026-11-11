@@ -187,6 +187,40 @@ mod imp {
             }
             Ok(File::from(unsafe { OwnedFd::from_raw_fd(fd) }))
         }
+
+        /// Remove the file `name` from this folder. A link of that name is
+        /// removed itself, never what it points at.
+        pub fn remove_file(&self, name: &str) -> io::Result<()> {
+            plain(name)?;
+            let c = cstr(name)?;
+            if unsafe { libc::unlinkat(self.fd.as_raw_fd(), c.as_ptr(), 0) } < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        }
+
+        /// Remove the folder `name` from this folder, if it is empty.
+        pub fn remove_dir(&self, name: &str) -> io::Result<()> {
+            plain(name)?;
+            let c = cstr(name)?;
+            if unsafe { libc::unlinkat(self.fd.as_raw_fd(), c.as_ptr(), libc::AT_REMOVEDIR) } < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        }
+
+        /// Give the file `from` the name `to`, both in this folder, in one
+        /// step. A file (or link) already called `to` is replaced itself.
+        pub fn rename(&self, from: &str, to: &str) -> io::Result<()> {
+            plain(from)?;
+            plain(to)?;
+            let (f, t) = (cstr(from)?, cstr(to)?);
+            let fd = self.fd.as_raw_fd();
+            if unsafe { libc::renameat(fd, f.as_ptr(), fd, t.as_ptr()) } < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        }
     }
 }
 
@@ -369,6 +403,45 @@ mod imp {
             }
             Ok(f)
         }
+
+        /// Whether `name`, opened as itself (never through a link), is in
+        /// this folder where it was asked for.
+        fn here(&self, name: &str, folder: bool) -> io::Result<()> {
+            plain(name)?;
+            let f = if folder {
+                open_folder(&self.path.join(name))?
+            } else {
+                std::fs::OpenOptions::new()
+                    .read(true)
+                    .custom_flags(OPEN_REPARSE_POINT)
+                    .open(self.path.join(name))?
+            };
+            if !self.is_where_asked(&f, name)? {
+                return Err(refused(&format!("{name} was reached through a link")));
+            }
+            Ok(())
+        }
+
+        /// Remove the file `name` from this folder. A link of that name is
+        /// removed itself, never what it points at.
+        pub fn remove_file(&self, name: &str) -> io::Result<()> {
+            self.here(name, false)?;
+            std::fs::remove_file(self.path.join(name))
+        }
+
+        /// Remove the folder `name` from this folder, if it is empty.
+        pub fn remove_dir(&self, name: &str) -> io::Result<()> {
+            self.here(name, true)?;
+            std::fs::remove_dir(self.path.join(name))
+        }
+
+        /// Give the file `from` the name `to`, both in this folder, in one
+        /// step. A file already called `to` is replaced.
+        pub fn rename(&self, from: &str, to: &str) -> io::Result<()> {
+            plain(to)?;
+            self.here(from, false)?;
+            std::fs::rename(self.path.join(from), self.path.join(to))
+        }
     }
 }
 
@@ -498,6 +571,48 @@ mod tests {
         assert_eq!(d.entries().unwrap(), vec!["a", "b", "f", "ok", "p"]);
         let made = Dir::open_beneath(&root, &["new", "deeper"], true).unwrap();
         assert!(made.path().ends_with("new/deeper"));
+    }
+
+    #[test]
+    fn files_are_renamed_and_removed_inside_the_folder_only() {
+        use std::io::Write;
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path().canonicalize().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("kept"), "kept").unwrap();
+        std::fs::create_dir(root.join("d")).unwrap();
+        let d = Dir::open_beneath(&root, &["d"], false).unwrap();
+        // A new file takes a name in one step, replacing what was there.
+        std::fs::write(root.join("d/a.txt"), "old").unwrap();
+        d.create_file("tmp").unwrap().write_all(b"new").unwrap();
+        d.rename("tmp", "a.txt").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(root.join("d/a.txt")).unwrap(),
+            "new"
+        );
+        assert!(!root.join("d/tmp").exists());
+        // Over a link, the link is replaced, not what it points at.
+        std::os::unix::fs::symlink(outside.path().join("kept"), root.join("d/l.txt")).unwrap();
+        d.create_file("tmp").unwrap().write_all(b"mine").unwrap();
+        d.rename("tmp", "l.txt").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(outside.path().join("kept")).unwrap(),
+            "kept"
+        );
+        assert!(d.open_file("l.txt").is_ok());
+        // Removing a link removes the link.
+        std::os::unix::fs::symlink(outside.path().join("kept"), root.join("d/gone")).unwrap();
+        d.remove_file("gone").unwrap();
+        assert!(outside.path().join("kept").exists());
+        // Names cannot climb, and a folder goes only when it is empty.
+        assert!(d.remove_file("../d/a.txt").is_err());
+        assert!(d.rename("a.txt", "../a.txt").is_err());
+        let top = Dir::open_beneath(&root, &[], false).unwrap();
+        assert!(top.remove_dir("d").is_err());
+        d.remove_file("a.txt").unwrap();
+        d.remove_file("l.txt").unwrap();
+        top.remove_dir("d").unwrap();
+        assert!(!root.join("d").exists());
     }
 }
 

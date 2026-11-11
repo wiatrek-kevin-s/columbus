@@ -297,6 +297,9 @@ pub async fn shell_info() -> Result<ShellInfo, String> {
                 "problem": problem,
                 "text": text,
                 "in_force": serde_json::to_value(&effective).unwrap_or(Value::Null),
+                // What the pages say about scripts (F-15, D-16).
+                "script_approval": settings::script_approval(&effective),
+                "work_mode": settings::work_mode(&effective),
             }),
             places: places_from(&live),
             confirm_with: settings::confirm_with().to_string(),

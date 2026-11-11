@@ -238,6 +238,19 @@ jobs:
           dbus-run-session -- xvfb-run -a -s "-screen 0 1400x900x24" python app/desktop/e2e/workflows.py target/debug/columbus-mcp app/desktop/src-tauri/target/debug/columbus-desktop
           dbus-run-session -- xvfb-run -a -s "-screen 0 1400x900x24" python app/desktop/e2e/projects.py target/debug/columbus-mcp app/desktop/src-tauri/target/debug/columbus-desktop
           dbus-run-session -- xvfb-run -a -s "-screen 0 1400x900x24" python app/desktop/e2e/datagroups.py target/debug/columbus-mcp app/desktop/src-tauri/target/debug/columbus-desktop
+          # Tools › Toolboxes: install the stand-in runner from a download server on this computer, find, run from a chat, remove (T-29).
+          cargo build -p columbus-mcp --example toolbox_standin --locked
+          dbus-run-session -- xvfb-run -a -s "-screen 0 1400x900x24" python app/desktop/e2e/toolboxes.py target/debug/columbus-mcp app/desktop/src-tauri/target/debug/columbus-desktop
+      - name: Sync with GitHub and Gitea in the main window, against stand-in servers (Linux)
+        if: runner.os == 'Linux'
+        # Settings › Git servers and a project's Sync section (T-33). The
+        # stand-ins are the ones the sync crate's own tests use; no real
+        # server, account or token is involved. Uses the WebDriver set up
+        # in the step above.
+        timeout-minutes: 20
+        run: |
+          cargo build -p columbus-sync --example fake_git_server --locked
+          dbus-run-session -- xvfb-run -a -s "-screen 0 1400x900x24" python app/desktop/e2e/sync.py target/debug/columbus-mcp app/desktop/src-tauri/target/debug/columbus-desktop
       - uses: actions/upload-artifact@v7
         if: always()
         with:

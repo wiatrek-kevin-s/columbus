@@ -2,9 +2,11 @@
 
 A project is made from the Projects page (name, instructions, only one of
 the person's connections, an export folder), its file is written where the
-server reads it, a chat started in it says so, the Chats page and the
-Projects list show it, and deleting it removes its file (its chats are
-kept, under Unfiled).
+server reads it, its Files section opens its folder and lists a file the
+assistant wrote there (through a real Columbus session in the project) with
+its size and when it changed, a chat started in it says so, the Chats page
+and the Projects list show it, and deleting it removes its file (its chats
+and its files are kept).
 
     dbus-run-session -- xvfb-run -a python app/desktop/e2e/projects.py \\
         target/debug/columbus-mcp app/desktop/src-tauri/target/debug/columbus-desktop
@@ -25,6 +27,9 @@ from guard import step
 WebDriverWait = guard.Wait  # its time-outs name the step that was waiting
 
 REPO = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(REPO / "app/ui/e2e"))
+from mcp_client import Mcp  # noqa: E402
+
 GATEWAY = Path(sys.argv[1]).resolve()
 APP = Path(sys.argv[2]).resolve()
 OUT = Path(__file__).resolve().parent / "out"
@@ -50,7 +55,7 @@ def main():
         (root / "connections" / f"{cid}.yaml").write_text(
             f"id: {cid}\ntype: gpkg\npath: {root / 'x.gpkg'}\ndatasets:\n  allow: [\"*\"]\n")
     (root / "policy.yaml").write_text(
-        f"connection_types: [gpkg]\nexports:\n  - {{ id: outbox, path: \"{root / 'outbox'}\", granted: true }}\n")
+        f"connection_types: [gpkg]\nallow_project_files: true\nexports:\n  - {{ id: outbox, path: \"{root / 'outbox'}\", granted: true }}\n")
     env = dict(os.environ,
                COLUMBUS_POLICY=str(root / "policy.yaml"), COLUMBUS_CONNECTIONS=str(root / "connections"),
                COLUMBUS_WORKSPACES=str(root / "ws"), COLUMBUS_AUDIT_DIR=str(root / "audit"),
@@ -58,7 +63,10 @@ def main():
                COLUMBUS_SERVER=str(GATEWAY), COLUMBUS_COMPANION="off",
                COLUMBUS_WORKER=str(REPO / "workers/python/columbus_worker.py"), COLUMBUS_PYTHON=sys.executable,
                COLUMBUS_APPROVALS_BROWSER="none", COLUMBUS_LOG="warn",
-               XDG_CONFIG_HOME=str(root / "config"), XDG_DATA_HOME=str(root / "data"))
+               XDG_CONFIG_HOME=str(root / "config"), XDG_DATA_HOME=str(root / "data"),
+               # A debug build writes the folder it would open here, instead
+               # of starting a file manager.
+               COLUMBUS_APP_TEST_OPEN=str(root / "opened.txt"))
     step("the app")
     d, proc = guard.driver(env, APP)
     wait = WebDriverWait(d, 30)
@@ -85,6 +93,38 @@ def main():
         wait.until(lambda drv: "None yet" in text(drv, "pj-dbs") or "Couldn't" in text(drv, "pj-dbs"))
         assert "None yet" in text(d, "pj-dbs"), text(d, "pj-dbs")
 
+        step("Its files: none yet, and the folder opens for the person's own")
+        files = root / "projects" / "tract-review-2027" / "files"
+        wait.until(lambda drv: "No files yet" in text(drv, "pj-files"))
+        assert not files.exists(), "nothing is made before it is needed"
+        click(d, By.ID, "pj-files-open")
+        wait.until(lambda drv: (root / "opened.txt").exists())
+        assert (root / "opened.txt").read_text() == str(files) and files.is_dir()
+        step("A file the assistant wrote is listed, with its size and when it changed")
+        # The assistant, in a chat of this project: a real Columbus session.
+        script = "print('lane widths')\n"
+        mcp = Mcp([str(GATEWAY), "serve"], dict(env, COLUMBUS_PROJECT="tract-review-2027"))
+        try:
+            made = mcp.tool("project_files", {"action": "write", "path": "scripts/widths.py", "text": script})
+            assert made["result"]["status"] == "written", made
+        finally:
+            mcp.close()
+        assert (files / "scripts" / "widths.py").read_text() == script
+        # And one the person put there themselves.
+        (files / "notes.md").write_text("# Notes\n")
+        click(d, By.ID, "pj-files-refresh")
+        row = "#pj-file-list li.file[data-path='scripts/widths.py']"
+        wait.until(lambda drv: drv.find_elements(By.CSS_SELECTOR, row))
+        listed = d.find_element(By.CSS_SELECTOR, row).text
+        assert "widths.py" in listed and f"{len(script)} B" in listed and "changed just now" in listed, listed
+        rows = [e.text for e in d.find_elements(By.CSS_SELECTOR, "#pj-file-list li")]
+        assert rows[0].startswith("notes.md") and rows[1] == "scripts/" and rows[2].startswith("widths.py"), rows
+        assert "Files (2)" in text(d, "pj-files") and "2 files" in text(d, "pj-files"), text(d, "pj-files")
+        assert "Your assistant can list, read and write" in text(d, "pj-files")
+        assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
+        d.execute_script("document.getElementById('pj-files').scrollIntoView({block: 'center'})")
+        d.save_screenshot(str(OUT / "projects-files.png"))
+
         step("A chat in the project says so")
         wait.until(EC.element_to_be_clickable((By.ID, "pj-chat"))).click()
         # Under the message box, the new chat's project is this one (it can
@@ -110,6 +150,7 @@ def main():
         wait.until(EC.element_to_be_clickable((By.XPATH, "//dialog//button[normalize-space()='Delete project']"))).click()
         wait.until(lambda drv: drv.execute_script("return location.hash") == "#/projects")
         assert not f.exists(), "the project file is removed"
+        assert (files / "scripts" / "widths.py").exists() and (files / "notes.md").exists(), "its files are kept"
         print("desktop projects e2e: ok")
     except Exception:
         d.save_screenshot(str(OUT / "projects-failed.png"))

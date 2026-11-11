@@ -112,16 +112,27 @@ environments:
 
 # Script approvals, for scripts that run confined at level A (the engine's
 # Python and governed level-A environments): no network, their inputs to
-# read, their own run folder to write.
+# read, their own run folder to write. They can never reach a connection, a
+# password, the person's other files or the network; this only says whether
+# the person is also asked first.
 #   approval: each      the person approves every run (the default)
 #   approval: session   the card also offers "Allow this script for the
 #                       session" (the same code, any inputs, until the chat
 #                       or AI app connection ends)
-#   approval: none      no approval: the sandbox is the boundary. The app's
-#                       "Work freely on copies" writes this
+#   approval: none      no approval: the sandbox is the boundary, and the
+#                       audit log records the rule for each run
 # A run with network (level B) and a trusted run ask every time, whatever
 # this says. session_approval: true is the older spelling of
 # approval: session. Unknown keys and values here are refused.
+#
+# The app's "Work freely on copies" (confirmed by the person at the
+# keyboard, where this file is theirs to change) writes seven settings:
+# allow_scripts: true, scripts.approval: none, environments.allow: true,
+# allow_personal_tools: true, allow_toolboxes: true,
+# allow_project_files: true and allow_sync: true. "Ask me before each
+# script" sets scripts.approval back to each and changes nothing else. To
+# keep either choice from people, manage this file so their account cannot
+# write it: the app then shows what is in force.
 scripts:
   approval: each
   session_approval: false

@@ -119,6 +119,9 @@ def check() -> list[str]:
                     problems.append(f"{rel}: link to {target} does not resolve")
             for m in tool_like.finditer(content):
                 word = m.group(1)
+                # whoami's policy fields (`project_files_allowed`) are not tools.
+                if word.endswith("_allowed"):
+                    continue
                 if word.split("_")[0] in tool_prefixes and word not in known:
                     problems.append(f"{rel}: names a tool `{word}` the server does not have")
     return problems

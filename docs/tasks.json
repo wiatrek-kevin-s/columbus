@@ -672,8 +672,8 @@
           "expected": "they describe the boundary B1 to B5 and no line still promises an approval per script by default"
         }
       ],
-      "status": "todo",
-      "evidence": ""
+      "status": "done",
+      "evidence": "Commits e3a60d7, bcf91a9, 7b1fa7f, 2173653, cd8cf94 (branch work/s10, merged into the pull request branch). Check 1: crates/shared/src/policy.rs the_keys_of_build_brief_3_default_off_and_refuse_unknown_values (the three values, the alias, an unknown value named with its key). Check 2: crates/gateway/tests/environments_tools.rs under_scripts_approval_none_only_a_run_that_leaves_the_sandbox_asks (it needs the environment fixtures, so it is there and not in tests/e2e.rs): under none a level A run asks nothing and the audit line and provenance name the rule; level B and trusted ask every time; each asks as before. Check 3: crates/gateway/tests/boundary.rs on Linux: a script and a child program it starts cannot read the connections folder, the policy, the audit log, another session's workspace, the person's home or the gateway's /proc entries, cannot open TCP or UDP sockets or look up a name, cannot write or delete outside the run folder; inputs, the engine's packages, temp and outputs still work; with no launcher or a failing launcher nothing runs. The Linux sandbox was tightened where real runs got through (all of /etc, /proc, other socket families, inherited files, the terminal, the key store, shared memory, message queues). Check 4: app/desktop/e2e/settings.py: on writes the seven settings after one confirmation; off sets only scripts.approval back to each; a declined confirmation writes nothing; a managed file shows 'set by your organization'; shell.py shows the choice on first run. Check 5: docs/reference.md (the boundary B1 to B5, Scripts, Python environments, Confinement levels, policy keys), SECURITY.md and examples/policy.yaml updated; README in T-34. Whole Rust suite 399 passed, 0 failed; fmt and clippy clean; all ten desktop scripts pass. Verified on Linux; boundary.rs runs on Windows and macOS for the first time in CI."
     },
     {
       "id": "T-28",
@@ -705,8 +705,8 @@
           "expected": "found, described and run like the others"
         }
       ],
-      "status": "todo",
-      "evidence": ""
+      "status": "done",
+      "evidence": "Commits 33d1b47, 27ca89d, c71a89c (branch work/s10b, merged into the pull request branch). Kinds geolibre and described; QGIS left out (A-10: its output was not confirmed from QGIS's source). Checks 1 and 2: crates/gateway/tests/toolboxes.rs with the stand-in runner crates/gateway/examples/toolbox_standin.rs: toolbox_tools_are_found_described_and_run (found by words, described with role and kind, run with a workspace layer in and a layer out with provenance and the input's labels); misbehaving_tools_are_confined (network, reading outside its inputs and writing outside its run folder all fail at level A; a program changed after install is refused; long output is cut and marked untrusted); the_time_limit_ends_a_tool; with_the_policy_off_no_toolbox_tool_is_offered. Check 3: the_catalogue_installs_only_what_matches_its_pin against a local server (right file installs; wrong hash, wrong size, a .. path, a link and a redirect are refused with nothing left; toolboxes.catalogue false names the key). Check 4: the_catalogue_holds_exactly_the_pinned_archives; all five archives were downloaded and hashed by the coordinator on 2026-11-10/11 and equal the publisher's .sha256 files (never run). Check 5: a_described_toolbox_runs_like_the_others. Whole Rust suite 405 passed, 0 failed; fmt and clippy clean. Not verified: the real GeoLibre runner was never run (A-7; owner check H-3); Windows and macOS by CI."
     },
     {
       "id": "T-29",
@@ -726,8 +726,8 @@
           "expected": "every control has a name and is reached by Tab"
         }
       ],
-      "status": "todo",
-      "evidence": ""
+      "status": "done",
+      "evidence": "Commits c93a881, c7190cd, 6929afb, 8dbb557, d3700cd, f189450 (branch work/s10b, merged into the pull request branch). Check 1: app/desktop/e2e/toolboxes.py (in CI): install from the catalogue against a local download server with name, version, source, licence and size shown first; search; run a tool from a chat with the scripted assistant; remove, after which the assistant is no longer offered its tools; also toolboxes turned off, the terminal command where the app cannot confirm, a refused download leaving nothing, a changed program shown as off, adding a program from this computer. Check 2: guard.unnamed is empty on the eight screens of that script; a tool's row opens with Enter. Verified on Linux; Windows and macOS build by CI."
     },
     {
       "id": "T-30",
@@ -772,8 +772,8 @@
           "expected": "it is listed with its size and time"
         }
       ],
-      "status": "todo",
-      "evidence": ""
+      "status": "done",
+      "evidence": "Commits bb31b8e, 36f8cee, 7e76504 (branch work/s10, merged into the pull request branch). Check 1: crates/gateway/tests/project_files.rs, 5 tests: write, list, read, run by path with a helper beside it, change, remove, each audited; with no project the answer says to start the chat in a project; with allow_project_files false the tool is not offered. Check 2: the same file and unit tests in crates/gateway/src/project_files.rs and crates/shared/src/project_files.rs: absolute paths, .., .git, .columbus, reserved names, names differing only by case, links (Unix), files over the cap and binary files are each refused. Check 3: app/desktop/e2e/projects.py: the project's page lists the file the assistant wrote with its size and time. Verified on Linux; Windows and macOS by CI."
     },
     {
       "id": "T-32",
@@ -801,8 +801,8 @@
           "expected": "only licences on the list"
         }
       ],
-      "status": "todo",
-      "evidence": ""
+      "status": "done",
+      "evidence": "Commits e97a71f, a89dc12, 441995d, f53de6c (new crate crates/sync; branch work/s11, merged into the pull request branch). Check 1: crates/sync/tests/two_people.rs, 3 passed: 1,412 syncs, 643 conflicts, 325 re-reads after the server moved, each of the three resolutions more than 200 times; no changed file lost and both folders equal at the end; the same property through each server's API. Check 2: tests/servers.rs, 22 passed, against stand-in servers written from GitHub's and Gitea's API descriptions: a first sync into an empty repository, a normal sync, a branch that moved (read again, never forced), a wrong token, a redirect to another host (not followed; the token sent nowhere else), 50 items a page, an old Gitea, a rate limit, SHA-256 ids; tests/tls.rs: an unknown certificate is refused, accepted only with the company file. Check 3: tests/safety.rs 11 passed and tests/engine.rs 15 passed: the ignore list, the 5 MB cap, the secret scan stopping before anything is sent, refused paths, links, a conflict on one file, deleted on one side and changed on the other, line endings only. Check 4: every new package is MIT or MIT/Apache-2.0 (sha1, trash, urlencoding, scopeguard, base64, objc2 on Mac; rcgen for tests). No Git program and no Git library. Not verified: no real GitHub, Gitea or Forgejo was used (owner check H-4); Windows and macOS by CI."
     },
     {
       "id": "T-33",
@@ -827,8 +827,8 @@
           "expected": "the page shows the old and new instructions and the project keeps the old ones until the person accepts"
         }
       ],
-      "status": "todo",
-      "evidence": ""
+      "status": "done",
+      "evidence": "Commits 051d0dd, 98ff52b, 1462200, c1077ba (branch work/s11, merged into the pull request branch). Check 1: app/desktop/e2e/sync.py (in CI, 8 passes in a row locally): connect both stand-in servers, link a project to a new private repository, add a file, Sync, change it on the server, Check for changes, Sync, make a conflict three times and settle it with Keep mine, Keep theirs and Keep both, read History, Disconnect, link again by picking the repository; after each step the stand-in's repository is compared; the token is found in no file under the test's folders, in nothing the app printed and nowhere in the page; no request was forced. Check 2: allow_sync off: both pages say so and the commands refuse; sync.hosts naming another host: connecting is refused with a message naming the key and nothing is sent. Check 3: an arriving columbus-project.yaml shows old and new name and instructions; the project keeps its own until the person accepts (accepted on one stand-in, declined on the other). Verified on Linux; Windows and macOS by CI; the credential store, the trash and company certificates on those systems are untested at run time."
     },
     {
       "id": "T-34",
