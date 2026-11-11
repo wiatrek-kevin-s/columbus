@@ -1,9 +1,12 @@
-# Manual checks for Columbus 0.14.0
+# Manual checks for Columbus 0.15.0
 
-Two optional checks that only a person with a real ArcGIS system can do. Columbus 0.14.0 was tested with fake ArcGIS servers and a stand-in arcpy, never against a real portal or a real ArcGIS Pro. Neither check is needed to use the release. Each takes about 30 minutes.
+Optional checks that only a person with the real systems can do. Columbus is tested with fake ArcGIS servers, a stand-in arcpy, a stand-in for the GeoLibre program and stand-in Git servers, never against a real portal, a real ArcGIS Pro, the real GeoLibre program or a real GitHub or Gitea. None of these checks is needed to use Columbus. H-1 and H-2 take about 30 minutes each, H-3 and H-4 about 20, and the two short looks at the end about 5.
 
 - **H-1: ArcGIS sign-in.** Your organization registers its own ArcGIS OAuth app for Columbus, and you sign in to a layer shared only inside your organization. It also settles which of the two sign-in routes your portal accepts (A-2, below).
-- **H-2: arcpy on a real ArcGIS Pro computer.** You register an ArcGIS Pro environment and run one small arcpy script. Until this passes, arcpy and trusted environments stay marked **experimental** (D-13).
+- **H-2: arcpy on a real ArcGIS Pro computer.** You register an ArcGIS Pro environment and run one small arcpy script. Until this passes, arcpy and trusted environments stay marked **experimental** (D-13). (The plan for 0.15 lists arcpy again as H-5: it is this same check, still open.)
+- **H-3: GeoLibre.** You install the GeoLibre toolbox and have your assistant run one of its tools. This is the first real run of that program with Columbus (A-7).
+- **H-4: sync with a real server.** You connect your GitHub or your organization's Gitea, link a project to a new private repository, and sync.
+- **Two short looks on Windows and on a Mac:** the map panel when your assistant reads and moves the map, and the choice **Work freely on copies** with Windows Hello or Touch ID. The app's pages are tested on Linux only.
 
 When you finish, write down what you saw for each numbered step marked **Record**, and give it to whoever maintains your Columbus (for this repository: open an issue on GitHub with the results). Leave out tokens, codes, passwords and client ids of private apps.
 
@@ -11,9 +14,9 @@ Don't use production data you can't afford to have read. These checks only read.
 
 ## Before you start
 
-1. Install Columbus 0.14.0 and set up the GIS engine, as the [Windows](install.md) or [Mac](install-macos.md) guide says (steps 1 to 4).
+1. Install Columbus 0.15.0 and set up the GIS engine, as the [Windows](install.md) or [Mac](install-macos.md) guide says (steps 1 to 4).
 2. Open a terminal in your Columbus folder (Windows: in File Explorer, open `C:\Columbus`, type `powershell` in the address bar and press Enter; Mac: Terminal, then `cd ~/Columbus`).
-3. Type `.\columbus-mcp.exe --version` (Windows) or `./columbus-mcp --version` (Mac). It should print `columbus-mcp 0.14.0`. The steps below write `columbus-mcp`; type it the same way.
+3. Type `.\columbus-mcp.exe --version` (Windows) or `./columbus-mcp --version` (Mac). It should print `columbus-mcp 0.15.0`. The steps below write `columbus-mcp`; type it the same way.
 
 ## H-1: ArcGIS sign-in
 
@@ -66,7 +69,7 @@ Columbus ships no client id (D-12): each organization registers its own app, so 
    **Record (H-1.B9):** the message you got.
 10. Optional, two weeks later: without signing in again, ask for rows. If the sign-in lapsed, the message should be "h1-test's ArcGIS sign-in has expired. Sign in again: columbus-mcp arcgis signin h1-test".
 
-**What the result means.** If (a) worked, nothing changes. If only the pasted code worked, Columbus 0.14.0 still works on your portal (the app's **Sign in** says to use `--paste-code` in a terminal when the browser doesn't come back), and the maintainers should know so the app can offer the code route itself.
+**What the result means.** If (a) worked, nothing changes. If only the pasted code worked, Columbus still works on your portal (the app's **Sign in** says to use `--paste-code` in a terminal when the browser doesn't come back), and the maintainers should know so the app can offer the code route itself.
 
 ## H-2: arcpy on a real ArcGIS Pro computer
 
@@ -118,7 +121,7 @@ Running arcpy under your Pro licence through Columbus is your organization's dec
    print(info)
    ```
 
-   Approve the run when Columbus asks (read the code first).
+   Approve the run if Columbus asks (read the code first). It asks unless you chose **Work freely on copies**: a governed environment runs in the sandbox.
 
    **Record (H-2.B3):** what the script printed, or its error. A-6 expects arcpy to fail here (for example "NotInitialized", or a licence or profile error), because the sandbox hides your profile.
 
@@ -146,3 +149,74 @@ Running arcpy under your Pro licence through Columbus is your organization's dec
 2. Put `allow_trusted` (and `allow_scripts`, `environments.allow` if they were off) back to `false`.
 
 **What the result means.** If Part C works, the maintainers can drop the **experimental** label on arcpy and trusted environments in a later release. If Part B works too (arcpy runs governed), A-6 was wrong: the docs will then recommend governed environments for arcpy, which keep Columbus's rules in force.
+
+## H-3: install GeoLibre and run a tool
+
+The GeoLibre program brings about a thousand open-source tools. While Columbus 0.15 was built, the build machine could not run a downloaded program, so Columbus's side follows GeoLibre's source at version 1.8.1 and was tested with a stand-in (A-7). This check is the program's first real run with Columbus. It needs an internet connection for the download, and Windows 10 or 11 (64-bit, not ARM) or a Mac.
+
+1. Turn toolboxes on. In the app, **Settings**, choose **Work freely on copies** and confirm with Windows Hello or Touch ID. (Or set `allow_toolboxes: true` in `policy.yaml` yourself.)
+2. Open **Tools** and press **Add tools**. Under **GeoLibre tools** it should say version 1.8.1, licence MIT, publisher opengeos (GeoLibre), and an address under `github.com/opengeos/geolibre-rust`. Nothing is downloaded yet.
+3. Press **Install** and confirm. The dialog shows each step: downloading, checking the download against the hash pinned in Columbus, unpacking, listing its tools in the sandbox.
+
+   **Record (H-3.3):** what the dialog said at the end (how many tools are ready), and how many the Tools page says "cannot be run by Columbus yet". If it stopped, the step it stopped at and the message, word for word.
+4. In the search box under **Toolboxes**, type `slope`, then `buffer`. Click one of the tools found.
+
+   **Record (H-3.4):** whether tools were found, and whether the panel on the right showed what the tool does and its parameters.
+5. In a chat, with a connection that has an elevation raster (a GeoTIFF in a projected coordinate system), ask: *"Clip a small piece of the elevation raster, then make a slope raster of it with a GeoLibre tool. Tell me which tool you ran."* No raster? Ask instead, of a layer you have (here `local-roads`, as in H-2): *"Read 100 roads from local-roads and buffer them by 50 feet with a GeoLibre tool."*
+
+   **Record (H-3.5):** the tool's name (it starts with `geolibre.`), whether Columbus asked you to approve the run (it should not), and whether a result came back as a raster or a layer in the chat. If the tool failed, what it printed.
+6. Ask for one more, on a layer: *"Run a GeoLibre tool that needs a vector layer on those roads."* Whether GeoLibre reads every GeoPackage Columbus writes has not been tried.
+
+   **Record (H-3.6):** whether the tool read the layer, or its error.
+7. To tidy up, press **Remove** beside the toolbox on the Tools page (or keep it).
+
+**What the result means.** If every step works, the note "never run during the build" can come out of the docs. If the install stops while listing the tools, or a tool cannot read a layer Columbus wrote, the maintainers need the exact message: Columbus's side of GeoLibre was written from its source alone.
+
+## H-4: sync a project with a real server
+
+Sync was built and tested against stand-in servers written from GitHub's and Gitea's published API descriptions, never against github.com, a GitHub Enterprise Server, a Gitea or a Forgejo. Use a new, empty repository that does not matter. This check works on Windows and on a Mac (on Linux no server can be connected yet).
+
+1. Turn sync on. In the app, **Settings**, choose **Work freely on copies** and confirm. (Or set `allow_sync: true` in `policy.yaml` yourself.)
+2. **Settings › Git servers › Connect a server.** Choose the kind and, unless it is github.com, give the address. Press **Open the page for a new token**, make the token there with the permissions the dialog names (on GitHub, **Contents: Read and write** and **Administration: Read and write**, so that Columbus can create the test repository), and paste it into the **Token** field (never into a chat).
+
+   **Record (H-4.2):** the message ("Connected to … as …"), or the error, word for word. Leave the token out.
+3. Open **Projects**, make a project named `Sync test`, and on its page press **Open the folder**. Put a small text file in it, for example `notes.md` with one line.
+4. On the project's page press **Link this project**, choose **A new private repository**, and press **Link**. If the server refuses to create it, make an empty private repository there yourself and link to it with **One of my repositories**.
+
+   **Record (H-4.4):** which of the two worked, the message ("Linked to … No file was sent."), and that the repository on the server is private.
+5. The page checks for changes by itself and should list two files as new, here: `notes.md` and `columbus-project.yaml` (the project's name and instructions). Type a note under **What did you change?** and press **Sync**.
+
+   **Record (H-4.5):** what the page said it sent, and on the server: the two files, your note as the change's message, and how many entries the history has (on GitHub the first sync into an empty repository makes two; every later one makes one).
+6. Change `notes.md` on the server, in your browser, and change it differently on your computer. Press **Check for changes**, then **Sync**. The file should be listed under **Needs a look**, with both versions kept. Choose **Keep both**.
+
+   **Record (H-4.6):** what the page listed and the names of the two files in the folder.
+7. Look where the token is kept. Windows: **Credential Manager** › **Windows Credentials**; Mac: **Keychain Access**. There should be a `columbus-app` entry named `git-server:…`. The file the page names under **Settings › Git servers** lists the server and holds no token.
+
+   **Record (H-4.7):** that the entry is there, and that the file has no token in it.
+8. Tidy up: **Disconnect** on the project's page, **Remove** the server under **Settings › Git servers**, then delete the test repository and the token on the server.
+
+**What the result means.** If every step works, the note "tested against stand-in servers only" can come out of the docs for that kind of server. If a step fails, the maintainers need the server's kind and version and the message: the real server answered differently from its published description.
+
+## Two short looks on Windows and on a Mac
+
+The app's pages are tested on Linux only. These two take about five minutes each, in the Columbus app, with an AI connected for the chat.
+
+**The map panel.** Your assistant can read what your map shows and point it at a result.
+
+1. In a chat, ask for something that makes a layer, for example *"Read 100 roads from local-roads."* The panel on the right opens with the map.
+2. Close the panel. Then ask: *"What does my map show right now?"*
+
+   **Record:** your assistant should say that your map is not open, and the panel should stay closed.
+3. Ask: *"Show those roads on my map."*
+
+   **Record:** the panel should open with the layer on, and a line should say **Your assistant changed what the map shows.**
+
+**The choice, with Windows Hello or Touch ID.** It needs a `policy.yaml` that is yours to change (install guide, step 3).
+
+1. Open **Settings**. Under **How your assistant works**, choose **Work freely on copies**.
+
+   **Record:** what asked you to confirm (Windows Hello, Touch ID or your Mac password), and the line under the two choices afterwards ("On now: Work freely on copies."). Cancel the prompt once first: nothing should change.
+2. Open `policy.yaml` in a text editor. Seven settings should now be on: `allow_scripts`, `scripts.approval: none`, `environments.allow`, `allow_personal_tools`, `allow_toolboxes`, `allow_project_files` and `allow_sync`, with the rest of the file as it was.
+3. Choose **Ask me before each script**. Nothing should ask you to confirm, and only `scripts.approval` should change, to `each`.
+
+   **Record:** whether both were so.

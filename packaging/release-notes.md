@@ -1,47 +1,59 @@
 Columbus {{VERSION}}, a test release. Click a link to download that file.
 
-## What's new in 0.14.0
+## What's new in 0.15.0
 
-Columbus now reaches much more of your organization's data, without loosening any rule.
+Columbus now looks like the AI apps you know, lets your assistant work freely on copies of your data, and takes tools you install in place of tools someone has to build. No rule loosens by itself: every new switch is off until you choose it.
 
-- **Folders of files.** Add a folder (or one file) of CSV, Excel (`.xlsx`), GeoJSON, GeoParquet, KML or FlatGeobuf files as a connection, and query, analyse and export it like a GeoPackage. Points come from `lon`/`lat`, `x`/`y` or WKT columns; codes with leading zeros stay text; row filters and hidden fields apply as everywhere else.
-- **ArcGIS Online and Portal layers.** Add a feature or map service as a connection: list, describe, sample and query its layers under your row filters and hidden fields, with no row lost to paging. Public layers work at once; layers shared only in your organization need a one-time **Sign in** (your organization registers its own ArcGIS app first: see [manual-checks.md](https://github.com/wiatrek-kevin-s/columbus/blob/main/docs/manual-checks.md)). Your assistant never sees the sign-in.
-- **Your own Python.** Register a Python environment (a venv, an ArcGIS Pro clone) under **Settings › Python environments**, and scripts can run in it. Governed environments (the default) run in the same sandbox as before. Your assistant can ask for a new environment with exact package versions, and Columbus builds it after you approve.
-- **Experimental: arcpy and trusted environments.** Where your organization allows it, a *trusted* environment runs scripts outside the sandbox, as you, each run approved; that is what arcpy is expected to need. `whoami` reports arcpy and your Pro licence in plain words. Both are marked **experimental** until checked on a real ArcGIS Pro computer (optional check H-2).
-- **File geodatabase and GeoTIFF exports.** `export_output` writes a new `.gdb` (64-bit whole numbers kept exact, flagged as needing ArcGIS Pro 3.2 or later) and raster results as Cloud-Optimized GeoTIFFs. Workflows can deliver both.
-- **Your weekly ROW job end to end.** Line geometries with M values (route measures) now survive every step. Workflows read files and ArcGIS layers and keep an ArcGIS sign-in alive across weekly runs. **Open in a chat** puts a run's results on the map for review; clicking a table row zooms to it; **Measure** gives feet and metres; `vector_op` `filter` removes rows ("leave out route X") without a script.
-- **Web map layers.** Add imagery and other services (XYZ, WMTS, WMS, ArcGIS map, image and feature services) to your map under **Data › Map layers** or **Add web layer**. They are display only: every request goes through Columbus, and your assistant never sees them.
-- **Faster and safer underneath.** Bounding-box queries use each database's spatial index; every engine package is installed by exact version and hash; tests that need the engine can no longer be skipped silently.
+- **A new window.** A sidebar (New chat, Search, your chats, Projects, Data, Documentation, Workflows, Tools, Activity, Settings), the chat in the middle, and a panel on the right that opens when your assistant makes something: the map and its table, the chat's files, how a result was made. The panel resizes, can fill the window, and closes.
+- **One boundary, in place of approving each script.** Your connections and passwords stay with Columbus. Reading goes through Columbus, under each source's rules, and lands as a copy. On copies your assistant works freely: choose **Work freely on copies** on the first-run screen or in **Settings**, and scripts and installed tools run without asking, in your operating system's sandbox (no network, only their inputs and their own run folder). Columbus still asks before an export to a folder that isn't pre-approved, a download from a host not on your list, any edit to a source, and code that needs the network or must run outside the sandbox (trusted environments, arcpy). The other choice is **Ask me before each script**.
+- **Toolboxes: install tools, don't build them.** **Tools › Add tools** installs GeoLibre: about a thousand open-source terrain, hydrology, raster and vector tools (MIT licence, version 1.8.1, a download of 16 to 19 MB). Columbus never ships it: it is downloaded when you ask, and checked against a SHA-256 pinned in Columbus. Your assistant finds, reads and runs any of its tools, each run in the same sandbox as scripts, on copies, with no approval. Any other command-line program can be added with a small description file. From a terminal: `columbus-mcp toolbox install geolibre`.
+- **Your assistant and your map.** It can read what your map shows (the area, the layers that are on, the feature you selected), point the map at a result, and take its snapshot of that same view.
+- **Project files.** Each project has a folder for scripts and notes. Your assistant can read and write text files there and run a script from there; you can put your own in. The project's page lists them.
+- **Sync with GitHub and Gitea.** **Settings › Git servers** connects github.com, a GitHub Enterprise Server, a Gitea or a Forgejo with a token, kept in your computer's credential store. On a project's page: **Link this project**, **Check for changes**, **Sync**. It works through the server's web API, so no Git is needed on your PC and nothing from a repository can run on it. A file changed on both sides is kept twice (keep mine, keep theirs, keep both). Data, secrets and big files stay out.
 
 **Needs macOS 15 or later on a Mac** (Apple Silicon). Windows 10 and 11 (64-bit) as before.
 
+### What changes if you come from 0.14
+
+- **Nothing loosens by itself.** The new policy keys (`scripts.approval`, `allow_toolboxes`, `allow_project_files`, `allow_sync`) are off until you choose **Work freely on copies** in the app, or your organization writes them in `policy.yaml`. Until then scripts are as in 0.14: off, or approved one by one. `scripts.session_approval: true` keeps its meaning.
+- **Choosing is yours, once.** **Work freely on copies** asks for Touch ID or Windows Hello and writes seven settings to `policy.yaml`: `allow_scripts`, `scripts.approval: none`, `environments.allow`, `allow_personal_tools`, `allow_toolboxes`, `allow_project_files` and `allow_sync`. **Ask me before each script** sets `scripts.approval` back to `each` and leaves the others, which each have a switch.
+- **The app does not create `policy.yaml`.** On a computer without one, the app says to create it first; the [Windows](https://github.com/wiatrek-kevin-s/columbus/blob/main/docs/install.md) and [Mac](https://github.com/wiatrek-kevin-s/columbus/blob/main/docs/install-macos.md) guides show how (step 3). Where your organization manages the file, the app shows what is in force and offers no choice.
+- **The window is new; your things are where they were:** chats, connections, notes, workflows and tools. The app opens on a question, not a Home page. The earlier session list and settings window are still under **Classic windows**, at the foot of **Settings**.
+
 ### Not in this release
 
-- A personal tool can't yet import an environment's other packages (whitebox, arcpy) beyond the tool rules' module list; scripts can (CR-1, sent to Blueprint for a decision). So arcpy works in scripts you approve, not in personal tools or workflows.
-- A documentation website (CR-3, a later round).
-- Screen redesign: a separate review of the app's screens comes next.
+- QGIS as a toolbox, and toolbox tools as steps of a workflow.
+- In sync: GitHub's device sign-in (a token works), merging line by line, more than the one linked branch, and syncing by itself. A synced folder is not a Git clone.
+- Sync on Linux: no server can be connected there yet. GeoLibre on Windows on ARM: its publisher builds none.
+- Still open from 0.14: a personal tool can't import an environment's other packages beyond the tool rules' module list (CR-1), so arcpy works in scripts you approve, not in personal tools or workflows; and a documentation website (CR-3).
 
 ### What we could and couldn't confirm
 
-- **ArcGIS sign-in route (A-2): unconfirmed.** Esri's documentation couldn't be checked, so Columbus supports both ways back from the browser: straight to Columbus (`http://127.0.0.1`), or a code you paste into the terminal (`--paste-code`). Register both redirect URLs; H-1 tells you which your portal accepts.
-- **Engine updates (A-4): Dependabot can't update the hash-pinned engine lists.** A weekly workflow regenerates them and opens a pull request instead; crates, npm packages and GitHub Actions are updated by Dependabot.
+- **The real GeoLibre program was never run while this was built** (the build machine may not run downloaded programs). Columbus's side follows the program's source at version 1.8.1 and is tested against a stand-in. Your first install is its first real run (H-3).
+- **Sync has never met a real GitHub or Gitea.** It was built and tested against stand-in servers written from their published API descriptions. Try it first on a repository that does not matter (H-4).
+- **arcpy and trusted environments are still experimental,** as in 0.14: not yet tried on a real ArcGIS Pro computer (H-2). They run outside the sandbox, where code could reach your connections, so Columbus asks before every such run.
+- **The app's pages are driven by tests on Linux only.** On Windows and macOS the tests build the app and run the server's own tests. Two short looks on Windows and on a Mac are in the manual checks.
+- **ArcGIS sign-in route (A-2): still unconfirmed** (H-1). Register both redirect URLs, as in 0.14.
 
 ### Optional checks you can do (not needed to use this release)
 
 - **H-1:** register your organization's ArcGIS app and try a signed-in layer.
 - **H-2:** run one arcpy script on a Windows PC with ArcGIS Pro.
+- **H-3:** install GeoLibre and have your assistant run one of its tools.
+- **H-4:** sync a project with your GitHub or your organization's Gitea.
+- **Two short looks on Windows and on a Mac:** the map panel, and the choice with Windows Hello or Touch ID.
 
-Both are step by step in [docs/manual-checks.md](https://github.com/wiatrek-kevin-s/columbus/blob/main/docs/manual-checks.md).
+All are step by step in [docs/manual-checks.md](https://github.com/wiatrek-kevin-s/columbus/blob/main/docs/manual-checks.md).
 
-### Upgrading from 0.13
+### Upgrading from 0.14
 
 1. Install the new extension and app (below).
-2. **Run the engine setup once more** (Mac: `sh engine/setup-engine.sh` in your Columbus folder; Windows: `engine\setup-engine.ps1`), from the new server folder. It reinstalls every package with hash checks and adds Columbus's own uv.
-3. Nothing else to change: the new policy keys (`environments`, `scripts.session_approval`, `map`) are off or empty by default, and `file` in `connection_types` is read as `files`. Folder-of-files caches rebuild once by themselves on first use.
+2. The engine's packages did not change, so the engine setup need not be run again. (From 0.13 or earlier, run it once more, from the new server folder: `sh engine/setup-engine.sh` on a Mac, `engine\setup-engine.ps1` on Windows.)
+3. Nothing else to change. To use what is new, open **Settings** in the app and choose how your assistant works.
 
-Licences of software Columbus carries are in `THIRD-PARTY-NOTICES.md` in the server folder.
+Licences of software Columbus carries are in `THIRD-PARTY-NOTICES.md` in the server folder. GeoLibre is not part of Columbus; its own licence and notices are kept beside it when you install it.
 
-**In 0.13.0:** importing documents as notes, sharing tools and workflows with coworkers, labelled map snapshots, workflow email.
+**In 0.14.0:** folders of files and ArcGIS Online and Portal layers as connections, your own Python environments, file geodatabase and GeoTIFF exports, measures kept end to end, web map layers. **In 0.13.0:** importing documents as notes, sharing tools and workflows with coworkers, labelled map snapshots, workflow email.
 
 ## Mac (Apple Silicon, macOS 15 or later)
 
@@ -66,7 +78,7 @@ Licences of software Columbus carries are in `THIRD-PARTY-NOTICES.md` in the ser
 | File | What it is |
 | --- | --- |
 | `.mcpb` | The Columbus server as a Claude desktop extension: Claude starts it for you |
-| `columbus-app-…` | The Columbus app: each running session's layers on a map, its tables, checks, and the requests waiting for your decision; and a chat with Claude using your own Anthropic API key |
+| `columbus-app-…` | The Columbus app: a chat with Claude using your own Anthropic API key, with the map, tables and checks beside it; your data, projects, workflows and tools; and the sessions other AI apps run, with the requests waiting for your decision |
 | `.zip` | The server as a folder, with the GIS engine setup script, examples, skills and guides |
 
 Nothing is code-signed yet, which is why macOS and Windows warn; the steps above say what to do.
