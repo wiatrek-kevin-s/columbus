@@ -1319,6 +1319,16 @@ fn remove(id: &str) -> Result<()> {
     let dir = tbx::toolboxes_dir();
     let tb = tbx::load(&dir, id).ok();
     let gone = tbx::remove(&dir, id).map_err(|e| anyhow!(e))?;
+    // On Windows, running its tools wrote a read permission for this
+    // toolbox's sandbox onto the program's folder and the folders it was
+    // given to read: taken back now, the mirror of that grant. (On macOS
+    // and Linux nothing was written onto a folder.)
+    let taken_back = tb.as_ref().map(|tb| {
+        columbus_confine::forget(
+            &crate::toolbox::sandbox_name(&tb.id),
+            &crate::toolbox::read_folders(tb),
+        )
+    });
     // Recorded where the person's other actions are, when that can be.
     if let Ok(state) = State::load(crate::config::Paths::from_env()) {
         record(
@@ -1341,6 +1351,26 @@ fn remove(id: &str) -> Result<()> {
             }
         }
     );
+    match (&tb, taken_back) {
+        (Some(t), Some(Ok(()))) if cfg!(windows) && !gone => println!(
+            "The permission its tools had to read the program's folder ({}) was taken back.",
+            crate::toolbox::read_folders(t)
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        (Some(t), Some(Err(e))) => println!(
+            "note: Windows did not take back the permission its tools had to read {}: {e}. It shows in the folder's Properties, under Security, as \"Columbus {}\" (or as an unknown account), and can be removed there.",
+            crate::toolbox::read_folders(t)
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", "),
+            crate::toolbox::sandbox_name(&t.id)
+        ),
+        _ => {}
+    }
     Ok(())
 }
 

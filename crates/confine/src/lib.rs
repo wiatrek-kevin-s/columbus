@@ -347,6 +347,27 @@ pub fn launch(spec: &Spec, program: &str, args: &[String]) -> Result<i32, Error>
     }
 }
 
+/// Take back what launching under the profile `name` left on `paths`, for
+/// when what ran under it is removed for good (a toolbox, with its
+/// program's folder and the folders it was given to read).
+///
+/// On Windows a launch writes a read permission for the profile onto each
+/// read-only folder, the program's own folder among them, and it stays
+/// there: this removes it, the mirror of that grant. On macOS and Linux a
+/// launch writes nothing onto a folder (the sandbox's rules live with the
+/// process), so there is nothing to take back.
+pub fn forget(name: &str, paths: &[PathBuf]) -> Result<(), Error> {
+    #[cfg(windows)]
+    {
+        windows::forget(name, paths)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (name, paths);
+        Ok(())
+    }
+}
+
 /// Entry point for the `columbus-confine` binary.
 pub fn main_cli() -> i32 {
     let args: Vec<String> = std::env::args().skip(1).collect();
