@@ -1077,16 +1077,24 @@ fn made(v: Option<&Value>) -> Made {
         return Made::default();
     };
     // A tool run through `run_tool` (a toolbox's, the person's own, a
-    // connected server's) lists the files it saved under `result.saved`:
-    // the first layer or table among them (what a table can show), else
+    // connected server's) lists the files it saved under `result.saved`,
+    // each with its kind. A script (`run_python`) lists what it wrote under
+    // `result.outputs`, with no kind: there a GeoPackage is a layer and a
+    // CSV a table, by the file's ending, as the map page takes them. Of
+    // those files: the first layer or table (what a table can show), else
     // the first file.
-    let saved = || {
-        let files = v["result"]["saved"].as_array()?;
-        files
-            .iter()
-            .find(|f| matches!(f["kind"].as_str(), Some("layer" | "table")))
-            .or(files.first())?["handle"]
-            .as_str()
+    let has_rows = |f: &Value| match f["kind"].as_str() {
+        Some(kind) => matches!(kind, "layer" | "table"),
+        None => f["handle"].as_str().is_some_and(|h| {
+            let h = h.to_ascii_lowercase();
+            h.ends_with(".gpkg") || h.ends_with(".csv")
+        }),
+    };
+    let listed = || {
+        let files = [&v["result"]["saved"], &v["result"]["outputs"]]
+            .into_iter()
+            .find_map(|l| l.as_array().filter(|a| !a.is_empty()))?;
+        files.iter().find(|f| has_rows(f)).or(files.first())?["handle"].as_str()
     };
     Made {
         provenance: v["provenance"]
@@ -1096,7 +1104,7 @@ fn made(v: Option<&Value>) -> Made {
         handle: v["result"]["layer"]["handle"]
             .as_str()
             .or(v["result"]["handle"].as_str())
-            .or_else(saved)
+            .or_else(listed)
             .filter(|s| plain(s))
             .map(String::from),
         images: vec![],
@@ -1202,10 +1210,37 @@ mod tests {
         let v = json!({"result": {"layer": {"handle": "ws://s/results/a.gpkg"},
             "saved": [{"handle": "ws://s/results/b.gpkg", "kind": "layer"}]}});
         assert_eq!(handle(v).as_deref(), Some("ws://s/results/a.gpkg"));
+        // A script (run_python) lists what it wrote under `outputs`, with
+        // no kind: a CSV is a table and a GeoPackage a layer, by the name.
+        let counts = "ws://s/results/script-p_9a8b7c6d-counts.csv";
+        let v = json!({"result": {"status": "done", "exit_code": 0, "stdout": "", "stderr": "", "code_sha256": "ab12",
+            "outputs": [
+                {"handle": "ws://s/results/script-p_9a8b7c6d-a-note.txt", "name": "a-note.txt", "bytes": 12, "summary": null},
+                {"handle": counts, "name": "counts.csv", "bytes": 24, "summary": {"rows": 3}},
+                {"handle": "ws://s/results/script-p_9a8b7c6d-lines.gpkg", "name": "lines.gpkg", "bytes": 98304, "summary": {"rows": 2}}]},
+            "provenance": "p_9a8b7c6d"});
+        assert_eq!(handle(v).as_deref(), Some(counts));
+        let v = json!({"result": {"outputs": [
+            {"handle": "ws://s/results/script-p_1-readme.md", "name": "readme.md"},
+            {"handle": "ws://s/results/script-p_1-Lines.GPKG", "name": "Lines.GPKG"}]}});
+        assert_eq!(
+            handle(v).as_deref(),
+            Some("ws://s/results/script-p_1-Lines.GPKG")
+        );
+        // A script that wrote no layer or table: its first file.
+        let v = json!({"result": {"outputs": [
+            {"handle": "ws://s/results/script-p_1-a.txt", "name": "a.txt"},
+            {"handle": "ws://s/results/script-p_1-b.tif", "name": "b.tif"}]}});
+        assert_eq!(
+            handle(v).as_deref(),
+            Some("ws://s/results/script-p_1-a.txt")
+        );
         // Nothing made or saved, or a handle that is not a plain id: none.
         for v in [
             json!({"result": {"status": "done"}}),
             json!({"result": {"saved": []}}),
+            json!({"result": {"outputs": []}}),
+            json!({"result": {"outputs": [{"handle": null, "name": "counts.csv"}]}}),
             json!({"result": {"saved": "ws://s/results/a.gpkg"}}),
             json!({"result": {"saved": [{"kind": "layer"}]}}),
             json!({"result": {"saved": [{"handle": "ws://s/results/<b>.gpkg", "kind": "layer"}]}}),
