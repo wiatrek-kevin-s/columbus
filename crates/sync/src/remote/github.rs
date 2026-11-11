@@ -144,7 +144,7 @@ pub(super) async fn tip(r: &Remote) -> Result<Tip, Error> {
             {
                 return Ok(Tip::At(id_of(
                     &v["object"]["sha"],
-                    "the branch's commit",
+                    "the newest change",
                     &r.http.host,
                 )?));
             }
@@ -267,7 +267,7 @@ async fn tree_id(r: &Remote, commit: &str) -> Result<String, Error> {
     }
     id_of(
         &reply.json(&r.http)?["tree"]["sha"],
-        "the commit's list of files",
+        "the list of files",
         &r.http.host,
     )
 }
@@ -302,7 +302,7 @@ async fn first_file(
         200 | 201 => {
             let commit = id_of(
                 &reply.json(&r.http)?["commit"]["sha"],
-                "the first commit",
+                "the first change",
                 &r.http.host,
             )?;
             // It must be on the linked branch.
@@ -414,7 +414,11 @@ pub(super) async fn send(
     if reply.status != 201 {
         return Err(SendError::Failed(r.http.failed(&reply)));
     }
-    let commit = id_of(&reply.json(&r.http)?["sha"], "the new commit", &r.http.host)?;
+    let commit = id_of(
+        &reply.json(&r.http)?["sha"],
+        "the change it made",
+        &r.http.host,
+    )?;
 
     // Move the branch, only if that loses nobody's commit.
     let mut segments = repo_path(r, &["git", "refs", "heads"]);

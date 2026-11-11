@@ -45,6 +45,12 @@ pub use secrets::Finding;
 pub use state::{Conflict, ConflictKind, Link, Record, State, Synced};
 pub use trash::{Keep, Kept};
 
+/// Today as `YYYY-MM-DD`, on this computer's clock: the day in the name of
+/// a copy kept for a file that needs a look.
+pub fn today() -> String {
+    chrono::Local::now().format("%Y-%m-%d").to_string()
+}
+
 /// Something that does not sync, and why.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
 pub struct Skipped {

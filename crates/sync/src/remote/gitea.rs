@@ -174,7 +174,7 @@ pub(super) async fn tip(r: &Remote) -> Result<Tip, Error> {
             let v = reply.json(&r.http)?;
             Ok(Tip::At(id_of(
                 &v["commit"]["id"],
-                "the branch's commit",
+                "the newest change",
                 &r.http.host,
             )?))
         }
@@ -309,7 +309,7 @@ pub(super) async fn send(
             201 => {
                 commit = id_of(
                     &reply.json(&r.http)?["commit"]["sha"],
-                    "the new commit",
+                    "the change it made",
                     &r.http.host,
                 )?;
                 was = Tip::At(commit.clone());

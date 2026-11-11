@@ -102,6 +102,14 @@ pub struct Record {
     pub link: Link,
     #[serde(default)]
     pub state: State,
+    /// What is remembered about the project's shared settings.
+    #[serde(default)]
+    pub settings: crate::settings::Memo,
+    /// A mark of the folder's owner when the link was made (the app keeps
+    /// the project's creation time here), so that a later project with the
+    /// same id does not take over this link and its state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub made_for: Option<String>,
 }
 
 impl Record {
@@ -110,6 +118,8 @@ impl Record {
             version: 1,
             link,
             state: State::default(),
+            settings: crate::settings::Memo::default(),
+            made_for: None,
         }
     }
 

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-sync-branches"
+description = "Enables the sync_branches command without any pre-configured scope."
+commands.allow = ["sync_branches"]
+
+[[permission]]
+identifier = "deny-sync-branches"
+description = "Denies the sync_branches command without any pre-configured scope."
+commands.deny = ["sync_branches"]

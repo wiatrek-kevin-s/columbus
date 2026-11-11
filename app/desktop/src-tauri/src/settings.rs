@@ -1371,7 +1371,7 @@ fn arcgis_signin(server: &Path, engine: Option<&Path>, id: &str) -> Result<Strin
 }
 
 /// Open `url` in the person's browser.
-fn open_browser(url: &str) -> std::io::Result<()> {
+pub(crate) fn open_browser(url: &str) -> std::io::Result<()> {
     use std::process::{Command, Stdio};
     let mut cmd = if cfg!(windows) {
         let root = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());

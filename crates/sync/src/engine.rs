@@ -852,6 +852,7 @@ fn message(note: Option<&str>, changes: &[Change]) -> String {
 /// Settle a file that needs a look, as the person chose. Nothing is sent;
 /// what "keep mine" or "keep both" leaves in the folder goes with the next
 /// sync. `copy` names which record is meant (a file can need a look twice).
+/// Gives where a file that was taken out of the folder is kept, if one was.
 pub fn resolve(
     root: &Path,
     state: &mut State,
@@ -859,7 +860,7 @@ pub fn resolve(
     copy: Option<&str>,
     choice: Choice,
     keep: &Keep,
-) -> Result<(), Error> {
+) -> Result<Option<Kept>, Error> {
     let Some(i) = state
         .conflicts
         .iter()
@@ -868,6 +869,7 @@ pub fn resolve(
         return Err(Error::Refused(format!("{path} no longer needs a look")));
     };
     let c = state.conflicts[i].clone();
+    let mut kept = None;
     match (c.kind, choice, c.copy.as_deref()) {
         // My version takes the name. What has the name now is the server's
         // version, which the server still has; if it was changed since, it
@@ -888,7 +890,7 @@ pub fn resolve(
                             let full = fsx::full(root, path);
                             std::fs::remove_file(&full).map_err(|e| Error::io(&full, e))?;
                         } else {
-                            trash::remove(root, path, keep)?;
+                            kept = Some(trash::remove(root, path, keep)?);
                         }
                     }
                     _ => {
@@ -902,26 +904,27 @@ pub fn resolve(
         }
         // The server's version stays; my copy is taken away, and kept.
         (ConflictKind::BothChanged | ConflictKind::DeletedOnServer, Choice::Theirs, Some(copy)) => {
-            take_away(root, copy, keep)?
+            kept = take_away(root, copy, keep)?
         }
         // I deleted it and still mean to: the server's new version is taken
         // away (kept), and the next sync sends the deletion.
-        (ConflictKind::DeletedHere, Choice::Mine, _) => take_away(root, path, keep)?,
+        (ConflictKind::DeletedHere, Choice::Mine, _) => kept = take_away(root, path, keep)?,
         // Both stay as they are: the copy is a file of its own from now on.
         _ => {}
     }
     state.conflicts.remove(i);
-    Ok(())
+    Ok(kept)
 }
 
-/// Take a plain file out of the folder, keeping it; nothing happens if no
-/// plain file has the name.
-fn take_away(root: &Path, path: &str, keep: &Keep) -> Result<(), Error> {
-    if fsx::kind(root, path)? == Kind::File {
-        trash::remove(root, path, keep)?;
-        fsx::remove_empty_parents(root, path);
+/// Take a plain file out of the folder, keeping it (and say where);
+/// nothing happens if no plain file has the name.
+fn take_away(root: &Path, path: &str, keep: &Keep) -> Result<Option<Kept>, Error> {
+    if fsx::kind(root, path)? != Kind::File {
+        return Ok(None);
     }
-    Ok(())
+    let kept = trash::remove(root, path, keep)?;
+    fsx::remove_empty_parents(root, path);
+    Ok(Some(kept))
 }
 
 /// One side of a before-and-after.

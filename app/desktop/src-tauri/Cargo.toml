@@ -22,6 +22,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 columbus-chat = { path = "../../../crates/chat" }
 columbus-shared = { path = "../../../crates/shared" }
+# Sync of a project's files with a Git server, through its web API.
+columbus-sync = { path = "../../../crates/sync" }
 serde_yaml = "0.9"
 tauri-plugin-dialog = "=2.8.4"
 tokio = { version = "1", features = ["sync", "time"] }

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-sync-preview-kept"
+description = "Enables the sync_preview_kept command without any pre-configured scope."
+commands.allow = ["sync_preview_kept"]
+
+[[permission]]
+identifier = "deny-sync-preview-kept"
+description = "Denies the sync_preview_kept command without any pre-configured scope."
+commands.deny = ["sync_preview_kept"]
