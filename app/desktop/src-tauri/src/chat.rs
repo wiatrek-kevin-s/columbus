@@ -576,7 +576,9 @@ pub async fn chat_save_settings(
         })
         .await
         .map_err(|e| e.to_string())??;
-    let mut s = old;
+    // (Read again: confirming an engine at the keyboard can take a while,
+    // and only what this command sets is changed.)
+    let mut s = load(&app);
     s.engine = engine;
     if let Some(m) = model {
         if id == crate::assistant::DEFAULT_SERVICE {
