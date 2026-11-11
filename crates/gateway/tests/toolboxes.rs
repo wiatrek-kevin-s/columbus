@@ -47,12 +47,12 @@ fn target_dir() -> PathBuf {
     exe.parent().unwrap().parent().unwrap().to_path_buf()
 }
 
+/// Whether this machine can set the sandbox up. Where CI says tests must
+/// not skip, a machine that cannot fails the test here, on every system.
 fn can_confine() -> bool {
-    let launcher = target_dir().join(format!("columbus-confine{}", std::env::consts::EXE_SUFFIX));
-    StdCommand::new(launcher)
-        .args(["--check", "A"])
-        .output()
-        .is_ok_and(|o| o.status.success())
+    support::can_confine(
+        &target_dir().join(format!("columbus-confine{}", std::env::consts::EXE_SUFFIX)),
+    )
 }
 
 /// The stand-in program's bytes.
