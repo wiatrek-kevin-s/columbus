@@ -1108,6 +1108,38 @@ async fn everyday_forms_of_a_password_are_not_read_to_the_assistant_or_written_b
             format!("USER, PASSWORD = \"gis\", \"{PASSWORD}\"\n"),
             "line 1 (a password or key written into the file (a quoted value))",
         ),
+        // A password to fall back on, and more calls that take one by its
+        // place.
+        (
+            "tool.py",
+            format!("import arcpy\npassword = arcpy.GetParameterAsText(1) or \"{PASSWORD}\"\n"),
+            "line 2 (a password or key written into the file (a quoted value))",
+        ),
+        (
+            "env_named.py",
+            format!("import os\npassword = os.getenv(\"PGPASSWORD\", default=\"{PASSWORD}\")\n"),
+            "line 2 (a password or key written into the file (a quoted value))",
+        ),
+        (
+            "run.sh",
+            format!("export PGPASSWORD=\"${{PGPASSWORD:-{PASSWORD}}}\"\npsql -h db1 roads\n"),
+            "line 1 (a password written into the file)",
+        ),
+        (
+            "admin.py",
+            format!("arcpy.management.CreateDatabaseUser(sde, \"DATABASE_USER\", \"editor1\", \"{PASSWORD}\")\n"),
+            "line 1 (a password written into the file (handed to a call that signs in))",
+        ),
+        (
+            "mssql.py",
+            format!("import pymssql\nconn = pymssql.connect(\"db1\", \"gis\", \"{PASSWORD}\", \"roads\")\n"),
+            "line 2 (a password written into the file (handed to a call that signs in))",
+        ),
+        (
+            "nested.py",
+            format!("gis = GIS(url, \"ana\", os.environ.get(\"AGOL_PW\", \"{PASSWORD}\"))\n"),
+            "line 1 (a password or key written into the file (a quoted value))",
+        ),
     ];
     // What the person (or a colleague, through sync) put there.
     for (name, text, _) in &cases {
@@ -1116,7 +1148,7 @@ async fn everyday_forms_of_a_password_are_not_read_to_the_assistant_or_written_b
     let fine = [
         (
             "plain.py",
-            "\"\"\"Load the roads.\n\n    password: the database password, read from the environment\n\"\"\"\nimport os\n\n# ask Ana for the password; it is kept by Columbus, never here\npassword = os.environ[\"PGPASSWORD\"]\nos.environ[\"PGPASSWORD\"] = password\ngis = GIS(url, username, password)\ngis = GIS(\"https://www.arcgis.com\", \"ana\", getpass.getpass())\nr = requests.get(url, auth=(user, pw))\nhost = os.environ.get(\"PGHOST\", \"db1.corp.example\")\npw = get_pw()\n",
+            "\"\"\"Load the roads.\n\n    password: the database password, read from the environment\n\"\"\"\nimport os\n\n# ask Ana for the password; it is kept by Columbus, never here\npassword = os.environ[\"PGPASSWORD\"]\nos.environ[\"PGPASSWORD\"] = password\ngis = GIS(url, username, password)\ngis = GIS(\"https://www.arcgis.com\", \"ana\", getpass.getpass())\nr = requests.get(url, auth=(user, pw))\nhost = os.environ.get(\"PGHOST\", \"db1.corp.example\")\npw = get_pw()\npassword = os.environ.get(\"PGPASSWORD\") or getpass.getpass()\nkey = os.environ.get(\"S3_KEY\", \"exports/2026/roads_north_v2.parquet\")\nftp.login(\"anonymous\", \"ana@county.gov\")\ny = np.exp(x/sigma2@w)\n",
         ),
         (
             "plain.md",

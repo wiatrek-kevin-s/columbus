@@ -452,6 +452,65 @@ async fn everyday_forms_of_a_password_stop_the_sync_before_anything_is_sent() {
         ("load.py", format!("USER, PASSWORD = \"gis\", \"{pw}\"\n"), 1),
         ("notes.md", format!("user: gis\npw: {pw}\n"), 2),
         ("dump.sh", format!("mysqldump -uroot -p{pw} gis > gis.sql\n"), 1),
+        // A password to fall back on, also inside another call.
+        (
+            "load.py",
+            format!("password = os.getenv(\"PGPASSWORD\", default=\"{pw}\")\n"),
+            1,
+        ),
+        (
+            "load.py",
+            format!("password = os.environ.get(\"PGPASSWORD\") or \"{pw}\"\n"),
+            1,
+        ),
+        (
+            "tool.py",
+            format!("password = arcpy.GetParameterAsText(1) or \"{pw}\"\n"),
+            1,
+        ),
+        (
+            "run.sh",
+            format!("export PGPASSWORD=\"${{PGPASSWORD:-{pw}}}\"\n"),
+            1,
+        ),
+        // (A `.js` file never leaves by sync: Windows runs one on a
+        // double click. TypeScript does.)
+        (
+            "map.ts",
+            format!("const p = process.env.DB_PASSWORD || \"{pw}\";\n"),
+            1,
+        ),
+        (
+            "setup.ps1",
+            format!("$secure = ConvertTo-SecureString \"{pw}\" -AsPlainText -Force\n"),
+            1,
+        ),
+        (
+            "sign_in.py",
+            format!("gis = GIS(url, \"ana\", os.environ.get(\"AGOL_PW\", \"{pw}\"))\n"),
+            1,
+        ),
+        // More calls that take a password by its place.
+        (
+            "admin.py",
+            format!("arcpy.management.CreateDatabaseUser(sde, \"DATABASE_USER\", \"editor1\", \"{pw}\")\n"),
+            1,
+        ),
+        (
+            "admin.py",
+            format!("gis.users.create(\"ana2\", \"{pw}\", \"Ana\", \"Gis\", \"ana@county.example\")\n"),
+            1,
+        ),
+        (
+            "load.py",
+            format!("conn = pymssql.connect(\"db1\", \"gis\", \"{pw}\", \"roads\")\n"),
+            1,
+        ),
+        (
+            "mail.py",
+            format!("server.login(\"gis@county.example\", \"{pw}\")\n"),
+            1,
+        ),
     ];
     for (name, text, line) in &cases {
         let r = repo();
@@ -509,7 +568,7 @@ async fn files_that_name_a_password_without_giving_one_are_sent() {
     let files = [
         (
             "scripts/load.py",
-            "\"\"\"Load the roads.\n\n    password: the database password, read from the environment\n\"\"\"\nimport os\n\n# ask Ana for the password; it is kept by Columbus, never here\npassword = os.environ[\"PGPASSWORD\"]\npassword: str\nos.environ[\"PGPASSWORD\"] = password\ncfg = {}\ncfg['password'] = get_password()\nconn = connect(user=user, password=pw2026x)  # as set above\ngis = GIS(url, username, password)\ngis = GIS(\"https://www.arcgis.com\", \"ana\", getpass.getpass())\ngis = GIS(\"pro\")\nr = requests.get(url, auth=(user, pw))\nhost = os.environ.get(\"PGHOST\", \"db1.corp.example\")\npassword = os.environ.get(\"PGPASSWORD\")\nconn = oracledb.connect(user=user, password=pw, dsn=dsn)\nx, y = \"12.5\", \"48.1\"\npw = get_pw()\n",
+            "\"\"\"Load the roads.\n\n    password: the database password, read from the environment\n\"\"\"\nimport os\n\n# ask Ana for the password; it is kept by Columbus, never here\npassword = os.environ[\"PGPASSWORD\"]\npassword: str\nos.environ[\"PGPASSWORD\"] = password\ncfg = {}\ncfg['password'] = get_password()\nconn = connect(user=user, password=pw2026x)  # as set above\ngis = GIS(url, username, password)\ngis = GIS(\"https://www.arcgis.com\", \"ana\", getpass.getpass())\ngis = GIS(\"pro\")\nr = requests.get(url, auth=(user, pw))\nhost = os.environ.get(\"PGHOST\", \"db1.corp.example\")\npassword = os.environ.get(\"PGPASSWORD\")\nconn = oracledb.connect(user=user, password=pw, dsn=dsn)\nx, y = \"12.5\", \"48.1\"\npw = get_pw()\npassword = os.getenv(\"PGPASSWORD\", default=None)\npassword = os.environ.get(\"PGPASSWORD\") or getpass.getpass()\nkey = os.environ.get(\"S3_KEY\", \"exports/2026/roads_north_v2.parquet\")\nftp.login(\"anonymous\", \"ana@county.gov\")\nconn = pymssql.connect(\"db1\", \"gis\", pw, \"roads2026\")\ny = np.exp(x/sigma2@w)\n",
         ),
         ("scripts/load.R", "password <- Sys.getenv(\"PGPASSWORD\")\npwd <- getwd()\n"),
         (
@@ -523,7 +582,7 @@ async fn files_that_name_a_password_without_giving_one_are_sent() {
         ("conf/app.xml", "<settings><password/><user>gis</user></settings>\n"),
         (
             "run.sh",
-            "publish --password\nmysql -u root -p\nmkdir -p output2026\npsql -U gis -p 5432 -h db1host\nsqlplus /nolog\nsqlplus ana@roads\n",
+            "publish --password\nmysql -u root -p\nmkdir -p output2026\npsql -U gis -p 5432 -h db1host\nsqlplus /nolog\nsqlplus ana@roads\nexport PGPASSWORD=\"${PGPASSWORD:-}\"\nexport PGHOST=\"${PGHOST:-db1.corp.example}\"\n",
         ),
         (
             "users.sql",
