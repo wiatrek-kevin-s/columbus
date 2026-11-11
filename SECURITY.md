@@ -25,7 +25,7 @@ Only the newest release gets fixes. Columbus is in test releases (0.x): update t
 - **Sync is yours to press.** A project's files go to a Git server only when you press **Sync**, to the repository you linked, and your assistant has no part in it. The token is sent only to that server, whose certificate is always checked. Data, keys and files over 5 MB stay out, and text that looks like a password or a token stops the sync before anything is sent.
 - **Secrets stay out of files.** Database passwords, ArcGIS sign-ins and Git server tokens are kept in the operating system's credential store, never in a file, a log or anything the assistant sees.
 - **A record.** Every call, including refusals, is a line in a hash-chained audit log on your computer, and every output has a provenance record.
-- **Nothing phoned home.** No telemetry and no account. Columbus contacts only what you set up (your databases and services, the AI service you chose, the basemap if you turn it on).
+- **Nothing phoned home.** No telemetry and no account. Columbus contacts only what you set up or ask for (your databases and services, the AI service you chose, the basemap if you turn it on, a Git server you connected, and a toolbox's publisher when you install one).
 
 The [technical reference](docs/reference.md) says exactly how each rule is enforced.
 
