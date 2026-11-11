@@ -9,9 +9,11 @@ another and removes the installed one; chooses Work freely on copies
 (one confirmation, seven settings, the rest of the file kept) and goes
 back to asking (scripts.approval each, nothing else); turns the switches
 for toolboxes and for sync off and on, each by itself (its own line of
-the policy file, nothing else); then, with the person declining to
-confirm, checks that nothing that widens access is saved (a connection,
-a switch, a tool, the mode), while turning a switch off still works;
+the policy file, nothing else); checks twice that a read of the settings
+which ends after a newer one is not drawn over it (the mode, a switch);
+then, with the person declining to confirm, checks that nothing that
+widens access is saved (a connection, a switch, a tool, the mode), while
+turning a switch off still works;
 and, with the policy file managed by the organization, that the mode in
 force and the switches are shown and cannot be changed. A debug build
 stands in for Touch ID / Windows Hello with COLUMBUS_APP_TEST_CONFIRM
@@ -349,6 +351,26 @@ gpd.GeoDataFrame({"RTE": ["IH0035", "US0183"], "district": [14, 12]}, geometry=[
         assert d.find_element(By.ID, "work-free").is_selected()
         assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
         d.save_screenshot(str(OUT / "settings-work-freely.png"))
+        step("a read of the settings that ends after a newer one does not put the older mode back")
+        # Ask me before each script is chosen (the answer to the read that
+        # follows is kept back), then Work freely on copies again.
+        drawn_before = d.find_element(By.ID, "work-free")
+        guard.hold(d, "settings_state")
+        click(d, By.ID, "work-ask")
+        wait.until(lambda drv: "approval: each" in (root / "policy.yaml").read_text() and guard.held(drv))
+        # The cards drawn before are still there: nothing was drawn since.
+        wait.until(lambda drv: drawn_before.is_enabled())
+        drawn_before.click()
+        wait.until(lambda drv: "approval: none" in (root / "policy.yaml").read_text())
+        wait.until(EC.staleness_of(drawn_before))  # the newer read was drawn
+        wait.until(lambda drv: "On now: Work freely on copies." in drv.find_element(By.ID, "work-state").text)
+        # Now the first read ends: it was made while the mode was Ask me.
+        older = guard.release(d)
+        assert older["policy"]["work_mode"] == "ask", older["policy"]
+        assert "On now: Work freely on copies." in d.find_element(By.ID, "work-state").text, \
+            "a read that ended late put the mode back to Ask me, while the file says Work freely on copies"
+        assert d.find_element(By.ID, "work-free").is_selected() and d.find_element(By.ID, "work-free").is_enabled()
+        assert policy(root) == (on, text), "the file is as it was before the two choices"
         # Organization rules says the same in plain words.
         nav(d, wait, "#/settings/org", "org-work-free")
         assert d.find_element(By.ID, "org-work-free").is_selected()
@@ -397,6 +419,26 @@ gpd.GeoDataFrame({"RTE": ["IH0035", "US0183"], "district": [14, 12]}, geometry=[
                     [(f"{name}: {str(not on).lower()}", f"{name}: {str(on).lower()}")], (before_text, after_text)
                 # The page shows the switch as the file has it.
                 wait.until(lambda drv: drv.find_element(By.ID, name).is_enabled() and drv.find_element(By.ID, name).is_selected() is on)
+
+        step("a read of the settings that ends after a newer one does not put an older switch back")
+        # Allow toolboxes is turned off (the answer to the read that follows
+        # is kept back), then on again.
+        drawn_before = d.find_element(By.ID, "allow_toolboxes")
+        assert drawn_before.is_selected()
+        d.execute_script("arguments[0].scrollIntoView({block: 'center'})", drawn_before)
+        guard.hold(d, "settings_state")
+        drawn_before.click()
+        wait.until(lambda drv: policy(root)[0].get("allow_toolboxes") is False and guard.held(drv))
+        # The row drawn before is still there: nothing was drawn since.
+        wait.until(lambda drv: drawn_before.is_enabled())
+        drawn_before.click()
+        wait.until(lambda drv: policy(root)[0].get("allow_toolboxes") is True)
+        wait.until(EC.staleness_of(drawn_before))  # the newer read was drawn
+        # Now the first read ends: it was made while the switch was off.
+        older = guard.release(d)
+        assert older["policy"]["allow_toolboxes"] is False, older["policy"]
+        box = d.find_element(By.ID, "allow_toolboxes")
+        assert box.is_selected() and box.is_enabled(), "a read that ended late put the switch back to off, while the file says on"
     finally:
         try:
             d.save_screenshot(str(OUT / "settings-last.png"))

@@ -336,11 +336,16 @@ async function overview(body, foot) {
 
   // How the assistant works: freely on copies, or asking before each script.
   const modeBox = h("div", { class: "bd", id: "work-mode" }, h("p", { class: "small muted" }, "…"));
+  // Only the read begun last is drawn: one begun after an earlier choice
+  // can end after the one begun since, and would show the mode as it was.
+  let modeReads = 0;
   const drawMode = async () => {
+    const mine = ++modeReads;
     try {
       const st = await invoke("settings_state");
+      if (mine !== modeReads) return;
       modeBox.replaceChildren(workMode(st, drawMode));
-    } catch (e) { modeBox.replaceChildren(h("p", { class: "error-text small" }, String(e))); }
+    } catch (e) { if (mine === modeReads) modeBox.replaceChildren(h("p", { class: "error-text small" }, String(e))); }
   };
   drawMode();
 
@@ -600,15 +605,20 @@ async function org(body) {
   if (p.problem) body.append(h("p", { id: "policy-problem", class: "error-text" }, p.problem));
   const sw = h("div", {});
   const mode = h("div", { class: "bd" });
+  // Only the read begun last is drawn: one begun after an earlier change
+  // can end after the one begun since, and would show a switch as it was.
+  let reads = 0;
   const drawSw = async () => {
+    const mine = ++reads;
     try {
       const s = await invoke("settings_state");
+      if (mine !== reads) return;
       mode.replaceChildren(workMode(s, drawSw, "org-work"));
       sw.replaceChildren(
         h("p", { id: "org-managed", class: "small muted", hidden: s.policy.writable }, "These are managed by your organization. Ask your IT team to change them."),
         ...Object.keys(SWITCHES).map((n) => switchRow(n, s, drawSw)),
         h("p", { class: "small muted" }, `Turning one on asks for ${st.confirm_with} first; turning one off does not. The rest of the file, comments included, is kept as it is.`));
-    } catch (e) { showError(error, e); }
+    } catch (e) { if (mine === reads) showError(error, e); }
   };
   await drawSw();
   body.append(h("section", { class: "card" }, sec("How your assistant works"), mode),

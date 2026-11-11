@@ -249,14 +249,20 @@ function syncCard(project) {
   function history() {
     const box = h("div", { id: "sync-history-list" }, h("p", { class: "muted small" }, "Looking…"));
     const d = h("details", { id: "sync-history" }, h("summary", { class: "small" }, "History"), box);
+    // Only the read begun last is drawn: History opened, closed and opened
+    // again reads the server twice, and the first answer can come last.
+    let reads = 0;
     d.addEventListener("toggle", async () => {
       if (!d.open) return;
+      const mine = ++reads;
       try {
         const items = await invoke("sync_history", { project: id });
+        if (mine !== reads) return;
         box.replaceChildren(items.length ? h("ul", { class: "list compact" }, ...items.map((c) => h("li", {}, h("div", { class: "text" },
           h("b", { class: "wrap-any" }, (c.note || "(no note)").split("\n")[0]), h("span", { class: "where" }, `${c.who || "someone"} · ${ago(c.when) || c.when}`)))))
           : h("p", { class: "muted small" }, "Nothing has been synced to this repository yet."));
       } catch (e) {
+        if (mine !== reads) return;
         box.replaceChildren(h("p", { class: "error-text small", role: "alert" }, String(e)));
       }
     });

@@ -18,15 +18,19 @@ What it walks through:
 * a project's Sync section, on the GitHub stand-in: link to a new private
   repository, add a file, Sync, change the file on the server, Check for
   changes, What changed (before and after), Sync, a conflict settled each
-  of the three ways, History, an arriving change to columbus-project.yaml
-  (shown, and applied only when accepted), a narrowed policy, Disconnect,
-  and linking again by picking the repository from the list;
+  of the three ways, History (and a read of it that ends after a newer one
+  does not put the older list back), an arriving change to
+  columbus-project.yaml (shown, and applied only when accepted), a narrowed
+  policy, Disconnect, and linking again by picking the repository from the
+  list;
 * the same start on the Gitea stand-in, where an arriving change to the
   shared settings is declined;
 * the token: in no file under the test's folders, in no line the app
   logged, nowhere in the page; and it was sent to the stand-ins only;
 * Remove a server (its projects say so), and a project made again under
-  the id of a deleted one, which does not take over the old link.
+  the id of a deleted one, which does not take over the old link;
+* Settings > Git servers: a read of the list that ends after a newer one
+  (a server removed, then one connected) does not put the older list back.
 
 A debug build keeps tokens in memory with COLUMBUS_APP_TEST_TOKENS=memory
 (Linux has no credential store Columbus can use yet) and accepts the
@@ -495,6 +499,28 @@ def main():
         assert not guard.unnamed(d), guard.unnamed(d)
         d.save_screenshot(str(OUT / "sync-history.png"))
 
+        step("History: a read that ends after a newer one does not put the older list back")
+
+        def look_again():
+            """Close History and open it again: it reads the server when it opens."""
+            for want in [False, True]:
+                click(d, By.CSS_SELECTOR, "#sync-history > summary")
+                wait.until(lambda drv: drv.execute_script("return document.getElementById('sync-history').open") is want)
+                time.sleep(0.2)
+
+        # Opened again (the answer to that read is kept back); a colleague's
+        # change lands on the server; opened once more.
+        guard.hold(d, "sync_history")
+        look_again()
+        wait.until(guard.held)
+        github.commit("roads-qc", message="Cy looked it over")
+        look_again()
+        wait.until(lambda drv: "Cy looked it over" in text(drv, "sync-history-list"))
+        # Now the first read ends: it was made before that change.
+        older = guard.release(d)
+        assert older and all(c["note"] != "Cy looked it over" for c in older), older
+        assert "Cy looked it over" in text(d, "sync-history-list"), "a read that ended late put back the history from before the newest change"
+
         step("an arriving change to columbus-project.yaml is shown, and used only when accepted")
         github.commit("roads-qc", put={"columbus-project.yaml": "name: Roads QC 2027\ninstructions: Report lengths in kilometres.\n"},
                       message="New units")
@@ -642,6 +668,30 @@ def main():
         wait.until(lambda drv: shown(drv, "sync-link"))
         assert not shown(d, "sync-where") and not bridges_record.exists(), "the new project is not linked"
         assert not guard.unnamed(d), guard.unnamed(d)
+
+        step("Git servers: a read that ends after a newer one does not put the older list back")
+        nav(d, wait, "#/settings/git", "git-connect")
+        wait.until(lambda drv: len(drv.find_elements(By.CSS_SELECTOR, "#git-servers li")) == 1)
+        assert "GitHub" in text(d, "git-servers") and "Gitea" not in text(d, "git-servers"), text(d, "git-servers")
+        # The server that is left is removed (the answer to the read that
+        # follows is kept back), then the Gitea is connected again.
+        guard.hold(d, "git_servers_state")
+        click(d, By.CSS_SELECTOR, "#git-servers li[data-id='127-0-0-1'] button")
+        wait.until(EC.element_to_be_clickable((By.XPATH, "//dialog//button[normalize-space()='Remove server']"))).click()
+        wait.until(lambda drv: guard.held(drv) and not yaml.safe_load(servers_file.read_text()))
+        click(d, By.ID, "git-connect")
+        wait.until(EC.visibility_of_element_located((By.ID, "git-token")))
+        choose(d, "git-kind", "gitea")
+        d.find_element(By.ID, "git-url").send_keys(gitea.url)
+        d.find_element(By.ID, "git-token").send_keys(TOKEN)
+        click(d, By.ID, "git-save")
+        wait.until(lambda drv: "Gitea" in text(drv, "git-servers"), text(d, "git-form-error"))
+        # Now the first read ends: it was made while no server was connected.
+        older = guard.release(d)
+        assert older["servers"] == [], older
+        assert "Gitea" in text(d, "git-servers") and len(d.find_elements(By.CSS_SELECTOR, "#git-servers li")) == 1, \
+            "a read that ended late put back the list from before the server was connected"
+        assert not shown(d, "git-none")
         print("desktop sync e2e: ok")
     except Exception:
         d.save_screenshot(str(OUT / "sync-failed.png"))
