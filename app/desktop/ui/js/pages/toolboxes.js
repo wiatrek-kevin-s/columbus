@@ -5,7 +5,8 @@
 // the same list the assistant is offered.
 import { $, h, el, invoke, listen, button, icon, showError, openDialog, openSide, closeSide, when } from "../core.js";
 
-// The install that is running, if any: it goes on when the dialog closes.
+// The install that is running, if any: it goes on when the dialog closes
+// or the page is left, and `done` settles when it ends.
 let busy = null;
 
 const count = (n) => Number(n || 0).toLocaleString();
@@ -40,7 +41,8 @@ export function toolboxSection() {
   const hits = h("ul", { id: "tbx-tools", class: "list", "aria-live": "polite" });
   const more = h("p", { id: "tbx-count", class: "muted small quiet", role: "status" });
   const find = h("div", { id: "tbx-find", class: "stack", hidden: true }, h("label", { class: "searchbox" }, icon("search"), q), h("div", { class: "bd flush" }, hits), more);
-  const where = h("p", { class: "small muted wrap-any" }, "A toolbox is a program that brings many tools. Your assistant finds them by what they do and runs them in the sandbox, on copies of your data, without asking: no network, and nothing outside the run's own folder is written. Stored in ", h("code", { id: "tbx-dir" }), ".");
+  const dir = h("code", { id: "tbx-dir" });
+  const where = h("p", { class: "small muted wrap-any" }, "A toolbox is a program that brings many tools. Your assistant finds them by what they do and runs them in the sandbox, on copies of your data, without asking: no network, and nothing outside the run's own folder is written. Stored in ", dir, ".");
   const card = h("section", { class: "card", id: "toolbox-card" },
     h("div", { class: "sec" }, h("h2", {}, "Toolboxes"), n, h("span", { class: "more" }, add)),
     h("div", { class: "bd stack" }, error, notice, off),
@@ -50,7 +52,7 @@ export function toolboxSection() {
   const say = (text) => { notice.textContent = text; notice.hidden = !text; };
 
   const draw = () => {
-    $("tbx-dir").textContent = st.dir;
+    dir.textContent = st.dir;
     off.hidden = st.allowed;
     off.replaceChildren(h("div", {}, h("b", {}, "Toolboxes are turned off. "),
       st.managed
@@ -197,7 +199,12 @@ export function toolboxSection() {
         const go = button(e.installed ? "Install again" : "Install", "primary", () => install(e, go, part), { class: "btn primary tbx-install", title: `Download and install it (asks for ${st.confirm_with})` });
         part.append(h("p", { class: "small muted" }, "Columbus checks the download against a hash pinned in this version before it unpacks anything, then lists the tools in the sandbox."),
           bar, step, err, h("div", { class: "row" }, go));
-        if (busy && busy.id === e.id) { go.disabled = true; showStep(part, busy.last); }
+        if (busy && busy.id === e.id) {
+          // Opened again while it installs: where it is now, and the button back when it ends.
+          go.disabled = true;
+          showStep(part, busy.last);
+          busy.done.then(() => { if (part.isConnected) { go.disabled = false; step.hidden = true; bar.hidden = true; } });
+        }
       }
       body.append(part);
     }
@@ -263,7 +270,8 @@ export function toolboxSection() {
     if (busy) return;
     const err = part.querySelector(".tbx-install-error");
     const step = part.querySelector(".tbx-step");
-    busy = { id: e.id, last: null };
+    let ended = () => {};
+    busy = { id: e.id, last: null, done: new Promise((r) => { ended = r; }) };
     btn.disabled = true;
     showError(err, null);
     say("");
@@ -286,9 +294,13 @@ export function toolboxSection() {
     } finally {
       busy = null;
       btn.disabled = false;
+      ended();
     }
     await refresh();
   }
+
+  // The page was opened while an install begun on an earlier visit runs: its list is read again when that ends.
+  if (busy) busy.done.then(() => { if (!closed) refresh(); });
 
   listen("toolbox-progress", (ev) => {
     const p = ev.payload || {};

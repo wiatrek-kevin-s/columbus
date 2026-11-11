@@ -105,14 +105,26 @@ fn can_confirm() -> bool {
     cfg!(any(target_os = "macos", windows))
 }
 
-/// The last line that says why a command failed.
+/// Why a command failed, in the server's own words. It says
+/// `Error: <reason>` first; what may follow (causes, and a stack trace
+/// where the person's environment asks for one) is not for the page.
 fn why(errs: &str, out: &str) -> String {
-    errs.lines()
+    let said = errs
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("Error: "))
+        .map(str::trim)
+        .find(|l| !l.is_empty());
+    if let Some(reason) = said {
+        return reason.to_string();
+    }
+    let before_trace = errs.split("Stack backtrace:").next().unwrap_or_default();
+    before_trace
+        .lines()
         .rev()
         .chain(out.lines().rev())
         .map(str::trim)
         .find(|l| !l.is_empty() && !l.starts_with('{'))
-        .map(|l| l.strip_prefix("Error: ").unwrap_or(l).to_string())
+        .map(String::from)
         .unwrap_or_else(|| "Columbus did not say why".into())
 }
 
@@ -503,13 +515,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_reason_is_the_commands_last_words() {
+    fn the_reason_is_the_commands_own_words() {
         assert_eq!(
             why(
                 "Error: the download does not match the hash pinned in Columbus\n",
                 ""
             ),
             "the download does not match the hash pinned in Columbus"
+        );
+        // With RUST_BACKTRACE set, a stack trace follows the reason.
+        assert_eq!(
+            why(
+                "warning: something else\nError: nothing was installed\n\nCaused by:\n    a detail\n\nStack backtrace:\n   0: anyhow::error\n  22: _start\n",
+                "{\"step\":\"download\"}\n"
+            ),
+            "nothing was installed"
+        );
+        assert_eq!(
+            why("it stopped\n\nStack backtrace:\n  22: _start\n", ""),
+            "it stopped"
         );
         assert_eq!(
             why("", "{\"step\":\"download\"}\nplain words\n"),

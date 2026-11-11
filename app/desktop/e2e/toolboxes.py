@@ -16,8 +16,10 @@ Two sessions of the app:
    cannot confirm who is at the keyboard (Linux): Add tools shows what
    would be installed and the terminal's command, and no Install button.
 2. With the tests' confirmation: Add tools shows the name, version, size,
-   licence, publisher and address before anything is downloaded; Install
-   downloads, checks, unpacks and lists, and says how many tools are ready;
+   licence, publisher and address before anything is downloaded; a
+   download that is not the pinned file is refused and leaves nothing;
+   Install downloads, checks, unpacks and lists, and says how many tools
+   are ready;
    the tools are found by words and one opens in the panel on the right;
    the assistant finds one and runs it without being asked to approve, and
    its result is a layer on the chat's map; Remove takes the toolbox away,
@@ -226,14 +228,19 @@ def main():
     url = f"http://127.0.0.1:{downloads.server_port}/standin.tar.gz"
     size = f"{len(ARCHIVE) / 1024 / 1024:.1f} MB" if len(ARCHIVE) >= 1024 * 1024 else f"{-(-len(ARCHIVE) // 1024)} KB"
     catalogue = root / "catalogue.json"
-    catalogue.write_text(json.dumps([{
-        "id": "geolibre", "name": "Stand-in GeoLibre", "about": "A few stand-in tools, for the tests.",
-        "kind": "geolibre", "version": "1.8.1", "licence": "MIT", "publisher": "the tests",
-        "homepage": "https://example.org/standin",
-        "downloads": [{"target": target(), "packing": "tar_gz", "url": url,
-                       "sha256": hashlib.sha256(ARCHIVE).hexdigest(), "bytes": len(ARCHIVE),
-                       "program": "standin-1.8.1/geolibre",
-                       "keep": ["standin-1.8.1/LICENSE", "standin-1.8.1/THIRD-PARTY-NOTICES.txt"]}]}]))
+
+    def entry(tb, name, sha256):
+        return {"id": tb, "name": name, "about": "A few stand-in tools, for the tests.",
+                "kind": "geolibre", "version": "1.8.1", "licence": "MIT", "publisher": "the tests",
+                "homepage": "https://example.org/standin",
+                "downloads": [{"target": target(), "packing": "tar_gz", "url": url,
+                               "sha256": sha256, "bytes": len(ARCHIVE),
+                               "program": "standin-1.8.1/geolibre",
+                               "keep": ["standin-1.8.1/LICENSE", "standin-1.8.1/THIRD-PARTY-NOTICES.txt"]}]}
+
+    # The second entry's pin is not the hash of what the server sends.
+    catalogue.write_text(json.dumps([entry("geolibre", "Stand-in GeoLibre", hashlib.sha256(ARCHIVE).hexdigest()),
+                                     entry("oddbox", "Changed download", "0" * 64)]))
 
     stand = ThreadingHTTPServer(("127.0.0.1", 0), Stand)
     threading.Thread(target=stand.serve_forever, daemon=True).start()
@@ -299,10 +306,10 @@ def main():
         wait.until(lambda drv: shown(drv, "#tbx-add"))
         step("Add tools says what would be installed before anything is downloaded")
         d.find_element(By.ID, "tbx-add").click()
-        wait.until(lambda drv: drv.find_elements(By.CSS_SELECTOR, "#tbx-dialog .tbx-install"))
+        wait.until(lambda drv: len(drv.find_elements(By.CSS_SELECTOR, "#tbx-dialog .tbx-install")) == 2)
         dialog = text(d, "#tbx-dialog")
         for part in ["Stand-in GeoLibre", "A few stand-in tools", "Version", "1.8.1", "Size", size, "Licence", "MIT",
-                     "Publisher", "the tests", "Address", url, "A program on this computer"]:
+                     "Publisher", "the tests", "Address", url, "Changed download", "A program on this computer"]:
             assert part in dialog, f"{part!r} is not in the dialog: {dialog}"
         assert "columbus-mcp toolbox install" not in dialog, "the terminal's command is for systems that cannot confirm"
         assert d.find_elements(By.ID, "tbx-form"), "a program on this computer can be added too"
@@ -310,14 +317,31 @@ def main():
         d.save_screenshot(str(OUT / "toolboxes-add.png"))
         assert not HITS, f"nothing is downloaded until the person installs: {HITS}"
 
+        step("A download that is not the pinned file is refused: the dialog says why, and nothing is installed")
+        odd = "#tbx-dialog .tbx-entry[data-id='oddbox']"
+        bad = d.find_element(By.CSS_SELECTOR, f"{odd} .tbx-install")
+        d.execute_script("arguments[0].scrollIntoView({block: 'center'})", bad)
+        bad.click()
+        WebDriverWait(d, 120).until(lambda drv: text(drv, f"{odd} .tbx-install-error").strip())
+        refusal = text(d, f"{odd} .tbx-install-error")
+        assert "does not match the hash pinned in Columbus" in refusal and "nothing was installed" in refusal, refusal
+        assert not text(d, f"{odd} .tbx-step.ok"), "nothing is said to be ready"
+        assert not (root / "toolboxes" / "oddbox").exists(), "a refused download leaves no toolbox"
+        left = [p.name for p in (root / "toolboxes").iterdir()] if (root / "toolboxes").exists() else []
+        assert not left, f"a refused download leaves nothing behind: {left}"
+        named(d)
+        HITS.clear()
+
         step("Install: downloaded, checked against its pin, unpacked, its tools listed in the sandbox")
-        install = d.find_element(By.CSS_SELECTOR, "#tbx-dialog .tbx-install")
+        good = "#tbx-dialog .tbx-entry[data-id='geolibre']"
+        install = d.find_element(By.CSS_SELECTOR, f"{good} .tbx-install")
+        d.execute_script("arguments[0].scrollIntoView({block: 'center'})", install)
         assert install.text == "Install", install.text
         install.click()
-        WebDriverWait(d, 180).until(lambda drv: re.fullmatch(r"[\d,]+ tools ready\.", text(drv, "#tbx-dialog .tbx-step.ok").strip() or "")
-                                    or text(drv, "#tbx-dialog .tbx-install-error").strip())
-        assert not text(d, "#tbx-dialog .tbx-install-error").strip(), text(d, "#tbx-dialog .tbx-install-error")
-        ready = int(re.match(r"([\d,]+) tools ready", text(d, "#tbx-dialog .tbx-step.ok").strip()).group(1).replace(",", ""))
+        WebDriverWait(d, 180).until(lambda drv: re.fullmatch(r"[\d,]+ tools ready\.", text(drv, f"{good} .tbx-step.ok").strip() or "")
+                                    or text(drv, f"{good} .tbx-install-error").strip())
+        assert not text(d, f"{good} .tbx-install-error").strip(), text(d, f"{good} .tbx-install-error")
+        ready = int(re.match(r"([\d,]+) tools ready", text(d, f"{good} .tbx-step.ok").strip()).group(1).replace(",", ""))
         assert ready >= 10, ready
         assert HITS == ["/standin.tar.gz"], HITS
         named(d)
