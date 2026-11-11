@@ -272,8 +272,8 @@ function serviceDialog(st, old, done) {
   const name = h("input", { id: "svc-name", name: "name", type: "text", autocomplete: "off", maxlength: "60", required: true, placeholder: "e.g. Azure OpenAI, or My company's gateway" });
   const address = h("input", { id: "svc-address", name: "address", type: "text", autocomplete: "off", spellcheck: "false", required: true, placeholder: "https://…/v1" });
   const format = h("select", { id: "svc-format", name: "format" },
-    h("option", { value: "chat" }, "OpenAI Chat Completions (most services: Azure OpenAI, Mistral, DeepSeek, Groq, Together, Bedrock, local servers)"),
-    h("option", { value: "responses" }, "OpenAI Responses (OpenAI's newer format)"),
+    h("option", { value: "chat" }, "OpenAI Chat Completions (most services)"),
+    h("option", { value: "responses" }, "OpenAI Responses"),
     h("option", { value: "messages" }, "Anthropic Messages"));
   const header = h("select", { id: "svc-key-header", name: "key_header" },
     h("option", { value: "bearer" }, "Authorization: Bearer (most services)"),
@@ -293,7 +293,7 @@ function serviceDialog(st, old, done) {
       h("label", { class: "field wide", for: "svc-name" }, "Name", name, h("small", {}, "What you want to call it. Errors and notices use this name.")),
       h("label", { class: "field wide", for: "svc-address" }, "Address", address,
         h("small", {}, "The address the service gives for its API, up to and including its version part (often ending in /v1). It must start with https://. Plain http:// is taken only for a service on this computer (localhost).")),
-      h("label", { class: "field wide", for: "svc-format" }, "Format", format, h("small", {}, "How the service is spoken to. Its documentation says which it takes; if a chat fails, try another.")),
+      h("label", { class: "field wide", for: "svc-format" }, "Format", format, h("small", {}, "How the service is spoken to. Most take OpenAI Chat Completions: Azure OpenAI, Mistral, DeepSeek, Groq, Together, Amazon Bedrock and servers on your own computer. The service's documentation says which it takes; if a chat fails, try another.")),
       h("label", { class: "field wide", for: "svc-key-header" }, "How the key is sent", header, h("small", {}, "You save the key itself afterwards, under Assistant, once this service is chosen. A service that needs no key gets none."))),
     h("label", { class: "switch-row" }, pictures, h("span", {}, h("b", {}, "Send pictures."), " Turn this on only if the model you will use can look at pictures: a map picture your assistant asks for is then sent to it. Off, it is told in words that a picture was made.")),
     h("p", { class: "small muted", id: "svc-note" }, cannot

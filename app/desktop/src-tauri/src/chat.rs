@@ -101,13 +101,18 @@ pub(crate) fn save(app: &AppHandle, s: &Settings) -> Result<(), String> {
     crate::settings::write_atomic(&p, &text)
 }
 
-/// Where a service's requests go: its own address. Test builds only: the
-/// app's end-to-end tests put a stand-in in its place.
-pub(crate) fn address_in_use(own: &str) -> String {
+/// Where a service's requests go: its own address. Test builds only: for
+/// a service Columbus knows, whose address is fixed in code, the app's
+/// end-to-end tests put a stand-in in its place (`COLUMBUS_APP_API_BASE`).
+/// A service the person added is always spoken to at its own address.
+pub(crate) fn address_in_use(own: &str, builtin: bool) -> String {
     #[cfg(debug_assertions)]
-    if let Ok(b) = std::env::var("COLUMBUS_APP_API_BASE") {
-        return b;
+    if builtin {
+        if let Ok(b) = std::env::var("COLUMBUS_APP_API_BASE") {
+            return b;
+        }
     }
+    let _ = builtin;
     own.to_string()
 }
 
@@ -818,7 +823,7 @@ pub async fn chat_start(
     let srv = tauri::async_runtime::spawn_blocking(move || server_ok(&srv, chats.as_deref()))
         .await
         .map_err(|e| e.to_string())??;
-    let api_base = address_in_use(&service.address);
+    let api_base = address_in_use(&service.address, service.added.is_none());
     let mut env = server_env(&s, &srv);
     // Always set, so an Unfiled chat never inherits a project from the
     // app's own environment (empty means none).
@@ -856,12 +861,8 @@ pub async fn chat_start(
     let id = new_transcript(
         &app,
         &st,
-        session.as_deref(),
-        (&service_id, &name),
-        &model,
-        &effort,
-        project.as_deref(),
-        run.as_ref(),
+        serde_json::json!({"session": session, "service": service_id, "service_name": name,
+            "model": model, "effort": effort, "project": project, "run": run}),
     );
     let started = Started {
         session,
@@ -1074,16 +1075,7 @@ fn current_id(st: &ChatState) -> Option<String> {
         .map(String::from)
 }
 
-fn new_transcript(
-    app: &AppHandle,
-    st: &ChatState,
-    session: Option<&str>,
-    service: (&str, &str),
-    model: &str,
-    effort: &str,
-    project: Option<&str>,
-    run: Option<&OpenRun>,
-) -> Option<String> {
+fn new_transcript(app: &AppHandle, st: &ChatState, about: serde_json::Value) -> Option<String> {
     let dir = chats_dir(app)?;
     std::fs::create_dir_all(&dir).ok()?;
     let now = std::time::SystemTime::now()
@@ -1093,11 +1085,12 @@ fn new_transcript(
     let id = format!("c{now}-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
     let path = dir.join(format!("{id}.jsonl"));
     *st.transcript.lock().expect("transcript") = Some(path);
-    record(
-        app,
-        &serde_json::json!({"kind": "meta", "id": id, "session": session, "service": service.0, "service_name": service.1,
-            "model": model, "effort": effort, "project": project, "run": run}),
-    );
+    // The first line: what the chat is (its session, the AI service and
+    // model it starts on, its project, a run it opened).
+    let mut meta = about;
+    meta["kind"] = serde_json::json!("meta");
+    meta["id"] = serde_json::json!(id);
+    record(app, &meta);
     Some(id)
 }
 

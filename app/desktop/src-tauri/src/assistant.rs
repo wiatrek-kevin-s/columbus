@@ -811,7 +811,7 @@ pub async fn chat_models(
                 r.service.name
             ));
         }
-        let address = chat::address_in_use(&r.address);
+        let address = chat::address_in_use(&r.address, r.added.is_none());
         Ok::<_, String>((id, r, key.unwrap_or_default(), address))
     })
     .await

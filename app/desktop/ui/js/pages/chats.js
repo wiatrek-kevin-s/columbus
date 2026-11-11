@@ -1079,7 +1079,7 @@ async function start() {
   } catch (err) {
     $("status").textContent = "";
     live.log.append(el("div", "error", String(err)));
-    if (/Settings › Assistant|server was not found/i.test(String(err))) {
+    if (/Settings › Assistant|assistant\.hosts|server was not found/i.test(String(err))) {
       live.log.append(h("p", { class: "small" }, h("a", { href: "#/settings/ai" }, "Set up the AI in Settings › Assistant")));
     }
     store.set("chatstate", "failed");
@@ -1191,7 +1191,8 @@ async function emptyChat() {
   // under it.
   document.body.classList.toggle("setup", !!s.needsSetup && !s.done.ai);
   if (s.needsSetup) {
-    box.append(firstSteps(s, () => emptyChat()));
+    // (A step may have changed the AI service: the chat's boxes follow.)
+    box.append(firstSteps(s, () => { updateChip(); emptyChat(); }));
     return;
   }
   if (c && (!c.ready || !c.server_found)) {
