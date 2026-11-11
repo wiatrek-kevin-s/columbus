@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-toolbox-add"
+description = "Enables the toolbox_add command without any pre-configured scope."
+commands.allow = ["toolbox_add"]
+
+[[permission]]
+identifier = "deny-toolbox-add"
+description = "Denies the toolbox_add command without any pre-configured scope."
+commands.deny = ["toolbox_add"]

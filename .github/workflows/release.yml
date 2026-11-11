@@ -195,8 +195,9 @@ jobs:
           set -eu
           bin=app/desktop/src-tauri/target/release/columbus-desktop
           [ -f "$bin" ] || bin=app/desktop/src-tauri/target/release/columbus-desktop.exe
-          # The confirmation stand-in exists only in debug builds.
-          for s in COLUMBUS_APP_TEST_CONFIRM COLUMBUS_APP_CHATS; do
+          # The confirmation stand-in exists only in debug builds; so does
+          # the toolbox catalogue a test names in place of the built-in pins.
+          for s in COLUMBUS_APP_TEST_CONFIRM COLUMBUS_APP_CHATS COLUMBUS_TOOLBOX_TEST_CATALOGUE; do
             if grep -a -q "$s" "$bin"; then echo "::error::$s is in the release app"; exit 1; fi
           done
           echo "no test switches in $bin"

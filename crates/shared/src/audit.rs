@@ -66,7 +66,9 @@ pub struct AuditRecord {
 
 pub struct AuditLog {
     dir: PathBuf,
-    state: Mutex<Option<(PathBuf, String)>>,
+    /// The file last written, the hash of its last line, and its length
+    /// then: while the length is the same, nobody else has written to it.
+    state: Mutex<Option<(PathBuf, String, u64)>>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -102,8 +104,13 @@ impl AuditLog {
     pub fn append_at(&self, record: &AuditRecord, now: DateTime<Utc>) -> std::io::Result<String> {
         let mut state = self.state.lock().expect("audit log poisoned");
         let path = self.file_for(now);
+        // Several Columbus programs write this file (a session, the app's
+        // own commands, a scheduled workflow). The last hash is remembered
+        // only while the file is as this log left it; after anyone else's
+        // line, the chain goes on from that line.
+        let len = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
         let prev = match &*state {
-            Some((p, h)) if *p == path => h.clone(),
+            Some((p, h, l)) if *p == path && *l == len => h.clone(),
             _ => last_hash(&path)?,
         };
 
@@ -125,7 +132,8 @@ impl AuditLog {
         line.push('\n');
         f.write_all(line.as_bytes())?;
         f.sync_data()?;
-        *state = Some((path, hash.clone()));
+        let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+        *state = Some((path, hash.clone(), len));
         Ok(hash)
     }
 }
@@ -223,6 +231,25 @@ mod tests {
         log.append_at(&rec("sql_select"), now).unwrap();
         let file = log.file_for(now);
         assert_eq!(verify(&file).unwrap(), 3);
+    }
+
+    #[test]
+    fn two_writers_keep_one_chain() {
+        // A running session and a command the person runs meanwhile
+        // (installing a toolbox, opening a shared file) write the same
+        // file in turn: each goes on from the other's last line.
+        let d = tempfile::tempdir().unwrap();
+        let now = Utc::now();
+        let session = AuditLog::new(d.path()).unwrap();
+        let command = AuditLog::new(d.path()).unwrap();
+        session.append_at(&rec("whoami"), now).unwrap();
+        session.append_at(&rec("search_tools"), now).unwrap();
+        command.append_at(&rec("toolbox_install"), now).unwrap();
+        session.append_at(&rec("run_tool"), now).unwrap();
+        command.append_at(&rec("toolbox_remove"), now).unwrap();
+        command.append_at(&rec("toolbox_install"), now).unwrap();
+        session.append_at(&rec("run_tool"), now).unwrap();
+        assert_eq!(verify(&session.file_for(now)).unwrap(), 7);
     }
 
     #[test]

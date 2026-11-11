@@ -46,6 +46,8 @@ columbus-chat = { path = "../chat" }
 reqwest = { version = "0.13", default-features = false }
 # Web map layers: WMTS and WMS capabilities (T-24).
 roxmltree = "0.21"
+# Toolboxes: unpacking a catalogue download (gzip and zip's deflate), in pure Rust.
+flate2 = "1"
 
 [dev-dependencies]
 reqwest = { version = "0.13", default-features = false, features = ["json"] }

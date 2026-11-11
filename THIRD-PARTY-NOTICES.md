@@ -62,6 +62,12 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
+## Installed at your request, never bundled
+
+### GeoLibre runner 1.8.1 (opengeos)
+
+Licence: MIT. Columbus does not carry this program in its repository or its installers. When you choose Tools › Add tools › GeoLibre (or run `columbus-mcp toolbox install geolibre`), Columbus downloads the publisher's own release for your system from https://github.com/opengeos/geolibre-rust/releases/tag/v1.8.1, checks it against a SHA-256 pinned in Columbus, and keeps the publisher's `LICENSE` and `THIRD-PARTY-NOTICES.txt` beside the program (in your toolboxes folder, `geolibre/bin/`). Most of its tools come from Whitebox (`whitebox_next_gen`, MIT OR Apache-2.0). Versions before 1.8.1 contained code under the AGPL and are never offered. Source: https://github.com/opengeos/geolibre-rust
+
 ## Every other dependency
 
 Columbus does not copy other projects' code into this repository. Their licences travel with them, and can be listed as follows:

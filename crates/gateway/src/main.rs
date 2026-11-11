@@ -35,6 +35,10 @@
 //! columbus-mcp env proposals         environments the assistant asked for (propose_environment)
 //! columbus-mcp env approve ID        create a proposed one with Columbus's uv (confirmed on the terminal)
 //! columbus-mcp env decline ID        delete a proposal
+//! columbus-mcp toolbox install ID [--yes]   install a toolbox from Columbus's catalogue (hash-pinned)
+//! columbus-mcp toolbox add PROGRAM --id ID --kind geolibre|described [--tools tools.json]
+//!                                   add a program already on this computer as a toolbox
+//! columbus-mcp toolbox list|tools [WORDS]|show TOOLBOX.TOOL|remove ID
 //! columbus-mcp workflow open ID RUN   serve MCP with a finished run's layers copied in (REQ-27)
 //! columbus-mcp --version
 //! ```
@@ -77,6 +81,8 @@ mod secrets;
 mod server;
 mod share_cli;
 mod snapshot_tools;
+mod toolbox;
+mod toolbox_cli;
 mod web_layers;
 mod worker;
 mod workflows;
@@ -146,6 +152,8 @@ async fn main() -> Result<()> {
         ["env", "proposals"] => env_cli::proposals(),
         ["env", "approve", id] => env_cli::approve(id),
         ["env", "decline", id] => env_cli::decline(id),
+        // Toolboxes: programs that describe their own tools (D-17).
+        ["toolbox", rest @ ..] => toolbox_cli::run(rest).await,
         ["servers", "list"] => review_cli::list().await,
         ["servers", "review", id] => review_cli::review(id).await.map(|_| ()),
         ["servers", "approve", id] => review_cli::approve(id, false).await,
@@ -185,7 +193,7 @@ async fn main() -> Result<()> {
             Ok(())
         }
         _ => bail!(
-            "usage: columbus-mcp [serve] | audit verify FILE | secret set|delete ID | servers list|review|approve|signin|signout ID | arcgis signin ID [--paste-code]|signout ID | map-source inspect URL [--kind K] [--auth-from ID]|save JSON|- [--replace]|test ID|remove ID|list | registry update [--from DIR|URL]|query JSON | plugins list|approve ID | tools list|show|install|decline|remove ID|org-install FILE|org-remove ID|org-list | env add ID --python PATH [--trust governed|trusted]|confirm|remove|approve|decline ID|list|proposals | workflow run ID [--scheduled]|open ID RUN|validate FILE|list | --version"
+            "usage: columbus-mcp [serve] | audit verify FILE | secret set|delete ID | servers list|review|approve|signin|signout ID | arcgis signin ID [--paste-code]|signout ID | map-source inspect URL [--kind K] [--auth-from ID]|save JSON|- [--replace]|test ID|remove ID|list | registry update [--from DIR|URL]|query JSON | plugins list|approve ID | tools list|show|install|decline|remove ID|org-install FILE|org-remove ID|org-list | env add ID --python PATH [--trust governed|trusted]|confirm|remove|approve|decline ID|list|proposals | toolbox install ID [--yes]|add PROGRAM --id ID --kind KIND [--tools FILE]|list|tools [WORDS]|show NAME|remove ID | workflow run ID [--scheduled]|open ID RUN|validate FILE|list | --version"
         ),
     }
 }
