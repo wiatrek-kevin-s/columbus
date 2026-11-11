@@ -111,10 +111,11 @@ pub(crate) trait Assemble: Send {
 pub(crate) trait Wire: Send + Sync {
     /// The person's message.
     fn user(&mut self, text: &str);
-    /// A reply was stopped before it came: if the person's message is the
-    /// last thing in the conversation, drop it. Tool results stay: their
-    /// calls are in the conversation, and a call without its result would
-    /// be refused by the service.
+    /// No reply came (the person stopped it, or the request failed): if
+    /// the person's message is the last thing in the conversation, drop
+    /// it, so the next request does not hold two of their messages in a
+    /// row. Tool results stay: their calls are in the conversation, and a
+    /// call without its result would be refused by the service.
     fn forget_unanswered(&mut self);
     /// Keep the conversation within the size Columbus sends.
     fn trim(&mut self);

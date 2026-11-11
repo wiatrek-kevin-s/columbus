@@ -654,9 +654,17 @@ impl Chat {
         });
         match &r {
             Ok(()) => self.ui.event(Event::Done),
-            Err(e) => self.ui.event(Event::Error {
-                text: e.to_string(),
-            }),
+            Err(e) => {
+                // A message that got no answer leaves the conversation (the
+                // window keeps it, with the error): left in, the next
+                // request would hold two of the person's messages in a
+                // row, which a local model's template refuses. What a tool
+                // step made before the failure stays.
+                self.wire.forget_unanswered();
+                self.ui.event(Event::Error {
+                    text: e.to_string(),
+                });
+            }
         }
         r
     }

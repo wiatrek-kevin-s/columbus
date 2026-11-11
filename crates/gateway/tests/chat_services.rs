@@ -2072,3 +2072,77 @@ async fn a_services_own_list_of_models_is_taken_as_data() {
         assert!(e.contains("https://"), "{e}");
     }
 }
+
+// ---------- After the review of 2026-11-11 ----------
+
+/// A message the service did not answer is taken back: the next request
+/// holds the conversation without it, so two of the person's messages
+/// never stand in a row (a local model's template refuses that). What a
+/// tool step made before the failure stays, with the message that began
+/// it. The window was shown the message and the error, and keeps both.
+#[tokio::test]
+async fn a_message_that_failed_is_taken_back_in_every_format() {
+    let Some(py) = python() else { return };
+    for fmt in ALL {
+        // (Not a 400: that would be tried once more without the optional fields.)
+        let refuse = || {
+            Next::Status(
+                403,
+                vec![],
+                error_body(fmt, "permission_error", "this key may not use the model"),
+            )
+        };
+        let mut run = Run::start(&py, fmt, false, vec![refuse(), reply(say("Here now."))]).await;
+        let what = run.what();
+        let e = run.send("first question").await.unwrap_err();
+        assert!(e.to_string().contains("may not use"), "{what}: {e}");
+        assert!(
+            matches!(
+                run.ui.events.lock().unwrap().last(),
+                Some(Event::Error { .. })
+            ),
+            "{what}: the window is told"
+        );
+        run.send("second question").await.unwrap();
+        run.assert_well_formed();
+        let second = run.stand.requests().pop().unwrap();
+        assert_eq!(
+            conversation(fmt, &second).len(),
+            1,
+            "{what}: the request holds the message being asked, and no other: {second}"
+        );
+        let text = second.to_string();
+        assert!(
+            text.contains("second question") && !text.contains("first question"),
+            "{what}: {text}"
+        );
+        // A failure after a tool step: the step stays, call and result.
+        run.stand.push(reply(call("t1", "whoami", json!({}))));
+        run.stand.push(refuse());
+        run.stand.push(reply(say("Done.")));
+        assert!(run.send("who am I?").await.is_err(), "{what}");
+        run.send("and again?").await.unwrap();
+        run.assert_well_formed();
+        let last = run.stand.requests().pop().unwrap();
+        let kept = results(fmt, &last);
+        assert_eq!(
+            kept.len(),
+            1,
+            "{what}: the tool's result is still there: {last}"
+        );
+        assert_eq!(kept[0].0, "t1", "{what}");
+        let text = last.to_string();
+        for said in ["second question", "who am I?", "and again?"] {
+            assert!(
+                text.contains(said),
+                "{what}: {said} is in the conversation: {text}"
+            );
+        }
+        assert_eq!(
+            run.ui.texts().last().map(String::as_str),
+            Some("Done."),
+            "{what}"
+        );
+        run.close().await;
+    }
+}
