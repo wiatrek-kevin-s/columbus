@@ -402,6 +402,32 @@ def assistant_and_the_map(mcp, ctx, page, port, root, routes, problems):
     page3.close()
     print("map: with no map open the assistant is told so, and nothing changes")
 
+    # ---- A layer the map cannot draw (its file changed since Columbus
+    # wrote it, so the page is refused its data): asked to show it and zoom
+    # to it, the tool says which parts were not done, and does not count
+    # the layer as on.
+    until("no map open again", lambda r: r["status"] == "not_open", t=10)
+    session, name = one[len("ws://"):].split("/", 1)
+    changed = root / "ws" / session / name
+    assert changed.is_file(), changed
+    changed.write_bytes(changed.read_bytes() + b"changed")
+    page4 = ctx.new_page()
+    page4.on("pageerror", lambda e: problems.append(str(e)))
+    page4.goto(open_link(port, root))
+    expect(page4.get_by_text("Not on the map:")).to_be_visible(timeout=20000)
+    r = until("a window with a layer it cannot draw", lambda r: r["status"] == "open")
+    assert r["view"]["layers_on"] == [], r
+    t0 = time.time()
+    r = mcp.tool("map_view", {"show": [one, routes], "zoom_to": one})["result"]
+    took = time.time() - t0
+    assert r["status"] == "partly_changed" and r["changed"] is True, r
+    assert sorted(x["part"] for x in r["not_done"]) == ["show", "zoom_to"], r
+    assert r["view"]["layers_on"] == [routes], r
+    assert took < 7, f"it took {took:.1f} s to say so"
+    expect(page4.locator(".map[data-layers='1']")).to_have_count(1)
+    page4.close()
+    print(f"map: a layer the map cannot draw is said as not done, in {took:.1f} s")
+
 
 def open_link(port, root):
     launch = root / "launch.txt"

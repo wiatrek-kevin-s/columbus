@@ -87,6 +87,8 @@ export interface FeatureCollection {
   geometry_type?: string | null;
   bbox?: [number, number, number, number] | null;
   source_crs?: string;
+  /** Set by the page while the layer is being read; never sent by the server. */
+  loading?: boolean;
 }
 
 export interface Rows {

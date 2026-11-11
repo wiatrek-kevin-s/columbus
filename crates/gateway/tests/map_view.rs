@@ -515,6 +515,24 @@ async fn the_assistant_reads_and_steers_the_persons_map() {
         "{v}"
     );
 
+    // A long report (many layers on) is taken whole, and layers the session
+    // no longer has are left out of what the assistant reads.
+    let mut long = moved.clone();
+    let gone: Vec<String> = (0..250)
+        .map(|i| format!("ws://{session}/results/no-longer-here-{i:03}-p_0123abcd.gpkg"))
+        .collect();
+    let mut named = vec![one.clone(), all.clone()];
+    named.extend(gone);
+    long["view"]["layers"] = json!(named);
+    assert!(
+        long.to_string().len() > 12_000,
+        "larger than other requests may be"
+    );
+    assert_eq!(page.report(&long).await, Value::Null);
+    let v = call(&client, "map_view", json!({})).await;
+    assert_eq!(v["result"]["view"]["layers_on"], json!([one, all]), "{v}");
+    page.report(&moved).await;
+
     // ---- A change: the assistant asks, the page receives it with its
     // next report, applies it and says so; the tool returns the new view.
     let t = Instant::now();

@@ -19,9 +19,10 @@ const WEB_POLL_MS = 5000;
 const VIEW_POLL_MS = 1000;
 const VIEW_SOON_MS = 250;
 // A change the assistant asked for waits this long for a result it names
-// to be listed, and this long for its zoom to end.
+// to be listed, and this long for the map to show it (the layers it turned
+// on read, its zoom ended).
 const VIEW_LIST_MS = 3000;
-const VIEW_ZOOM_MS = 3000;
+const VIEW_SETTLE_MS = 3000;
 
 type Phase = "starting" | "ready" | "no-link" | "used" | "ended";
 
@@ -319,10 +320,12 @@ export function App() {
   // The last change of the assistant's this page finished applying.
   const [viewDone, setViewDone] = useState<{ seq: number; notDone: CommandPart[] }>({ seq: 0, notDone: [] });
   // One taken from the server, waiting for the results it names to be
-  // listed; and its zoom, while the map is on its way.
+  // listed; then, applied, until the map shows it: the layers it turned on
+  // are read (or cannot be) and its zoom has ended.
   const [command, setCommand] = useState<{ cmd: ViewCommand; until: number } | null>(null);
   const commandTaken = useRef(0);
-  const zooming = useRef<{ seq: number; key: string; notDone: CommandPart[]; timer: number } | null>(null);
+  const [settling, setSettling] = useState<{ seq: number; show: string[]; notDone: CommandPart[]; zooming: boolean; until: number } | null>(null);
+  const viewZoom = useRef<string | null>(null);
   const [viewFit, setViewFit] = useState<{ extent: Extent; key: string } | null>(null);
   // Say it to the server now (set on every draw, so it says what is drawn).
   const sendView = useRef<() => void>(() => {});
@@ -652,45 +655,53 @@ export function App() {
     }
     if (plan.active) setActive(plan.active);
     setNotice("Your assistant changed what the map shows.");
-    if (zooming.current) window.clearTimeout(zooming.current.timer);
-    zooming.current = null;
-    if (!plan.zoomLayer && !plan.zoomExtent) {
-      setViewDone({ seq: cmd.seq, notDone: plan.notDone });
-      return;
-    }
-    // The zoom: done when the map has stopped there, or not done when it
-    // has not started in time (a layer with nothing to draw).
-    const key = `${plan.zoomLayer ?? "extent"}#v${cmd.seq}`;
-    zooming.current = {
-      seq: cmd.seq,
-      key,
-      notDone: plan.notDone,
-      timer: window.setTimeout(() => {
-        if (zooming.current?.key !== key) return;
-        zooming.current = null;
-        setViewDone({ seq: cmd.seq, notDone: [...plan.notDone, "zoom_to"] });
-      }, VIEW_ZOOM_MS),
-    };
-    if (plan.zoomLayer) setFitTo(key);
-    else if (plan.zoomExtent) {
+    // Said to be done once the map shows it (below).
+    const key = plan.zoomLayer || plan.zoomExtent ? `${plan.zoomLayer ?? "extent"}#v${cmd.seq}` : null;
+    viewZoom.current = key;
+    setSettling({ seq: cmd.seq, show: plan.show, notDone: plan.notDone, zooming: !!key, until: Date.now() + VIEW_SETTLE_MS });
+    if (key && plan.zoomLayer) setFitTo(key);
+    else if (key && plan.zoomExtent) {
       // In place of any zoom to a layer still waiting for its data.
       setFitTo(null);
       setViewFit({ extent: plan.zoomExtent, key });
     }
   }, [command, outputs]);
+  // The zoom a change asked for has ended (the map has stopped there).
   const fitted = useCallback((key: string) => {
-    const z = zooming.current;
-    if (!z || z.key !== key) return;
-    window.clearTimeout(z.timer);
-    zooming.current = null;
-    setViewDone({ seq: z.seq, notDone: z.notDone });
+    if (viewZoom.current !== key) return;
+    viewZoom.current = null;
+    setSettling((s) => (s ? { ...s, zooming: false } : s));
   }, []);
+  // A change is done when the map shows it: the layers it turned on have
+  // been read, and its zoom has ended. What has not happened in time is
+  // said as not done: a layer that cannot be drawn, a zoom with nothing to
+  // zoom to.
+  useEffect(() => {
+    if (!settling) return;
+    const reading = settling.show.some((h) => {
+      const l = layers[h];
+      return !l || (!("error" in l) && !!l.loading);
+    });
+    if ((reading || settling.zooming) && Date.now() <= settling.until) {
+      const t = window.setTimeout(() => setSettling((s) => (s ? { ...s } : s)), Math.max(50, settling.until - Date.now() + 20));
+      return () => window.clearTimeout(t);
+    }
+    const missed: CommandPart[] = [];
+    if (settling.show.some((h) => {
+      const l = layers[h];
+      return !!l && "error" in l;
+    })) missed.push("show");
+    if (settling.zooming) missed.push("zoom_to");
+    viewZoom.current = null;
+    setSettling(null);
+    setViewDone({ seq: settling.seq, notDone: [...new Set([...settling.notDone, ...missed])] });
+  }, [settling, layers]);
 
   // Load what is on the map.
   useEffect(() => {
     for (const h of onMap) {
       if (layers[h]) continue;
-      setLayers((l) => ({ ...l, [h]: { type: "FeatureCollection", features: [], total: 0, shown: 0, truncated: false, geometry: true } }));
+      setLayers((l) => ({ ...l, [h]: { type: "FeatureCollection", features: [], total: 0, shown: 0, truncated: false, geometry: true, loading: true } }));
       api.layer(h).then(
         (fc) => setLayers((l) => ({ ...l, [h]: fc })),
         (e) => {

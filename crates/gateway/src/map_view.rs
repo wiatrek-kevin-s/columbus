@@ -161,8 +161,11 @@ impl Part {
     /// page's words are never passed on).
     fn why(self) -> &'static str {
         match self {
-            Part::Show | Part::Hide | Part::Active => {
-                "the map does not list one of the layers named (its file may have changed since it was made)"
+            Part::Show => {
+                "the map could not draw one of the layers named: it does not list it, or its data could not be read or placed on the map (the map's list says why)"
+            }
+            Part::Hide | Part::Active => {
+                "the map does not list one of the outputs named (its file may have changed since it was made)"
             }
             Part::ZoomTo => {
                 "the map had nothing to zoom to: the layer has no geometry it can draw, or it took too long to load"
