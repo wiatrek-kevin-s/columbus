@@ -639,8 +639,8 @@
           "expected": "pictures and words match the new window; no broken link"
         }
       ],
-      "status": "todo",
-      "evidence": ""
+      "status": "done",
+      "evidence": "Commits 8275cc8, 8e6a12c, 8855ec1; pull request #23 merged as b967ccd after CI run https://github.com/wiatrek-kevin-s/columbus/actions/runs/42931738643 passed on all 14 jobs (Windows, macOS, Linux). Locally on Linux: the eight desktop scripts plus frame_ipc and deeplink pass, with every earlier check kept and new ones (the seven places; the panel opening on a first result, resizing, filling the window in wide and narrow windows, closing; the fill button's name; a request bringing the chat back; a name on every control). Pictures and the animation retaken from the real app with screenshots.py --no-basemap; the docs describe the new window; link check: 520 links, none broken."
     },
     {
       "id": "T-27",

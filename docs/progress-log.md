@@ -4,8 +4,8 @@ Kit version 1.1 · as of 2026-11-08, session S1 not started
 
 ## Where things stand
 
-- **Session:** part 3, the open workbench (0.15), from the owner's instruction of 2026-11-10 (`docs/build-brief-3.md`) · **Task:** T-26 (the new window), then T-27 to T-36
-- **Next step:** merge the new window (area S9), then build areas S10 (one boundary, toolboxes, the map, project files) and S11 (sync with GitHub and Gitea), then S12 (docs, version 0.15.0, review, hand-over)
+- **Session:** part 3, the open workbench (0.15), from the owner's instruction of 2026-11-10 (`docs/build-brief-3.md`) · **Task:** T-27 to T-33 (areas S10 and S11), being built; T-26 (the new window) is done and on `main`
+- **Next step:** finish and merge areas S10 (one boundary, toolboxes, the map, project files) and S11 (sync with GitHub and Gitea), then S12 (docs, version 0.15.0, review, hand-over)
 - **Waiting on the owner:** nothing. They asked not to be involved and to be told when it is done
 - **Homework received:** setup round answered ("skip" on Dependabot alerts); H-1 and H-2 are optional, after release; H-3 to H-5 are optional, after part 3
 
@@ -227,6 +227,7 @@ Newest first, written as you go. Mark each claim verified (checked this session)
 - 2026-11-09 T-17 done: v0.14.0 released (pre-release) from e73620f; Release run 42712984935; PR #17 merged (e73620f) after CI run 42708308018 green.
 - 2026-11-09 Final review done (F-1 Fix now). R-101 done: fb20570, run 42705526192 green on 14 jobs; R-102: e393259 Pillow 13, pip-audit clean; Dependabot merges left to the owner. Re-check confirmed both.
 - 2026-11-09 T-16 done: 4d0ad47 and 641fde0..364de06; run 42685605864 green on 15 jobs; README 10-second test passed (7/10, then a polish round).
+- 2026-11-11 T-26 done: 8275cc8, 8e6a12c, 8855ec1; PR #23 merged (b967ccd) after CI run 42931738643 green on 14 jobs (verified). Ten desktop scripts pass locally (verified).
 
 ### Kit → Session S1 (2026-11-08)
 
