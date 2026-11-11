@@ -165,7 +165,7 @@ The GeoLibre program brings about a thousand open-source tools. While Columbus 0
 5. In a chat, with a connection that has an elevation raster (a GeoTIFF in a projected coordinate system), ask: *"Clip a small piece of the elevation raster, then make a slope raster of it with a GeoLibre tool. Tell me which tool you ran."* No raster? Ask instead, of a layer you have (here `local-roads`, as in H-2): *"Read 100 roads from local-roads and buffer them by 50 feet with a GeoLibre tool."*
 
    **Record (H-3.5):** the tool's name (it starts with `geolibre.`), whether Columbus asked you to approve the run (it should not), and whether a result came back as a raster or a layer in the chat. If the tool failed, what it printed.
-6. Ask for one more, on a layer: *"Run a GeoLibre tool that needs a vector layer on those roads."* Whether GeoLibre reads every GeoPackage Columbus writes has not been tried.
+6. Ask for one more, on a layer you have: *"Read 100 roads from local-roads, then run a GeoLibre tool that needs a vector layer on them."* Whether GeoLibre reads every GeoPackage Columbus writes has not been tried.
 
    **Record (H-3.6):** whether the tool read the layer, or its error.
 7. To tidy up, press **Remove** beside the toolbox on the Tools page (or keep it).
