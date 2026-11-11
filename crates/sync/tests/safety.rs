@@ -422,6 +422,25 @@ async fn everyday_forms_of_a_password_stop_the_sync_before_anything_is_sent() {
         let said = format!("{rep:?} {}", serde_json::to_string(&rep).unwrap());
         assert!(!said.contains(&pw) && !said.contains(&long), "{said}");
     }
+
+    // A note as Windows often saves it (UTF-16 with its mark in front,
+    // what PowerShell's `>` writes) is read as the text it is.
+    let r = repo();
+    let host = MemoryHost::new(r.clone(), "Ana");
+    let mut ana = Person::new("ana");
+    let note: Vec<u8> = [0xFF, 0xFE]
+        .into_iter()
+        .chain(
+            format!("user: gis\r\npassword: {pw}\r\n")
+                .encode_utf16()
+                .flat_map(u16::to_le_bytes),
+        )
+        .collect();
+    ana.write("notes.txt", &note);
+    let rep = ana.sync(&host).await;
+    let found = rep.stopped.as_ref().expect("the UTF-16 note went through");
+    assert_eq!((found[0].path.as_str(), found[0].line), ("notes.txt", 2));
+    assert!(rep.sent.is_empty() && r.lock().unwrap().is_empty());
 }
 
 /// And ordinary scripts, notes and settings that only name a password go

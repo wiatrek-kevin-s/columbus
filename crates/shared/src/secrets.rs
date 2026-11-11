@@ -55,6 +55,11 @@
 //! keep a script's password out of the file. In a script, a bare word
 //! after `=` is a variable; in its comments and docstrings, as in a note,
 //! it is something the person typed.
+//!
+//! A file that is not text (it has a NUL byte near its start) is searched
+//! only for the shapes of keys and tokens. Text saved as UTF-16 with its
+//! mark in front, as Windows often saves a note, is read as the text it
+//! is.
 
 use serde::Serialize;
 
@@ -303,11 +308,37 @@ pub fn is_text(bytes: &[u8]) -> bool {
     !bytes[..bytes.len().min(8000)].contains(&0)
 }
 
+/// Text saved as UTF-16 with its mark in front, as Windows often saves a
+/// note (and as PowerShell's `>` writes a file): read as the text it is.
+/// `None` for anything else, and for bytes that only start like that mark.
+fn utf16(bytes: &[u8]) -> Option<String> {
+    // Two bytes to a unit; an odd byte at the end is left out.
+    let units = |pair: fn([u8; 2]) -> u16| -> Vec<u16> {
+        bytes[2..]
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|c| pair(*c))
+            .collect()
+    };
+    let text = match bytes {
+        [0xFF, 0xFE, ..] => String::from_utf16_lossy(&units(u16::from_le_bytes)),
+        [0xFE, 0xFF, ..] => String::from_utf16_lossy(&units(u16::from_be_bytes)),
+        _ => return None,
+    };
+    (!text.chars().take(8000).any(|c| c == '\0')).then_some(text)
+}
+
 /// Look through one file. `own` are strings that must never leave (the
 /// linked server's token).
 pub fn find(path: &str, bytes: &[u8], own: &[String]) -> Vec<Finding> {
-    let text = String::from_utf8_lossy(bytes);
-    let is_text = is_text(bytes);
+    let (text, is_text) = match utf16(bytes) {
+        Some(text) => (std::borrow::Cow::Owned(text), true),
+        None => (String::from_utf8_lossy(bytes), is_text(bytes)),
+    };
+    // The mark some programs put in front of UTF-8 text is not part of
+    // the first line.
+    let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
     let ext = crate::file_kinds::extension(path.rsplit('/').next().unwrap_or(path));
     let lang = lang(&ext);
     let is_notebook = ext == "ipynb";
@@ -2292,14 +2323,81 @@ mod tests {
             ("notes.md", "The default login is admin, password: admin123 (change it).\n".to_string(), 1, password),
             ("list.py", format!("next_page_token = \"{}\"\n", "CAESBggDEAEYAQ1234567890"), 1, quoted),
         ];
-        let wrong = missed(&cases, &[PW, &m20, &m32, "opensesame", "admin123"]);
+        let values = [PW, &m20, &m32, "opensesame", "admin123"];
+        let mut wrong = missed(&cases, &values);
+        // The same with the line ends Windows writes.
+        let windows: Vec<(&str, String, usize, &str)> = cases
+            .iter()
+            .map(|(path, text, line, what)| (*path, text.replace('\n', "\r\n"), *line, *what))
+            .collect();
+        wrong.extend(missed(&windows, &values));
         assert!(
             wrong.is_empty(),
             "{} of {} are not found:\n{}",
             wrong.len(),
-            cases.len(),
+            2 * cases.len(),
             wrong.join("\n")
         );
+    }
+
+    /// A note as Windows saves it is read like any other: UTF-16 with its
+    /// mark in front (what PowerShell's `>` writes), or UTF-8 with one.
+    #[test]
+    fn text_as_windows_saves_it_is_searched_too() {
+        let text = format!("user: gis\r\npassword: {PW}\r\n");
+        let little: Vec<u8> = [0xFF, 0xFE]
+            .into_iter()
+            .chain(text.encode_utf16().flat_map(u16::to_le_bytes))
+            .collect();
+        let big: Vec<u8> = [0xFE, 0xFF]
+            .into_iter()
+            .chain(text.encode_utf16().flat_map(u16::to_be_bytes))
+            .collect();
+        let marked: Vec<u8> = [0xEF, 0xBB, 0xBF].into_iter().chain(text.bytes()).collect();
+        for bytes in [&little, &big, &marked] {
+            let found = find("notes.txt", bytes, &[]);
+            assert_eq!(found.len(), 1, "{found:?}");
+            assert_eq!((found[0].line, found[0].what.as_str()), (2, PASSWORD));
+            assert!(!format!("{found:?}").contains(PW));
+        }
+        // A setting on the very first line, behind the mark.
+        let first = format!("{}token: {}\r\nportal: gis\r\n", '\u{feff}', mixed(32));
+        let found = find("conf.yaml", first.as_bytes(), &[]);
+        assert_eq!(
+            found.iter().map(|f| f.line).collect::<Vec<_>>(),
+            [1],
+            "{found:?}"
+        );
+        // The linked server's own token, in a file saved that way.
+        let own = vec!["zq7k-FAKE-token-0001".to_string()];
+        let note: Vec<u8> = [0xFF, 0xFE]
+            .into_iter()
+            .chain(
+                "pasted zq7k-FAKE-token-0001 here\r\n"
+                    .encode_utf16()
+                    .flat_map(u16::to_le_bytes),
+            )
+            .collect();
+        assert_eq!(find("notes.txt", &note, &own).len(), 1);
+        // The same text that only names a password stays quiet, and bytes
+        // that merely start like the mark are not text.
+        let quiet: Vec<u8> = [0xFF, 0xFE]
+            .into_iter()
+            .chain(
+                "Ask Ana for the password.\r\n"
+                    .encode_utf16()
+                    .flat_map(u16::to_le_bytes),
+            )
+            .collect();
+        assert_eq!(find("notes.txt", &quiet, &[]), []);
+        for bytes in [
+            vec![0xFF, 0xFE],
+            vec![0xFF, 0xFE, 0x41],
+            vec![0xFF, 0xFE, 0, 0, 1, 2, 3, 4],
+            vec![0xFE, 0xFF, 0, 0, 0xD8, 0x00],
+        ] {
+            assert_eq!(find("x.bin", &bytes, &[]), [], "{bytes:?}");
+        }
     }
 
     /// Near misses of each of those forms: ordinary scripts, notes and
@@ -2435,10 +2533,12 @@ mod tests {
             ("a.py", "headers = {\"Authorization\": f\"Bearer {token}\"}\n".into()),
             ("a.md", "the bearer of this letter is 21 years old or more\n".into()),
         ];
+        // As they are, and with the line ends Windows writes.
         let wrong: Vec<String> = cases
             .iter()
+            .flat_map(|(path, text)| [(*path, text.clone()), (*path, text.replace('\n', "\r\n"))])
             .filter_map(|(path, text)| {
-                hit_in(path, text).map(|(line, what)| {
+                hit_in(path, &text).map(|(line, what)| {
                     format!("{path} should not stop: {text:?} -> line {line} ({what})")
                 })
             })
@@ -2447,7 +2547,7 @@ mod tests {
             wrong.is_empty(),
             "{} of {} stop:\n{}",
             wrong.len(),
-            cases.len(),
+            2 * cases.len(),
             wrong.join("\n")
         );
     }
