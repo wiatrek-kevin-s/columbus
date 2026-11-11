@@ -33,6 +33,8 @@ pub(crate) struct Net {
     /// The address requests go to, without a trailing `/`.
     base: String,
     key: String,
+    /// Whether the address is this computer.
+    local: bool,
     pub service: Service,
 }
 
@@ -61,12 +63,25 @@ impl Net {
             http: b.build()?,
             base: checked.url,
             key,
+            local: checked.local,
             service,
         })
     }
 
     pub fn key(&self) -> &str {
         &self.key
+    }
+
+    /// What the person is told when a request did not reach the service.
+    pub fn unreachable(&self, e: reqwest::Error) -> String {
+        if self.local && e.is_connect() {
+            // Nothing listens at an address on this computer: the service
+            // is not started. (The network has no part in it.)
+            let name = &self.service.name;
+            let who = name.strip_suffix(" on this computer").unwrap_or(name);
+            return format!("{who} is not running on this computer (nothing answers at its address). Start it and try again");
+        }
+        format!("could not reach {}: {}", self.service.name, plain(e))
     }
 
     fn with_key(&self, mut r: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
@@ -110,7 +125,7 @@ pub async fn list_models(address: &str, key: &str, service: &Service) -> Result<
         .models()
         .send()
         .await
-        .map_err(|e| anyhow!("could not reach {name}: {}", plain(e)))?;
+        .map_err(|e| anyhow!("{}", net.unreachable(e)))?;
     let code = r.status();
     if code.is_redirection() {
         bail!("{}", redirect_text(name));

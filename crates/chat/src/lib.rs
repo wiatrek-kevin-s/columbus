@@ -908,7 +908,7 @@ impl Chat {
                 .post(&body.json)
                 .send()
                 .await
-                .map_err(|e| anyhow!("could not reach {name}: {}", http::plain(e)))?;
+                .map_err(|e| anyhow!("{}", self.net.unreachable(e)))?;
             let code = r.status();
             if code.is_redirection() {
                 bail!("{}", http::redirect_text(name));

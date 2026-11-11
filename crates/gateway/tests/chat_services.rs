@@ -2146,3 +2146,59 @@ async fn a_message_that_failed_is_taken_back_in_every_format() {
         run.close().await;
     }
 }
+
+/// A port on this computer that nothing listens on.
+fn closed_port() -> u16 {
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    l.local_addr().unwrap().port()
+}
+
+/// A service on this computer that does not answer is not running: the
+/// person is told that, and to start it, not that their network is at
+/// fault. The same when its list of models is asked for.
+#[tokio::test]
+async fn a_service_on_this_computer_that_is_not_running_is_said_to_be_so() {
+    let Some(py) = python() else { return };
+    let said =
+        "is not running on this computer (nothing answers at its address). Start it and try again";
+    for (service, model, name) in [
+        (builtin("ollama").unwrap().service(), "llama3.3", "Ollama"),
+        (builtin("lmstudio").unwrap().service(), "qwen3", "LM Studio"),
+        (
+            own(Fmt::Chat, KeyHeader::Bearer, false),
+            "deployment-1",
+            "My gateway",
+        ),
+    ] {
+        let (_dir, root) = setup(&py);
+        let address = format!("http://127.0.0.1:{}/v1", closed_port());
+        let ui = TestUi::new(Answer::AllowOnce);
+        let mut chat = Chat::start_with(
+            config(&root, &py, &address, model),
+            service.clone(),
+            ui.clone(),
+            Cancel::default(),
+        )
+        .await
+        .unwrap();
+        let e = chat
+            .send("hello", &Cancel::default())
+            .await
+            .unwrap_err()
+            .to_string();
+        assert_eq!(e, format!("{name} {said}"));
+        assert!(
+            !e.contains("network") && !e.contains("offline"),
+            "nothing about the network: {e}"
+        );
+        assert!(
+            matches!(ui.events.lock().unwrap().last(), Some(Event::Error { text }) if *text == e)
+        );
+        chat.close().await;
+        let e = columbus_chat::list_models(&address, "", &service)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert_eq!(e, format!("{name} {said}"));
+    }
+}
