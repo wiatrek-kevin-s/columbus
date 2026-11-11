@@ -163,6 +163,9 @@ def main():
         first = text(d, "#first-steps")
         assert "Start with your data." in first and "Connect an AI for the chat" in first, first
         assert "Your first connection is added" in first, first
+        # How the assistant works is chosen here too (T-27, REQ-37).
+        assert "How should your assistant work?" in first and "Work freely on copies (recommended)" in first, first
+        assert "Ask me before each script" in first and d.find_element(By.ID, "fr-work-free").is_enabled(), first
         assert not d.find_element(By.ID, "text").is_displayed(), "no question to ask before an AI is connected"
         named(d)
         d.save_screenshot(str(OUT / "shell-first-run.png"))

@@ -53,6 +53,8 @@ every check id is in [references/check-ids.md](references/check-ids.md).
 Call `whoami` once, first, with no arguments. Read and keep:
 
 - `policy.edits_allowed`, `policy.scripts_allowed`: phase 1 is read-only by default.
+  `policy.script_approval`: whether a script that stays in the sandbox asks the person
+  first (`each`, `session`) or runs at once (`none`); one with network or outside it asks.
   `policy.personal_tools_allowed`: whether the person's own tools (section 13) are on.
 - `policy.rows_returned_per_call` (at most 500), `policy.rows_read_per_query` (default
   200,000; an organization may raise it, up to 20,000,000), `policy.query_seconds`

@@ -65,6 +65,7 @@ fn main() {
             "settings_save_connection",
             "settings_delete_connection",
             "settings_set_switch",
+            "settings_set_work_mode",
             "settings_pick",
             "settings_test_connection",
             "settings_draft_notes",

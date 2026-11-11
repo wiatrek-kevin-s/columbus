@@ -3,6 +3,7 @@
 // parts, moved here: the app opens on a question now.)
 import { h, icon, invoke, store, button, savePrefs, showError } from "../core.js";
 import { openEditor } from "./connections.js";
+import { workMode } from "./settings.js";
 
 const STEPS = ["ai", "engine", "connection"];
 
@@ -85,7 +86,9 @@ export function firstSteps(s, again) {
       h("div", { class: "row" }, button("Check again", "sm", () => again()), skipped.has("engine") ? null : skip("engine")));
   }
   checks.append(h("li", {}, mark("engine"), eng));
-  box.append(checks,
+  // How the assistant works: freely on copies, or asking before each script.
+  const mode = s.st ? h("div", { class: "stack", id: "fr-mode" }, h("h3", {}, "How should your assistant work?"), workMode(s.st, () => again(), "fr-work", false)) : null;
+  box.append(checks, mode,
     h("div", { class: "row welcome-foot" }, h("span", { class: "small muted grow" }, "Your assistant sees only what your connections allow; anything that changes data or leaves this computer asks you first."),
       button("Skip setup", "ghost sm", async () => { await savePrefs({ setup_done: true }); again(); }, { id: "fr-skip" })));
   return box;

@@ -517,6 +517,7 @@ fn main() {
             settings::settings_save_connection,
             settings::settings_delete_connection,
             settings::settings_set_switch,
+            settings::settings_set_work_mode,
             settings::settings_pick,
             settings::settings_test_connection,
             settings::settings_draft_notes,

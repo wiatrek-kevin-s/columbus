@@ -67,7 +67,7 @@ arcgis signin <id>)". A step's `tool` is one of:
 - an installed personal tool, by its full name `personal.<name>.run`, with `args` as you
   would pass to `run_tool`'s `args`
 
-Never a step: `run_python` (a script is approved one run at a time), edits, connected
+Never a step: `run_python` (a workflow run never runs a script), edits, connected
 servers, downloads, and `export_output` (exports are made by `outputs.folder`, below). A
 personal tool is the way to put your own code in a workflow: propose it with `propose_tool`
 first; once the person has installed it, the workflow can use it.

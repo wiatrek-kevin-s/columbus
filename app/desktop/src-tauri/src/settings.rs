@@ -61,8 +61,40 @@ pub struct PolicyView {
     allow_personal_tools: bool,
     allow_workflows: bool,
     allow_shared_tools: bool,
+    /// The switches of build brief 3 (F-15).
+    allow_toolboxes: bool,
+    allow_project_files: bool,
+    allow_sync: bool,
+    environments_allow: bool,
+    /// When a script in the sandbox asks first: `each`, `session` or `none`.
+    script_approval: &'static str,
+    /// How the assistant works (D-16): `free` (Work freely on copies:
+    /// scripts run in the sandbox without asking), `ask` (each script
+    /// asks) or `off` (no scripts).
+    work_mode: &'static str,
     connection_types: Vec<String>,
     problem: Option<String>,
+}
+
+/// The policy's `scripts.approval` in force, as the file spells it.
+pub(crate) fn script_approval(p: &OrgPolicy) -> &'static str {
+    use columbus_shared::policy::ScriptApproval;
+    match p.scripts.approval_rule() {
+        ScriptApproval::Each => "each",
+        ScriptApproval::Session => "session",
+        ScriptApproval::None => "none",
+    }
+}
+
+/// How the assistant works under this policy (D-16): `free`, `ask` or `off`.
+pub(crate) fn work_mode(p: &OrgPolicy) -> &'static str {
+    if !p.allow_scripts {
+        "off"
+    } else if script_approval(p) == "none" {
+        "free"
+    } else {
+        "ask"
+    }
 }
 
 #[derive(Serialize)]
@@ -263,6 +295,13 @@ fn scan(dir: &Path) -> Vec<(PathBuf, Result<Connection, String>)> {
 }
 
 pub(crate) fn writable(path: &Path) -> bool {
+    // Tests only (debug builds): the file as an organization manages it,
+    // for systems where the test's account may write anything. It can only
+    // take access away.
+    #[cfg(debug_assertions)]
+    if std::env::var_os("COLUMBUS_APP_TEST_MANAGED").is_some_and(|v| v == "1") {
+        return false;
+    }
     if path.exists() {
         std::fs::OpenOptions::new().append(true).open(path).is_ok()
     } else {
@@ -322,6 +361,12 @@ fn state() -> SettingsState {
             allow_personal_tools: policy.allow_personal_tools,
             allow_workflows: policy.allow_workflows,
             allow_shared_tools: policy.allow_shared_tools,
+            allow_toolboxes: policy.allow_toolboxes,
+            allow_project_files: policy.allow_project_files,
+            allow_sync: policy.allow_sync,
+            environments_allow: policy.environments.allow,
+            script_approval: script_approval(&policy),
+            work_mode: work_mode(&policy),
             connection_types: policy.connection_types.clone(),
             problem,
         },
@@ -1437,9 +1482,20 @@ fn set_switch(name: &str, on: bool) -> Result<(), String> {
     };
     let text = set_key(&before, name, on);
     if on {
+        // What the scripts switch gives depends on the approval rule the
+        // file states (F-15).
+        let rule = OrgPolicy::parse(&text, &path)
+            .map(|p| script_approval(&p))
+            .unwrap_or("each");
         confirm(match name {
             "allow_edits" => {
                 "let your assistant write to read-write connections, after your approval of each change"
+            }
+            "allow_scripts" if rule == "none" => {
+                "let your assistant run Python scripts in the sandbox, without asking you each time"
+            }
+            "allow_scripts" if rule == "session" => {
+                "let your assistant run Python scripts, after your approval of each one or of a script for a whole chat"
             }
             "allow_scripts" => "let your assistant run Python scripts, after your approval of each one",
             "allow_workflows" => "let the workflows you approve run by themselves, on their schedule",
@@ -1492,6 +1548,317 @@ pub(crate) fn set_key(text: &str, key: &str, on: bool) -> String {
     let mut s = out.join("\n");
     s.push('\n');
     s
+}
+
+/// The top-level switches "Work freely on copies" turns on (F-15); with
+/// `scripts.approval: none` and `environments.allow: true`, seven settings.
+const FREE_SWITCHES: [&str; 5] = [
+    "allow_scripts",
+    "allow_personal_tools",
+    "allow_toolboxes",
+    "allow_project_files",
+    "allow_sync",
+];
+
+/// How the assistant works (build brief 3, D-16, F-15, REQ-37). `free`:
+/// **Work freely on copies**, which writes the seven open settings after
+/// one confirmation at the keyboard. Otherwise **Ask me before each
+/// script**: `scripts.approval` goes back to `each` and nothing else
+/// changes (each other switch has its own place). The rest of the file,
+/// comments included, is kept as it is.
+#[tauri::command]
+pub async fn settings_set_work_mode(free: bool) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || set_work_mode(free))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn set_work_mode(free: bool) -> Result<(), String> {
+    let path = paths::policy_file();
+    if !writable(&path) {
+        return Err(format!(
+            "{} is managed by your organization (this account cannot change it)",
+            path.display()
+        ));
+    }
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    // Only a file that exists, as for the switches.
+    let Ok(before) = std::fs::read_to_string(&path) else {
+        return Err(format!(
+            "there is no organization settings file at {} yet, so Columbus's defaults apply (no scripts). Create it as the install guide shows, then change it here",
+            path.display()
+        ));
+    };
+    let text = work_mode_text(&before, free)?;
+    if text == before {
+        return Ok(());
+    }
+    if free {
+        confirm("let your assistant work freely on copies: run scripts and tools in the sandbox without asking you each time")?;
+        if std::fs::read_to_string(&path).ok().as_deref() != Some(before.as_str()) {
+            return Err("the settings file changed while you were asked; nothing was saved".into());
+        }
+    }
+    write_atomic(&path, &text)?;
+    // As the server reads it: the mode asked for, or the file as it was.
+    let saved = OrgPolicy::load(&path)
+        .map_err(|e| e.to_string())
+        .and_then(|p| {
+            let open = FREE_SWITCHES.len() == 5
+                && p.allow_scripts
+                && p.allow_personal_tools
+                && p.allow_toolboxes
+                && p.allow_project_files
+                && p.allow_sync
+                && p.environments.allow
+                && script_approval(&p) == "none";
+            if free && !open {
+                Err("the file did not take every setting".to_string())
+            } else if !free && script_approval(&p) != "each" {
+                Err("the file did not take scripts.approval: each".to_string())
+            } else {
+                Ok(())
+            }
+        });
+    if let Err(e) = saved {
+        let _ = write_atomic(&path, &before);
+        return Err(format!("not saved: the server would refuse the file: {e}"));
+    }
+    Ok(())
+}
+
+/// The policy file's text with the mode set, checked: read as YAML, the
+/// new text differs from the old in exactly the settings meant, or it is
+/// refused (a layout this editor does not know is never guessed at).
+pub(crate) fn work_mode_text(before: &str, free: bool) -> Result<String, String> {
+    use serde_yaml::Value;
+    let unreadable = |e: serde_yaml::Error| {
+        format!("the settings file does not read as YAML ({e}); fix it first")
+    };
+    let mut want: Value = serde_yaml::from_str(before).map_err(unreadable)?;
+    if want.is_null() {
+        want = Value::Mapping(Default::default());
+    }
+    let Value::Mapping(root) = &mut want else {
+        return Err("the settings file is not a list of settings; fix it first".into());
+    };
+    let mut put = |section: Option<&str>, key: &str, value: Value| -> Result<(), String> {
+        let Some(sec) = section else {
+            root.insert(Value::String(key.into()), value);
+            return Ok(());
+        };
+        let slot = root.entry(Value::String(sec.into())).or_insert(Value::Null);
+        if slot.is_null() {
+            *slot = Value::Mapping(Default::default());
+        }
+        let Value::Mapping(group) = slot else {
+            return Err(format!(
+                "{sec} in the settings file is not a group of settings"
+            ));
+        };
+        group.insert(Value::String(key.into()), value);
+        Ok(())
+    };
+    let mut text = before.to_string();
+    if free {
+        for k in FREE_SWITCHES {
+            text = set_key(&text, k, true);
+            put(None, k, Value::Bool(true))?;
+        }
+        text = set_nested_key(&text, "scripts", "approval", "none")?;
+        put(Some("scripts"), "approval", Value::String("none".into()))?;
+        text = set_nested_key(&text, "environments", "allow", "true")?;
+        put(Some("environments"), "allow", Value::Bool(true))?;
+    } else {
+        text = set_nested_key(&text, "scripts", "approval", "each")?;
+        put(Some("scripts"), "approval", Value::String("each".into()))?;
+    }
+    let got: Value = serde_yaml::from_str(&text).map_err(|e| {
+        format!(
+            "Columbus could not change this file's layout safely ({e}); change it by hand: {}",
+            by_hand(free)
+        )
+    })?;
+    if got != want {
+        return Err(format!(
+            "Columbus could not change this file's layout safely; change it by hand: {}",
+            by_hand(free)
+        ));
+    }
+    Ok(text)
+}
+
+fn by_hand(free: bool) -> &'static str {
+    if free {
+        "allow_scripts, allow_personal_tools, allow_toolboxes, allow_project_files and allow_sync to true, scripts: { approval: none } and environments: { allow: true }"
+    } else {
+        "scripts: { approval: each }"
+    }
+}
+
+/// Where an end-of-line comment starts in the rest of a line (a `#` after
+/// white space, outside quotes): the text before it, and the comment with
+/// the white space in front of it.
+fn split_comment(rest: &str) -> (&str, &str) {
+    let mut quote: Option<char> = None;
+    let mut prev_space = true;
+    for (i, c) in rest.char_indices() {
+        match quote {
+            Some(q) => {
+                if c == q {
+                    quote = None;
+                }
+            }
+            None => {
+                if c == '"' || c == '\'' {
+                    quote = Some(c);
+                } else if c == '#' && prev_space {
+                    let start = rest[..i].trim_end().len();
+                    return (&rest[..start], &rest[start..]);
+                }
+            }
+        }
+        prev_space = c.is_whitespace();
+    }
+    let start = rest.trim_end().len();
+    (&rest[..start], &rest[start..])
+}
+
+/// A value written inline (`{ a: true, b: [x, y] }`): plain where that
+/// reads back as the same value, quoted otherwise.
+fn inline_yaml(v: &serde_yaml::Value) -> Result<String, String> {
+    use serde_yaml::Value;
+    let text = |s: &str| -> String {
+        let plain = s.starts_with(|c: char| c.is_ascii_alphabetic())
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+            && !["true", "false", "null", "yes", "no", "on", "off", "y", "n"]
+                .contains(&s.to_ascii_lowercase().as_str());
+        if plain {
+            s.to_string()
+        } else {
+            // A JSON string is a YAML double-quoted one.
+            serde_json::to_string(s).unwrap_or_else(|_| "\"\"".into())
+        }
+    };
+    Ok(match v {
+        Value::Null => "null".into(),
+        Value::Bool(b) => b.to_string(),
+        Value::Number(n) => n.to_string(),
+        Value::String(s) => text(s),
+        Value::Sequence(items) => format!(
+            "[{}]",
+            items
+                .iter()
+                .map(inline_yaml)
+                .collect::<Result<Vec<_>, _>>()?
+                .join(", ")
+        ),
+        Value::Mapping(m) if m.is_empty() => "{}".into(),
+        Value::Mapping(m) => {
+            let mut parts = Vec::new();
+            for (k, v) in m {
+                let Value::String(k) = k else {
+                    return Err("a setting's name is not text".into());
+                };
+                parts.push(format!("{}: {}", text(k), inline_yaml(v)?));
+            }
+            format!("{{ {} }}", parts.join(", "))
+        }
+        Value::Tagged(_) => return Err("a tagged value".into()),
+    })
+}
+
+/// The file with `section.key` set to `value` (a plain word: `true`,
+/// `none`), for a group of settings written either way the policy files
+/// are (`scripts: { approval: each }` on one line, or `scripts:` with its
+/// settings indented under it), or not there yet. Comments are kept. A
+/// layout it does not know gives a file that fails the caller's check.
+pub(crate) fn set_nested_key(
+    text: &str,
+    section: &str,
+    key: &str,
+    value: &str,
+) -> Result<String, String> {
+    let named = |line: &str, name: &str| -> Option<usize> {
+        let rest = line.strip_prefix(name)?;
+        let colon = rest.trim_start();
+        // `name:` then the end, a space, or (inline) a bracket.
+        (colon.starts_with(':')
+            && colon[1..]
+                .chars()
+                .next()
+                .is_none_or(|c| c.is_whitespace() || c == '{' || c == '['))
+        .then(|| line.len() - colon.len() + 1)
+    };
+    let mut lines: Vec<String> = text.lines().map(String::from).collect();
+    let Some(at) = lines.iter().position(|l| named(l, section).is_some()) else {
+        // Not there yet: a group of its own at the end.
+        lines.push(format!("{section}:"));
+        lines.push(format!("  {key}: {value}"));
+        return Ok(lines.join("\n") + "\n");
+    };
+    let after = named(&lines[at], section).expect("matched above");
+    let (body, comment) = {
+        let (b, c) = split_comment(&lines[at][after..]);
+        (b.trim().to_string(), c.to_string())
+    };
+    if body.starts_with('{') {
+        // One line: read it, set the value, write it back.
+        let mut group: serde_yaml::Value = serde_yaml::from_str(&body)
+            .map_err(|e| format!("{section} in the settings file does not read ({e})"))?;
+        let serde_yaml::Value::Mapping(m) = &mut group else {
+            return Err(format!(
+                "{section} in the settings file is not a group of settings"
+            ));
+        };
+        let v: serde_yaml::Value = serde_yaml::from_str(value).map_err(|e| e.to_string())?;
+        m.insert(serde_yaml::Value::String(key.into()), v);
+        lines[at] = format!("{section}: {}{comment}", inline_yaml(&group)?);
+        return Ok(lines.join("\n") + "\n");
+    }
+    if !(body.is_empty() || body == "~" || body == "null") {
+        return Err(format!(
+            "{section} in the settings file is not a group of settings"
+        ));
+    }
+    if !body.is_empty() {
+        // `scripts: ~` set nothing; the group starts here.
+        lines[at] = format!("{section}:{comment}");
+    }
+    // Its settings: the indented lines under it, to the next line that
+    // starts at the margin. The first one's indent is the group's.
+    let indent_of = |l: &str| l.len() - l.trim_start().len();
+    let mut indent: Option<usize> = None;
+    let mut found: Option<usize> = None;
+    for (i, l) in lines.iter().enumerate().skip(at + 1) {
+        let t = l.trim_start();
+        if t.is_empty() || t.starts_with('#') {
+            continue;
+        }
+        let n = indent_of(l);
+        if n == 0 {
+            break;
+        }
+        let group_indent = *indent.get_or_insert(n);
+        if n == group_indent && named(t, key).is_some() && found.is_none() {
+            found = Some(i);
+        }
+    }
+    match found {
+        Some(i) => {
+            let l = &lines[i];
+            let pad = &l[..indent_of(l)];
+            let t = l.trim_start();
+            let (_, comment) = split_comment(&t[named(t, key).expect("matched above")..]);
+            lines[i] = format!("{pad}{key}: {value}{comment}");
+        }
+        None => {
+            let pad = " ".repeat(indent.unwrap_or(2));
+            lines.insert(at + 1, format!("{pad}{key}: {value}"));
+        }
+    }
+    Ok(lines.join("\n") + "\n")
 }
 
 /// The person's own tools: installed ones, and those an assistant proposed
@@ -1774,6 +2141,219 @@ mod tests {
             set_key("allow_edits_x: 1\n", "allow_edits", true),
             "allow_edits_x: 1\nallow_edits: true\n"
         );
+    }
+}
+
+#[cfg(test)]
+mod work_mode_tests {
+    use super::*;
+
+    fn policy(text: &str) -> OrgPolicy {
+        OrgPolicy::parse(text, Path::new("policy.yaml")).unwrap()
+    }
+
+    /// The seven settings F-15 lists, as the server reads the file.
+    fn open(p: &OrgPolicy) -> bool {
+        p.allow_scripts
+            && script_approval(p) == "none"
+            && p.environments.allow
+            && p.allow_personal_tools
+            && p.allow_toolboxes
+            && p.allow_project_files
+            && p.allow_sync
+    }
+
+    #[test]
+    fn the_mode_is_read_from_the_policy() {
+        assert_eq!(work_mode(&OrgPolicy::default()), "off");
+        assert_eq!(work_mode(&policy("allow_scripts: true\n")), "ask");
+        assert_eq!(
+            work_mode(&policy(
+                "allow_scripts: true\nscripts: { session_approval: true }\n"
+            )),
+            "ask"
+        );
+        assert_eq!(
+            work_mode(&policy(
+                "allow_scripts: true\nscripts: { approval: none }\n"
+            )),
+            "free"
+        );
+        // No scripts at all: the rule alone opens nothing.
+        assert_eq!(work_mode(&policy("scripts: { approval: none }\n")), "off");
+        assert_eq!(
+            script_approval(&policy("scripts: { approval: none }\n")),
+            "none"
+        );
+    }
+
+    #[test]
+    fn work_freely_writes_the_seven_settings_and_keeps_the_rest() {
+        let before = "# The organization's settings.\nconnection_types: [gpkg, postgis]\nhide_fields: [\"*ssn*\"]\nallow_scripts: false   # run_python\nallow_edits: false     # edits\n";
+        let on = work_mode_text(before, true).unwrap();
+        assert_eq!(
+            on,
+            "# The organization's settings.\nconnection_types: [gpkg, postgis]\nhide_fields: [\"*ssn*\"]\nallow_scripts: true   # run_python\nallow_edits: false     # edits\nallow_personal_tools: true\nallow_toolboxes: true\nallow_project_files: true\nallow_sync: true\nscripts:\n  approval: none\nenvironments:\n  allow: true\n"
+        );
+        let p = policy(&on);
+        assert!(open(&p) && work_mode(&p) == "free");
+        // Nothing else moved: edits stay off, the types and hidden fields stay.
+        assert!(!p.allow_edits && !p.allow_workflows && !p.environments.allow_trusted);
+        assert_eq!(p.connection_types, ["gpkg", "postgis"]);
+        assert_eq!(p.hide_fields, ["*ssn*"]);
+        // Again changes nothing.
+        assert_eq!(work_mode_text(&on, true).unwrap(), on);
+
+        // Off: scripts.approval back to each, and nothing else.
+        let off = work_mode_text(&on, false).unwrap();
+        assert_eq!(off, on.replace("  approval: none", "  approval: each"));
+        let q = policy(&off);
+        assert_eq!(script_approval(&q), "each");
+        assert_eq!(work_mode(&q), "ask");
+        assert!(q.allow_scripts && q.allow_personal_tools && q.allow_toolboxes);
+        assert!(q.allow_project_files && q.allow_sync && q.environments.allow);
+    }
+
+    #[test]
+    fn groups_written_on_one_line_keep_their_other_settings() {
+        let before = "allow_scripts: true\nscripts: { session_approval: true }   # ask once a chat\nenvironments: {allow: false, allow_trusted: true, index_hosts: [pypi.corp.example, \"files.corp.example:8443\"]}\n";
+        let on = work_mode_text(before, true).unwrap();
+        assert!(
+            on.contains(
+                "scripts: { session_approval: true, approval: none }   # ask once a chat\n"
+            ),
+            "{on}"
+        );
+        assert!(
+            on.contains("environments: { allow: true, allow_trusted: true, index_hosts: [pypi.corp.example, \"files.corp.example:8443\"] }\n"),
+            "{on}"
+        );
+        let p = policy(&on);
+        assert!(open(&p));
+        // The stated rule wins over the older key, which is kept as written.
+        assert!(p.scripts.session_approval && p.environments.allow_trusted);
+        assert_eq!(
+            p.environments.index_hosts,
+            ["pypi.corp.example", "files.corp.example:8443"]
+        );
+        let off = work_mode_text(&on, false).unwrap();
+        assert!(off
+            .contains("scripts: { session_approval: true, approval: each }   # ask once a chat\n"));
+        assert_eq!(script_approval(&policy(&off)), "each");
+        // An empty group, and one that says nothing yet.
+        for empty in [
+            "scripts: {}\n",
+            "scripts:\n",
+            "scripts: ~   # later\n",
+            "scripts: null\n",
+        ] {
+            let on = work_mode_text(
+                &format!("allow_edits: true\n{empty}allow_workflows: true\n"),
+                true,
+            )
+            .unwrap_or_else(|e| panic!("{empty:?}: {e}"));
+            let p = policy(&on);
+            assert!(
+                open(&p) && p.allow_edits && p.allow_workflows,
+                "{empty:?}: {on}"
+            );
+        }
+        assert!(work_mode_text("scripts: ~   # later\n", true)
+            .unwrap()
+            .contains("scripts:   # later\n  approval: none\n"));
+    }
+
+    #[test]
+    fn groups_written_as_blocks_are_changed_in_place() {
+        let before = "allow_scripts: true\n\nscripts:\n    # How scripts are approved.\n    session_approval: false\n    approval: session    # once a chat\n\nenvironments:\n  allow: false          # the master switch\n  index_hosts:\n    - pypi.org\n    - allow: this-is-not-a-setting\nexports:\n  - { id: outbox, path: /srv/out }\n";
+        let on = work_mode_text(before, true).unwrap();
+        // Each value changed on its own line, with its indent and comment.
+        assert!(on.contains("    approval: none    # once a chat\n"), "{on}");
+        assert!(
+            on.contains("  allow: true          # the master switch\n"),
+            "{on}"
+        );
+        // A deeper line that only looks like the setting is left alone.
+        assert!(on.contains("    - allow: this-is-not-a-setting\n"), "{on}");
+        assert!(on.contains("    # How scripts are approved.\n    session_approval: false\n"));
+        assert!(on.contains("exports:\n  - { id: outbox, path: /srv/out }\n"));
+        // Read as YAML, only the settings meant changed.
+        let a: serde_yaml::Value = serde_yaml::from_str(before).unwrap();
+        let b: serde_yaml::Value = serde_yaml::from_str(&on).unwrap();
+        assert_eq!(a["exports"], b["exports"]);
+        assert_eq!(
+            a["environments"]["index_hosts"],
+            b["environments"]["index_hosts"]
+        );
+        assert_eq!(b["scripts"]["approval"], "none");
+        assert_eq!(b["environments"]["allow"], true);
+        // A block without the setting gets it as its first line, at the
+        // block's own indent.
+        let on = work_mode_text(
+            "scripts:\n    session_approval: true\nallow_edits: true\n",
+            true,
+        )
+        .unwrap();
+        assert!(
+            on.starts_with(
+                "scripts:\n    approval: none\n    session_approval: true\nallow_edits: true\n"
+            ),
+            "{on}"
+        );
+        // A group that is the last thing in the file, without a final newline.
+        let on = work_mode_text("environments:\n  allow_network: true", true).unwrap();
+        assert!(
+            on.starts_with("environments:\n  allow: true\n  allow_network: true\n"),
+            "{on}"
+        );
+        assert!(open(&policy(&on)));
+    }
+
+    #[test]
+    fn a_layout_it_cannot_change_safely_is_refused_not_guessed() {
+        for odd in [
+            // The settings group on the next line, inline.
+            "scripts:\n  { session_approval: true }\n",
+            // The whole file inline.
+            "{ allow_scripts: false }\n",
+            // Indented as a whole.
+            "  allow_scripts: false\n  allow_edits: true\n",
+            // Not a group at all.
+            "scripts: on\n",
+            "environments: [allow]\n",
+            // Does not read.
+            "allow_scripts: [\n",
+        ] {
+            let e = work_mode_text(odd, true);
+            assert!(e.is_err(), "{odd:?} gave {e:?}");
+        }
+        // Turning it off touches only scripts.approval, wherever the rest is.
+        assert_eq!(
+            work_mode_text("allow_scripts: true\nallow_sync: true\n", false).unwrap(),
+            "allow_scripts: true\nallow_sync: true\nscripts:\n  approval: each\n"
+        );
+    }
+
+    #[test]
+    fn comments_are_told_from_values() {
+        assert_eq!(split_comment(" true   # why"), (" true", "   # why"));
+        assert_eq!(split_comment(" \"a # b\" # c"), (" \"a # b\"", " # c"));
+        assert_eq!(
+            split_comment(" { x: 'it''s #1' }"),
+            (" { x: 'it''s #1' }", "")
+        );
+        assert_eq!(split_comment(" a#b"), (" a#b", ""));
+        assert_eq!(split_comment(""), ("", ""));
+        // Inline values read back as themselves.
+        for text in [
+            "{ a: true, b: [x, \"y z\", 3], c: { d: \"true\", e: null } }",
+            "{}",
+            "{ hosts: [\"*.example.org\", pypi.org] }",
+        ] {
+            let v: serde_yaml::Value = serde_yaml::from_str(text).unwrap();
+            let back: serde_yaml::Value = serde_yaml::from_str(&inline_yaml(&v).unwrap()).unwrap();
+            assert_eq!(v, back, "{text}");
+        }
     }
 }
 

@@ -5,12 +5,17 @@ whose classic copy stays reachable from Classic windows).
 Adds a GeoPackage connection, makes it read-write, turns edits on and
 removes it, checking each file as the server reads it; turns personal
 tools on, reads a tool an assistant proposed, installs one, declines
-another and removes the installed one; then, with the person declining to
-confirm, checks that nothing that widens access is saved (a connection, a
-switch, a tool). A debug build stands in for Touch ID / Windows Hello with
-COLUMBUS_APP_TEST_CONFIRM (allow or deny). A real Columbus session runs
-beside the app on the same files: Test asks it to open a connection
-before it is saved, and the saved notice says no restart is needed.
+another and removes the installed one; chooses Work freely on copies
+(one confirmation, seven settings, the rest of the file kept) and goes
+back to asking (scripts.approval each, nothing else); then, with the
+person declining to confirm, checks that nothing that widens access is
+saved (a connection, a switch, a tool, the mode); and, with the policy
+file managed by the organization, that the mode in force is shown and
+cannot be changed. A debug build stands in for Touch ID / Windows Hello
+with COLUMBUS_APP_TEST_CONFIRM (allow or deny), and for a managed policy
+file with COLUMBUS_APP_TEST_MANAGED. A real Columbus session runs beside
+the app on the same files: Test asks it to open a connection before it is
+saved, and the saved notice says no restart is needed.
 
     dbus-run-session -- xvfb-run -a python app/desktop/e2e/settings.py \\
         target/debug/columbus-mcp app/desktop/src-tauri/target/debug/columbus-desktop
@@ -97,8 +102,19 @@ def columbus(root):
     raise SystemExit("the Columbus session did not announce itself")
 
 
-def session(root, confirm):
-    env = dict(files(root), COLUMBUS_APP_TEST_CONFIRM=confirm)
+# The settings Work freely on copies turns on (F-15).
+SEVEN = {"allow_scripts": True, "scripts": {"approval": "none"}, "environments": {"allow": True},
+         "allow_personal_tools": True, "allow_toolboxes": True, "allow_project_files": True, "allow_sync": True}
+
+
+def policy(root):
+    """The policy file as the server reads it, and as written."""
+    text = (root / "policy.yaml").read_text()
+    return yaml.safe_load(text), text
+
+
+def session(root, confirm, **more):
+    env = dict(files(root), COLUMBUS_APP_TEST_CONFIRM=confirm, **more)
     d, proc = guard.driver(env, APP)
     wait = WebDriverWait(d, 30)
     guard.ready(d, wait)
@@ -296,6 +312,53 @@ gpd.GeoDataFrame({"RTE": ["IH0035", "US0183"], "district": [14, 12]}, geometry=[
         wait.until(lambda drv: drv.execute_script("return location.hash") == "#/data")
         wait.until(lambda drv: drv.find_elements(By.ID, "no-conn") and drv.find_element(By.ID, "no-conn").is_displayed())
         assert not d.find_elements(By.CSS_SELECTOR, "#connections li[data-id='roads']")
+
+        # How the assistant works (T-27, REQ-37): one choice in Settings.
+        step("work freely on copies: the mode in force is shown")
+        before, _ = policy(root)
+        assert before["allow_scripts"] is False and "scripts" not in before, before
+        nav(d, wait, "#/settings", "work-free")
+        wait.until(lambda drv: "Python scripts are off" in drv.find_element(By.ID, "work-state").text)
+        assert d.find_element(By.ID, "work-ask").is_selected() and not d.find_element(By.ID, "work-free").is_selected()
+        assert d.find_element(By.ID, "work-free").is_enabled()
+        words = d.find_element(By.ID, "work").text
+        assert "Work freely on copies (recommended)" in words and "Ask me before each script" in words, words
+        assert "cannot reach your connections, your passwords, your other files or the internet" in words, words
+        assert "still asks you before anything leaves the workspace or changes a source" in words, words
+        assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
+        d.save_screenshot(str(OUT / "settings-work-mode.png"))
+        step("work freely on copies: on, after one confirmation, writes the seven settings")
+        click(d, By.ID, "work-free")
+        wait.until(lambda drv: "approval: none" in (root / "policy.yaml").read_text())
+        on, text = policy(root)
+        assert {k: on.get(k) for k in SEVEN} == SEVEN, on
+        # Nothing else changed, and the comments stayed where they were.
+        assert {k: v for k, v in on.items() if k not in SEVEN} == {k: v for k, v in before.items() if k not in SEVEN}, (before, on)
+        assert text.startswith("# The organization's settings.\n") and "allow_scripts: true   # run_python\n" in text, text
+        assert "allow_edits: true     # edits\n" in text, text
+        wait.until(lambda drv: "On now: Work freely on copies." in drv.find_element(By.ID, "work-state").text)
+        assert d.find_element(By.ID, "work-free").is_selected()
+        assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
+        d.save_screenshot(str(OUT / "settings-work-freely.png"))
+        # Organization rules says the same in plain words.
+        nav(d, wait, "#/settings/org", "org-work-free")
+        assert d.find_element(By.ID, "org-work-free").is_selected()
+        wait.until(lambda drv: "without asking you each time" in drv.find_element(By.ID, "settings").text)
+        assert d.find_element(By.ID, "allow_scripts").is_selected()
+        step("ask me before each script: scripts.approval goes back to each, nothing else changes")
+        click(d, By.ID, "org-work-ask")
+        wait.until(lambda drv: "approval: each" in (root / "policy.yaml").read_text())
+        off, text = policy(root)
+        assert off == dict(on, scripts={"approval": "each"}), (on, off)
+        assert "allow_scripts: true   # run_python\n" in text and "# The organization's settings." in text, text
+        wait.until(lambda drv: "On now: Ask me before each script." in drv.find_element(By.ID, "org-work-state").text)
+        assert d.find_element(By.ID, "org-work-ask").is_selected()
+        # The other switches stay where they are; each is turned off in its
+        # own place (a tightening: no confirmation).
+        wait.until(lambda drv: drv.find_element(By.ID, "allow_scripts").is_selected())
+        click(d, By.ID, "allow_scripts")
+        wait.until(lambda drv: "allow_scripts: false" in (root / "policy.yaml").read_text())
+        wait.until(lambda drv: "Python scripts are off" in drv.find_element(By.ID, "org-work-state").text)
     finally:
         try:
             d.save_screenshot(str(OUT / "settings-last.png"))
@@ -340,6 +403,40 @@ gpd.GeoDataFrame({"RTE": ["IH0035", "US0183"], "district": [14, 12]}, geometry=[
         nav(d, wait, "#/settings/org", "allow_edits")
         d.find_element(By.ID, "allow_edits").click()
         wait.until(lambda drv: "allow_edits: false" in (root / "policy.yaml").read_text())
+        # Work freely on copies widens: not saved without the confirmation.
+        step("denied: work freely on copies")
+        _, text = policy(root)
+        nav(d, wait, "#/settings", "work-free")
+        click(d, By.ID, "work-free")
+        wait.until(lambda drv: drv.find_element(By.ID, "work-error").is_displayed())
+        assert "not confirmed" in d.find_element(By.ID, "work-error").text
+        assert (root / "policy.yaml").read_text() == text
+        assert d.find_element(By.ID, "work-ask").is_selected() and not d.find_element(By.ID, "work-free").is_selected()
+    finally:
+        step("closing the second app")
+        guard.stop(d, proc)
+
+    # The organization's file: the mode in force is shown, not offered.
+    managed = "# Managed by IT.\nconnection_types: [gpkg]\nallow_scripts: true\nscripts: { approval: none }\n"
+    (root / "policy.yaml").write_text(managed)
+    step("the app once more, the policy file managed by the organization")
+    d, proc, wait = session(root, "allow", COLUMBUS_APP_TEST_MANAGED="1")
+    try:
+        step("managed: the mode in force is shown as set by the organization")
+        nav(d, wait, "#/settings", "work-free")
+        wait.until(lambda drv: "On now: Work freely on copies." in drv.find_element(By.ID, "work-state").text)
+        assert "set by your organization" in d.find_element(By.ID, "work-managed").text
+        assert d.find_element(By.ID, "work-free").is_selected()
+        assert not d.find_element(By.ID, "work-free").is_enabled() and not d.find_element(By.ID, "work-ask").is_enabled()
+        assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
+        d.save_screenshot(str(OUT / "settings-work-managed.png"))
+        # The app's own code refuses too, whatever a page asks.
+        d.set_script_timeout(30)
+        answer = d.execute_async_script(
+            "const done = arguments[arguments.length - 1];"
+            "window.__TAURI__.core.invoke('settings_set_work_mode', { free: false }).then(() => done('saved'), (e) => done(String(e)));")
+        assert "managed by your organization" in answer, answer
+        assert (root / "policy.yaml").read_text() == managed
         print("desktop settings e2e (main window): ok")
     finally:
         step("closing the app and Columbus")
