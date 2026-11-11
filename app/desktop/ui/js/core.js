@@ -17,7 +17,20 @@ export function el(tag, cls, text) {
   return e;
 }
 
-/** An element with children (nodes or strings, as text). */
+/** Put children in `e`: nodes, or strings as text, alone or in a list. What
+ * is not there (null, undefined, false) is left out. Use this, not
+ * `e.append` or `e.replaceChildren`, wherever a child may be missing: those
+ * two write a missing child into the page as the word "null" or
+ * "undefined". Returns `e`. */
+export function put(e, ...kids) {
+  for (const k of kids.flat()) {
+    if (k == null || k === false) continue;
+    e.append(k instanceof Node ? k : document.createTextNode(String(k)));
+  }
+  return e;
+}
+
+/** An element with children (nodes or strings, as text; see `put`). */
 export function h(tag, attrs, ...kids) {
   const e = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs || {})) {
@@ -28,11 +41,7 @@ export function h(tag, attrs, ...kids) {
     else if (k === "dataset") Object.assign(e.dataset, v);
     else e.setAttribute(k, v === true ? "" : String(v));
   }
-  for (const k of kids.flat()) {
-    if (k == null || k === false) continue;
-    e.append(k instanceof Node ? k : document.createTextNode(String(k)));
-  }
-  return e;
+  return put(e, ...kids);
 }
 
 export function button(label, cls, onclick, attrs = {}) {
@@ -594,10 +603,30 @@ export function clientName(c) {
   const known = {
     "claude-ai": "Claude desktop",
     "claude-code": "Claude Code",
-    "columbus-chat": "Columbus chat",
+    // Columbus's own parts, by the names they write in the audit log: the
+    // app's chat (the name its session gives itself); its Settings and Data
+    // pages (a connection tested, notes drafted); its pages that read
+    // through Columbus (the Registry, a project's databases); its
+    // Documentation page (suggested notes, imports); a shared file opened
+    // in it; a workflow run by itself; the map and table beside a chat
+    // (a layer or rows read to draw them); the approvals page in the
+    // browser (what it reads, and a decision made there); and the server
+    // itself (settings read again, a run's results opened).
+    "Columbus app": "Columbus's own chat",
+    "columbus-chat": "Columbus's own chat",
+    "columbus-app (settings)": "Columbus's Settings",
+    "columbus-app-page": "Columbus's own pages",
+    "columbus-app-documents": "Columbus's Documentation page",
+    "columbus-app-share": "Columbus's shared files",
+    "columbus-runner": "Columbus's workflow runs",
+    "companion-window (view)": "Columbus's map and table",
+    "companion-window (approve)": "Columbus's approvals page",
+    "approvals-page": "Columbus's approvals page",
+    columbus: "Columbus itself",
     "Visual Studio Code": "VS Code",
     "github-copilot": "GitHub Copilot",
     cursor: "Cursor",
   };
-  return known[c] || c;
+  // (Its own names only: a client may call itself anything, "constructor" included.)
+  return Object.prototype.hasOwnProperty.call(known, c) ? known[c] : c;
 }

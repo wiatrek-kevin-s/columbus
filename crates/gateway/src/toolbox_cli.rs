@@ -1072,8 +1072,9 @@ async fn add_inner(
         }
     }
     // Its folder becomes readable by its tools: it must be a folder of
-    // its own, not the person's home, Desktop, Documents or Downloads, the
-    // top of a drive or a system folder.
+    // its own, not the person's home, Desktop, Documents or Downloads, a
+    // folder of keys and sign-ins there (.ssh, .aws), the top of a drive
+    // or a system folder.
     if let Some(why) = tbx::program_folder_problem(&program) {
         return Err(format!("{why}. Nothing was added"));
     }

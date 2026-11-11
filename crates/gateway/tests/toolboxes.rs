@@ -383,7 +383,9 @@ fn audit_text(env: &Env) -> String {
 /// A program added from this computer (R-104): its whole folder becomes
 /// readable by its tools, so the command says which folder that is before
 /// it asks, and refuses a program that sits directly in the person's home
-/// folder, Desktop, Documents or Downloads, or in a system folder.
+/// folder, Desktop, Documents or Downloads, in one of the home folder's
+/// folders of keys and sign-ins (`.ssh`, `.aws`; R-105), or in a system
+/// folder.
 #[test]
 fn a_program_is_added_only_from_a_folder_of_its_own_and_the_person_is_told_what_it_reads() {
     let dir = tempfile::tempdir().unwrap();
@@ -427,6 +429,15 @@ fn a_program_is_added_only_from_a_folder_of_its_own_and_the_person_is_told_what_
         (home.join("Desktop"), "your Desktop folder"),
         (home.join("Documents"), "your Documents folder"),
         (home.join("Downloads"), "your Downloads folder"),
+        // The home folder's own folders of keys and sign-ins (R-105).
+        (
+            home.join(".ssh"),
+            "your .ssh folder, where keys and sign-ins are kept",
+        ),
+        (
+            home.join(".aws"),
+            "your .aws folder, where keys and sign-ins are kept",
+        ),
     ] {
         let (program, o) = add(&folder);
         assert!(!o.ok, "{} was added: {}", program.display(), o.stdout);
@@ -480,7 +491,7 @@ fn a_program_is_added_only_from_a_folder_of_its_own_and_the_person_is_told_what_
                 && l.contains("\"denied\"")
                 && l.contains("a folder of its own"))
             .count(),
-        5,
+        7,
         "{audit}"
     );
 

@@ -24,7 +24,7 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/hero-dark.png">
-    <img src="docs/images/hero-light.png" width="900" alt="The Columbus app, in three parts. On the left, a sidebar: New chat, Search, the places (Chats, Projects, Data, Documentation, Workflows, Tools, Activity), the recent chats and Settings. In the middle, the chat about which fatal crashes from 2020 to 2023 happened within 150 feet of IH 35 in central Austin. The answer reads: 36 of the 122 fatal crashes were within 150 feet of IH 35, taking 39 lives, with a table of crashes and deaths by year. On the right, a panel named Map and table: the fatal crashes of central Austin as points, with the IH 35 corridor and the 36 counted crashes highlighted, and a legend of the layers the assistant made, the active one marked Checks passed.">
+    <img src="docs/images/hero-light.png" width="900" alt="The Columbus app, in three parts. On the left, a sidebar: New chat, Search, the places (Chats, Projects, Data, Documentation, Workflows, Tools, Activity), the recent chats and Settings. In the middle, the chat about which fatal crashes from 2020 to 2023 happened within 150 feet of IH 35 in central Austin. The answer reads: 36 of the 122 fatal crashes were within 150 feet of IH 35, taking 39 lives, with a table of crashes and deaths by year. Under the message box, the chat's project, its AI service, its model and its thinking level. On the right, a panel named Map and table: the fatal crashes of central Austin as points, with the IH 35 corridor and the 36 counted crashes highlighted, and a legend of the layers the assistant made, the active one marked Checks passed.">
   </picture>
   <br><sub>A real question about public Austin crash data, answered in the app. Each layer is checked, and the map shows what was counted.</sub>
 </p>
@@ -38,6 +38,7 @@
 - **Keeps one boundary, in code.** Your connections and passwords stay with Columbus. It reads for the AI under each source's rules (Configure connections as read-only, read/write, etc.), and what is read lands as a copy on your computer. On copies the AI works freely: once you choose **Work freely on copies**, its scripts and tools run in a sandbox with no network, without asking each time. Columbus still asks before an export to a folder that isn't pre-approved, before any edit to a source, and before code that needs the network or must leave the sandbox. Every step is logged on your computer.
 - **Does real GIS work.** Queries, joins, buffers and overlays, raster analysis, your own Python and ArcGIS Pro's arcpy (experimental). Every result is checked (row counts, coordinate systems, valid shapes), and repeated jobs become scheduled workflows that trigger on a schedule set by you.
 - **Uses tools you install, not ones you build.** Add GeoLibre from the Tools page: about a thousand open-source terrain, hydrology, raster and vector tools. The AI finds the right one and runs it on copies, in the same sandbox. Any other command-line program can be added with a small description file.
+- **Works with the AI you choose.** The app's own chat uses Anthropic, OpenAI, xAI, Google Gemini or OpenRouter with your own key, a model on your own computer (Ollama, LM Studio), or another service you add by its address. Or keep the AI app you already use: Claude desktop, GitHub Copilot, Cursor and others can use Columbus too. The rules are the same whichever you use.
 
 ## See it work
 
@@ -62,11 +63,11 @@ Your AI app never touches your data. It asks Columbus for each step, and Columbu
 
 ## Get started
 
-**You need:** Windows 10 or 11, or a Mac with Apple Silicon and macOS 15 or later; Python 3.12 (the setup script installs the rest); Claude desktop or an Anthropic API key; ArcGIS Pro only if you want arcpy.
+**You need:** Windows 10 or 11, or a Mac with Apple Silicon and macOS 15 or later; Python 3.12 (the setup script installs the rest); an AI of your choice (a key for an AI service, a model on your own computer, or an AI app such as Claude desktop or GitHub Copilot); ArcGIS Pro only if you want arcpy.
 
 1. **Download** the [latest release](https://github.com/wiatrek-kevin-s/columbus/releases/latest): the Columbus app, the Claude desktop extension and the server folder.
 2. **Set up Columbus's Python** once, from the server folder: `sh engine/setup-engine.sh` on a Mac, `engine\setup-engine.ps1` on Windows. It installs the GIS tools Columbus uses.
-3. **Connect an AI.** Install the extension in Claude desktop, or add your Anthropic API key in the app under **Settings › Assistant**.
+3. **Connect an AI.** In the app, choose your AI service under **Settings › Assistant** and save its key (a model on your own computer, through Ollama, needs none). Or use an AI app you already have: install the extension in Claude desktop, or copy the entry for GitHub Copilot, Cursor and others from that same page.
 4. **Add your data and ask.** In the app, **Data › Add data** (a GeoPackage or a file geodatabase is the quickest start). Then ask, for example: *Check the parcels layer for invalid geometries and show me where they are.*
 5. **Choose how the AI works.** On the first-run screen or in **Settings**: **Work freely on copies** (recommended) or **Ask me before each script**. On your own computer you create Columbus's settings file once first; the guides show how.
 
@@ -98,8 +99,9 @@ More pages in the [app tour](docs/app-tour.md). Every picture is taken from the 
 - **Toolboxes:** install GeoLibre, about a thousand open-source tools, from the Tools page; or add any command-line program with a small description file.
 - **The map, both ways:** the AI can read what your map shows, and point it at a result.
 - **Projects with files, synced with GitHub or Gitea:** each project has a folder for scripts and notes, which the AI can write and run from. Link it to a repository and press **Sync**; no Git is needed on your PC.
+- **Any AI in the app's chat:** choose Anthropic, OpenAI, xAI, Google Gemini, OpenRouter or a model on your own computer (Ollama, LM Studio), or add another service by its address. The app also shows how to connect other AI apps to Columbus, with the entry to copy.
 
-Said plainly: the GeoLibre program itself was never run while this was built, so your first install is its first real run. Sync was tested against stand-in servers, never a real GitHub or Gitea. arcpy is still *experimental*, not yet tried on a real ArcGIS Pro computer; it has to run outside the sandbox, where code could reach your connections, so Columbus asks before every such run. And 0.15 may not be published yet: if the newest version on the [releases page](https://github.com/wiatrek-kevin-s/columbus/releases) is still 0.14, it has none of the above. What changes for people coming from 0.14 is in the [release notes](packaging/release-notes.md).
+Said plainly: the GeoLibre program itself was never run while this was built, so your first install is its first real run. Sync was tested against stand-in servers, never a real GitHub or Gitea. In the app's own chat, no AI service was contacted while this was built: every one was tested against stand-ins. OpenAI, xAI, Gemini and the other services new in 0.15 were built from each one's published description, so your first chat with one of them is its first meeting with the real thing. arcpy is still *experimental*, not yet tried on a real ArcGIS Pro computer; it has to run outside the sandbox, where code could reach your connections, so Columbus asks before every such run. And 0.15 may not be published yet: if the newest version on the [releases page](https://github.com/wiatrek-kevin-s/columbus/releases) is still 0.14, it has none of the above. What changes for people coming from 0.14 is in the [release notes](packaging/release-notes.md).
 
 ## Learn more
 

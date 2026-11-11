@@ -158,6 +158,19 @@ sync:
   hosts: []                   # empty: any server the person connects; listed: only these,
                               # e.g. [gitea.example.org]
 
+# The AI services the Columbus app's own chat may use. What the chat reads
+# is sent to the service it uses, so this names who may see those rows. A
+# workflow's AI review keeps to it too: it uses Anthropic, so it runs only
+# if api.anthropic.com is listed (or the list is empty).
+# Unknown keys here are refused. (It does not limit which other AI app a
+# person connects to Columbus: this file's other rules govern what any of
+# them is given.)
+assistant:
+  hosts: []                   # empty: any AI service the person sets up in the app;
+                              # listed: only services at these hosts, e.g.
+                              # [api.anthropic.com, "*.openai.azure.com", localhost]
+                              # (localhost: a model on the person's own computer)
+
 # Web map layers (imagery, WMS/WMTS, ArcGIS map, image and feature
 # services): display only, drawn through Columbus, never seen by the
 # assistant. Unknown keys here are refused.

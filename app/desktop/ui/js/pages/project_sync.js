@@ -7,8 +7,9 @@
 // check showed, and anything that changed after it waits. A file that may
 // hold data read from a source (the assistant wrote it in a chat that had
 // read one) is listed under Not syncing and goes only after the person
-// chose Send it anyway for it. Everything shown here that comes from a
-// file, a server or a colleague is shown as text.
+// chose Send it anyway for it, in the list or in the dialog that shows the
+// file. Everything shown here that comes from a file, a server or a
+// colleague is shown as text.
 import { h, el, invoke, button, showError, toast, askConfirm, openDialog, ago, plural } from "../core.js";
 
 const WHAT = { new: "new", changed: "changed", deleted: "deleted" };
@@ -93,17 +94,32 @@ function syncCard(project) {
     return h("div", { class: "stack" }, h("p", { class: "small" }, h("b", {}, `${title} (${rows.length}). `), about), h("ul", { class: "list compact", id: idName }, ...rows));
   }
 
+  // `labels.held` is given for a held file the list offers Send it anyway
+  // for: the dialog then offers the same choice, so the person can look
+  // and choose in one place. It is the list's own button's doing, and is
+  // offered once the text is on show.
   async function showPreview(path, labels) {
     const box = h("div", { class: "grid2", id: "sync-preview" }, h("p", { class: "muted small wide" }, "Looking…"));
     const close = h("button", { type: "button", class: "btn" }, "Close");
-    const d = openDialog(path, box, [h("span", { class: "spacer" }), close], `What changed in ${path}`);
+    const send = labels.held ? button("Send it anyway", "", null, { id: "sync-preview-send", "aria-label": `Send it anyway: ${path}`, disabled: true }) : null;
+    const d = openDialog(path, box, [h("span", { class: "spacer" }), close, send], `What changed in ${path}`);
     d.id = "sync-preview-dialog";
     close.addEventListener("click", () => d.close());
+    if (send) send.addEventListener("click", async (ev) => {
+      // (Not while something else is under way: the choice would not be taken.)
+      if (busy) return;
+      await sendAnyway(path, true)(ev);
+      d.close();
+    });
     try {
       const p = await labels.load();
       const side = (title, s, idName) => h("div", { class: "stack" }, h("p", { class: "small" }, h("b", {}, title)),
         s.text != null ? h("pre", { class: "box", id: idName, tabindex: "0" }, s.text) : h("p", { class: "muted small", id: idName }, `(${s.note || "nothing"})`));
       box.replaceChildren(side(labels.left, labels.swap ? p.mine : p.theirs, "sync-preview-left"), side(labels.right, labels.swap ? p.theirs : p.mine, "sync-preview-right"));
+      if (send) {
+        box.append(h("p", { class: "small wide", id: "sync-preview-held" }, `This file is held back: ${labels.held}. Send it anyway puts it with your next sync, as it is now. Nothing is sent until you press Sync.`));
+        send.disabled = false;
+      }
     } catch (e) {
       box.replaceChildren(h("p", { class: "error-text wide", role: "alert" }, String(e)));
     }
@@ -131,7 +147,7 @@ function syncCard(project) {
       h("p", { class: "small" }, h("b", {}, `Held back (${heldFiles.length}). `),
         "These may quote data your assistant read from one of your sources, so they stay here. Look at one and choose Send it anyway, and it goes with your next sync, as it is now."),
       h("ul", { class: "list compact", id: "sync-held" }, ...heldFiles.map((f) => fileRow(f.path, `${WHAT[f.what]} · ${f.why}`,
-        () => showPreview(f.path, { left: "On the server now", right: "Here (held back)", load: preview(f.path) }),
+        () => showPreview(f.path, { left: "On the server now", right: "Here (held back)", load: preview(f.path), held: f.choice ? f.why : null }),
         f.choice ? [button("Send it anyway", "sm", sendAnyway(f.path, true), { "aria-label": `Send it anyway: ${f.path}` })] : null)))) : null;
     const notSyncing = c.skipped.length + heldFiles.length;
     const skipped = notSyncing ? h("details", { id: "sync-skipped", class: "stack" }, h("summary", { class: "small" }, `Not syncing (${notSyncing})`),
@@ -445,7 +461,7 @@ function syncCard(project) {
       h("label", { class: "field", for: "sync-note" }, "What did you change? (optional)", note),
       status, result, changesBox, lookSlot, history(),
       h("p", { class: "small muted wrap-any", id: "sync-what" }, "What syncs is this project's files folder, ", h("code", {}, view.folder),
-        ", with the project's name and instructions (the file columbus-project.yaml in it, which Columbus writes). When you press Sync, every changed file in it is sent, except these, which stay here: data files (GeoPackages, shapefiles, GeoJSON, CSV, Excel, databases and other data formats), password, key and connection files, archives, programs and shortcuts, anything in a folder named outputs, files over 5 MB, and a few other things (links, a .git folder, a Python environment or its cache, files the system makes, names another system cannot hold). A file your assistant wrote in a chat that had read one of your sources may quote data, so it is held back until you choose Send it anyway. If a file looks like it holds a password or a token, nothing is sent. What will be sent and what is not syncing is listed here, with why, before anything goes.")].filter(Boolean));
+        ", with the project's name and instructions (the file columbus-project.yaml in it, which Columbus writes). When you press Sync, every changed file in it is sent, except these, which stay here: data files (GeoPackages, shapefiles, GeoJSON, CSV, Excel, databases and other data formats), password, key and connection files, map documents and layer files (they can hold a saved connection), archives, programs and shortcuts, anything in a folder named outputs, files over 5 MB, and a few other things (links, a .git folder, a Python environment or its cache, files the system makes, names another system cannot hold). Data is known by a file's name: a table saved as .txt or .json is not recognized as data. A file your assistant wrote in a chat that had read one of your sources may quote data, so it is held back until you choose Send it anyway. If a file looks like it holds a password or a token, nothing is sent. What will be sent and what is not syncing is listed here, with why, before anything goes.")].filter(Boolean));
     drawChanges();
   }
 

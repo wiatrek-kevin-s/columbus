@@ -8,8 +8,10 @@
 //!
 //! A finding names the file and the line, never the secret itself.
 //!
-//! What counts (D-20; widened by the final review of part 3, R-103), kept
-//! to what is very likely a secret, so that nobody is stopped for nothing:
+//! What counts (D-20; widened by the final review of part 3, R-103, and by
+//! its re-check and the review after it, R-105), kept to what is very
+//! likely a secret, so that
+//! nobody is stopped for nothing:
 //!
 //! * the linked server's own access token, anywhere;
 //! * a private key (`-----BEGIN … PRIVATE KEY-----`);
@@ -18,25 +20,84 @@
 //!   `sk-…` keys, GitLab (`glpat-…`), Slack (`xoxb-…` and its kin), an AWS
 //!   access key (`AKIA…`), a Google API key (`AIza…`);
 //! * a sign-in token of the JWT kind (`eyJ….….…`), which Gitea's and
-//!   Forgejo's sign-ins use;
+//!   Forgejo's sign-ins use, and a long mixed token after the word
+//!   `Bearer`;
 //! * 40 hex digits (a Gitea or Forgejo access token) on a line that also
 //!   says token, secret, password, key or authorization: 40 hex digits
-//!   alone are far more often a commit or a checksum;
-//! * a password written into the file: a quoted value given to a name
-//!   ending in `password`, `passwd` or `pwd`, or a long mixed value given
-//!   to one ending in `token`, `secret` or `key`; an unquoted value given
-//!   to a password name (`password: …` in a settings file, `PWD=…;` or
-//!   `Password=…;` in a connection string), when it is six characters or
-//!   more with a letter and a digit;
+//!   alone are far more often a commit or a checksum, and so are those
+//!   that the words right around them call a hash;
+//! * a password given to a name that holds one (a name ending in
+//!   `password`, `passwd`, `pwd` or `passphrase`, or in the word as German,
+//!   Spanish and French have it; `pass` or `pw` alone or as in `db_pass`,
+//!   and `pw` after a `_`), or a long mixed value given to a name ending
+//!   in `token`, `secret` or `key` (for `secret`, in quotes, also a
+//!   shorter one that reads as a password):
+//!   * in quotes, with `=`, `:`, `=>`, `:=` or R's `<-`, the name plain, in
+//!     quotes or in a subscript (`cfg["password"] = "…"`,
+//!     `os.environ["PGPASSWORD"] = "…"`), with a type between
+//!     (`password: str = "…"`), a letter before the quote (`b"…"`), and
+//!     as one of several names given their values at once
+//!     (`USER, PASSWORD = "gis", "…"`);
+//!   * without quotes, when it is six characters or more with a letter and
+//!     a digit (sixteen for a token, secret or key): `password: …` in a
+//!     settings file or a note (also as `**Password:** …` and
+//!     ``Password: `…` ``), `PWD=…;` or `Password=…;` in a connection
+//!     string, `export PGPASSWORD=…`, `token: …`, `api_key = …`;
+//!   * in a sentence (`the password is …`, ``the password `…` ``,
+//!     `Password for staging: …`), in a row of a table whose heading names
+//!     it, and between tags (`<password>…</password>`, `<entry
+//!     key="password">…</entry>`, `<property name="password"
+//!     value="…"/>`);
+//!   * in a database command (`PASSWORD '…'`, `IDENTIFIED BY …`) and on a
+//!     command line (`--password …`, `-P …` beside `-U …`, curl's
+//!     `-u user:password`, MySQL's and 7-Zip's `-pVALUE`, Windows' `net
+//!     use … /user:NAME …`);
+//! * a password handed to a well-known call by its place, with no name
+//!   beside it to say so ([`CALLS`]): `GIS(url, "user", "…")` and
+//!   `gis.users.create("user", "…", …)`; arcpy's `SignInToPortal`,
+//!   `CreateDatabaseConnection`, `CreateDatabaseConnectionString`,
+//!   `CreateArcSDEConnectionFile`, `CreateEnterpriseGeodatabase`,
+//!   `CreateDatabaseUser` and `ArcSDESQLExecute`; `HTTPBasicAuth("user",
+//!   "…")` and a pair given as the sign-in (`auth=("user", "…")`);
+//!   `cx_Oracle.connect("user", "…", dsn)`, `pymssql.connect(server,
+//!   "user", "…")`, the `connect` of MySQLdb and PyMySQL; `FTP(host,
+//!   "user", "…")` and `login("user", "…")`; PowerShell's
+//!   `ConvertTo-SecureString "…" -AsPlainText`; also when the call runs
+//!   over several lines, or stands inside another call;
+//! * a password or a key to fall back on: the default of a value read
+//!   from the environment (`os.environ.get("PGPASSWORD", "…")`,
+//!   `os.getenv("PGPASSWORD", default="…")`), a string after such a read
+//!   and `or`, `||`, `??` or `?:` (`process.env.DB_PASSWORD || "…"`), a
+//!   shell's `${PGPASSWORD:-…}`, a variable set for good on Windows
+//!   (`setx PGPASSWORD …`), and a string that a name which holds a
+//!   password falls back on (`password = args.password or "…"`);
+//! * Oracle's `user/password@database`, on a line that says it is one
+//!   (`sqlplus`, `sqlldr`, `expdp`, `impdp`, `exp`, `imp`, `CONNECT`, a
+//!   connect string), and a user and password packed after
+//!   `Authorization: Basic`;
 //! * an address with a password in it (`scheme://user:password@host`), or
 //!   with a long mixed `token=`, `key=`, `secret=` or `sig=` in it;
 //! * a line of a `.pgpass` file (`host:port:database:user:password`) and a
-//!   sign-in of a `.netrc` file (`machine … login … password …`).
+//!   sign-in of a `.netrc` file (`machine … login … password …`), also
+//!   after a comment sign or a list mark.
 //!
-//! Values that are plainly placeholders (`${…}`, `<…>`, `changeme`,
-//! `your-…`) do not count, and neither does a value that is code: a value
-//! read from the environment (`os.environ["PGPASSWORD"]`), a variable, a
-//! call. That is the way to keep a script's password out of the file.
+//! A stand-in does not count ([`placeholder`]): a value that is a template
+//! (`${…}`, `$NAME`, `%NAME%`, `{name}`, `<…>`), put together from parts
+//! (`"gis_%s"`), a mask (`********`), a password's hash, a pattern, or
+//! little more than a word that says so (`changeme`, `your-password`,
+//! `password123`). A sign or such a word in it does not make a value one:
+//! `Tr4ffic$Count26`, `100%Roads!` and `Password123!` are passwords.
+//! Neither does a value count that is a path, a column's type (`varchar2`)
+//! or code: a value read from the environment
+//! (`os.environ["PGPASSWORD"]`), a variable, a call. That is the way to
+//! keep a script's password out of the file. In a script, a bare word
+//! after `=` is a variable; in its comments and docstrings, as in a note,
+//! it is something the person typed.
+//!
+//! A file that is not text (it has a NUL byte near its start) is searched
+//! only for the shapes of keys and tokens. Text saved as UTF-16 with its
+//! mark in front, as Windows often saves a note, is read as the text it
+//! is.
 
 use serde::Serialize;
 
@@ -53,14 +114,236 @@ pub struct Finding {
     pub what: String,
 }
 
+/// How a language marks a person's own words in a line of code: its
+/// comment signs, and strings that run over several lines.
+#[derive(Debug, Clone, Copy, Default)]
+struct Lang {
+    /// `# …`
+    hash: bool,
+    /// `// …` and `/* … */`
+    slashes: bool,
+    /// `-- …`
+    dashes: bool,
+    /// `% …`
+    percent: bool,
+    /// `' …` (Visual Basic, whose strings are in double quotes only)
+    apostrophe: bool,
+    /// `"""…"""` and `'''…'''`, Python's docstrings
+    triple: bool,
+    /// `` `…` `` is a string
+    backtick: bool,
+}
+
 /// Languages where a bare word after `=` is a variable, never a value
 /// typed in: there, an unquoted password counts only inside a string (a
-/// connection string).
-const CODE: &[&str] = &[
-    "c", "cc", "cjs", "cpp", "cs", "go", "h", "hpp", "ipynb", "java", "jl", "js", "jsx", "kt",
-    "lua", "m", "mjs", "php", "pl", "py", "pyt", "pyw", "r", "rb", "rs", "scala", "swift", "ts",
-    "tsx", "vb",
-];
+/// connection string) or among the person's own words (a comment, a
+/// docstring). `None` for every other file, which is all the person's own
+/// words: a note, a settings file, a shell script.
+fn lang(ext: &str) -> Option<Lang> {
+    let none = Lang::default();
+    Some(match ext {
+        "ipynb" | "py" | "pyt" | "pyw" => Lang {
+            hash: true,
+            triple: true,
+            ..none
+        },
+        "jl" | "pl" | "r" | "rb" => Lang { hash: true, ..none },
+        "php" => Lang {
+            hash: true,
+            slashes: true,
+            ..none
+        },
+        "c" | "cc" | "cpp" | "cs" | "h" | "hpp" | "java" | "kt" | "rs" | "scala" | "swift" => {
+            Lang {
+                slashes: true,
+                ..none
+            }
+        }
+        "cjs" | "go" | "js" | "jsx" | "mjs" | "ts" | "tsx" => Lang {
+            slashes: true,
+            backtick: true,
+            ..none
+        },
+        "lua" => Lang {
+            dashes: true,
+            ..none
+        },
+        "m" => Lang {
+            percent: true,
+            slashes: true,
+            ..none
+        },
+        "vb" => Lang {
+            apostrophe: true,
+            ..none
+        },
+        _ => return None,
+    })
+}
+
+/// What the lines before left open in a file of code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum Open {
+    #[default]
+    Nothing,
+    /// A string over several lines (a docstring), until this sign comes
+    /// again.
+    Text(&'static str),
+    /// A `/* … */` comment.
+    Comment,
+}
+
+/// Where on a line a person's own words are. In a note or a settings file
+/// that is all of it. In a line of code it is the comments and the
+/// docstrings: elsewhere there, a bare word after `=` is a variable.
+#[derive(Debug)]
+enum Prose {
+    All,
+    /// The parts of a line of code that are comments or docstrings, as
+    /// byte ranges.
+    Parts(Vec<(usize, usize)>),
+}
+
+impl Prose {
+    /// Whether the byte at `i` is among the person's own words.
+    fn at(&self, i: usize) -> bool {
+        match self {
+            Prose::All => true,
+            Prose::Parts(parts) => {
+                // The parts stand in order and apart: the one that could
+                // hold `i` is the last that starts at or before it.
+                let after = parts.partition_point(|(from, _)| *from <= i);
+                after > 0 && i < parts[after - 1].1
+            }
+        }
+    }
+}
+
+/// Where `sign` next is in `bytes` at or after `from`.
+fn find_from(bytes: &[u8], from: usize, sign: &[u8]) -> Option<usize> {
+    bytes
+        .get(from..)?
+        .windows(sign.len())
+        .position(|w| w == sign)
+        .map(|i| from + i)
+}
+
+/// The parts of a line of code that are a person's own words: its
+/// comments, and what lies inside a string that runs over several lines.
+/// `open` is what the lines before left open, and is brought up to date.
+/// A sign inside an ordinary string is not a comment. Where a line cannot
+/// be made out (a quote that never closes), less is taken for words, never
+/// more.
+fn words_in_code(line: &str, lang: Lang, open: &mut Open) -> Vec<(usize, usize)> {
+    let b = line.as_bytes();
+    let mut parts = Vec::new();
+    let mut i = 0;
+    let ends = match *open {
+        Open::Nothing => None,
+        Open::Text(sign) => Some(sign),
+        Open::Comment => Some("*/"),
+    };
+    if let Some(sign) = ends {
+        match find_from(b, 0, sign.as_bytes()) {
+            Some(j) => {
+                parts.push((0, j));
+                i = j + sign.len();
+                *open = Open::Nothing;
+            }
+            None => {
+                parts.push((0, b.len()));
+                return parts;
+            }
+        }
+    }
+    while i < b.len() {
+        let c = b[i];
+        let rest = &b[i..];
+        if lang.triple && (rest.starts_with(b"\"\"\"") || rest.starts_with(b"'''")) {
+            let sign: &'static str = if c == b'"' { "\"\"\"" } else { "'''" };
+            match find_from(b, i + 3, sign.as_bytes()) {
+                Some(j) => {
+                    parts.push((i + 3, j));
+                    i = j + 3;
+                }
+                None => {
+                    parts.push((i + 3, b.len()));
+                    *open = Open::Text(sign);
+                    break;
+                }
+            }
+        } else if lang.apostrophe && c == b'\'' {
+            parts.push((i + 1, b.len()));
+            break;
+        } else if c == b'"' || c == b'\'' || (lang.backtick && c == b'`') {
+            // An ordinary string: to its end, or the line's.
+            i += 1;
+            while i < b.len() && b[i] != c {
+                if b[i] == b'\\' {
+                    i += 1;
+                }
+                i += 1;
+            }
+            i += 1;
+        } else if (lang.hash && c == b'#') || (lang.percent && c == b'%') {
+            parts.push((i + 1, b.len()));
+            break;
+        } else if (lang.slashes && rest.starts_with(b"//"))
+            || (lang.dashes && rest.starts_with(b"--"))
+        {
+            parts.push((i + 2, b.len()));
+            break;
+        } else if lang.slashes && rest.starts_with(b"/*") {
+            match find_from(b, i + 2, b"*/") {
+                Some(j) => {
+                    parts.push((i + 2, j));
+                    i = j + 2;
+                }
+                None => {
+                    parts.push((i + 2, b.len()));
+                    *open = Open::Comment;
+                    break;
+                }
+            }
+        } else {
+            i += 1;
+        }
+    }
+    parts
+}
+
+/// Where a line of a notebook (`.ipynb`) is: in the code of a code cell,
+/// or anywhere else (a text cell, what a cell printed, the file's own
+/// structure), which is read as the person's own words.
+#[derive(Debug, Default)]
+struct Notebook {
+    code_cell: bool,
+    in_source: bool,
+}
+
+impl Notebook {
+    /// Take in the next line of the file as it is saved, and say whether
+    /// it is a line of a code cell's code.
+    fn code(&mut self, raw: &str) -> bool {
+        let t = raw.trim();
+        if let Some(kind) = t.strip_prefix("\"cell_type\"") {
+            self.code_cell = kind.contains("\"code\"");
+            self.in_source = false;
+            return false;
+        }
+        if t.starts_with("\"source\"") {
+            // `"source": [` opens the cell's lines; anything else has them
+            // all on this line.
+            self.in_source = t.ends_with('[');
+            return false;
+        }
+        if self.in_source && t.starts_with(']') {
+            self.in_source = false;
+            return false;
+        }
+        self.in_source && self.code_cell
+    }
+}
 
 /// Whether `bytes` read as text: no NUL byte near the start (Git's own
 /// test).
@@ -68,33 +351,87 @@ pub fn is_text(bytes: &[u8]) -> bool {
     !bytes[..bytes.len().min(8000)].contains(&0)
 }
 
+/// Text saved as UTF-16 with its mark in front, as Windows often saves a
+/// note (and as PowerShell's `>` writes a file): read as the text it is.
+/// `None` for anything else, and for bytes that only start like that mark.
+fn utf16(bytes: &[u8]) -> Option<String> {
+    // Two bytes to a unit; an odd byte at the end is left out.
+    let units = |pair: fn([u8; 2]) -> u16| -> Vec<u16> {
+        bytes[2..]
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|c| pair(*c))
+            .collect()
+    };
+    let text = match bytes {
+        [0xFF, 0xFE, ..] => String::from_utf16_lossy(&units(u16::from_le_bytes)),
+        [0xFE, 0xFF, ..] => String::from_utf16_lossy(&units(u16::from_be_bytes)),
+        _ => return None,
+    };
+    (!text.chars().take(8000).any(|c| c == '\0')).then_some(text)
+}
+
 /// Look through one file. `own` are strings that must never leave (the
 /// linked server's token).
 pub fn find(path: &str, bytes: &[u8], own: &[String]) -> Vec<Finding> {
-    let text = String::from_utf8_lossy(bytes);
-    let is_text = is_text(bytes);
+    let (text, is_text) = match utf16(bytes) {
+        Some(text) => (std::borrow::Cow::Owned(text), true),
+        None => (String::from_utf8_lossy(bytes), is_text(bytes)),
+    };
+    // The mark some programs put in front of UTF-8 text is not part of
+    // the first line.
+    let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
     let ext = crate::file_kinds::extension(path.rsplit('/').next().unwrap_or(path));
-    let code = CODE.contains(&ext.as_str());
-    let notebook = ext == "ipynb";
+    let lang = lang(&ext);
+    let is_notebook = ext == "ipynb";
     let mut out = Vec::new();
     // The line a `.netrc` entry began on (`machine <host>`), when its
     // login and password follow on the next lines.
     let mut machine_at: Option<usize> = None;
+    let mut open = Open::Nothing;
+    let mut notebook = Notebook::default();
+    let mut table = Table::default();
+    let mut calls = Calls::default();
     for (i, line) in text.split('\n').enumerate() {
         if out.len() >= MAX_PER_FILE {
             break;
         }
-        // A notebook keeps each line of code inside a string of its own.
+        // A notebook keeps each line of a cell inside a string of its own.
         let unwrapped;
-        let line = if notebook {
+        let (line, code) = if is_notebook {
+            let code = notebook.code(line);
+            if !code {
+                // A docstring does not run on from one cell into the next.
+                open = Open::Nothing;
+            }
             unwrapped = notebook_line(line);
-            unwrapped.as_str()
+            (unwrapped.as_str(), code)
         } else {
-            line
+            (line, true)
         };
-        let mut what = in_line(line, own, is_text, code);
+        let prose = match lang {
+            Some(lang) if code => Prose::Parts(words_in_code(line, lang, &mut open)),
+            _ => Prose::All,
+        };
+        // Every line is shown to the table, so that it knows its rows, and
+        // to the calls, which may run over several lines.
+        let in_a_table = is_text && table.row(line);
+        let in_a_call = if is_text {
+            calls.line(line, matches!(prose, Prose::Parts(_)))
+        } else {
+            None
+        };
+        let plain = undecorated(line);
+        let mut what = in_line(line, plain, own, is_text, &prose);
+        if what.is_none() && in_a_table {
+            what = Some(IN_A_TABLE);
+        }
+        if what.is_none() {
+            what = in_a_call;
+        }
         if what.is_none() && is_text {
-            let words: Vec<&str> = line.split_whitespace().collect();
+            let words: Vec<&str> = plain.split_whitespace().collect();
             if netrc_machine(&words) {
                 machine_at = Some(i);
             } else if machine_at.is_some_and(|at| i - at <= 3) && netrc_fields(&words) {
@@ -129,8 +466,27 @@ fn notebook_line(line: &str) -> String {
 }
 
 const NETRC: &str = "a sign-in of a password file (.netrc: machine, login, password)";
+const QUOTED: &str = "a password or key written into the file (a quoted value)";
+const PASSWORD: &str = "a password written into the file";
+const KEY: &str = "a token, key or secret written into the file";
+const BETWEEN_TAGS: &str = "a password or key written into the file (between tags)";
+const IN_A_TABLE: &str = "a password or key written into the file (in a table)";
+const IN_A_COMMAND: &str = "a password written into the file (in a database command)";
+const ON_A_COMMAND_LINE: &str = "a password written into the file (on a command line)";
+const IN_A_CALL: &str = "a password written into the file (handed to a call that signs in)";
+const ORACLE: &str = "a password written into the file (an Oracle sign-in, user/password@database)";
+const BASIC: &str = "a user and password written into the file (packed after Authorization: Basic)";
 
-fn in_line(line: &str, own: &[String], is_text: bool, code: bool) -> Option<&'static str> {
+/// What one line looks like it holds, if anything. `plain` is the line
+/// without what stands in front of it and around it ([`undecorated`]);
+/// `prose` says where on it the person's own words are.
+fn in_line(
+    line: &str,
+    plain: &str,
+    own: &[String],
+    is_text: bool,
+    prose: &Prose,
+) -> Option<&'static str> {
     if own
         .iter()
         .any(|t| t.len() >= 8 && line.contains(t.as_str()))
@@ -153,11 +509,18 @@ fn in_line(line: &str, own: &[String], is_text: bool, code: bool) -> Option<&'st
         return Some("an access token (40 hex digits beside a word like token or key)");
     }
     if is_text {
-        if password_assignment(line) {
-            return Some("a password or key written into the file (a quoted value)");
+        let named = given(line, true);
+        if password_assignment(line, &named)
+            || several_at_once(line)
+            || falls_back_on(line, &named)
+            || environment_read(line)
+        {
+            return Some(QUOTED);
         }
-        if unquoted_password(line, code) {
-            return Some("a password written into the file");
+        // Names given a value with no quotes around the name.
+        let bare = given(line, false);
+        if unquoted_password(line, &bare, prose) {
+            return Some(PASSWORD);
         }
         if url_with_password(line) {
             return Some("an address with a password in it");
@@ -165,16 +528,71 @@ fn in_line(line: &str, own: &[String], is_text: bool, code: bool) -> Option<&'st
         if url_with_secret(line) {
             return Some("an address with a token, key or secret in it");
         }
-        if pgpass_line(line) {
+        if unquoted_key(line, &bare, prose) {
+            return Some(KEY);
+        }
+        if said_in_words(line, prose) {
+            return Some(PASSWORD);
+        }
+        if between_tags(line) {
+            return Some(BETWEEN_TAGS);
+        }
+        if let Some(what) = after_a_space(line) {
+            return Some(what);
+        }
+        if let Some(what) = shell_default(line).or_else(|| set_for_good(line)) {
+            return Some(what);
+        }
+        if made_secure(line) {
+            return Some(IN_A_CALL);
+        }
+        if identified_by(line) {
+            return Some(IN_A_COMMAND);
+        }
+        if on_a_command_line(line) || net_use(line) {
+            return Some(ON_A_COMMAND_LINE);
+        }
+        if bearer(line) {
+            return Some("an access token (after the word Bearer)");
+        }
+        if basic_sign_in(line) {
+            return Some(BASIC);
+        }
+        if oracle_sign_in(line) {
+            return Some(ORACLE);
+        }
+        if pgpass_line(plain) {
             return Some(
                 "a line of a password file (.pgpass: host, port, database, user, password)",
             );
         }
-        if netrc_line(&line.split_whitespace().collect::<Vec<_>>()) {
+        if netrc_line(&plain.split_whitespace().collect::<Vec<_>>()) {
             return Some(NETRC);
         }
     }
     None
+}
+
+/// A line without what a script or a note puts in front of it and around
+/// it: a comment sign (`#`, `//`, `--`, `;`, `%`, `*`), a list or quote
+/// mark (`-`, `*`, `+`, `>`), and the marks that set it as code
+/// (`` ` ``). A list mark needs a space after it: `*:*:*:gis:…` is a
+/// `.pgpass` line that starts with `*`.
+fn undecorated(line: &str) -> &str {
+    let mut t = line.trim();
+    // A few signs, one inside the other, at most: `# - `…``.
+    for _ in 0..4 {
+        let before = t;
+        for sign in ["#", "//", "/*", "--", ";", "%", ">", "- ", "* ", "+ "] {
+            t = t.strip_prefix(sign).unwrap_or(t).trim_start();
+        }
+        t = t.strip_suffix("*/").unwrap_or(t).trim_end();
+        t = t.trim_matches('`').trim();
+        if t == before {
+            break;
+        }
+    }
+    t
 }
 
 fn private_key(line: &str) -> bool {
@@ -202,9 +620,10 @@ fn prefixed(line: &str, prefix: &str, min: usize, body: fn(u8) -> bool) -> bool 
     while let Some(i) = line[from..].find(prefix) {
         let start = from + i;
         let after = start + prefix.len();
+        // (Only where a word starts is what follows read: the runs read
+        // then stand apart, so the line is read once.)
         let at_word_start = start == 0 || !word_char(bytes[start - 1]);
-        let run = bytes[after..].iter().take_while(|b| body(**b)).count();
-        if at_word_start && run >= min {
+        if at_word_start && bytes[after..].iter().take_while(|b| body(**b)).count() >= min {
             return true;
         }
         from = after;
@@ -219,21 +638,48 @@ fn github_token(line: &str) -> bool {
         || prefixed(line, "github_pat_", 40, word_char)
 }
 
+/// A run of characters after a token's well-known start: how long it is,
+/// and whether a letter and a digit are in it.
+#[derive(Debug, Clone, Copy)]
+struct Run {
+    len: usize,
+    mixed: bool,
+}
+
 /// The run of characters `body` accepts after each `prefix` that starts a
-/// word in `line`.
+/// word in `line`. A prefix inside the run of the one before it shares
+/// that run's end, so the line is read once however many there are.
 fn runs_after<'a>(
     line: &'a str,
     prefix: &'a str,
     body: fn(u8) -> bool,
-) -> impl Iterator<Item = &'a str> + 'a {
+) -> impl Iterator<Item = Run> + 'a {
     let bytes = line.as_bytes();
+    // The run last read: from where to where, and where its last letter
+    // and its last digit stand.
+    let (mut from, mut end) = (0, 0);
+    let (mut letter, mut digit) = (None, None);
     line.match_indices(prefix).filter_map(move |(start, _)| {
         if start > 0 && word_char(bytes[start - 1]) {
             return None;
         }
         let after = start + prefix.len();
-        let run = bytes[after..].iter().take_while(|b| body(**b)).count();
-        Some(&line[after..after + run])
+        if !(from..=end).contains(&after) {
+            (from, end, letter, digit) = (after, after, None, None);
+            while end < bytes.len() && body(bytes[end]) {
+                if bytes[end].is_ascii_alphabetic() {
+                    letter = Some(end);
+                } else if bytes[end].is_ascii_digit() {
+                    digit = Some(end);
+                }
+                end += 1;
+            }
+        }
+        let within = |at: Option<usize>| at.is_some_and(|at| at >= after);
+        Some(Run {
+            len: end - after,
+            mixed: within(letter) && within(digit),
+        })
     })
 }
 
@@ -244,17 +690,17 @@ fn has_letter_and_digit(v: &str) -> bool {
 /// A token by its well-known start (besides GitHub's, above).
 fn known_token(line: &str) -> Option<&'static str> {
     let dashed = |b: u8| word_char(b) || b == b'-';
-    if runs_after(line, "sk-ant-", dashed).any(|r| r.len() >= 20 && has_letter_and_digit(r)) {
+    if runs_after(line, "sk-ant-", dashed).any(|r| r.len >= 20 && r.mixed) {
         return Some("an Anthropic API key");
     }
-    if runs_after(line, "sk-", dashed).any(|r| r.len() >= 20 && has_letter_and_digit(r)) {
+    if runs_after(line, "sk-", dashed).any(|r| r.len >= 20 && r.mixed) {
         return Some("an API key (it starts with sk-)");
     }
-    if runs_after(line, "glpat-", dashed).any(|r| r.len() >= 20) {
+    if runs_after(line, "glpat-", dashed).any(|r| r.len >= 20) {
         return Some("a GitLab token");
     }
     for kind in ["xoxa-", "xoxb-", "xoxp-", "xoxr-", "xoxs-"] {
-        if runs_after(line, kind, dashed).any(|r| r.len() >= 10 && has_letter_and_digit(r)) {
+        if runs_after(line, kind, dashed).any(|r| r.len >= 10 && r.mixed) {
             return Some("a Slack token");
         }
     }
@@ -264,16 +710,19 @@ fn known_token(line: &str) -> Option<&'static str> {
     for kind in ["AKIA", "ASIA"] {
         let found = line.match_indices(kind).any(|(start, _)| {
             let bytes = line.as_bytes();
+            // (Only where a word starts is what follows read.)
+            if start > 0 && word_char(bytes[start - 1]) {
+                return false;
+            }
             let after = start + kind.len();
             let run = bytes[after..].iter().take_while(|b| capitals(**b)).count();
-            let ends = bytes.get(after + run).is_none_or(|b| !word_char(*b));
-            (start == 0 || !word_char(bytes[start - 1])) && run == 16 && ends
+            run == 16 && bytes.get(after + run).is_none_or(|b| !word_char(*b))
         });
         if found {
             return Some("an AWS access key");
         }
     }
-    if runs_after(line, "AIza", dashed).any(|r| r.len() == 35) {
+    if runs_after(line, "AIza", dashed).any(|r| r.len == 35) {
         return Some("a Google API key");
     }
     None
@@ -282,6 +731,19 @@ fn known_token(line: &str) -> Option<&'static str> {
 fn jwt(line: &str) -> bool {
     let b64 = |b: u8| b.is_ascii_alphanumeric() || b == b'-' || b == b'_';
     let bytes = line.as_bytes();
+    // The runs last read (a token has three): an `eyJ` inside one of them
+    // shares its end, so the line is read once however many there are.
+    let mut read = [(1, 0); 4];
+    let mut oldest = 0;
+    let mut run_at = |at: usize| -> usize {
+        if let Some((_, end)) = read.iter().find(|(from, end)| (*from..=*end).contains(&at)) {
+            return end - at;
+        }
+        let run = bytes[at..].iter().take_while(|b| b64(**b)).count();
+        read[oldest] = (at, at + run);
+        oldest = (oldest + 1) % read.len();
+        run
+    };
     let mut from = 0;
     while let Some(i) = line[from..].find("eyJ") {
         let start = from + i;
@@ -292,7 +754,7 @@ fn jwt(line: &str) -> bool {
         let mut at = start;
         let mut parts = 0;
         loop {
-            let run = bytes[at..].iter().take_while(|b| b64(**b)).count();
+            let run = run_at(at);
             if run < 10 {
                 break;
             }
@@ -325,6 +787,20 @@ const SECRET_WORDS: &[&str] = &[
 ];
 
 fn hex40_beside_a_secret_word(line: &str) -> bool {
+    // What is said near a run of digits, in small letters: the name it is
+    // given to and the words around it (some eighty characters before,
+    // forty after).
+    let said_near = |from: usize, to: usize| {
+        let mut start = from.saturating_sub(80);
+        while !line.is_char_boundary(start) {
+            start -= 1;
+        }
+        let mut end = (to + 40).min(line.len());
+        while !line.is_char_boundary(end) {
+            end += 1;
+        }
+        line[start..end].to_ascii_lowercase()
+    };
     let bytes = line.as_bytes();
     let mut i = 0;
     let mut found = false;
@@ -339,7 +815,17 @@ fn hex40_beside_a_secret_word(line: &str) -> bool {
                 .is_none_or(|b| !b.is_ascii_alphanumeric());
             // All digits is a number, not a token.
             let mixed = bytes[i..i + run].iter().any(|b| b.is_ascii_alphabetic());
-            if run == 40 && ends && mixed {
+            // What says beside it that it is a hash is believed:
+            // `token_hash = "…"`, `# sha1 of the token table: …`.
+            let a_hash = || {
+                let near = said_near(i, i + run);
+                [
+                    "hash", "sha1", "sha-1", "sha256", "sha-256", "sha512", "md5", "checksum",
+                ]
+                .iter()
+                .any(|w| near.contains(w))
+            };
+            if run == 40 && ends && mixed && !a_hash() {
                 found = true;
                 break;
             }
@@ -355,101 +841,758 @@ fn hex40_beside_a_secret_word(line: &str) -> bool {
     SECRET_WORDS.iter().any(|w| lower.contains(w))
 }
 
-/// A value nobody would use: a template, a stand-in, one letter repeated.
-fn placeholder(v: &str) -> bool {
-    let l = v.to_lowercase();
-    v.contains(['$', '{', '}', '<', '>', '%', '*'])
-        || [
-            "your",
-            "example",
-            "placeholder",
-            "changeme",
-            "change_me",
-            "change-me",
-            "redacted",
-            "dummy",
-            "xxxx",
-            "todo",
-            "secret",
-            "password",
-            "passwd",
-        ]
-        .iter()
-        .any(|w| l.contains(w))
-        || l.chars()
-            .next()
-            .is_some_and(|first| l.chars().all(|c| c == first))
+/// Words that say a value is a stand-in for the real one, in small
+/// letters. (The last four are the word password in German, Spanish and
+/// French: a page's labels in those languages give it as a value.)
+const STAND_IN_WORDS: &[&str] = &[
+    "your",
+    "example",
+    "placeholder",
+    "changeme",
+    "change_me",
+    "change-me",
+    "redacted",
+    "dummy",
+    "xxxx",
+    "todo",
+    "secret",
+    "password",
+    "passwd",
+    "passwort",
+    "kennwort",
+    "contraseña",
+    "contrasena",
+    "motdepasse",
+];
+
+/// Whether `v` holds a word that says it is a stand-in.
+fn says_it_stands_in(v: &str) -> bool {
+    let lower = v.to_lowercase();
+    STAND_IN_WORDS.iter().any(|word| lower.contains(word))
 }
 
-/// `name = "value"` (or `:`, or `=>`), with `name` one that holds a
-/// password or a key.
-fn password_assignment(line: &str) -> bool {
-    let bytes = line.as_bytes();
-    for (i, b) in bytes.iter().enumerate() {
-        if *b != b'=' && *b != b':' {
+/// Whether a value that holds such a word reads as a real password all
+/// the same: it has a digit, and with it either small letters and
+/// capitals, or a sign that is not `-`, `_` or `.` (`Password123!`,
+/// `GISpassword2026`, `todo-Roads26`; not `password123`, `PASSWORD_123`,
+/// `your-password-1`).
+fn reads_as_real(v: &str) -> bool {
+    let digit = v.chars().any(|c| c.is_ascii_digit());
+    let both_cases = v.chars().any(char::is_lowercase) && v.chars().any(char::is_uppercase);
+    let sign = v
+        .chars()
+        .any(|c| !c.is_alphanumeric() && !matches!(c, '-' | '_' | '.'));
+    digit && (both_cases || sign)
+}
+
+/// A value that hides another: one character repeated (`********`,
+/// `xxxxxxxx`), three stars or more in a row (`Wint***`), or no letter but
+/// `x` (`XXXX-XXXX-1234`).
+fn a_mask(v: &str) -> bool {
+    let mut chars = v.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    let letters = || v.chars().filter(|c| c.is_alphabetic());
+    chars.all(|c| c == first)
+        || v.contains("***")
+        || v.contains("•••")
+        || (letters().count() >= 4 && letters().all(|c| c == 'x' || c == 'X'))
+}
+
+/// Where the part of a template that starts at `at` ends, and whether it
+/// is one beyond doubt. A part is what a program puts a value in for:
+///
+/// * beyond doubt: `${…}`, `$(…)`, `#{…}`, `{{…}}`, `<%…%>` (also left
+///   open, as when the value was cut at a blank), `%NAME%`, `%(name)s`,
+///   `%s` and its kin before something that is no letter or digit, and a
+///   field in braces (`{}`, `{0}`, `{name}`, `{name!r}`, `{0:>8}`);
+/// * perhaps: `$NAME` (also `$env:NAME`, `$1`, `$@`), which is how a
+///   variable is written and also how a password with a `$` in it reads
+///   (`Tr4ffic$Count26`), a batch file's `%1` and `%~dp0`, and `<…>`.
+fn template_part(b: &[u8], at: usize) -> Option<(usize, bool)> {
+    // How long the name is that starts at `from`: a letter or `_`, then
+    // letters, digits and `_`.
+    let name = |from: usize| match b.get(from) {
+        Some(c) if c.is_ascii_alphabetic() || *c == b'_' => {
+            1 + b[from + 1..].iter().take_while(|c| word_char(**c)).count()
+        }
+        _ => 0,
+    };
+    // Where what opened closes, counting the same brackets inside it: the
+    // value's end when it does not.
+    let closes = |from: usize, open: u8, close: u8| {
+        let mut depth = 1;
+        for (k, c) in b[from..].iter().enumerate() {
+            if *c == open {
+                depth += 1;
+            } else if *c == close {
+                depth -= 1;
+                if depth == 0 {
+                    return from + k + 1;
+                }
+            }
+        }
+        b.len()
+    };
+    let ends_with = |from: usize, sign: &[u8]| {
+        b[from..]
+            .windows(sign.len())
+            .position(|w| w == sign)
+            .map_or(b.len(), |k| from + k + sign.len())
+    };
+    let plain_after = |at: usize| b.get(at).is_none_or(|c| !c.is_ascii_alphanumeric());
+    match &b[at..] {
+        [b'$', b'{', ..] | [b'#', b'{', ..] => Some((closes(at + 2, b'{', b'}'), true)),
+        [b'$', b'(', ..] => Some((closes(at + 2, b'(', b')'), true)),
+        [b'{', b'{', ..] => Some((ends_with(at + 2, b"}}"), true)),
+        [b'<', b'%', ..] => Some((ends_with(at + 2, b"%>"), true)),
+        [b'$', ..] => {
+            let n = name(at + 1);
+            let digits = b[at + 1..]
+                .iter()
+                .take_while(|c| c.is_ascii_digit())
+                .count();
+            if n > 0 {
+                // `$env:PGPASSWORD`, `$script:pw`.
+                let scoped = match b.get(at + 1 + n) {
+                    Some(b':') => name(at + 2 + n),
+                    _ => 0,
+                };
+                Some((at + 1 + n + if scoped > 0 { 1 + scoped } else { 0 }, false))
+            } else if digits > 0 {
+                Some((at + 1 + digits, false))
+            } else if matches!(b.get(at + 1), Some(b'@' | b'*' | b'#' | b'?' | b'$' | b'!')) {
+                Some((at + 2, false))
+            } else {
+                None
+            }
+        }
+        [b'%', b'(', ..] => {
+            let n = name(at + 2);
+            let closed = n > 0 && b.get(at + 2 + n) == Some(&b')');
+            (closed && b.get(at + 3 + n).is_some_and(u8::is_ascii_alphabetic))
+                .then_some((at + 4 + n, true))
+        }
+        [b'%', ..] => {
+            let n = name(at + 1);
+            if n > 0 {
+                // `%NAME%`, `%NAME:~0,3%`.
+                let mut end = at + 1 + n;
+                if b.get(end) == Some(&b':') {
+                    end += b[end..].iter().take_while(|c| **c != b'%').count();
+                }
+                if b.get(end) == Some(&b'%') {
+                    return Some((end + 1, true));
+                }
+            }
+            match b.get(at + 1) {
+                Some(c) if b"sdirfxucgeo".contains(c) && plain_after(at + 2) => {
+                    Some((at + 2, true))
+                }
+                Some(c) if c.is_ascii_digit() && plain_after(at + 2) => Some((at + 2, false)),
+                Some(b'*') => Some((at + 2, false)),
+                Some(b'~') => {
+                    let n = b[at + 2..].iter().take_while(|c| word_char(**c)).count();
+                    Some((at + 2 + n, false))
+                }
+                _ => None,
+            }
+        }
+        [b'{', ..] => {
+            let inside = b[at + 1..]
+                .iter()
+                .take_while(|c| {
+                    !c.is_ascii_whitespace() && !matches!(**c, b'{' | b'}' | b'"' | b'\'')
+                })
+                .count();
+            if b.get(at + 1 + inside) != Some(&b'}') {
+                return None;
+            }
+            let field = &b[at + 1..at + 1 + inside];
+            // (`{262E99C9-6160-4871-ACEC-4E61736B6F21}`: Windows writes
+            // the name of a thing so.)
+            let guid = field.len() == 36
+                && field.iter().enumerate().all(|(k, c)| match k {
+                    8 | 13 | 18 | 23 => *c == b'-',
+                    _ => c.is_ascii_hexdigit(),
+                });
+            if guid {
+                return Some((at + 2 + inside, true));
+            }
+            let digits = field.iter().take_while(|c| c.is_ascii_digit()).count();
+            // Nothing, a place (`{0}`), or a name; then how to show it.
+            let named = match field.first() {
+                None | Some(b':' | b'!') => true,
+                Some(c) if c.is_ascii_alphabetic() || *c == b'_' => true,
+                Some(_) => {
+                    (1..=2).contains(&digits)
+                        && field.get(digits).is_none_or(|c| matches!(c, b':' | b'!'))
+                }
+            };
+            named.then_some((at + 2 + inside, true))
+        }
+        [b'<', ..] => {
+            let inside = b[at + 1..]
+                .iter()
+                .take_while(|c| !matches!(**c, b'<' | b'>'))
+                .count();
+            (inside > 0 && b.get(at + 1 + inside) == Some(&b'>'))
+                .then_some((at + 2 + inside, false))
+        }
+        _ => None,
+    }
+}
+
+/// A value that is a template, not a password or a key: it is built only
+/// of parts a program puts a value in for and of what stands between them
+/// (`${DB_PASSWORD}`, `$USER:$PASS`, `{user}:{pw}`, `<your password>`), or
+/// it holds such a part beyond doubt among other text, which makes it a
+/// value put together from parts (`f"gis-{suffix}"`, `"gis_%s"`). A sign
+/// by itself does not make one: `Tr4ffic$Count26`, `100%Roads!`,
+/// `Roads{2026}` and `Roads<3Maps` are passwords.
+fn a_template(v: &str) -> bool {
+    let b = v.as_bytes();
+    let (mut parts, mut beyond_doubt, mut other_text) = (0, false, false);
+    let mut i = 0;
+    while i < b.len() {
+        if let Some((end, sure)) = template_part(b, i) {
+            parts += 1;
+            beyond_doubt |= sure;
+            i = end.max(i + 1);
             continue;
         }
-        // The name before it: letters, digits, _ and -, perhaps in quotes.
+        other_text |= b[i].is_ascii_alphanumeric() || !b[i].is_ascii();
+        i += 1;
+    }
+    beyond_doubt || (parts > 0 && !other_text)
+}
+
+/// A pattern that text is matched against, not a value: it holds a class
+/// of characters with a range in it (`[A-Za-z0-9_]`), `\d`, `\w` or `\s`,
+/// or a group that starts with `(?`.
+fn a_pattern(v: &str) -> bool {
+    let class_with_a_range = v.split('[').skip(1).any(|after| {
+        let class = after.split(']').next().unwrap_or(after);
+        ["a-z", "A-Z", "0-9"]
+            .iter()
+            .any(|range| class.contains(range))
+    });
+    class_with_a_range
+        || ["\\d", "\\w", "\\s", "(?"]
+            .iter()
+            .any(|sign| v.contains(sign))
+}
+
+/// A password's hash, as programs keep it, is not the password:
+/// `$2b$12$…`, `$6$…`, `$argon2id$…` (a `$`, the way of hashing, a `$`,
+/// and the rest), or `pbkdf2_sha256$600000$…$…` as Django writes it.
+fn a_hash(v: &str) -> bool {
+    let fields: Vec<&str> = v.split('$').collect();
+    let way = |f: &str| {
+        (1..=16).contains(&f.len())
+            && f.bytes()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_'))
+    };
+    let named = |f: &str| {
+        let f = f.to_ascii_lowercase();
+        [
+            "pbkdf2", "argon2", "bcrypt", "scrypt", "sha1", "sha256", "sha512", "md5", "crypt",
+            "unsalted",
+        ]
+        .iter()
+        .any(|w| f.starts_with(w))
+    };
+    v.len() >= 30
+        && ((fields.len() >= 4 && fields[0].is_empty() && way(fields[1]))
+            || (fields.len() >= 3 && named(fields[0])))
+}
+
+/// A value nobody would use as a password: empty, a mask, a template, a
+/// password's hash, or little more than a word that says it is a stand-in
+/// (`password`, `your-password-here`, `changeme`, `password123`) and does
+/// not read as a real one ([`reads_as_real`]).
+fn placeholder(v: &str) -> bool {
+    v.is_empty()
+        || a_mask(v)
+        || a_template(v)
+        || a_pattern(v)
+        || a_hash(v)
+        || (says_it_stands_in(v) && !reads_as_real(v))
+}
+
+/// The same for a token or a key. One that holds a word of a stand-in is
+/// one whatever else is in it: nobody chooses a key, so a key that says
+/// `EXAMPLE` is a guide's.
+fn placeholder_key(v: &str) -> bool {
+    v.is_empty() || a_mask(v) || a_template(v) || a_pattern(v) || says_it_stands_in(v)
+}
+
+/// `%21` and its kin read as the characters they stand for, as an address
+/// writes a sign that would otherwise mean something in it.
+fn percent_decoded(v: &str) -> String {
+    let b = v.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        let hex = |c: u8| (c as char).to_digit(16);
+        match (
+            b[i],
+            b.get(i + 1).copied().and_then(hex),
+            b.get(i + 2).copied().and_then(hex),
+        ) {
+            (b'%', Some(high), Some(low)) => {
+                out.push((high * 16 + low) as u8);
+                i += 3;
+            }
+            (c, _, _) => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Words that say what kind of thing a password field holds or how it is
+/// kept, not a password: a column's type, a way of hashing or encoding.
+const KIND_WORDS: &[&str] = &[
+    "argon2",
+    "argon2i",
+    "argon2id",
+    "base32",
+    "base64",
+    "bcrypt",
+    "bigint",
+    "binary",
+    "boolean",
+    "bytea",
+    "char",
+    "character",
+    "int2",
+    "int4",
+    "int8",
+    "integer",
+    "latin1",
+    "md5",
+    "nchar",
+    "number",
+    "numeric",
+    "nvarchar",
+    "nvarchar2",
+    "pbkdf2",
+    "scrypt",
+    "sha1",
+    "sha2",
+    "sha224",
+    "sha256",
+    "sha3",
+    "sha384",
+    "sha512",
+    "smallint",
+    "string",
+    "text",
+    "utf16",
+    "utf8",
+    "utf8mb4",
+    "varbinary",
+    "varchar",
+    "varchar2",
+];
+
+/// A value that names a kind, not a password: `varchar2`, `nvarchar(64)`,
+/// `sha256-hashed`. The word must be all of it, but for a length in
+/// brackets or one more plain word: `base64:…` followed by a value is a
+/// value.
+fn kind_word(v: &str) -> bool {
+    let lower = v.to_ascii_lowercase();
+    let word = lower
+        .bytes()
+        .take_while(|b| b.is_ascii_alphanumeric())
+        .count();
+    if !KIND_WORDS.contains(&&lower[..word]) {
+        return false;
+    }
+    let rest = &lower[word..];
+    let length = rest
+        .strip_prefix('(')
+        .and_then(|r| r.strip_suffix(')'))
+        .is_some_and(|inner| {
+            inner
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b',' || b == b' ')
+        });
+    let one_more_word = rest
+        .strip_prefix(['-', '_'])
+        .is_some_and(|w| !w.is_empty() && w.bytes().all(|b| b.is_ascii_lowercase()));
+    rest.is_empty() || length || one_more_word
+}
+
+/// A value that is a path: it starts as paths do (`~/`, `./`, `../`,
+/// `C:\`, `\\server`), or with `/` and goes through a folder at least
+/// (`/home/ana`; `/x9` alone could be a password).
+fn path_like(v: &str) -> bool {
+    let b = v.as_bytes();
+    let drive =
+        b.len() > 2 && b[0].is_ascii_alphabetic() && b[1] == b':' && matches!(b[2], b'\\' | b'/');
+    let home_or_here = ["~/", "~\\", "./", ".\\", "../", "..\\", "\\\\"]
+        .iter()
+        .any(|p| v.starts_with(p));
+    // `$HOME/project`, `$env:TEMP\out`: a path that starts at a variable.
+    let at_a_variable = match template_part(b, 0) {
+        Some((end, _)) if b.first() == Some(&b'$') => matches!(b.get(end), Some(b'/' | b'\\')),
+        _ => false,
+    };
+    drive || home_or_here || at_a_variable || (v.starts_with('/') && v.matches('/').count() >= 2)
+}
+
+/// What a name holds, by how it ends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Holds {
+    /// `password`, `db_password`, `PGPASSWORD`, `passwd`, `pwd`,
+    /// `passphrase`.
+    Password,
+    /// `pass`, `db_pass`, `pw`, `AGOL_PW`: short for password, and words
+    /// with other meanings, so the value must look like a password even
+    /// in quotes.
+    Pass,
+    /// `token`, `client_secret`, `api_key`: its value must be long and
+    /// mixed.
+    Key,
+}
+
+/// What `pass` or `pw` is the password of, where it is short for
+/// password: `db_pass`, `DB_PASS`, `userpass`, `AGOL_PW`. Not `first_pass`,
+/// `bypass`, `compass`.
+const PASS_OF: &[&str] = &[
+    "admin", "ags", "agol", "arcgis", "auth", "database", "db", "ftp", "gis", "login", "mysql",
+    "ora", "oracle", "pg", "portal", "postgres", "root", "sde", "smtp", "sql", "ssh", "user",
+];
+
+/// Units a number is given in. `pw` is also a width, of a page
+/// (`pw: 1024px`) or of a pulse (`pw: 10.25ns`), so a number with its unit
+/// is no password for it.
+const UNITS: &[&str] = &[
+    "%", "cm", "deg", "dpi", "em", "ft", "hz", "in", "khz", "km", "m", "mhz", "mm", "ms", "ns",
+    "pc", "ppi", "ps", "pt", "px", "rem", "s", "us",
+];
+
+/// A number with its unit: `1024px`, `12.5mm`, `300dpi`, `10.25ns`.
+fn a_measure(v: &str) -> bool {
+    let number = v
+        .bytes()
+        .take_while(|b| b.is_ascii_digit() || *b == b'.')
+        .count();
+    number > 0 && UNITS.contains(&&v[number..])
+}
+
+/// How a name that holds a password ends: the word, its short forms, and
+/// the word in German, Spanish and French (`mot de passe` as a name is
+/// written in one piece; with blanks it is [`given`]'s to find).
+const PASSWORD_WORDS: &[&str] = &[
+    "password",
+    "passwd",
+    "pwd",
+    "passphrase",
+    "passwort",
+    "kennwort",
+    "contraseña",
+    "contrasena",
+    "motdepasse",
+    "mot_de_passe",
+    "mot-de-passe",
+];
+
+/// What the name `name` holds, if it holds a password or a key. Letter
+/// case, and `-` or `_` around it (`--password`, `__password__`), do not
+/// matter.
+fn holds(name: &str) -> Option<Holds> {
+    let lower = name.to_lowercase();
+    let name = lower.trim_matches(['-', '_']);
+    if PASSWORD_WORDS.iter().any(|w| name.ends_with(w)) {
+        return Some(Holds::Password);
+    }
+    for short in ["pass", "pw"] {
+        if let Some(before) = name.strip_suffix(short) {
+            let of = before.trim_end_matches(['-', '_']);
+            let of = of.rsplit(['-', '_']).next().unwrap_or(of);
+            // (`pw` after a `_` is the password of whatever stands before
+            // it: `arcpy_pw`, `new_pw`. `pass` is a word too: `first_pass`.)
+            let its_own_word = short == "pw" && before.ends_with(['-', '_']);
+            if of.is_empty() || PASS_OF.contains(&of) || its_own_word {
+                return Some(Holds::Pass);
+            }
+        }
+    }
+    [
+        "token",
+        "secret",
+        "apikey",
+        "api_key",
+        "api-key",
+        "access_key",
+        "access-key",
+        "secret_key",
+        "secret-key",
+        "private_key",
+        "private-key",
+    ]
+    .iter()
+    .any(|w| name.ends_with(w))
+    .then_some(Holds::Key)
+}
+
+/// A place on a line where a name that holds a password or a key is given
+/// a value.
+struct Given {
+    /// Where the name starts.
+    start: usize,
+    holds: Holds,
+    /// Where the value starts: right after the sign.
+    after: usize,
+    /// Where it starts when a type stands between the name and its `=`
+    /// (`password: str = …`): after that `=`. Only a value in quotes
+    /// counts there; a bare one is a number or a variable
+    /// (`MAX_PASSWORD: u32 = 256u32`).
+    after_type: Option<usize>,
+    /// The name ends in `secret`: its value may be shorter than a key's
+    /// when it reads as a password ([`a_short_secret`]).
+    secret: bool,
+    /// The name is `pwd` and nothing more, which is also what a script
+    /// calls the folder it works in ([`a_plain_name`]).
+    pwd: bool,
+}
+
+/// Every place on a line where a name that holds a password or a key is
+/// given a value with `=`, `:` (and so `=>`, `:=`, `==`) or R's `<-`.
+/// The name stands right before the sign, but for spaces and for what a
+/// note puts around a name to set it off (`**Password**:`,
+/// `` `password`: ``). `quoted` also takes a name in quotes or in a
+/// subscript: `"password": …`, `cfg["password"] = …`,
+/// `os.environ["PGPASSWORD"] = …`.
+fn given(line: &str, quoted: bool) -> Vec<Given> {
+    let bytes = line.as_bytes();
+    let mut out = Vec::new();
+    for (i, b) in bytes.iter().enumerate() {
+        let arrow = *b == b'<' && bytes.get(i + 1) == Some(&b'-');
+        if *b != b'=' && *b != b':' && !arrow {
+            continue;
+        }
         let mut end = i;
-        while end > 0 && bytes[end - 1] == b' ' {
+        if arrow && end > 0 && bytes[end - 1] == b'<' {
+            // R's `<<-`.
             end -= 1;
         }
-        if end > 0 && (bytes[end - 1] == b'"' || bytes[end - 1] == b'\'') {
+        // Back over spaces, and over what closes a name (a few at most).
+        let mut closers = 0;
+        while end > 0 {
+            let c = bytes[end - 1];
+            let closes = matches!(c, b'*' | b'`') || (quoted && matches!(c, b'"' | b'\'' | b']'));
+            // (French writes a blank that does not break before its colon.)
+            let wide = [0xA0u8, 0xAF]
+                .contains(&c)
+                .then(|| line[..end].chars().next_back())
+                .flatten()
+                .filter(|c| matches!(c, '\u{a0}' | '\u{202f}'));
+            if let Some(blank) = wide {
+                end -= blank.len_utf8();
+                continue;
+            }
+            if c != b' ' && c != b'\t' && !(closes && closers < 6) {
+                break;
+            }
+            closers += usize::from(closes);
             end -= 1;
         }
         let mut start = end;
         while start > 0 && (word_char(bytes[start - 1]) || bytes[start - 1] == b'-') {
             start -= 1;
         }
-        if start == end {
-            continue;
+        // A name that ASCII letters do not spell, or that is three words:
+        // `contraseña`, `mot de passe`.
+        let named = if start < end {
+            holds(&line[start..end])
+        } else {
+            None
+        };
+        let (start, holds) = match (named, in_other_words(&line[..end])) {
+            (Some(holds), _) => (start, holds),
+            (None, Some(len)) => (end - len, Holds::Password),
+            (None, None) => continue,
+        };
+        let after = i + if arrow { 2 } else { 1 };
+        let after_type = if *b == b':' {
+            after_a_type(line, after)
+        } else {
+            None
+        };
+        out.push(Given {
+            start,
+            holds,
+            after,
+            after_type,
+            secret: line[start..end].to_lowercase().ends_with("secret"),
+            pwd: line[start..end].eq_ignore_ascii_case("pwd"),
+        });
+    }
+    out
+}
+
+/// How many bytes at the end of `before` spell a name for a password that
+/// [`holds`] cannot see, because it has a letter beyond ASCII in it or is
+/// three words: `contraseña`, `mot de passe`.
+fn in_other_words(before: &str) -> Option<usize> {
+    // (Both end in `a` or `e`: most names are told apart by that alone.)
+    if !matches!(before.as_bytes().last(), Some(b'a' | b'A' | b'e' | b'E')) {
+        return None;
+    }
+    ["contraseña", "mot de passe"].iter().find_map(|word| {
+        let mut letters = before.char_indices().rev();
+        let mut at = before.len();
+        for wanted in word.chars().rev() {
+            let (i, c) = letters.next()?;
+            if !c.to_lowercase().eq(std::iter::once(wanted)) {
+                return None;
+            }
+            at = i;
         }
-        let name = line[start..end].to_lowercase();
-        let password = ["password", "passwd", "pwd"]
-            .iter()
-            .any(|w| name.ends_with(w));
-        let key = [
-            "token",
-            "secret",
-            "apikey",
-            "api_key",
-            "api-key",
-            "access_key",
-            "access-key",
-            "secret_key",
-            "secret-key",
-            "private_key",
-            "private-key",
-        ]
+        // The whole word: nothing that belongs to a longer one before it.
+        letters
+            .next()
+            .is_none_or(|(_, c)| !c.is_alphanumeric())
+            .then_some(before.len() - at)
+    })
+}
+
+/// `password: str = "…"`: where the value starts when a type stands
+/// between the name and its `=`. `from` is right after the `:`. A type is
+/// a few plain words, with brackets (`Optional[str]`, `&'static str`); a
+/// comma outside brackets ends a parameter, so what follows is another
+/// one's value.
+fn after_a_type(line: &str, from: usize) -> Option<usize> {
+    let eq = line.as_bytes()[from..]
         .iter()
-        .any(|w| name.ends_with(w));
-        if !password && !key {
-            continue;
-        }
-        // The value after it: a quoted run with no space in it.
-        let mut at = i + 1;
-        while at < bytes.len() && matches!(bytes[at], b' ' | b'=' | b'>' | b':') {
-            at += 1;
-        }
-        let Some(quote) = bytes.get(at).copied().filter(|q| *q == b'"' || *q == b'\'') else {
-            continue;
-        };
-        let rest = &line[at + 1..];
-        let Some(close) = rest.find(quote as char) else {
-            continue;
-        };
-        let value = &rest[..close];
-        if value.chars().any(char::is_whitespace) || placeholder(value) {
-            continue;
-        }
-        let n = value.chars().count();
-        let mixed =
-            value.chars().any(|c| c.is_ascii_digit()) && value.chars().any(|c| c.is_alphabetic());
-        if (password && n >= 6) || (key && n >= 16 && mixed) {
-            return true;
+        .take(60)
+        .position(|b| *b == b'=')?;
+    let kind = line[from..from + eq].trim();
+    if kind.is_empty() || kind.split_whitespace().count() > 4 {
+        return None;
+    }
+    let mut depth = 0;
+    for c in kind.chars() {
+        match c {
+            '[' | '<' => depth += 1,
+            ']' | '>' => depth -= 1,
+            ',' if depth > 0 => {}
+            c if c.is_ascii_alphanumeric() => {}
+            '_' | '.' | ' ' | '|' | '&' | '?' | '*' | '\'' => {}
+            _ => return None,
         }
     }
-    false
+    let after = from + eq + 1;
+    // `==` and `=>` are not what gives a typed name its value.
+    (!matches!(line.as_bytes().get(after), Some(b'=') | Some(b'>'))).then_some(after)
+}
+
+/// Whether `value`, found in quotes or between tags, counts as a password
+/// or a key for a name that `holds` one.
+fn typed_in_quotes(value: &str, holds: Holds) -> bool {
+    // A template is one as it is written (`%DB_PASSWORD%`). Anything else
+    // is judged as it reads once `%21` and its kin are the signs they
+    // stand for.
+    if a_template(value) {
+        return false;
+    }
+    let decoded;
+    let value = if holds != Holds::Key && value.contains('%') {
+        decoded = percent_decoded(value);
+        decoded.as_str()
+    } else {
+        value
+    };
+    let stands_in = match holds {
+        Holds::Key => placeholder_key(value),
+        Holds::Password | Holds::Pass => placeholder(value),
+    };
+    if value.chars().any(|c| c.is_whitespace() || c.is_control())
+        || stands_in
+        || path_like(value)
+        || kind_word(value)
+    {
+        return false;
+    }
+    let n = value.chars().count();
+    let mixed =
+        value.chars().any(|c| c.is_ascii_digit()) && value.chars().any(|c| c.is_alphabetic());
+    match holds {
+        Holds::Password => n >= 6,
+        Holds::Pass => n >= 6 && mixed && !a_measure(value),
+        Holds::Key => n >= 16 && mixed,
+    }
+}
+
+/// The value in quotes that starts at or after `at`, behind spaces, the
+/// rest of the sign (`=>`, `:=`), a note's `**`, and a letter or two that
+/// say what kind of string it is (`b"…"`, `N'…'`). `None` when no quoted
+/// value starts there.
+fn quoted_value(line: &str, mut at: usize) -> Option<&str> {
+    let bytes = line.as_bytes();
+    while at < bytes.len() && matches!(bytes[at], b' ' | b'\t' | b'=' | b'>' | b':' | b'*') {
+        at += 1;
+    }
+    let mut q = at;
+    while q < bytes.len() && q - at < 2 && bytes[q].is_ascii_alphabetic() {
+        q += 1;
+    }
+    let quote = bytes
+        .get(q)
+        .copied()
+        .filter(|c| *c == b'"' || *c == b'\'')?;
+    let rest = &line[q + 1..];
+    let close = rest.find(quote as char)?;
+    Some(&rest[..close])
+}
+
+/// `name = "value"` (or `:`, `=>`, `<-`), with `name` one that holds a
+/// password or a key ([`given`]).
+fn password_assignment(line: &str, given: &[Given]) -> bool {
+    given.iter().any(|g| {
+        [Some(g.after), g.after_type]
+            .into_iter()
+            .flatten()
+            .any(|at| {
+                quoted_value(line, at).is_some_and(|v| {
+                    (typed_in_quotes(v, g.holds) && !(g.pwd && a_plain_name(v)))
+                        || (g.secret && a_short_secret(v))
+                })
+            })
+    })
+}
+
+/// A value for a name that ends in `secret`, shorter than a key and
+/// reading as a password: eight characters or more with a digit, and with
+/// it small letters and capitals or a sign (`Tr4ffic!Count26`; not
+/// `kafka-topic-1` or `IH0035-KG`).
+fn a_short_secret(value: &str) -> bool {
+    value.chars().count() >= 8
+        && reads_as_real(value)
+        // (`"\u3299\ufe0f"` is a character written out, not a value typed.)
+        && !value.contains('\\')
+        && !value.chars().any(|c| c.is_whitespace() || c.is_control())
+        && !placeholder(value)
+        && !path_like(value)
+        && !kind_word(value)
+}
+
+/// A plain word with an underscore in it, all in small letters
+/// (`row_widths`): for the name `pwd`, the name of a folder, not a
+/// password. (Not for a name that can only hold a password: a test
+/// database's `password = "columbus_rw_test"` is one.)
+fn a_plain_name(value: &str) -> bool {
+    value.contains('_')
+        && !value.starts_with('_')
+        && !value.ends_with('_')
+        && value.bytes().all(|c| c.is_ascii_lowercase() || c == b'_')
 }
 
 fn identifier(v: &str) -> bool {
@@ -460,73 +1603,1836 @@ fn identifier(v: &str) -> bool {
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
-/// `name = value` or `name: value` with no quotes, `name` one that holds a
-/// password: a settings file (`password: …`), a shell line
-/// (`export PGPASSWORD=…`), a connection string (`PWD=…;`,
-/// `Password=…;`, `password=… dbname=…`). The value counts when it is six
-/// characters or more with a letter and a digit, and is not code: in a
-/// language where a bare word is a variable (`code`), only a value inside
-/// a string counts.
-fn unquoted_password(line: &str, code: bool) -> bool {
+/// `args.password`, `self.pw1`: a field of something.
+fn field_of_something(v: &str) -> bool {
+    let fields: Vec<&str> = v.split('.').collect();
+    fields.len() > 1 && fields.iter().all(|f| identifier(f))
+}
+
+/// The quotes of a line up to the place last asked about, so that asking
+/// about one name after another reads the line once, not once for each.
+#[derive(Debug, Default)]
+struct Quotes {
+    at: usize,
+    double: usize,
+    single: usize,
+}
+
+impl Quotes {
+    /// Whether the text before `at` leaves a string open, counted roughly:
+    /// an odd number of quotes of one kind.
+    fn open_before(&mut self, line: &str, at: usize) -> bool {
+        if at < self.at {
+            *self = Quotes::default();
+        }
+        for b in &line.as_bytes()[self.at..at] {
+            match b {
+                b'"' => self.double += 1,
+                b'\'' => self.single += 1,
+                _ => {}
+            }
+        }
+        self.at = at;
+        self.double % 2 == 1 || self.single % 2 == 1
+    }
+}
+
+/// Where the next character of some kind stands on a line, remembered
+/// from one question to the next: asked from one place after another
+/// inside the same stretch, it reads the line once, not once for each.
+#[derive(Debug)]
+struct Next<P> {
+    is: P,
+    /// The stretch last read: from where, and where the character stood
+    /// (the line's end when there was none).
+    read: Option<(usize, usize)>,
+}
+
+impl<P: Fn(char) -> bool> Next<P> {
+    fn new(is: P) -> Next<P> {
+        Next { is, read: None }
+    }
+
+    /// Where the next such character stands at or after `at`: the line's
+    /// end when there is none.
+    fn after(&mut self, line: &str, at: usize) -> usize {
+        if let Some((from, stop)) = self.read {
+            if (from..=stop).contains(&at) {
+                return stop;
+            }
+        }
+        let stop = line[at..].find(&self.is).map_or(line.len(), |i| at + i);
+        self.read = Some((at, stop));
+        stop
+    }
+}
+
+/// How many names in one run of text (no blank, quote or separator in it)
+/// are looked at as names given a value. A setting has one such name, or a
+/// few (`a=b=c`); a line made of thousands of them would take the search a
+/// time that grows with the square of its length.
+const RUN_NAMES: usize = 16;
+
+/// What ends a value with no quotes around it.
+fn ends_a_value(c: char) -> bool {
+    c.is_whitespace() || matches!(c, ';' | ',' | '&' | '"' | '\'' | ')' | '`' | '|' | '<')
+}
+
+/// Where unquoted values stop on a line, remembered from one name to the
+/// next: the names of one run of text share its end.
+#[derive(Debug)]
+struct Runs {
+    stops: Next<fn(char) -> bool>,
+    /// Where the run last looked at stops, and how many names in it were
+    /// looked at.
+    stop: usize,
+    names: usize,
+}
+
+impl Runs {
+    fn new() -> Runs {
+        Runs {
+            stops: Next::new(ends_a_value),
+            stop: usize::MAX,
+            names: 0,
+        }
+    }
+
+    /// Where the unquoted value that starts at `at` stops: at a blank, a
+    /// quote or a separator, or at the line's end. `None` once
+    /// [`RUN_NAMES`] names of the same run have been looked at.
+    fn stop(&mut self, line: &str, at: usize) -> Option<usize> {
+        let stop = self.stops.after(line, at);
+        if stop != self.stop {
+            (self.stop, self.names) = (stop, 0);
+        }
+        self.names += 1;
+        (self.names <= RUN_NAMES).then_some(stop)
+    }
+}
+
+/// The value with no quotes around it that starts at or after `at`,
+/// without what a note puts around a value to set it off (`**…**`,
+/// `` `…` ``) and without the `**` that closes the name's own emphasis
+/// (`**Password:** …`). `None` where a quoted value starts: that is the
+/// other rule's. `runs` remembers where values stop ([`Runs`]).
+fn bare_value<'a>(line: &'a str, mut at: usize, runs: &mut Runs) -> Option<&'a str> {
     let bytes = line.as_bytes();
-    for (i, b) in bytes.iter().enumerate() {
-        if *b != b'=' && *b != b':' {
+    let blank = |b: u8| b == b' ' || b == b'\t';
+    while at < bytes.len() && blank(bytes[at]) {
+        at += 1;
+    }
+    let marks = bytes[at..].iter().take_while(|b| **b == b'*').count();
+    if marks > 0 && bytes.get(at + marks).is_some_and(|b| blank(*b)) {
+        at += marks;
+        while at < bytes.len() && blank(bytes[at]) {
+            at += 1;
+        }
+    }
+    let rest = &line[at..];
+    if rest.starts_with(['"', '\'']) {
+        return None;
+    }
+    if let Some(code) = rest.strip_prefix('`') {
+        // Set as code in a note. (In a shell script the same marks run a
+        // command: more than one word, which is no password.)
+        return Some(&code[..code.find('`')?]);
+    }
+    let stop = runs.stop(line, at)?;
+    let mut value = &line[at..stop];
+    // `**value**`. One `*` in front and none behind is something else (a
+    // YAML alias), and is left on, which makes the value a placeholder.
+    let lead = value.bytes().take_while(|b| *b == b'*').count();
+    let trail = value.bytes().rev().take_while(|b| *b == b'*').count();
+    if lead > 0 && trail >= lead && value.len() > lead + trail {
+        value = &value[lead..];
+    }
+    Some(value.trim_end_matches('*'))
+}
+
+/// Whether `value`, found without quotes, counts as a password typed in:
+/// six characters or more with a letter and a digit, and not a
+/// placeholder, a kind, a path, an address, a call, an index or a field.
+fn typed_in_bare(value: &str) -> bool {
+    // (As a quoted value: a template as it is written, anything else as it
+    // reads once `%21` and its kin are decoded.)
+    if a_template(value) || value.contains(['/', '\\', '(', '[', ']', '|', '`']) {
+        return false;
+    }
+    let decoded;
+    let value = if value.contains('%') {
+        decoded = percent_decoded(value);
+        decoded.as_str()
+    } else {
+        value
+    };
+    value.chars().count() >= 6
+        && has_letter_and_digit(value)
+        && !value.chars().any(|c| c.is_whitespace() || c.is_control())
+        && !placeholder(value)
+        && !kind_word(value)
+        && !value.contains("::")
+        && !field_of_something(value)
+}
+
+/// Whether a bare word at the name that starts at `start` is a variable,
+/// not a value: it is in a line of code, outside its strings, comments and
+/// docstrings.
+fn a_variable(line: &str, start: usize, value: &str, prose: &Prose, quotes: &mut Quotes) -> bool {
+    identifier(value) && !prose.at(start) && !quotes.open_before(line, start)
+}
+
+/// Whether the name at `start` is one a shell reads, not one given a
+/// value: `${PGPASSWORD:?it is not set}`. What follows its `:` there says
+/// what to do when it is missing; a value to use instead is
+/// [`shell_default`]'s to judge.
+fn read_by_a_shell(line: &str, start: usize) -> bool {
+    line[..start].ends_with("${")
+}
+
+/// `name = value` or `name: value` with no quotes, `name` one that holds a
+/// password: a settings file or a note (`password: …`, `**Password:** …`,
+/// ``Password: `…` ``), a shell line (`export PGPASSWORD=…`), a connection
+/// string (`PWD=…;`, `Password=…;`, `password=… dbname=…`). The value
+/// counts when it is six characters or more with a letter and a digit, and
+/// is not code: in a language where a bare word is a variable, only a
+/// value inside a string, a comment or a docstring counts.
+fn unquoted_password(line: &str, given: &[Given], prose: &Prose) -> bool {
+    let (mut runs, mut quotes) = (Runs::new(), Quotes::default());
+    // (`pw` and `pass` are two letters and four: among the characters of
+    // packed data they turn up by chance, so they count where a setting
+    // can begin: at the line's start, or after a blank, a quote, a bracket
+    // that opens or a sign that stands between settings.)
+    let begins = |g: &Given| {
+        g.holds != Holds::Pass
+            || line[..g.start]
+                .chars()
+                .next_back()
+                .is_none_or(|c| c.is_whitespace() || "\"'`({[,;&?|*>.-/$:#+%!".contains(c))
+    };
+    let named = |g: &&Given| g.holds != Holds::Key && !read_by_a_shell(line, g.start) && begins(g);
+    given.iter().filter(named).any(|g| {
+        bare_value(line, g.after, &mut runs).is_some_and(|v| {
+            typed_in_bare(v)
+                && !(g.holds == Holds::Pass && a_measure(v))
+                && !a_variable(line, g.start, v, prose, &mut quotes)
+        })
+    })
+}
+
+/// Words a shell or a batch file puts before a setting.
+const SETS: &[&str] = &[
+    "declare", "env", "export", "local", "readonly", "set", "setx", "typeset",
+];
+
+/// Whether the name at `start` begins a setting, rather than being a word
+/// in a sentence: it is first on its line (after a list or comment sign,
+/// or a word such as `export`), is a flag (`--token=…`), or comes straight
+/// after a bracket, a quote or a sign that stands between settings (`&`,
+/// `;`, `,`, `?`). `indent` is how much blank space the line starts with.
+fn begins_a_setting(line: &str, start: usize, indent: usize) -> bool {
+    let bytes = line.as_bytes();
+    if bytes[start] == b'-' {
+        return true;
+    }
+    // The whole name, with what it belongs to: `arcgis.api_key`.
+    let mut s = start;
+    while s > 0 && (word_char(bytes[s - 1]) || bytes[s - 1] == b'.') {
+        s -= 1;
+    }
+    let before = line[..s].trim_end();
+    let Some(last) = before.chars().last() else {
+        return true;
+    };
+    if matches!(
+        last,
+        '"' | '\''
+            | '`'
+            | '&'
+            | '?'
+            | ';'
+            | ','
+            | '{'
+            | '('
+            | '['
+            | '|'
+            | '>'
+            | '*'
+            | '#'
+            | '+'
+            | '-'
+            | '/'
+    ) {
+        return true;
+    }
+    // A word such as `export`, first on its line.
+    SETS.iter().any(|word| {
+        before.len().checked_sub(word.len()).is_some_and(|at| {
+            at <= indent && before.as_bytes()[at..].eq_ignore_ascii_case(word.as_bytes())
+        })
+    })
+}
+
+/// A token or a key that is a path to one: `/run/secrets/x`,
+/// `keys/deploy.pem`, `secrets/prod/key-2`. Unlike a password, a key may
+/// hold `/` itself (base64), so only what reads as a path is one: it
+/// starts as paths do, ends in a file's name, or has no capital in it.
+fn path_to_a_key(v: &str) -> bool {
+    if !v.contains(['/', '\\']) {
+        return false;
+    }
+    let last = v.rsplit(['/', '\\']).next().unwrap_or(v);
+    let file = last.rsplit_once('.').is_some_and(|(stem, ext)| {
+        !stem.is_empty()
+            && (1..=5).contains(&ext.len())
+            && ext.bytes().all(|b| b.is_ascii_alphanumeric())
+    });
+    path_like(v) || file || !v.bytes().any(|b| b.is_ascii_uppercase())
+}
+
+/// Whether `value`, found without quotes, counts as a token or a key
+/// typed in: sixteen characters or more with a letter and a digit, and not
+/// a placeholder, a stand-in that names itself (`access_token_123`), an
+/// address or a path.
+fn typed_in_bare_key(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    value.chars().count() >= 16
+        && has_letter_and_digit(value)
+        && !value.chars().any(char::is_whitespace)
+        && !placeholder_key(value)
+        && !["token", "apikey", "api_key", "api-key"]
+            .iter()
+            .any(|w| lower.contains(w))
+        && !value.contains("://")
+        && !path_to_a_key(value)
+}
+
+/// `token: …`, `api_key = …`, `client_secret: …` with no quotes, where a
+/// setting begins ([`begins_a_setting`]): a settings file, a shell line
+/// (`export ARCGIS_API_KEY=…`), a request's line (`X-Api-Key: …`). The
+/// value counts when it is sixteen characters or more with a letter and a
+/// digit, and is not a placeholder, a path, an address or code.
+fn unquoted_key(line: &str, given: &[Given], prose: &Prose) -> bool {
+    let indent = line.len() - line.trim_start().len();
+    let (mut runs, mut quotes) = (Runs::new(), Quotes::default());
+    given
+        .iter()
+        .filter(|g| {
+            g.holds == Holds::Key
+                && !read_by_a_shell(line, g.start)
+                && begins_a_setting(line, g.start, indent)
+        })
+        .any(|g| {
+            bare_value(line, g.after, &mut runs).is_some_and(|v| {
+                typed_in_bare_key(v)
+                    && !v.contains(['(', '[', ']', '{', '}', '`'])
+                    && !v.contains("::")
+                    && !field_of_something(v)
+                    && !a_variable(line, g.start, v, prose, &mut quotes)
+            })
+        })
+}
+
+/// A sentence that says it: `the password is …` (also `was`, and with a
+/// colon after). What follows counts as an unquoted value does, without
+/// the full stop and the marks around it.
+fn said_in_words(line: &str, prose: &Prose) -> bool {
+    let lower = line.to_ascii_lowercase();
+    let bytes = lower.as_bytes();
+    let mut quotes = Quotes::default();
+    for name in ["password", "passwd", "passphrase", "pwd"] {
+        for (i, _) in lower.match_indices(name) {
+            // Past the marks that close the name's emphasis, then the verb.
+            let mut at = i + name.len();
+            while at < bytes.len() && matches!(bytes[at], b'*' | b'`' | b'"' | b'\'') {
+                at += 1;
+            }
+            // Set as code right after the word: ``the password `…` ``.
+            let code = line[at..]
+                .trim_start_matches([' ', '\t'])
+                .strip_prefix('`')
+                .and_then(|rest| rest.split_once('`'))
+                .map(|(code, _)| code);
+            let spaced = line[at..].starts_with([' ', '\t']);
+            if spaced
+                && code.is_some_and(|code| {
+                    typed_in_bare(code) && !a_variable(line, i, code, prose, &mut quotes)
+                })
+            {
+                return true;
+            }
+            // `Password for staging: …`: what it is for, in a few words.
+            if let Some(rest) = lower[at..].strip_prefix(" for ") {
+                let colon = rest.bytes().take(40).position(|c| c == b':');
+                let what = colon.map(|c| &rest[..c]);
+                let few = what.is_some_and(|w| {
+                    (1..=4).contains(&w.split_whitespace().count())
+                        && w.chars()
+                            .all(|c| c.is_alphanumeric() || c == ' ' || c == '-')
+                });
+                if let (true, Some(colon)) = (few, colon) {
+                    let from = at + " for ".len() + colon + 1;
+                    let word = line[from..].split_whitespace().next().unwrap_or("");
+                    let value = word.trim_matches(['"', '\'', '`', '*']);
+                    if typed_in_bare(value) && !a_variable(line, i, value, prose, &mut quotes) {
+                        return true;
+                    }
+                }
+            }
+            let Some(verb) = [" is", " was"]
+                .iter()
+                .find(|v| lower[at..].starts_with(**v))
+            else {
+                continue;
+            };
+            at += verb.len();
+            if bytes.get(at) == Some(&b':') {
+                at += 1;
+            }
+            if !matches!(bytes.get(at), Some(b' ') | Some(b'\t')) {
+                continue;
+            }
+            let word = line[at..].split_whitespace().next().unwrap_or("");
+            let word = word.trim_end_matches(['.', ',', ';', ':', '!', '?', ')']);
+            // "…" around one word are marks; around several, the first
+            // word of a phrase is no value.
+            let open = word
+                .chars()
+                .next()
+                .filter(|c| matches!(c, '"' | '\'' | '`'));
+            if open.is_some_and(|q| word.len() < 2 || !word.ends_with(q)) {
+                continue;
+            }
+            let value = word.trim_matches(['"', '\'', '`', '*']);
+            if typed_in_bare(value) && !a_variable(line, i, value, prose, &mut quotes) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// How far a tag's end, and the end of what a password's tag holds, is
+/// looked for, in bytes.
+const NEAR: usize = 300;
+
+/// `<password>…</password>`: what stands between a tag whose name holds a
+/// password or a key and the tag that closes it, counted as a quoted value
+/// is.
+fn between_tags(line: &str) -> bool {
+    // What an attribute of a tag is given: ` key="…"`.
+    fn attribute<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
+        tag.match_indices(name).find_map(|(at, _)| {
+            let before = tag[..at].chars().next_back()?;
+            let rest = tag[at + name.len()..].strip_prefix('=')?;
+            let quote = rest.chars().next().filter(|q| matches!(q, '"' | '\''))?;
+            before
+                .is_whitespace()
+                .then(|| rest[1..].split_once(quote))
+                .flatten()
+                .map(|(value, _)| value)
+        })
+    }
+    let mut closes = Next::new(|c: char| c == '>');
+    let mut from = 0;
+    while let Some(i) = line[from..].find('<') {
+        from += i + 1;
+        let rest = &line[from..];
+        // A tag is short; so is what a password's tag holds.
+        let close = closes.after(line, from) - from;
+        if close >= rest.len() || close > NEAR {
             continue;
         }
-        let mut end = i;
-        while end > 0 && bytes[end - 1] == b' ' {
+        let tag = &rest[..close];
+        let after = &rest[close + 1..];
+        if tag.contains('<') {
+            continue;
+        }
+        // `db:Password encrypted="false"`: the name, without what it
+        // belongs to. Or a tag that names it in an attribute, as a
+        // settings file does: `<entry key="password">`, `<property
+        // name="password" value="…"/>`.
+        let name = tag
+            .bytes()
+            .take_while(|b| word_char(*b) || matches!(b, b':' | b'-' | b'.'))
+            .count();
+        let name = &tag[..name];
+        let by_name = holds(name.rsplit(':').next().unwrap_or(name));
+        let by_attribute = || {
+            ["key", "name"]
+                .iter()
+                .find_map(|a| attribute(tag, a))
+                .and_then(holds)
+        };
+        let Some(holds) = by_name.or_else(by_attribute) else {
+            continue;
+        };
+        if by_name.is_none() {
+            if let Some(value) = attribute(tag, "value") {
+                if typed_in_quotes(value, holds) {
+                    return true;
+                }
+                continue;
+            }
+        }
+        if tag.ends_with('/') {
+            continue;
+        }
+        let near = |text: &str, sign: u8| text.bytes().take(NEAR).position(|b| b == sign);
+        let text = match after.strip_prefix("<![CDATA[") {
+            Some(data) => match near(data, b']') {
+                Some(end) if data[end..].starts_with("]]></") => &data[..end],
+                _ => continue,
+            },
+            None => match near(after, b'<') {
+                Some(end) if after[end..].starts_with("</") => &after[..end],
+                _ => continue,
+            },
+        };
+        if typed_in_quotes(text.trim(), holds) {
+            return true;
+        }
+    }
+    false
+}
+
+/// What a command that makes or changes a database user says.
+const DATABASE_USER: &[&str] = &[
+    "alter login",
+    "alter role",
+    "alter user",
+    "connect to",
+    "create login",
+    "create role",
+    "create user",
+    "grant ",
+    "set password",
+];
+
+fn database_command(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    DATABASE_USER.iter().any(|w| lower.contains(w))
+}
+
+/// A password after its name with only a space between, in quotes: a
+/// database command's `PASSWORD '…'` (`CREATE USER … WITH PASSWORD '…'`),
+/// a command line's `--password "…"`, a build file's `password "…"`. The
+/// first two say plainly that a password follows; anywhere else the value
+/// must also have a letter and a digit, since words in quotes follow the
+/// word password in ordinary sentences too.
+fn after_a_space(line: &str) -> Option<&'static str> {
+    let bytes = line.as_bytes();
+    let command = database_command(line);
+    for (q, quote) in bytes.iter().enumerate() {
+        if *quote != b'"' && *quote != b'\'' {
+            continue;
+        }
+        // Back over a letter that says what kind of string it is
+        // (`N'…'`, `E'…'`), then the space, then the name.
+        let mut end = q;
+        if end > 1 && bytes[end - 1].is_ascii_alphabetic() && bytes[end - 2] == b' ' {
+            end -= 1;
+        }
+        if end == 0 || !matches!(bytes[end - 1], b' ' | b'\t') {
+            continue;
+        }
+        while end > 0 && matches!(bytes[end - 1], b' ' | b'\t') {
             end -= 1;
         }
         let mut start = end;
         while start > 0 && (word_char(bytes[start - 1]) || bytes[start - 1] == b'-') {
             start -= 1;
         }
-        if start == end {
+        let flag = bytes[start] == b'-';
+        // (`pass` only as a flag: in a sentence it is a verb, "pass 'int64'
+        // to …".)
+        let Some(holds) = holds(&line[start..end])
+            .filter(|h| *h == Holds::Password || (flag && *h == Holds::Pass))
+        else {
             continue;
+        };
+        let rest = &line[q + 1..];
+        let Some(close) = rest.find(*quote as char) else {
+            continue;
+        };
+        let value = &rest[..close];
+        let sure = flag || command;
+        if typed_in_quotes(value, holds) && (sure || has_letter_and_digit(value)) {
+            return Some(if flag {
+                ON_A_COMMAND_LINE
+            } else if command {
+                IN_A_COMMAND
+            } else {
+                PASSWORD
+            });
         }
-        let name = line[start..end].to_lowercase();
-        if !["password", "passwd", "pwd"]
+    }
+    None
+}
+
+/// `IDENTIFIED BY …` in a command that makes or changes a database user:
+/// in quotes, or bare (as Oracle takes it) when it has a letter and a
+/// digit. A value handed in from outside (`:pw`, `&pw`) is not one.
+fn identified_by(line: &str) -> bool {
+    if !database_command(line) {
+        return false;
+    }
+    let lower = line.to_ascii_lowercase();
+    let Some(by) = lower
+        .find("identified")
+        .and_then(|i| lower[i..].find(" by ").map(|j| i + j + 4))
+    else {
+        return false;
+    };
+    let rest = line[by..].trim_start();
+    match rest.chars().next() {
+        Some(quote @ ('"' | '\'')) => rest[1..]
+            .find(quote)
+            .is_some_and(|close| typed_in_quotes(&rest[1..1 + close], Holds::Password)),
+        _ => {
+            let stop = rest
+                .find(|c: char| c.is_whitespace() || matches!(c, ';' | ',' | ')' | '"' | '\''))
+                .unwrap_or(rest.len());
+            let value = &rest[..stop];
+            typed_in_bare(value) && !value.starts_with([':', '&', '$', '?', '@'])
+        }
+    }
+}
+
+/// Flags that name the user on a command line.
+const USER_FLAGS: &[&str] = &[
+    "--login",
+    "--uid",
+    "--user",
+    "--username",
+    "-U",
+    "-u",
+    "-user",
+    "-username",
+];
+
+/// A password given on a command line, as the words of a command or as
+/// the items of a list (`["sqlcmd", "-U", "gis", "-P", "…"]`):
+///
+/// * after a flag whose name holds a password (`--password …`,
+///   `--db-password …`; `--password=…` and `--password "…"` are the other
+///   rules');
+/// * after `-P` or `-p`, on a line that also names the user (`-U gis`).
+///   By themselves the two letters mean too many things (`mkdir -p`,
+///   `ssh -p 22`, `rsync -P`), except after `sshpass`, whose `-p` is the
+///   password;
+/// * as curl's `-u user:password`;
+/// * as MySQL's `-pVALUE`, the password right behind the letter, on a
+///   `mysql`, `mysqldump` or `mariadb` line that also names the user.
+///
+/// What follows a flag counts when it is not another flag and reads as a
+/// password typed in ([`typed_in_bare`]).
+fn on_a_command_line(line: &str) -> bool {
+    if !line.contains('-') {
+        return false;
+    }
+    // Each word, with whether it stood in quotes of its own.
+    let words: Vec<(bool, &str)> = line
+        .split(|c: char| c.is_whitespace() || c == '(' || c == '[')
+        .filter(|w| !w.is_empty())
+        .map(|w| {
+            (
+                w.starts_with(['"', '\'', '`']),
+                w.trim_matches(['"', '\'', '`', ',', ']', ')', ';']),
+            )
+        })
+        .collect();
+    // What follows the flag at `k`, when it is a value: never another
+    // flag, and after a flag that is an item of a list (in quotes) only
+    // another such item: a bare word there is a variable or another
+    // argument.
+    let value_of = |k: usize| -> Option<&str> {
+        let (quoted, value) = *words.get(k + 1)?;
+        ((quoted || !words[k].0) && !value.is_empty() && !value.starts_with('-')).then_some(value)
+    };
+    // A user's name is no file and no path: `python -u run.py` is not one.
+    let names_a_user = |v: &str| {
+        let file = v.rsplit_once('.').is_some_and(|(_, ext)| {
+            (1..=4).contains(&ext.len()) && ext.bytes().all(|b| b.is_ascii_alphabetic())
+        });
+        !v.contains(['/', ':']) && (!file || v.contains('@'))
+    };
+    let user = words.iter().enumerate().any(|(k, (_, w))| {
+        (USER_FLAGS.contains(w) && value_of(k).is_some_and(names_a_user))
+            || ["--user=", "--username="].iter().any(|f| w.starts_with(f))
+    });
+    let lower = line.to_ascii_lowercase();
+    let names = |tools: &[&str]| tools.iter().any(|t| lower.contains(t));
+    // Tools that use the two letters for something else: after MySQL's
+    // `-p` and a space comes the database (`mysql -u root -p parcels`);
+    // PostgreSQL's `-P` sets how psql prints, or asks createuser to prompt.
+    let p_is_not_a_password = names(&["mysql", "mariadb"]);
+    let capital_p_is_not_a_password = names(&["psql", "createuser", "pg_"]);
+    // And one whose `-p` is always the password.
+    let sshpass = names(&["sshpass"]);
+    let curl = lower
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .any(|w| w == "curl");
+    // What stands right behind a flag, with no space: `-pVALUE`.
+    let behind = |w: &str, flag: &str| -> Option<String> {
+        let value = w.strip_prefix(flag).filter(|v| !v.is_empty())?;
+        Some(value.trim_matches(['"', '\'']).to_string())
+    };
+    // 7-Zip's own way, the same: `7z a -pVALUE …`.
+    let seven_zip = lower.contains("7z")
+        && words
             .iter()
-            .any(|w| name.ends_with(w))
-        {
-            continue;
-        }
-        let mut at = i + 1;
-        while at < bytes.len() && (bytes[at] == b' ' || bytes[at] == b'\t') {
-            at += 1;
-        }
-        let rest = &line[at..];
-        // A quoted value is the other rule's.
-        if rest.starts_with(['"', '\'']) {
-            continue;
-        }
-        let stop = rest
-            .find(|c: char| c.is_whitespace() || matches!(c, ';' | ',' | '&' | '"' | '\'' | ')'))
-            .unwrap_or(rest.len());
-        let value = &rest[..stop];
-        if value.chars().count() < 6 || placeholder(value) || !has_letter_and_digit(value) {
-            continue;
-        }
-        // A path, an address, a call, an index: not a value typed in.
-        if value.contains(['/', '\\', '(', '[', ']', '|', '`']) || value.contains("::") {
-            continue;
-        }
-        // `args.password`, `self.pw1`: a field of something.
-        let fields: Vec<&str> = value.split('.').collect();
-        if fields.len() > 1 && fields.iter().all(|f| identifier(f)) {
-            continue;
-        }
-        if code && identifier(value) {
-            let before = &line[..start];
-            let in_string =
-                before.matches('"').count() % 2 == 1 || before.matches('\'').count() % 2 == 1;
-            if !in_string {
-                continue;
-            }
-        }
+            .any(|(_, w)| matches!(program(w).as_str(), "7z" | "7za" | "7zr" | "7zz"));
+    if seven_zip
+        && words
+            .iter()
+            .any(|(_, w)| behind(w, "-p").is_some_and(|v| typed_in_bare(&v)))
+    {
         return true;
     }
+    // MySQL's own way: the password right behind `-p`, with no space, on
+    // a line that names the user (`-u root`, `-uroot`, `--user=root`).
+    if p_is_not_a_password {
+        let user_named = user || words.iter().any(|(_, w)| behind(w, "-u").is_some());
+        if user_named
+            && words
+                .iter()
+                .any(|(_, w)| behind(w, "-p").is_some_and(|v| typed_in_bare(&v)))
+        {
+            return true;
+        }
+    }
+    for (k, (quoted, word)) in words.iter().enumerate() {
+        let Some(value) = value_of(k) else {
+            continue;
+        };
+        let long = word.starts_with('-')
+            && !word.contains('=')
+            && holds(word).is_some_and(|h| h != Holds::Key);
+        let short = (user
+            && ((*word == "-P" && !capital_p_is_not_a_password)
+                || (*word == "-p" && !p_is_not_a_password)))
+            || (sshpass && *word == "-p");
+        // A port (`-p 8080:80`, `-p host1:5432`) or a setting
+        // (`-P border=2`) is not a password.
+        let port = value
+            .rsplit_once(':')
+            .is_some_and(|(_, n)| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+        if (long && (typed_in_bare(value) || (*quoted && typed_in_quotes(value, Holds::Password))))
+            || (short && typed_in_bare(value) && !port && !value.contains('='))
+        {
+            return true;
+        }
+        if curl && (*word == "-u" || *word == "--user") {
+            if let Some((_, password)) = value.split_once(':') {
+                if typed_in_bare(password) {
+                    return true;
+                }
+            }
+        }
+    }
     false
+}
+
+/// Windows' `net use … /user:NAME`, with the password as a word of its
+/// own, before or after the user: `net use Z: \\server\share /user:gis
+/// …`. The word that is no switch (`/…`), no drive (`Z:`), no share
+/// (`\\…`) and not `*` (which asks for it) counts as an unquoted value
+/// does.
+fn net_use(line: &str) -> bool {
+    if !line
+        .as_bytes()
+        .windows(6)
+        .any(|w| w.eq_ignore_ascii_case(b"/user:"))
+    {
+        return false;
+    }
+    let words: Vec<&str> = line.split_whitespace().collect();
+    let Some(at) = words
+        .windows(2)
+        .position(|pair| program(pair[0]) == "net" && pair[1].eq_ignore_ascii_case("use"))
+    else {
+        return false;
+    };
+    let names_the_user = |w: &&str| w.get(..6).is_some_and(|s| s.eq_ignore_ascii_case("/user:"));
+    words[at + 2..].iter().any(names_the_user)
+        && words[at + 2..]
+            .iter()
+            .find(|w| !w.starts_with(['/', '\\']) && !w.ends_with(':') && **w != "*")
+            .is_some_and(|w| typed_in_bare(w.trim_matches(['"', '\''])))
+}
+
+/// A token after the word Bearer, as a request's `Authorization` line has
+/// it: twenty characters or more with a letter and a digit.
+fn bearer(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    lower.match_indices("bearer ").any(|(i, _)| {
+        let rest = line[i + 7..].trim_start();
+        let run = rest
+            .bytes()
+            .take_while(|b| {
+                b.is_ascii_alphanumeric()
+                    || matches!(b, b'.' | b'_' | b'~' | b'+' | b'/' | b'=' | b'-')
+            })
+            .count();
+        let token = &rest[..run];
+        run >= 20 && has_letter_and_digit(token) && !placeholder_key(token)
+    })
+}
+
+/// A table in a note, as Markdown writes one: a heading row
+/// (`| user | password |`), a row of dashes, then the rows. It remembers
+/// which columns the heading says hold a password or a key.
+#[derive(Debug, Default)]
+struct Table {
+    /// What each cell of the row above names, when that row was one.
+    above: Option<Vec<Option<Holds>>>,
+    /// The same for the heading of the table the next rows belong to.
+    columns: Option<Vec<Option<Holds>>>,
+}
+
+impl Table {
+    /// Take in the next line, and say whether it is a row that gives a
+    /// password or a key: in a column whose heading names one, or right
+    /// after a cell that names one (`| Password | … |`).
+    fn row(&mut self, line: &str) -> bool {
+        let Some((framed, cells)) = cells(line) else {
+            *self = Table::default();
+            return false;
+        };
+        let dashes = |c: &&str| {
+            let c = c.trim_matches(':');
+            !c.is_empty() && c.bytes().all(|b| b == b'-')
+        };
+        if cells.iter().all(dashes) {
+            // The row of dashes: the row above it is the heading.
+            self.columns = self.above.take().filter(|h| h.iter().any(Option::is_some));
+            return false;
+        }
+        let names: Vec<Option<Holds>> = cells.iter().map(|c| names_a_secret(c)).collect();
+        let in_its_column = self.columns.as_ref().is_some_and(|columns| {
+            cells
+                .iter()
+                .zip(columns)
+                .any(|(cell, holds)| holds.is_some_and(|h| typed_in_a_cell(cell, h)))
+        });
+        // (Only in a row written as one, between `|`: a shell's
+        // `… | grep password | …` is no table.)
+        let beside_its_name = framed
+            && cells
+                .windows(2)
+                .zip(&names)
+                .any(|(pair, holds)| holds.is_some_and(|h| typed_in_a_cell(pair[1], h)));
+        self.above = Some(names);
+        in_its_column || beside_its_name
+    }
+}
+
+/// The cells of a table's row: what stands between `|`, without the
+/// marks a note puts around words; and whether the row is written with a
+/// `|` in front. `None` for a line that is no row.
+fn cells(line: &str) -> Option<(bool, Vec<&str>)> {
+    let t = line.trim();
+    if !t.contains('|') {
+        return None;
+    }
+    let framed = t.len() > 1 && t.starts_with('|');
+    let inner = t.strip_prefix('|').unwrap_or(t);
+    let inner = inner.strip_suffix('|').unwrap_or(inner);
+    let cells: Vec<&str> = inner
+        .split('|')
+        .map(|c| c.trim().trim_matches(['*', '`', '_']).trim())
+        .collect();
+    (framed || cells.len() > 1).then_some((framed, cells))
+}
+
+/// What a cell names, when it is a heading or a label for a password or a
+/// key: one to three words, the last of them the name (`Password`,
+/// `Admin password`, `API token`).
+fn names_a_secret(cell: &str) -> Option<Holds> {
+    let words: Vec<&str> = cell.split_whitespace().collect();
+    let last = words.last()?.trim_end_matches(':');
+    (words.len() <= 3 && last.bytes().all(|b| word_char(b) || b == b'-'))
+        .then(|| holds(last))
+        .flatten()
+}
+
+/// Whether a cell gives a password or a key: one word, counted as an
+/// unquoted value is.
+fn typed_in_a_cell(cell: &str, holds: Holds) -> bool {
+    match holds {
+        Holds::Password => typed_in_bare(cell),
+        Holds::Pass => typed_in_bare(cell) && !a_measure(cell),
+        Holds::Key => typed_in_bare_key(cell),
+    }
+}
+
+/// Where the string that opens at `at` closes: the place of its closing
+/// quote. `None` when it does not close on this line.
+fn string_end(b: &[u8], at: usize) -> Option<usize> {
+    let quote = b[at];
+    let mut i = at + 1;
+    while i < b.len() && b[i] != quote {
+        if b[i] == b'\\' {
+            i += 1;
+        }
+        i += 1;
+    }
+    (i < b.len()).then_some(i)
+}
+
+/// The place after the string that opens at `at`; the line's end when it
+/// does not close.
+fn after_string(b: &[u8], at: usize) -> usize {
+    string_end(b, at).map_or(b.len(), |end| end + 1)
+}
+
+/// What stands between the quotes when `text` is one string and nothing
+/// else: `"…"`, `'…'`, also with a letter or two before it (`r"…"`). A
+/// string put together (`"a" + b`), a variable, a call: `None`.
+fn only_a_string(text: &str) -> Option<&str> {
+    let text = text.trim();
+    let b = text.as_bytes();
+    let kind = b
+        .iter()
+        .take(2)
+        .take_while(|c| c.is_ascii_alphabetic())
+        .count();
+    if !matches!(b.get(kind), Some(b'"') | Some(b'\'')) {
+        return None;
+    }
+    let end = string_end(b, kind)?;
+    (end + 1 == b.len()).then(|| &text[kind + 1..end])
+}
+
+/// What a well-known call is handed, and where.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Takes {
+    /// A password, as the argument at one of these places (counted from
+    /// 0).
+    PasswordAt(&'static [usize]),
+    /// A name and then its value: a value read from the environment with
+    /// its default, or set there.
+    NameThenValue,
+    /// A name alone: a value read from the environment, for what it falls
+    /// back on (`… ?? "…"`). What else the call is handed is no value.
+    Name,
+    /// A user and then a password, both written out: `login("user",
+    /// "…")`. A function of that name may do anything, so the second
+    /// counts only after a first that is a string too.
+    UserAndPassword,
+}
+
+/// Well-known calls that are handed a password by its place, with no name
+/// beside it to say so. A call is known by the end of its name, so
+/// `GIS(`, `gis.GIS(` and `arcgis.gis.GIS(` are one; a name with a dot in
+/// it here needs both parts (`os.environ.get(`, `gis.users.create(`), and
+/// `.login` is a call of that name on anything (`ftp.login(`). The places
+/// are the ones each function documents:
+///
+/// * ArcGIS API for Python: `GIS(url, username, password, …)` and
+///   `users.create(username, password, …)`, a new member's first password;
+/// * arcpy: `SignInToPortal(portal_url, username, password, …)`,
+///   `CreateDatabaseConnection(out_folder_path, out_name,
+///   database_platform, instance, account_authentication, username,
+///   password, …)`, `CreateDatabaseConnectionString(database_platform,
+///   instance, account_authentication, username, password, …)`,
+///   `CreateArcSDEConnectionFile(out_folder_path, out_name, server,
+///   service, database, account_authentication, username, password, …)`,
+///   `CreateEnterpriseGeodatabase(database_platform, instance_name,
+///   database_name, account_authentication, database_admin,
+///   database_admin_password, sde_schema, gdb_admin_name,
+///   gdb_admin_password, …)`, `CreateDatabaseUser(input_database,
+///   user_authentication_type, user_name, user_password, …)` (each also
+///   by its older name, `…_management`), and `ArcSDESQLExecute(server,
+///   instance, database, user, password)`;
+/// * requests: `HTTPBasicAuth(username, password)` and its kin, and the
+///   `BasicAuth(username, password)` of httpx and aiohttp;
+/// * database drivers: cx_Oracle's `connect(user, password, dsn)`,
+///   pymssql's `connect(server, user, password, database)`, and the
+///   `connect(host, user, password, database)` of MySQLdb and PyMySQL;
+/// * Python's own: `FTP(host, user, passwd)`, the `login(user, password)`
+///   of its file and mail clients, and `os.environ.get(name, default)`,
+///   `os.getenv(name, default)`, `os.environ.setdefault(name, value)` and
+///   `os.putenv(name, value)`, when the name holds a password or a key;
+/// * .NET's, as PowerShell uses them: `SetEnvironmentVariable(name, value,
+///   …)`, and `GetEnvironmentVariable(name, …)` for what it falls back on
+///   (`… ?? "…"`; what follows the name there says where to look, and is
+///   no value).
+///
+/// A pair given as the sign-in, `auth=("user", "password")`, is found by
+/// its own shape ([`call_at`]).
+const CALLS: &[(&str, Takes)] = &[
+    ("GIS", Takes::PasswordAt(&[2])),
+    ("users.create", Takes::PasswordAt(&[1])),
+    ("SignInToPortal", Takes::PasswordAt(&[2])),
+    ("CreateDatabaseConnection", Takes::PasswordAt(&[6])),
+    (
+        "CreateDatabaseConnection_management",
+        Takes::PasswordAt(&[6]),
+    ),
+    ("CreateDatabaseConnectionString", Takes::PasswordAt(&[4])),
+    (
+        "CreateDatabaseConnectionString_management",
+        Takes::PasswordAt(&[4]),
+    ),
+    ("CreateArcSDEConnectionFile", Takes::PasswordAt(&[7])),
+    (
+        "CreateArcSDEConnectionFile_management",
+        Takes::PasswordAt(&[7]),
+    ),
+    ("CreateEnterpriseGeodatabase", Takes::PasswordAt(&[5, 8])),
+    (
+        "CreateEnterpriseGeodatabase_management",
+        Takes::PasswordAt(&[5, 8]),
+    ),
+    ("CreateDatabaseUser", Takes::PasswordAt(&[3])),
+    ("CreateDatabaseUser_management", Takes::PasswordAt(&[3])),
+    ("ArcSDESQLExecute", Takes::PasswordAt(&[4])),
+    ("HTTPBasicAuth", Takes::PasswordAt(&[1])),
+    ("HTTPDigestAuth", Takes::PasswordAt(&[1])),
+    ("HTTPProxyAuth", Takes::PasswordAt(&[1])),
+    ("BasicAuth", Takes::PasswordAt(&[1])),
+    ("DigestAuth", Takes::PasswordAt(&[1])),
+    ("cx_Oracle.connect", Takes::PasswordAt(&[1])),
+    ("cx_Oracle.Connection", Takes::PasswordAt(&[1])),
+    ("pymssql.connect", Takes::PasswordAt(&[2])),
+    ("MySQLdb.connect", Takes::PasswordAt(&[2])),
+    ("pymysql.connect", Takes::PasswordAt(&[2])),
+    ("FTP", Takes::PasswordAt(&[2])),
+    ("FTP_TLS", Takes::PasswordAt(&[2])),
+    (".login", Takes::PasswordAt(&[1])),
+    ("login", Takes::UserAndPassword),
+    ("environ.get", Takes::NameThenValue),
+    ("environ.setdefault", Takes::NameThenValue),
+    ("getenv", Takes::NameThenValue),
+    ("putenv", Takes::NameThenValue),
+    ("SetEnvironmentVariable", Takes::NameThenValue),
+    ("GetEnvironmentVariable", Takes::Name),
+];
+
+/// What the call named `name` is handed, if it is one of [`CALLS`].
+fn well_known(name: &str) -> Option<Takes> {
+    let mut parts = name.rsplit('.');
+    let last = parts.next()?;
+    let before = parts.next();
+    CALLS
+        .iter()
+        .find(|(call, _)| match call.split_once('.') {
+            Some(("", function)) => last == function && before.is_some(),
+            Some((module, function)) => last == function && before == Some(module),
+            None => last == *call,
+        })
+        .map(|(_, takes)| *takes)
+}
+
+/// The well-known call that opens with the bracket at `at`, if one does.
+/// Besides the calls of [`CALLS`], a pair given to a name that ends in
+/// `auth` (`auth=("user", "password")`, `session.auth = (…)`,
+/// `http_auth=(…)`, `"auth": (…)`).
+///
+/// `hash` is where the line's first `#` stands: after it the rest of the
+/// line may be a comment, and so may the next line, so a call that opens
+/// there does not go on to the next line. `code` says the line is one of a
+/// script: there a blank may stand between a call's name and its bracket
+/// (`GIS (url, …)`), which among words is no call.
+fn call_at(line: &str, at: usize, hash: Option<usize>, code: bool) -> Option<Call> {
+    let b = line.as_bytes();
+    let blank = |c: u8| c == b' ' || c == b'\t';
+    let name_before = |end: usize| {
+        let mut start = end;
+        while start > 0 && (word_char(b[start - 1]) || b[start - 1] == b'.') {
+            start -= 1;
+        }
+        &line[start..end]
+    };
+    let commented = hash.is_some_and(|hash| hash < at);
+    let name = name_before(at);
+    if !name.is_empty() {
+        return well_known(name).map(|takes| Call::new(takes, at + 1, commented));
+    }
+    let mut end = at;
+    while end > 0 && blank(b[end - 1]) {
+        end -= 1;
+    }
+    if end == 0 {
+        return None;
+    }
+    if code && !commented {
+        let name = name_before(end);
+        if !name.is_empty() {
+            return well_known(name).map(|takes| Call::new(takes, at + 1, true));
+        }
+    }
+    // `auth = (`, perhaps, or `"auth": (` in a dictionary.
+    if !matches!(b[end - 1], b'=' | b':') {
+        return None;
+    }
+    end -= 1;
+    if end > 0 && matches!(b[end - 1], b'=' | b'!' | b'<' | b'>' | b':') {
+        return None;
+    }
+    while end > 0 && blank(b[end - 1]) {
+        end -= 1;
+    }
+    if end > 0 && matches!(b[end - 1], b'"' | b'\'') {
+        end -= 1;
+    }
+    let mut start = end;
+    while start > 0 && word_char(b[start - 1]) {
+        start -= 1;
+    }
+    // A name that says it keeps a sign-in: `auth`, `http_auth`, `creds`.
+    let name = &b[start..end];
+    ["auth", "cred", "creds", "credential", "credentials"]
+        .iter()
+        .any(|kept| {
+            name.len() >= kept.len()
+                && name[name.len() - kept.len()..].eq_ignore_ascii_case(kept.as_bytes())
+        })
+        .then(|| Call::new(Takes::PasswordAt(&[1]), at + 1, commented))
+}
+
+/// The next well-known call that opens on `line` at or after `from`, and
+/// where its arguments start.
+fn next_call(line: &str, from: usize, hash: Option<usize>, code: bool) -> Option<(Call, usize)> {
+    let b = line.as_bytes();
+    (from..b.len())
+        .filter(|&i| b[i] == b'(')
+        .find_map(|i| call_at(line, i, hash, code).map(|call| (call, i + 1)))
+}
+
+/// How many lines a call may run over before it is given up.
+const CALL_LINES: usize = 30;
+
+/// How many well-known calls may be open inside one another.
+const CALLS_DEEP: usize = 8;
+
+/// A well-known call whose arguments are being read, perhaps over several
+/// lines (as a formatter lays a long call out).
+#[derive(Debug)]
+struct Call {
+    takes: Takes,
+    /// Which argument is being read, counted from 0.
+    arg: usize,
+    /// How many brackets are open inside the call's own.
+    depth: usize,
+    /// The argument being read has text on a line before this one: it was
+    /// judged there, or is more than one string.
+    begun: bool,
+    /// An argument with a name (`verify_cert=False`) or stars (`*args`)
+    /// has come: from there on, places say nothing.
+    named: bool,
+    /// The user is `anonymous` (or `ftp`, which file servers take for
+    /// the same): what follows is an address given out of courtesy, not a
+    /// password (`ftp.login("anonymous", "ana@…")`).
+    anonymous: bool,
+    /// What the first argument names ([`Takes::NameThenValue`]).
+    names: Option<Holds>,
+    /// The first argument is a string written out
+    /// ([`Takes::UserAndPassword`]).
+    user_written: bool,
+    /// How many lines the call has run over.
+    lines: usize,
+    /// Where the text of the argument being read starts on this line.
+    from: usize,
+    /// The call opened on the line being read.
+    fresh: bool,
+    /// The call must close on the line it opens on: it stands after a
+    /// `#`, or has a blank before its bracket.
+    one_line: bool,
+}
+
+impl Call {
+    /// A call whose arguments start at `from` on the line being read.
+    fn new(takes: Takes, from: usize, one_line: bool) -> Call {
+        Call {
+            takes,
+            arg: 0,
+            depth: 0,
+            begun: false,
+            named: false,
+            anonymous: false,
+            names: None,
+            user_written: false,
+            lines: 0,
+            from,
+            fresh: true,
+            one_line,
+        }
+    }
+
+    /// Judge the argument whose text on this line is `text`.
+    fn argument(&mut self, text: &str) -> Option<&'static str> {
+        let text = text.trim();
+        if self.begun || text.is_empty() {
+            return None;
+        }
+        // `name = value`: what an argument given by its name is given.
+        let name = text.bytes().take_while(|b| word_char(*b)).count();
+        let after = text[name..].trim_start();
+        let given = (name > 0 && after.starts_with('=') && !after.starts_with("=="))
+            .then(|| after[1..].trim_start());
+        match self.takes {
+            Takes::PasswordAt(places) => {
+                if text.starts_with('*') || given.is_some() {
+                    self.named = true;
+                }
+                let value = only_a_string(text)?;
+                // Right before the password's place stands the user.
+                if places.contains(&(self.arg + 1))
+                    && (value.eq_ignore_ascii_case("anonymous") || value == "ftp")
+                {
+                    self.anonymous = true;
+                    return None;
+                }
+                // (`auth=(token, "x-oauth-basic")`: the words GitHub asks
+                // for in the password's place, with the token as the user.)
+                (!self.named
+                    && !self.anonymous
+                    && places.contains(&self.arg)
+                    && typed_in_quotes(value, Holds::Password)
+                    && value != "x-oauth-basic")
+                    .then_some(IN_A_CALL)
+            }
+            Takes::UserAndPassword => {
+                if text.starts_with('*') || given.is_some() {
+                    self.named = true;
+                }
+                let value = only_a_string(text);
+                if self.arg == 0 {
+                    self.user_written = value.is_some_and(|user| {
+                        !user.eq_ignore_ascii_case("anonymous") && user != "ftp"
+                    });
+                    return None;
+                }
+                (self.arg == 1 && self.user_written && !self.named)
+                    .then_some(value)
+                    .flatten()
+                    .filter(|value| typed_in_quotes(value, Holds::Password))
+                    .map(|_| IN_A_CALL)
+            }
+            Takes::NameThenValue | Takes::Name => {
+                // The default may be given by its name (`default="…"`).
+                let text = given.unwrap_or(text);
+                if self.arg == 0 {
+                    self.names = only_a_string(text).and_then(holds);
+                    return None;
+                }
+                let holds = self
+                    .names
+                    .filter(|_| self.arg == 1 && self.takes == Takes::NameThenValue)?;
+                only_a_string(text)
+                    .filter(|value| default_counts(value, holds))
+                    .map(|_| QUOTED)
+            }
+        }
+    }
+}
+
+/// Whether `value` counts as what a value read from the environment falls
+/// back on, for a name that `holds` a password or a key: as a quoted value
+/// does, but a key that reads as a path to one (`keys/portal.pem`) is the
+/// path, not the key.
+fn default_counts(value: &str, holds: Holds) -> bool {
+    typed_in_quotes(value, holds) && !(holds == Holds::Key && path_to_a_key(value))
+}
+
+/// The string to fall back on that follows a value read from the
+/// environment: `… or "…"` (`||`, `??` and `?:` in other languages). One
+/// string and nothing put to it: `… or "x" + y` is not one.
+fn fallback(rest: &str) -> Option<&str> {
+    let rest = rest.trim_start();
+    let rest = ["or ", "||", "??", "?:"]
+        .iter()
+        .find_map(|sign| rest.strip_prefix(sign))?
+        .trim_start();
+    let b = rest.as_bytes();
+    let kind = b
+        .iter()
+        .take(2)
+        .take_while(|c| c.is_ascii_alphabetic())
+        .count();
+    if !matches!(b.get(kind), Some(b'"') | Some(b'\'')) {
+        return None;
+    }
+    let end = string_end(b, kind)?;
+    let after = rest[end + 1..].trim_start();
+    (after.is_empty() || after.starts_with([')', ']', '}', ',', ';', '#']))
+        .then(|| &rest[kind + 1..end])
+}
+
+/// The well-known calls of a file, line by line: a call may open on one
+/// line and be handed its password on another, and one call may stand
+/// inside another (`GIS(url, "ana", os.environ.get("AGOL_PW", "…"))`).
+#[derive(Debug, Default)]
+struct Calls {
+    /// The calls being read, the innermost last.
+    open: Vec<Call>,
+}
+
+impl Calls {
+    /// Take in the next line, and say what it holds if it hands a
+    /// well-known call its password. `code` says the line is one of a
+    /// script ([`call_at`]).
+    fn line(&mut self, line: &str, code: bool) -> Option<&'static str> {
+        // A call does not run on over an empty line, or without end.
+        if line.trim().is_empty() || self.open.iter().any(|c| c.lines >= CALL_LINES) {
+            self.open.clear();
+        }
+        for call in &mut self.open {
+            call.from = 0;
+        }
+        let b = line.as_bytes();
+        let hash = line.find('#');
+        let mut found = None;
+        // Where the line's code ends (a comment may follow), and whether
+        // it ends inside a string.
+        let (mut end, mut in_a_string) = (b.len(), false);
+        let mut i = 0;
+        while i < b.len() {
+            if self.open.is_empty() {
+                // Outside a call, the next one counts wherever it stands:
+                // in a comment or in a string too.
+                let Some((call, after)) = next_call(line, i, hash, code) else {
+                    break;
+                };
+                self.open.push(call);
+                i = after;
+                continue;
+            }
+            match b[i] {
+                b'"' | b'\'' => {
+                    match string_end(b, i) {
+                        Some(close) => i = close + 1,
+                        None => {
+                            in_a_string = true;
+                            i = b.len();
+                        }
+                    }
+                    continue;
+                }
+                b'#' => {
+                    end = i;
+                    break;
+                }
+                // A well-known call inside this one is read by itself.
+                b'(' if self.open.len() < CALLS_DEEP => {
+                    if let Some(call) = call_at(line, i, hash, code) {
+                        self.open.push(call);
+                        i += 1;
+                        continue;
+                    }
+                }
+                _ => {}
+            }
+            let Some(call) = self.open.last_mut() else {
+                break;
+            };
+            match b[i] {
+                b'(' | b'[' | b'{' => call.depth += 1,
+                b')' | b']' | b'}' if call.depth > 0 => call.depth -= 1,
+                b')' | b']' | b'}' => {
+                    found = found.or(call.argument(&line[call.from..i]));
+                    // A value read from the environment, and what stands
+                    // in for it when it is not there.
+                    let read = match call.takes {
+                        Takes::NameThenValue => call.arg == 0,
+                        Takes::Name => true,
+                        Takes::PasswordAt(_) | Takes::UserAndPassword => false,
+                    };
+                    if let (true, Some(holds)) = (read, call.names) {
+                        if fallback(&line[i + 1..]).is_some_and(|v| default_counts(v, holds)) {
+                            found = found.or(Some(QUOTED));
+                        }
+                    }
+                    self.open.pop();
+                }
+                b',' if call.depth == 0 => {
+                    found = found.or(call.argument(&line[call.from..i]));
+                    call.arg += 1;
+                    call.begun = false;
+                    call.from = i + 1;
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        // The line ends inside these calls. A string alone on its line is
+        // judged where it stands; what follows it belongs to it.
+        for call in &mut self.open {
+            let rest = &line[call.from.min(end)..end];
+            if !rest.trim().is_empty() {
+                found = found.or(call.argument(rest));
+                call.begun = true;
+            }
+            call.lines += 1;
+        }
+        // A call that opened on this line goes on to the next only as a
+        // call laid out over several lines does: the line ends with a
+        // bracket that opens or with a comma. Anything else is a bracket
+        // left open among words, and what follows are not its arguments.
+        let laid_out = !in_a_string && line[..end].trim_end().ends_with(['(', '[', '{', ',']);
+        if let Some(at) = self
+            .open
+            .iter()
+            .position(|c| c.fresh && (c.one_line || !laid_out))
+        {
+            // Their brackets stay open inside the call around them.
+            let brackets: usize = self.open[at..].iter().map(|c| 1 + c.depth).sum();
+            self.open.truncate(at);
+            if let Some(around) = self.open.last_mut() {
+                around.depth += brackets;
+            }
+        }
+        for call in &mut self.open {
+            call.fresh = false;
+        }
+        found
+    }
+}
+
+/// A string to fall back on, given to a name that holds a password or a
+/// key for when what it is given first is not there: `password =
+/// args.password or "…"`, `const password = opts.password || "…"`. The
+/// string counts as a quoted value does. Looked for in what the name is
+/// given, up to where that ends (a comma, a bracket that closes, a
+/// comment) and not far ([`NEAR`]); not inside a call's arguments, a
+/// subscript or a list there, where it is something else's fallback
+/// (`passwd = getpass.getpass("… %s" % (host or "localhost"))`).
+fn falls_back_on(line: &str, given: &[Given]) -> bool {
+    let b = line.as_bytes();
+    given.iter().any(|g| {
+        let stop = b.len().min(g.after + NEAR);
+        // How many brackets are open, and at which of them a call's
+        // arguments, a subscript or a list began.
+        let (mut depth, mut inside) = (0usize, None);
+        let mut i = g.after;
+        while i < stop {
+            match b[i] {
+                b'"' | b'\'' => {
+                    i = after_string(b, i);
+                    continue;
+                }
+                b'(' | b'[' | b'{' => {
+                    depth += 1;
+                    // A bracket that only groups: `(a or "…")`.
+                    let groups = b[i] == b'('
+                        && (i == 0
+                            || !(word_char(b[i - 1])
+                                || matches!(b[i - 1], b')' | b']' | b'"' | b'\'')));
+                    if !groups && inside.is_none() {
+                        inside = Some(depth);
+                    }
+                }
+                b')' | b']' | b'}' if depth == 0 => return false,
+                b')' | b']' | b'}' => {
+                    if inside == Some(depth) {
+                        inside = None;
+                    }
+                    depth -= 1;
+                }
+                b',' | b';' | b'#' if depth == 0 => return false,
+                // `or` as a word of its own; `||`, `??`, `?:`.
+                b'o' if i > 0 && word_char(b[i - 1]) => {}
+                b'o' | b'|' | b'?'
+                    if inside.is_none()
+                        && fallback(&line[i..])
+                            .is_some_and(|value| default_counts(value, g.holds)) =>
+                {
+                    return true;
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        false
+    })
+}
+
+/// A value read from the environment by its name, with a string to fall
+/// back on: `process.env.DB_PASSWORD || "…"` (also `process.env["…"]`,
+/// `import.meta.env.…`, Ruby's `ENV["…"]`, PHP's `$_ENV['…']`,
+/// PowerShell's `$env:…`). The name must hold a password or a key, and
+/// the string counts as a quoted value does.
+fn environment_read(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    lower.match_indices("env").any(|(at, _)| {
+        let rest = &line[at + 3..];
+        let (name, after) = if let Some(rest) = rest.strip_prefix(['.', ':']) {
+            let name = rest.bytes().take_while(|c| word_char(*c)).count();
+            rest.split_at(name)
+        } else if let Some(rest) = rest.strip_prefix('[') {
+            let b = rest.as_bytes();
+            if !matches!(b.first(), Some(b'"') | Some(b'\'')) {
+                return false;
+            }
+            let Some(end) = string_end(b, 0) else {
+                return false;
+            };
+            let Some(after) = rest[end + 1..].strip_prefix(']') else {
+                return false;
+            };
+            (&rest[1..end], after)
+        } else {
+            return false;
+        };
+        holds(name)
+            .is_some_and(|holds| fallback(after).is_some_and(|value| default_counts(value, holds)))
+    })
+}
+
+/// A value read from the environment as a shell does, with what to use
+/// when it is not there: `${PGPASSWORD:-…}` (also `:=`), in a script, a
+/// `.env` file or a compose file. The name must hold a password or a key,
+/// and the value counts as an unquoted one does.
+fn shell_default(line: &str) -> Option<&'static str> {
+    line.match_indices("${").find_map(|(at, _)| {
+        let rest = &line[at + 2..];
+        let name = rest.bytes().take_while(|c| word_char(*c)).count();
+        let holds = holds(&rest[..name])?;
+        let value = rest[name..]
+            .strip_prefix(":-")
+            .or_else(|| rest[name..].strip_prefix(":="))?;
+        let end = value.bytes().take(NEAR).position(|c| c == b'}')?;
+        let value = value[..end].trim_matches(['"', '\'']);
+        match holds {
+            Holds::Key => typed_in_bare_key(value).then_some(KEY),
+            Holds::Pass if a_measure(value) => None,
+            _ => typed_in_bare(value).then_some(PASSWORD),
+        }
+    })
+}
+
+/// Windows' `setx NAME value`, which sets a variable for good: the value
+/// with no quotes, for a name that holds a password or a key (in quotes it
+/// is the other rule's, [`after_a_space`]). It counts as an unquoted value
+/// does.
+fn set_for_good(line: &str) -> Option<&'static str> {
+    let mut words = line.split_whitespace();
+    while let Some(word) = words.next() {
+        if !word.eq_ignore_ascii_case("setx") {
+            continue;
+        }
+        let (name, value) = (words.next()?, words.next()?);
+        return match holds(name)? {
+            Holds::Key => typed_in_bare_key(value).then_some(KEY),
+            Holds::Pass if a_measure(value) => None,
+            _ => typed_in_bare(value).then_some(PASSWORD),
+        };
+    }
+    None
+}
+
+/// PowerShell's `ConvertTo-SecureString "…" -AsPlainText`: what is made a
+/// secret there is a secret written out. The string handed to it: the
+/// first thing after its name and its flags (`-String "…"`), or what is
+/// piped into it (`"…" | ConvertTo-SecureString -AsPlainText -Force`). A
+/// variable there, or a file read there, is not one. The string counts as
+/// a quoted password does.
+fn made_secure(line: &str) -> bool {
+    const NAME: &str = "convertto-securestring";
+    let lower = line.to_ascii_lowercase();
+    if !lower.contains("-asplaintext") {
+        return false;
+    }
+    lower.match_indices(NAME).any(|(at, _)| {
+        // Past the flags, to what it is handed.
+        let mut rest = line[at + NAME.len()..].trim_start();
+        while rest.starts_with('-') {
+            let flag = rest.find(char::is_whitespace).unwrap_or(rest.len());
+            rest = rest[flag..].trim_start();
+        }
+        let handed = rest
+            .chars()
+            .next()
+            .filter(|quote| matches!(quote, '"' | '\''))
+            .and_then(|quote| rest[1..].split_once(quote))
+            .map(|(value, _)| value);
+        // What is piped in: a string that stands by itself before the
+        // `|`, not the last word of another command (`Get-Content "…" |`).
+        let piped = line[..at]
+            .trim_end()
+            .strip_suffix('|')
+            .map(str::trim_end)
+            .and_then(|before| {
+                let quote = before.chars().last().filter(|q| matches!(q, '"' | '\''))?;
+                let inner = &before[..before.len() - 1];
+                let open = inner.rfind(quote)?;
+                let alone = inner[..open].trim_end();
+                (alone.is_empty() || alone.ends_with(['=', '(', '{', ';', '|', ',']))
+                    .then(|| &inner[open + 1..])
+            });
+        [handed, piped]
+            .into_iter()
+            .flatten()
+            .any(|value| typed_in_quotes(value, Holds::Password))
+    })
+}
+
+/// The parts of `text` between its commas, leaving alone the commas inside
+/// strings and brackets: up to a comment, or to a bracket that closes what
+/// was not opened here.
+fn between_commas(text: &str) -> Vec<&str> {
+    let b = text.as_bytes();
+    let mut parts = Vec::new();
+    let (mut start, mut depth, mut i) = (0, 0usize, 0);
+    while i < b.len() {
+        match b[i] {
+            b'"' | b'\'' => {
+                i = after_string(b, i);
+                continue;
+            }
+            b'#' => break,
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' if depth == 0 => break,
+            b')' | b']' | b'}' => depth -= 1,
+            b',' if depth == 0 => {
+                parts.push(&text[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    parts.push(&text[start..i.min(b.len())]);
+    parts
+}
+
+/// Several names given their values at once, one of them a password:
+/// `USER, PASSWORD = "gis", "…"` (also in brackets, and with Go's `:=`).
+/// The value in the same place as the name counts, as a quoted value
+/// does.
+fn several_at_once(line: &str) -> bool {
+    let b = line.as_bytes();
+    // The first `=` that gives values: not part of `==`, `<=`, `>=`, `!=`.
+    let Some(eq) = (0..b.len()).find(|&i| {
+        b[i] == b'='
+            && b.get(i + 1) != Some(&b'=')
+            && (i == 0 || !matches!(b[i - 1], b'=' | b'!' | b'<' | b'>'))
+    }) else {
+        return false;
+    };
+    let left = line[..eq].trim_end_matches(':').trim();
+    if !left.contains(',') {
+        return false;
+    }
+    let left = ["const ", "let ", "var ", "my ", "local "]
+        .iter()
+        .find_map(|word| left.strip_prefix(word))
+        .unwrap_or(left);
+    let left = left
+        .trim()
+        .trim_start_matches(['(', '['])
+        .trim_end_matches([')', ']']);
+    let names: Vec<&str> = left.split(',').map(str::trim).collect();
+    let plain = |n: &&str| !n.is_empty() && n.bytes().all(|c| word_char(c) || c == b'.');
+    if names.len() < 2 || !names.iter().all(plain) {
+        return false;
+    }
+    let right = line[eq + 1..].trim_start();
+    let right = right.strip_prefix(['(', '[']).unwrap_or(right);
+    names
+        .iter()
+        .zip(between_commas(right))
+        .any(|(name, value)| {
+            holds(name.rsplit('.').next().unwrap_or(name)).is_some_and(|holds| {
+                only_a_string(value).is_some_and(|value| typed_in_quotes(value, holds))
+            })
+        })
+}
+
+/// What a run of base64 holds, when that is plain text: a sign-in packed
+/// as a request's Basic sign-in packs it. `None` for anything else.
+fn unpacked(run: &str) -> Option<String> {
+    let mut out = Vec::new();
+    let (mut bits, mut have) = (0u32, 0);
+    for c in run.bytes() {
+        let six = match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'+' | b'-' => 62,
+            b'/' | b'_' => 63,
+            _ => return None,
+        };
+        bits = (bits << 6) | u32::from(six);
+        have += 6;
+        if have >= 8 {
+            have -= 8;
+            out.push((bits >> have) as u8);
+            bits &= (1 << have) - 1;
+        }
+    }
+    (out.iter().all(|c| (0x20..0x7f).contains(c)))
+        .then(|| String::from_utf8(out).ok())
+        .flatten()
+}
+
+/// `Authorization: Basic …`: a user and a password packed into one value
+/// (base64 of `user:password`). The line must say `Authorization`, and
+/// what is packed must read as `user:password` with a password of six
+/// characters or more that is not a stand-in. The pair the standard
+/// itself gives as its example (`aladdin:opensesame`, RFC 7617), which
+/// texts about this sign-in repeat, is not one.
+fn basic_sign_in(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    if !lower.contains("authorization") {
+        return false;
+    }
+    lower.match_indices("basic ").any(|(i, _)| {
+        let rest = line[i + 6..].trim_start();
+        let run = rest
+            .bytes()
+            .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, b'+' | b'/' | b'-' | b'_'))
+            .count();
+        run >= 8
+            && unpacked(&rest[..run]).is_some_and(|pair| {
+                !pair.eq_ignore_ascii_case("aladdin:opensesame")
+                    && pair.split_once(':').is_some_and(|(_, password)| {
+                        password.chars().count() >= 6
+                            && !password.contains(' ')
+                            && !placeholder(password)
+                    })
+            })
+    })
+}
+
+/// Oracle's own programs, which take a sign-in as `user/password@database`.
+const ORACLE_PROGRAMS: &[&str] = &["sqlplus", "sqlldr", "expdp", "impdp", "exp", "imp"];
+
+/// Those of them whose names are no plain words: a line that names one
+/// may hold an Oracle sign-in anywhere. (`exp` and `imp` are plain words
+/// too, as in `np.exp(…)`: they count only right before the sign-in.)
+const ORACLE_WORDS: &[&str] = &["sqlplus", "sqlldr", "expdp", "impdp"];
+
+/// Other signs that a line may hold an Oracle sign-in: Python's Oracle
+/// drivers, a call that connects, a name that says it holds what one
+/// connects with, the `userid=` of Oracle's programs. (A name with `dsn`
+/// at its start or end, and GDAL's `OCI:` right before the sign-in, are
+/// two more: see [`oracle_sign_in`].)
+const ORACLE_SIGNS: &[&str] = &[
+    "cx_oracle",
+    "oracledb",
+    "connect(",
+    "connect_string",
+    "connection_string",
+    "conn_str",
+    "connstr",
+    "userid=",
+];
+
+/// The password in a word that has Oracle's shape, `user/password`, with
+/// or without `@database` behind it (and with `userid=` before it, as
+/// Oracle's programs take it): when the user is a plain name and the
+/// password counts as an unquoted value does.
+fn oracle_word(word: &str) -> bool {
+    let word = word
+        .trim_start_matches(['"', '\'', '(', '['])
+        .trim_end_matches(['"', '\'', ',', ';', ')', ']']);
+    let word = match word.get(..7) {
+        Some(start) if start.eq_ignore_ascii_case("userid=") => &word[7..],
+        _ => word,
+    };
+    let Some((user, rest)) = word.split_once('/') else {
+        return false;
+    };
+    let named = user.bytes().next().is_some_and(|c| c.is_ascii_alphabetic())
+        && user
+            .bytes()
+            .all(|c| word_char(c) || matches!(c, b'$' | b'#' | b'.'));
+    named && typed_in_bare(rest.split('@').next().unwrap_or(rest))
+}
+
+/// The program a word of a command runs, in small letters: without the
+/// folders before it, what a list puts around it, and `.exe`. `sqlplus`
+/// for `C:\oracle\bin\sqlplus.exe` and for the `["sqlplus",` of a list;
+/// `np.exp` for `np.exp`, which is not `exp`.
+fn program(word: &str) -> String {
+    let word = word.trim_end_matches(['"', '\'', ',', ';', ')', ']']);
+    let name = word
+        .bytes()
+        .rev()
+        .take_while(|c| word_char(*c) || *c == b'.')
+        .count();
+    let name = word[word.len() - name..].to_ascii_lowercase();
+    match name.strip_suffix(".exe") {
+        Some(plain) => plain.to_string(),
+        None => name,
+    }
+}
+
+/// Oracle's `user/password@database`, on a line that says it is one: a
+/// `sqlplus`, `sqlldr`, `expdp`, `impdp`, `exp` or `imp` line, SQL*Plus's
+/// `CONNECT`, or a connect string ([`ORACLE_SIGNS`]). The shape alone is
+/// too common (`actions/checkout@v4`, `data/2024@v1`). Right after one of
+/// those programs' names (or `CONNECT` at the start of a line),
+/// `user/password` counts with no database behind it too: there it is the
+/// sign-in, not a path. The password counts as an unquoted value does.
+fn oracle_sign_in(line: &str) -> bool {
+    if !line.contains('/') {
+        return false;
+    }
+    // Right after the program's name, past its flags. `exp`, `imp` and
+    // `connect` are plain words too: after them the sign-in must name its
+    // database, end the line, or stand before a setting (`file=…`).
+    let words: Vec<&str> = line.split_whitespace().collect();
+    let after_a_program = words.iter().enumerate().any(|(k, word)| {
+        let program = program(word);
+        let connect = k == 0 && matches!(program.as_str(), "connect" | "conn");
+        if !connect && !ORACLE_PROGRAMS.contains(&program.as_str()) {
+            return false;
+        }
+        let Some(at) = (k + 1..words.len()).find(|n| !words[*n].starts_with('-')) else {
+            return false;
+        };
+        let certain = !(connect || matches!(program.as_str(), "exp" | "imp"))
+            || words[at].contains('@')
+            || words.get(at + 1).is_none_or(|after| after.contains('='));
+        certain && oracle_word(words[at])
+    });
+    if after_a_program {
+        return true;
+    }
+    // Anywhere on a line that says so, with the database behind it.
+    if !line.contains('@') {
+        return false;
+    }
+    let lower = line.to_ascii_lowercase();
+    let says_so = ORACLE_SIGNS.iter().any(|sign| lower.contains(sign))
+        || lower
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .any(|word| {
+                ORACLE_WORDS.contains(&word) || word.starts_with("dsn") || word.ends_with("dsn")
+            });
+    let b = line.as_bytes();
+    line.match_indices('/').any(|(slash, _)| {
+        // The user: a name right before the slash, where a word starts
+        // (not a part of a path or of an address).
+        let name = b[..slash]
+            .iter()
+            .rev()
+            .take_while(|c| word_char(**c) || matches!(**c, b'$' | b'#' | b'.'))
+            .count();
+        let start = slash - name;
+        if name == 0
+            || !b[start].is_ascii_alphabetic()
+            || (start > 0 && matches!(b[start - 1], b'/' | b'\\' | b'@' | b'-'))
+            || !(says_so || lower[..start].ends_with("oci:"))
+        {
+            return false;
+        }
+        // The password: up to the `@`, with a database behind it.
+        let rest = &line[slash + 1..];
+        let end = rest
+            .find(|c: char| {
+                c.is_whitespace() || matches!(c, '@' | '/' | '"' | '\'' | ',' | ')' | ';')
+            })
+            .unwrap_or(rest.len());
+        let database = rest[end..].strip_prefix('@').and_then(|d| d.bytes().next());
+        database.is_some_and(|c| c.is_ascii_alphanumeric() || matches!(c, b'/' | b'"' | b'('))
+            && typed_in_bare(&rest[..end])
+    })
 }
 
 /// The names of an address's parts that carry a secret (`?token=…`), with
@@ -551,34 +3457,71 @@ const SECRET_PARTS: &[&str] = &[
 ];
 
 /// An address with a long mixed token, key or secret among its parts:
-/// `https://host/path?f=json&token=…`.
+/// `https://host/path?f=json&token=…`. Every address on the line is looked
+/// at, also one that stands inside another's parts (`…?next=https://…`).
+/// Addresses in one stretch of text share its end and its parts, which
+/// are judged once.
 fn url_with_secret(line: &str) -> bool {
-    let mut rest = line;
-    while let Some(i) = rest.find("://") {
-        rest = &rest[i + 3..];
-        let end = rest
-            .find(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '<' | '>' | '`'))
-            .unwrap_or(rest.len());
-        let address = &rest[..end];
-        let Some((_, query)) = address.split_once('?') else {
+    let mut ends =
+        Next::new(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '<' | '>' | '`'));
+    let mut asks = Next::new(|c: char| c == '?');
+    let mut parts = Next::new(|c: char| matches!(c, '&' | ';' | '#'));
+    let mut gives = Next::new(|c: char| c == '=');
+    // The part from `start` up to `end`: `name=value`, with a name that
+    // carries a secret and a value that reads as one. Of the values that
+    // end at one place (one address inside another's part, and so on),
+    // only the first few are read: see [`RUN_NAMES`].
+    let (mut ended, mut read) = (usize::MAX, 0);
+    let mut secret = |start: usize, end: usize| -> bool {
+        let eq = gives.after(line, start);
+        // (No such name is longer than this.)
+        if eq >= end || eq - start > 40 {
+            return false;
+        }
+        let name: String = line[start..eq]
+            .to_lowercase()
+            .chars()
+            .filter(|c| *c != '-' && *c != '_')
+            .collect();
+        if !SECRET_PARTS.contains(&name.as_str()) {
+            return false;
+        }
+        if end != ended {
+            (ended, read) = (end, 0);
+        }
+        read += 1;
+        let value = &line[eq + 1..end];
+        read <= RUN_NAMES
+            && value.chars().count() >= 16
+            && has_letter_and_digit(value)
+            && !placeholder_key(value)
+    };
+    // Up to where the parts of the stretch that ends at `.1` are judged
+    // already: from its first `&` on.
+    let mut judged: Option<(usize, usize)> = None;
+    let mut from = 0;
+    while let Some(i) = line[from..].find("://") {
+        from += i + 3;
+        let end = ends.after(line, from);
+        let query = asks.after(line, from);
+        if query >= end {
             continue;
-        };
-        for part in query.split(['&', ';', '#']) {
-            let Some((name, value)) = part.split_once('=') else {
-                continue;
-            };
-            let name: String = name
-                .to_lowercase()
-                .chars()
-                .filter(|c| *c != '-' && *c != '_')
-                .collect();
-            if SECRET_PARTS.contains(&name.as_str())
-                && value.chars().count() >= 16
-                && has_letter_and_digit(value)
-                && !placeholder(value)
-            {
+        }
+        let mut start = query + 1;
+        loop {
+            let stop = parts.after(line, start).min(end);
+            if secret(start, stop) {
                 return true;
             }
+            // The parts after this one were judged for an address before
+            // this one, in the same stretch.
+            if stop >= end || judged.is_some_and(|(first, of)| of == end && stop >= first) {
+                break;
+            }
+            start = stop + 1;
+        }
+        if judged.is_none_or(|(_, of)| of != end) {
+            judged = Some((parts.after(line, query + 1).min(end), end));
         }
     }
     false
@@ -673,8 +3616,18 @@ fn url_with_password(line: &str) -> bool {
             .unwrap_or(rest.len());
         let authority = &rest[..end];
         if let Some((userinfo, _host)) = authority.rsplit_once('@') {
-            if let Some((_user, pass)) = userinfo.split_once(':') {
-                if pass.chars().count() >= 3 && !placeholder(pass) && pass.to_lowercase() != "pass"
+            if let Some((user, pass)) = userinfo.split_once(':') {
+                // (`{…:…}` is one part of a pattern, not a user and a
+                // password; `%21` is how an address writes a sign.)
+                let in_braces = user.matches('{').count() > user.matches('}').count();
+                let template = a_template(pass);
+                let pass = percent_decoded(pass);
+                if !in_braces
+                    && !template
+                    && pass.chars().count() >= 3
+                    && !pass.chars().any(|c| c.is_whitespace() || c.is_control())
+                    && !placeholder(&pass)
+                    && pass.to_lowercase() != "pass"
                 {
                     return true;
                 }
@@ -789,7 +3742,7 @@ mod tests {
     }
 
     // More made-up values, put together here for the same reason.
-    const PW: &str = "Wint3r2026";
+    const PW: &str = concat!("Wint3r", "2026");
     fn mixed(n: usize) -> String {
         "a1B2c3D4e5F6g7H8i9J0".repeat(n / 20 + 1)[..n].to_string()
     }
@@ -1038,6 +3991,1293 @@ mod tests {
         ] {
             assert_eq!(hit_in(path, &text), None, "{path} should not stop: {text}");
         }
+    }
+
+    /// A script's languages are still told from notes and settings: where a
+    /// bare word after `=` is a variable, and where it is a value.
+    #[test]
+    fn which_files_are_code() {
+        for ext in [
+            "c", "cc", "cjs", "cpp", "cs", "go", "h", "hpp", "ipynb", "java", "jl", "js", "jsx",
+            "kt", "lua", "m", "mjs", "php", "pl", "py", "pyt", "pyw", "r", "rb", "rs", "scala",
+            "swift", "ts", "tsx", "vb",
+        ] {
+            assert!(lang(ext).is_some(), "{ext}");
+            // A variable there, as before (in a notebook: in a code cell).
+            let line = "conn = connect(user=user, password=pw2026x)";
+            let text = match ext {
+                "ipynb" => notebook(&[("code", &[line])]),
+                _ => format!("{line}\n"),
+            };
+            assert_eq!(hit_in(&format!("a.{ext}"), &text), None, "{ext}");
+        }
+        for ext in [
+            "md", "txt", "yaml", "ini", "sh", "ps1", "bat", "sql", "json", "xml", "",
+        ] {
+            assert!(lang(ext).is_none(), "{ext}");
+            let text = "host=db user=gis password=pw2026x\n";
+            assert!(hit_in(&format!("a.{ext}"), text).is_some(), "{ext}");
+        }
+    }
+
+    /// A notebook as Jupyter saves it: one line of a cell to a line of the
+    /// file, each in quotes.
+    fn notebook(cells: &[(&str, &[&str])]) -> String {
+        let cells: Vec<String> = cells
+            .iter()
+            .map(|(kind, lines)| {
+                let source: Vec<String> = lines
+                    .iter()
+                    .map(|l| format!("    {}", serde_json::to_string(&format!("{l}\n")).unwrap()))
+                    .collect();
+                let more = if *kind == "code" {
+                    "   \"execution_count\": 1,\n   \"metadata\": {},\n   \"outputs\": [],\n"
+                } else {
+                    "   \"metadata\": {},\n"
+                };
+                format!(
+                    "  {{\n   \"cell_type\": \"{kind}\",\n{more}   \"source\": [\n{}\n   ]\n  }}",
+                    source.join(",\n")
+                )
+            })
+            .collect();
+        format!(
+            "{{\n \"cells\": [\n{}\n ],\n \"metadata\": {{}},\n \"nbformat\": 4,\n \"nbformat_minor\": 5\n}}\n",
+            cells.join(",\n")
+        )
+    }
+
+    /// Every finding in `cases` that is missing or on the wrong line, in
+    /// words; and a check that no finding repeats a value.
+    fn missed(cases: &[(&str, String, usize, &str)], values: &[&str]) -> Vec<String> {
+        let mut wrong = Vec::new();
+        for (path, text, line, what) in cases {
+            let found = find(path, text.as_bytes(), &[]);
+            match found.first() {
+                Some(f) if f.line == *line && f.what.contains(what) => {}
+                other => wrong.push(format!(
+                    "{path} should stop at line {line} for {what:?}: {text:?} -> {:?}",
+                    other.map(|f| (f.line, f.what.as_str()))
+                )),
+            }
+            // What is said names the file and the line, never the value.
+            for f in &found {
+                assert_eq!(f.path, *path);
+                let said = format!("{f:?} {}", serde_json::to_string(f).unwrap());
+                for v in values {
+                    assert!(!said.contains(v), "{said}");
+                }
+            }
+        }
+        wrong
+    }
+
+    /// Everyday ways of writing a password down that the re-check of R-103
+    /// sent through a sync and read to the assistant (R-105): each on its
+    /// own, with the line the finding must name.
+    #[test]
+    fn everyday_forms_stop_a_sync() {
+        let (m20, m32) = (mixed(20), mixed(32));
+        let password = "a password written into the file";
+        let quoted = "a password or key written into the file (a quoted value)";
+        let cases: Vec<(&str, String, usize, &str)> = vec![
+            // In a comment of a script, where the person's own words are.
+            ("load.py", format!("import os\n# login gis_reader, password: {PW}\nprint(1)\n"), 2, password),
+            ("load.py", format!("# password = {PW}\n"), 1, password),
+            ("load.py", format!("# PWD={PW};\n"), 1, password),
+            ("load.py", format!("# DRIVER={{SQL Server}};SERVER=db;UID=gis;PWD={PW};\n"), 1, password),
+            ("load.py", format!("rows = read()  # the prod password: {PW}\n"), 1, password),
+            ("load.R", format!("# password: {PW}\ncon <- 1\n"), 1, password),
+            ("app.js", format!("// password: {PW}\n"), 1, password),
+            ("app.ts", format!("/*\n * user gis_reader\n * password: {PW}\n */\nexport {{}};\n"), 3, password),
+            ("app.cs", format!("int x = 1; /* PWD={PW}; */\n"), 1, password),
+            ("tool.vb", format!("' password: {PW}\n"), 1, password),
+            ("tool.lua", format!("-- password: {PW}\n"), 1, password),
+            ("tool.m", format!("% password: {PW}\n"), 1, password),
+            // In a docstring.
+            ("load.py", format!("\"\"\"Loads roads.\n\nlogin: gis_reader\npassword: {PW}\n\"\"\"\nprint(1)\n"), 4, password),
+            ("load.py", format!("def load():\n    '''Signs in as gis_reader.\n\n    The password is {PW}.\n    '''\n    return 1\n"), 4, password),
+            ("load.py", format!("def load():\n    \"\"\"Signs in. password: {PW}\"\"\"\n"), 2, password),
+            // A line of a .netrc or a .pgpass file, after a comment sign.
+            ("load.py", format!("# machine git.corp.example login ana password {PW}\n"), 1, ".netrc"),
+            ("load.py", format!("# machine git.corp.example\n#   login ana\n#   password {PW}\n"), 3, ".netrc"),
+            ("load.py", format!("# db.corp.example:5432:gis:gis_reader:{PW}\n"), 1, ".pgpass"),
+            ("load.js", format!("// db.corp.example:5432:gis:gis_reader:{PW}\n"), 1, ".pgpass"),
+            // Assignments the scan did not follow.
+            ("load.py", format!("import os\nos.environ[\"PGPASSWORD\"] = \"{PW}\"\n"), 2, quoted),
+            ("load.py", format!("cfg = {{}}\ncfg['password'] = '{PW}'\n"), 2, quoted),
+            ("load.py", format!("settings[\"db\"][ \"password\" ] = \"{PW}\"\n"), 1, quoted),
+            ("load.py", format!("password: str = \"{PW}\"\n"), 1, quoted),
+            ("load.py", format!("def connect(user: str = \"gis\", password: str = \"{PW}\"):\n"), 1, quoted),
+            ("app.ts", format!("const password: string = \"{PW}\";\n"), 1, quoted),
+            ("load.R", format!("password <- \"{PW}\"\n"), 1, quoted),
+            ("load.R", format!("pwd <<- '{PW}'\n"), 1, quoted),
+            ("load.py", format!("password = b\"{PW}\"\n"), 1, quoted),
+            ("load.sql", format!("ALTER LOGIN gis WITH PASSWORD = N'{PW}';\n"), 1, quoted),
+            // Notes, as people write them.
+            ("notes.md", format!("**Password:** {PW}\n"), 1, password),
+            ("notes.md", format!("**Password**: {PW}\n"), 1, password),
+            ("notes.md", format!("Password: **{PW}**\n"), 1, password),
+            ("notes.md", format!("**Password: {PW}**\n"), 1, password),
+            ("notes.md", format!("Password: `{PW}`\n"), 1, password),
+            ("notes.md", format!("- Password: `{PW}`\n"), 1, password),
+            ("notes.md", format!("- `password`: `{PW}`\n"), 1, password),
+            ("notes.md", format!("* user: gis_reader\n* password: {PW}\n"), 2, password),
+            ("notes.md", format!("The password is {PW}.\n"), 1, password),
+            ("notes.md", format!("| user | password |\n|---|---|\n| gis_reader | {PW} |\n"), 3, "in a table"),
+            ("notes.md", format!("| User | **Password** |\n| :--- | ---: |\n| ana | `{PW}` |\n"), 3, "in a table"),
+            ("notes.md", format!("| setting | value |\n|---|---|\n| Password | {PW} |\n"), 3, "in a table"),
+            ("notes.md", format!("- machine git.corp.example login ana password {PW}\n"), 1, ".netrc"),
+            ("notes.md", format!("`db.corp.example:5432:gis:gis_reader:{PW}`\n"), 1, ".pgpass"),
+            ("notes.md", format!("- db.corp.example:5432:gis:gis_reader:{PW}\n"), 1, ".pgpass"),
+            // A notebook's text cell, and a comment in one of its code cells.
+            ("nb.ipynb", notebook(&[("markdown", &[&format!("password: {PW}")])]), 7, password),
+            ("nb.ipynb", notebook(&[("code", &["x = 1", &format!("# password: {PW}")])]), 10, password),
+            // Between tags.
+            ("conn.xml", format!("<connection><user>gis</user><password>{PW}</password></connection>\n"), 1, "between tags"),
+            ("settings.xml", format!("<server>\n  <db:Password><![CDATA[{PW}]]></db:Password>\n</server>\n"), 2, "between tags"),
+            // A token, key or secret with no quotes, as a settings file has it.
+            ("conf.yaml", format!("portal: https://gis.corp.example/portal\ntoken: {m32}\n"), 2, "a token, key or secret"),
+            ("conf.ini", format!("[arcgis]\napi_key = {m32}\n"), 2, "a token, key or secret"),
+            ("conf.yaml", format!("client_secret: {m32}\n"), 1, "a token, key or secret"),
+            ("run.sh", format!("export ARCGIS_API_KEY={m20}\n"), 1, "a token, key or secret"),
+            // `pass` for password.
+            ("conf.yaml", format!("user: gis\npass: {PW}\n"), 2, password),
+            ("run.sh", format!("DB_PASS={PW}\n"), 1, password),
+            ("load.py", format!("db_pass = \"{PW}\"\n"), 1, quoted),
+            // A database command.
+            ("users.sql", format!("CREATE USER gis WITH PASSWORD '{PW}';\n"), 1, "in a database command"),
+            ("users.sql", format!("ALTER ROLE gis WITH ENCRYPTED PASSWORD '{}';\n", "opensesame"), 1, "in a database command"),
+            ("users.sql", format!("ALTER USER gis IDENTIFIED BY {PW};\n"), 1, "in a database command"),
+            ("users.sql", format!("CREATE USER gis IDENTIFIED BY \"{PW}\";\n"), 1, "in a database command"),
+            ("load.py", format!("cur.execute(\"CREATE USER gis WITH PASSWORD '{PW}'\")\n"), 1, "in a database command"),
+            // A command line.
+            ("run.sh", format!("sqlcmd -S db -U gis -P {PW} -Q 'select 1'\n"), 1, "on a command line"),
+            ("cmd.txt", format!("sdetable -o list -u gis -p {PW}\n"), 1, "on a command line"),
+            ("run.sh", format!("python publish.py --user gis --password {PW}\n"), 1, "on a command line"),
+            ("run.bat", format!("publish.exe --password \"{PW}\" --portal https://gis.corp.example\n"), 1, "on a command line"),
+            ("run.sh", format!("publish --password={PW}\n"), 1, password),
+            ("load.py", format!("subprocess.run([\"sqlcmd\", \"-U\", \"gis\", \"-P\", \"{PW}\"])\n"), 1, "on a command line"),
+            ("load.py", format!("os.system(\"sqlcmd -S db -U gis -P {PW}\")\n"), 1, "on a command line"),
+            ("run.sh", format!("curl -u gis:{PW} https://gis.corp.example/geoserver/rest/layers\n"), 1, "on a command line"),
+            ("run.sh", format!("sshpass -p '{PW}' sftp ana@files.corp.example\n"), 1, "on a command line"),
+            // A token after the word Bearer.
+            ("call.sh", format!("curl -H 'Authorization: Bearer {m32}' https://api.example.org\n"), 1, "Bearer"),
+            ("call.py", format!("headers = {{'Authorization': 'Bearer {m32}'}}\n"), 1, "Bearer"),
+            // As before, however far the sign stands from the name.
+            ("load.py", format!("password            = \"{}\"\n", "hunter2-prod"), 1, quoted),
+            ("conf.yaml", format!("user:            gis\npassword        : {PW}\n"), 2, password),
+            // Borderline, and kept: an example value is still a value.
+            ("notes.md", "The default login is admin, password: admin123 (change it).\n".to_string(), 1, password),
+            ("list.py", format!("next_page_token = \"{}\"\n", "CAESBggDEAEYAQ1234567890"), 1, quoted),
+        ];
+        let values = [PW, &m20, &m32, "opensesame", "admin123"];
+        let mut wrong = missed(&cases, &values);
+        // The same with the line ends Windows writes.
+        let windows: Vec<(&str, String, usize, &str)> = cases
+            .iter()
+            .map(|(path, text, line, what)| (*path, text.replace('\n', "\r\n"), *line, *what))
+            .collect();
+        wrong.extend(missed(&windows, &values));
+        assert!(
+            wrong.is_empty(),
+            "{} of {} are not found:\n{}",
+            wrong.len(),
+            2 * cases.len(),
+            wrong.join("\n")
+        );
+    }
+
+    /// A note as Windows saves it is read like any other: UTF-16 with its
+    /// mark in front (what PowerShell's `>` writes), or UTF-8 with one.
+    #[test]
+    fn text_as_windows_saves_it_is_searched_too() {
+        let text = format!("user: gis\r\npassword: {PW}\r\n");
+        let little: Vec<u8> = [0xFF, 0xFE]
+            .into_iter()
+            .chain(text.encode_utf16().flat_map(u16::to_le_bytes))
+            .collect();
+        let big: Vec<u8> = [0xFE, 0xFF]
+            .into_iter()
+            .chain(text.encode_utf16().flat_map(u16::to_be_bytes))
+            .collect();
+        let marked: Vec<u8> = [0xEF, 0xBB, 0xBF].into_iter().chain(text.bytes()).collect();
+        for bytes in [&little, &big, &marked] {
+            let found = find("notes.txt", bytes, &[]);
+            assert_eq!(found.len(), 1, "{found:?}");
+            assert_eq!((found[0].line, found[0].what.as_str()), (2, PASSWORD));
+            assert!(!format!("{found:?}").contains(PW));
+        }
+        // A setting on the very first line, behind the mark.
+        let first = format!("{}token: {}\r\nportal: gis\r\n", '\u{feff}', mixed(32));
+        let found = find("conf.yaml", first.as_bytes(), &[]);
+        assert_eq!(
+            found.iter().map(|f| f.line).collect::<Vec<_>>(),
+            [1],
+            "{found:?}"
+        );
+        // The linked server's own token, in a file saved that way.
+        let own = vec!["zq7k-FAKE-token-0001".to_string()];
+        let note: Vec<u8> = [0xFF, 0xFE]
+            .into_iter()
+            .chain(
+                "pasted zq7k-FAKE-token-0001 here\r\n"
+                    .encode_utf16()
+                    .flat_map(u16::to_le_bytes),
+            )
+            .collect();
+        assert_eq!(find("notes.txt", &note, &own).len(), 1);
+        // The same text that only names a password stays quiet, and bytes
+        // that merely start like the mark are not text.
+        let quiet: Vec<u8> = [0xFF, 0xFE]
+            .into_iter()
+            .chain(
+                "Ask Ana for the password.\r\n"
+                    .encode_utf16()
+                    .flat_map(u16::to_le_bytes),
+            )
+            .collect();
+        assert_eq!(find("notes.txt", &quiet, &[]), []);
+        for bytes in [
+            vec![0xFF, 0xFE],
+            vec![0xFF, 0xFE, 0x41],
+            vec![0xFF, 0xFE, 0, 0, 1, 2, 3, 4],
+            vec![0xFE, 0xFF, 0, 0, 0xD8, 0x00],
+        ] {
+            assert_eq!(find("x.bin", &bytes, &[]), [], "{bytes:?}");
+        }
+    }
+
+    /// Near misses of each of those forms: ordinary scripts, notes and
+    /// settings that name a password without giving one. None may stop a
+    /// sync or keep the assistant from a file.
+    #[test]
+    fn near_misses_of_the_everyday_forms_do_not() {
+        let m20 = mixed(20);
+        let cases: Vec<(&str, String)> = vec![
+            // Comments and docstrings that talk about a password.
+            ("a.py", "# ask Ana for the password\n".into()),
+            ("a.py", "# password: see the credential store\n".into()),
+            ("a.py", "# password = get_password()\n".into()),
+            ("a.py", "# password = os.environ[\"PGPASSWORD\"]\n".into()),
+            ("a.py", "# pwd = os.getcwd()\n# PWD=$(pwd)\n".into()),
+            ("a.py", "# password: str\n".into()),
+            ("a.ts", "// password: string;\n".into()),
+            ("a.py", "# password: sha256 of what the person typed\n".into()),
+            ("a.py", "# the password is base64-encoded in the header\n".into()),
+            ("a.py", "# the password is 12 characters or more\n".into()),
+            ("a.py", "# the password is kept by Columbus, never here\n".into()),
+            ("a.py", "\"\"\"Connect.\n\n    user: the login name\n    password: the database password, read from the environment\n    token: str\n\"\"\"\n".into()),
+            ("a.py", "'''The machine needs a login and a password.'''\n".into()),
+            ("a.py", "# db.corp.example:5432:gis:gis_reader:<password>\n".into()),
+            ("a.py", "# machine git.corp.example login ana password <password>\n".into()),
+            // A comment sign inside a string is not a comment, and what
+            // follows a real one does not make the code before it words.
+            ("a.py", "x = '# not a comment'; password = pw2026x\n".into()),
+            ("a.py", "conn = connect(user=user, password=pw2026x)  # as set above\n".into()),
+            ("a.js", "const u = \"http://db.corp.example\"; password = pw2026x;\n".into()),
+            // Assignments whose value is code, empty or a stand-in.
+            ("a.py", "os.environ[\"PGPASSWORD\"] = password\n".into()),
+            ("a.py", "os.environ[\"PGPASSWORD\"] = getpass.getpass()\n".into()),
+            ("a.py", "cfg['password'] = ''\n".into()),
+            ("a.py", "cfg[\"password\"] = \"${DB_PASSWORD}\"\n".into()),
+            ("a.py", "cfg['password'] = os.environ['PGPASSWORD']\n".into()),
+            ("a.py", "passwords[0] = \"abcdef\"\n".into()),
+            ("a.py", "password: str\n".into()),
+            ("a.py", "password: str = None\n".into()),
+            ("a.py", "password: str = \"\"\n".into()),
+            ("a.py", "password=os.environ[\"PGPASSWORD\"]\n".into()),
+            ("a.py", "def load(password: str, layer: str = \"roads2026\"):\n".into()),
+            ("a.rs", "pub const STATUS_WRONG_PASSWORD: NTSTATUS = 0xC000006A;\n".into()),
+            ("a.rs", "pub const ICW_MAX_PASSWORD: u32 = 256u32;\n".into()),
+            ("a.py", "MAX_PASSWORD: int = max1024\n".into()),
+            ("a.R", "password <- Sys.getenv(\"PGPASSWORD\")\n".into()),
+            ("a.R", "password <- rstudioapi::askForPassword(\"Database password\")\n".into()),
+            ("a.R", "pwd <- getwd()\n".into()),
+            // Notes that name a password without giving one.
+            ("notes.md", "Ask Ana for the password.\n".into()),
+            ("notes.md", "**Password:** ask Ana\n".into()),
+            ("notes.md", "Password: **in the credential store**\n".into()),
+            ("notes.md", "Password: `<your password>`\n".into()),
+            ("notes.md", "- `password`: `string`, what the person types\n".into()),
+            ("notes.md", "The password is 12 characters or more.\n".into()),
+            ("notes.md", "The password is sha256-hashed before it is stored.\n".into()),
+            ("notes.md", "| user | password |\n|---|---|\n".into()),
+            ("notes.md", "| user | password |\n|---|---|\n| gis_reader | <ask Ana> |\n| gis_editor | ******** |\n| gis_admin | in the vault |\n".into()),
+            ("notes.md", "| field | type |\n|---|---|\n| password | varchar2 |\n| user_id1 | int4 |\n".into()),
+            ("notes.md", "| key | value |\n|---|---|\n| api_key | set in the environment |\n".into()),
+            ("notes.md", "| password |\n|---|\n\nparcel4471 | roads2026\n".into()),
+            ("notes.md", "cat names1.txt | grep password | wc -l\n".into()),
+            // A notebook: text that names a password, and code that reads one.
+            ("nb.ipynb", notebook(&[("markdown", &["Ask Ana for the password."]), ("code", &["password = os.environ[\"PGPASSWORD\"]", "conn = connect(user=user, password=pw2026x)"])])),
+            // Tags with nothing, or a stand-in, between them.
+            ("a.xml", "<password/>\n<password></password>\n".into()),
+            ("a.xml", "<password>${DB_PASSWORD}</password>\n".into()),
+            ("a.xml", "<password>changeme</password>\n".into()),
+            ("a.xml", "<passwordPolicy>min8chars</passwordPolicy>\n".into()),
+            ("a.html", "<input type=\"password\" name=\"pwd1\" id=\"pwd-field1\">\n".into()),
+            ("a.html", "<label for=\"pwd1\">Password</label>\n".into()),
+            // Tokens, keys and secrets that are not there.
+            ("conf.yaml", "token: null\n".into()),
+            ("conf.yaml", "token: ${ARCGIS_TOKEN}\n".into()),
+            ("conf.yaml", "client_secret: <from the portal>\n".into()),
+            ("conf.yaml", "token: abc123\n".into()),
+            ("conf.yaml", "token_url: https://login.example.org/oauth2/v2.0/token\n".into()),
+            ("conf.yaml", "secret: /run/secrets/client-secret-v2\n".into()),
+            ("conf.yaml", "private_key: keys/deploy_ed25519_2026.pem\n".into()),
+            ("a.py", "api_key = os.environ[\"ARCGIS_API_KEY\"]\n".into()),
+            ("a.py", format!("token = {m20}\n")),
+            ("a.rs", "    \"token=access_token_123&token_type_hint=access_token\",\n".into()),
+            ("notes.md", format!("a word in a sentence, not a setting: token={m20}\n")),
+            // `pass` with its other meanings.
+            ("conf.yaml", "pass: true\n".into()),
+            ("a.py", "    pass  # nothing to do\n".into()),
+            ("a.py", "    # columns; pass 'float64' explicitly if that is wanted\n".into()),
+            ("notes.md", "To keep the type, pass \"int64x\" as the second value.\n".into()),
+            ("conf.yaml", "compass: north2east\n".into()),
+            ("a.py", "bypass = \"route66x\"\n".into()),
+            ("a.py", "first_pass = \"stage1x\"\n".into()),
+            ("a.py", "overpass_url = \"https://overpass-api.de/api/interpreter\"\n".into()),
+            // Database commands without a password in them.
+            ("a.sql", "ALTER USER gis WITH PASSWORD '<new password>';\n".into()),
+            ("a.sql", "ALTER USER gis IDENTIFIED BY :new_pw;\n".into()),
+            ("a.sql", "ALTER USER gis PASSWORD EXPIRE;\n".into()),
+            ("a.sql", "-- each parcel is identified by 'OBJECTID_1'\n".into()),
+            ("a.sql", "COMMENT ON COLUMN users.password IS 'bcrypt2a hash';\n".into()),
+            ("a.py", "parser.add_argument(\"--password\", help=\"the password 'for-prod' is asked for\")\n".into()),
+            // Command lines where nothing follows the flag, or what
+            // follows is not a password.
+            ("a.sh", "publish --password\n".into()),
+            ("a.sh", "publish --password $DB_PASS1\n".into()),
+            ("a.sh", "publish --password \"$DB_PASSWORD\"\n".into()),
+            ("a.sh", "publish --password --portal https://gis.corp.example\n".into()),
+            ("a.sh", "publish --password-file secrets1.txt\n".into()),
+            ("a.sh", "mysql -u root -p\n".into()),
+            ("a.sh", "mysql -u root -p parcels2024\n".into()),
+            ("a.sh", "psql -U gis -p 5432 -h db1host\n".into()),
+            ("a.sh", "ssh -p 2222 ana@host1\n".into()),
+            ("a.sh", "sshpass -p \"$SFTP_PASS1\" sftp -P 2222 ana@host1\n".into()),
+            ("a.sh", "sshpass -e ssh -p 2222 ana@host1\n".into()),
+            ("a.sh", "mkdir -p output2026\n".into()),
+            ("a.sh", "cp -u -p file1.txt backup1\n".into()),
+            ("a.sh", "rsync -u -P data2024 backup\n".into()),
+            ("a.sh", "python -u run.py -p profile1\n".into()),
+            ("a.sh", "docker run -u 1000:1000 -p 8080:80 image1\n".into()),
+            ("a.sh", "docker run -u ana -p host1:8080 image1\n".into()),
+            ("a.sh", "sudo -u postgres createuser -P gis_user1\n".into()),
+            ("a.sh", "psql -U gis -d roads -P border=2 -c \"select 1\"\n".into()),
+            ("a.py", "# Usage: python load.py -u <user> -p <password>\n".into()),
+            ("a.sh", "read -s -p \"Password: \" PW1234\n".into()),
+            ("a.sh", "curl -u \"$USER:$PASS\" https://gis.corp.example\n".into()),
+            ("a.sh", "curl -u gis https://gis.corp.example/rest1\n".into()),
+            ("a.py", "parser.add_argument(\"--password\", type=str2bool, help=\"ask for it\")\n".into()),
+            ("a.py", "parser.add_argument(\"-p\", \"--password\", dest=\"pw2026\")\n".into()),
+            ("a.py", "@click.option(\"--password\", \"-p\", prompt=True)\n".into()),
+            ("a.py", "run([\"sqlcmd\", \"-U\", user, \"-P\", password1])\n".into()),
+            ("notes.md", "Use `--password` to give it, or leave it out to be asked.\n".into()),
+            // The word Bearer without a token.
+            ("a.md", "Authorization: Bearer <token>\n".into()),
+            ("a.md", "Authorization: Bearer YOUR_ACCESS_TOKEN_1234567890\n".into()),
+            ("a.py", "headers = {\"Authorization\": f\"Bearer {token}\"}\n".into()),
+            ("a.md", "the bearer of this letter is 21 years old or more\n".into()),
+        ];
+        // As they are, and with the line ends Windows writes.
+        let wrong: Vec<String> = cases
+            .iter()
+            .flat_map(|(path, text)| [(*path, text.clone()), (*path, text.replace('\n', "\r\n"))])
+            .filter_map(|(path, text)| {
+                hit_in(path, &text).map(|(line, what)| {
+                    format!("{path} should not stop: {text:?} -> line {line} ({what})")
+                })
+            })
+            .collect();
+        assert!(
+            wrong.is_empty(),
+            "{} of {} stop:\n{}",
+            wrong.len(),
+            2 * cases.len(),
+            wrong.join("\n")
+        );
+    }
+
+    /// Two stops the re-check called borderline now pass: a value that is a
+    /// path, and one that is a column's type. A real value in their place
+    /// still stops.
+    #[test]
+    fn a_path_or_a_column_type_is_not_a_password() {
+        for (path, text) in [
+            ("run.json", "{\"pwd\": \"/home/ana/project\"}\n"),
+            ("a.py", "pwd = \"/home/ana/project\"\n"),
+            ("a.py", "pwd = r\"C:\\Users\\ana\\project\"\n"),
+            ("run.json", "{\"pwd\": \"C:\\\\Users\\\\ana\\\\project\"}\n"),
+            ("a.py", "pwd = '~/project2026'\n"),
+            ("schema.yaml", "fields:\n  password: varchar2\n"),
+            (
+                "schema.yaml",
+                "fields:\n  password: nvarchar2\n  pwd: int4\n",
+            ),
+            (
+                "schema.json",
+                "{\"password\": \"varchar2\", \"pwd\": \"string\"}\n",
+            ),
+            ("notes.md", "password: sha256\n"),
+        ] {
+            assert_eq!(hit_in(path, text), None, "{path} should not stop: {text}");
+        }
+        for (path, text) in [
+            ("run.json", format!("{{\"pwd\": \"/{PW}\"}}\n")),
+            ("a.py", format!("pwd = \"{PW}/x\"\n")),
+            (
+                "schema.yaml",
+                format!("fields:\n  password: varchar2{PW}\n"),
+            ),
+            ("schema.yaml", format!("password: base64:{}\n", mixed(24))),
+            ("schema.yaml", "fields:\n  pwd: char8x\n".to_string()),
+        ] {
+            assert!(hit_in(path, &text).is_some(), "{path} should stop: {text}");
+        }
+    }
+
+    /// A user and a password packed as a request's Basic sign-in packs
+    /// them (base64 of `user:password`), for the tests.
+    fn basic(user: &str, password: &str) -> String {
+        const LETTERS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let text = format!("{user}:{password}");
+        let mut out = String::new();
+        for three in text.as_bytes().chunks(3) {
+            let n = (u32::from(three[0]) << 16)
+                | (u32::from(*three.get(1).unwrap_or(&0)) << 8)
+                | u32::from(*three.get(2).unwrap_or(&0));
+            for k in 0..4 {
+                if k <= three.len() {
+                    out.push(LETTERS[((n >> (18 - 6 * k)) & 63) as usize] as char);
+                } else {
+                    out.push('=');
+                }
+            }
+        }
+        out
+    }
+
+    /// A password handed to a well-known call by its place, with no name
+    /// beside it, and the other forms the first round of R-105 left out:
+    /// each on its own, with the line the finding must name.
+    #[test]
+    fn well_known_calls_and_forms_stop_a_sync() {
+        let m32 = mixed(32);
+        let packed = basic("gis", PW);
+        assert_eq!(basic("user", "pass"), "dXNlcjpwYXNz");
+        let call = "handed to a call that signs in";
+        let quoted = "a password or key written into the file (a quoted value)";
+        let password = "a password written into the file";
+        let oracle = "an Oracle sign-in";
+        let cases: Vec<(&str, String, usize, &str)> = vec![
+            // ArcGIS: the third string of GIS, by any of its names.
+            ("sign_in.py", format!("from arcgis.gis import GIS\ngis = GIS(\"https://www.arcgis.com\", \"ana\", \"{PW}\")\n"), 2, call),
+            ("sign_in.py", format!("portal = arcgis.gis.GIS(url, \"ana\", \"{PW}\")\n"), 1, call),
+            ("sign_in.py", format!("portal = gis.GIS(url, 'ana', '{PW}', verify_cert=False)\n"), 1, call),
+            // Over several lines, as a formatter lays a call out: with a
+            // comma after the last argument, and without.
+            ("sign_in.py", format!("g = arcgis.gis.GIS(\n    \"https://gis.corp.example/portal\",\n    \"ana\",\n    \"{PW}\",\n    verify_cert=False,\n)\n"), 4, call),
+            ("sign_in.py", format!("g = GIS(\n    url,  # the county's portal\n    'ana',\n    '{PW}'\n)\nprint(g)\n"), 4, call),
+            // In a note and in a notebook's code.
+            ("notes.md", format!("Sign in first: `GIS(\"https://www.arcgis.com\", \"ana\", \"{PW}\")`.\n"), 1, call),
+            ("nb.ipynb", notebook(&[("code", &["from arcgis.gis import GIS", &format!("gis = GIS(url, \"ana\", \"{PW}\")")])]), 10, call),
+            // arcpy: the portal, a connection file, a geodatabase.
+            ("a.py", format!("arcpy.SignInToPortal(\"https://gis.corp.example/portal\", \"ana\", \"{PW}\")\n"), 1, call),
+            ("a.py", format!("arcpy.SignInToPortal(arcpy.GetActivePortalURL(), \"ana\", \"{PW}\")\n"), 1, call),
+            ("a.py", format!("arcpy.management.CreateDatabaseConnection(out, \"prod.sde\", \"SQL_SERVER\", \"db1\", \"DATABASE_AUTH\", \"gis\", \"{PW}\")\n"), 1, call),
+            ("a.py", format!("arcpy.CreateDatabaseConnection_management(r\"C:\\conn\", \"prod.sde\", \"ORACLE\", \"db1/orcl\", \"DATABASE_AUTH\", \"gis\", \"{PW}\", \"SAVE_USERNAME\")\n"), 1, call),
+            ("a.py", format!("arcpy.management.CreateDatabaseConnection(\n    out_folder,\n    \"prod.sde\",\n    \"POSTGRESQL\",\n    \"db1.corp.example\",\n    \"DATABASE_AUTH\",\n    \"gis\",\n    \"{PW}\",\n    \"SAVE_USERNAME\",\n    \"roads\",\n)\n"), 8, call),
+            ("a.py", format!("egdb = arcpy.ArcSDESQLExecute(\"db1\", \"sde:oracle11g:orcl\", \"\", \"gis\", \"{PW}\")\n"), 1, call),
+            // arcpy's other tools that are handed a password by its place.
+            ("a.py", format!("cs = arcpy.management.CreateDatabaseConnectionString(\"SQL_SERVER\", \"db1\", \"DATABASE_AUTH\", \"gis\", \"{PW}\")\n"), 1, call),
+            ("a.py", format!("cs = arcpy.CreateDatabaseConnectionString_management(\"ORACLE\", \"db1/orcl\", \"DATABASE_AUTH\", \"gis\", \"{PW}\")\n"), 1, call),
+            ("a.py", format!("arcpy.management.CreateEnterpriseGeodatabase(\"SQL_Server\", \"db1\", \"roads\", \"DATABASE_AUTH\", \"sa\", \"{PW}\", \"SDE_SCHEMA\", \"sde\", sde_pw, \"\", keycodes)\n"), 1, call),
+            ("a.py", format!("arcpy.CreateEnterpriseGeodatabase_management(\"SQL_Server\", \"db1\", \"roads\", \"DATABASE_AUTH\", \"sa\", sa_pw, \"SDE_SCHEMA\", \"sde\", \"{PW}\", \"\", keycodes)\n"), 1, call),
+            ("a.py", format!("arcpy.management.CreateDatabaseUser(sde, \"DATABASE_USER\", \"editor1\", \"{PW}\")\n"), 1, call),
+            ("a.py", format!("arcpy.CreateDatabaseUser_management(sde, \"DATABASE_USER\", \"editor1\", \"{PW}\", \"editors\")\n"), 1, call),
+            ("a.py", format!("arcpy.CreateArcSDEConnectionFile_management(out, \"prod.sde\", \"db1\", \"5151\", \"\", \"DATABASE_AUTH\", \"gis\", \"{PW}\")\n"), 1, call),
+            // A new member's first password (ArcGIS API for Python).
+            ("a.py", format!("gis.users.create(\"ana2\", \"{PW}\", \"Ana\", \"Gis\", \"ana@county.example\")\n"), 1, call),
+            // A blank between a call's name and its bracket, in a script.
+            ("a.py", format!("gis = GIS (url, \"ana\", \"{PW}\")\n"), 1, call),
+            ("a.py", format!("arcpy.SignInToPortal (url, \"ana\", \"{PW}\")\n"), 1, call),
+            // Web clients: a pair given as the sign-in.
+            ("a.py", format!("r = requests.get(url, auth=(\"ana\", \"{PW}\"))\n"), 1, call),
+            ("a.py", format!("session.auth = (\"ana\", \"{PW}\")\n"), 1, call),
+            ("a.py", format!("options = {{\"timeout\": 30, \"auth\": (\"ana\", \"{PW}\")}}\n"), 1, call),
+            ("a.py", format!("AUTH = (\n    \"ana\",\n    \"{PW}\",\n)\n"), 3, call),
+            ("a.py", format!("es = Elasticsearch(hosts, http_auth=('ana', '{PW}'))\n"), 1, call),
+            ("a.py", format!("auth = HTTPBasicAuth(\"ana\", \"{PW}\")\n"), 1, call),
+            ("a.py", format!("r = requests.get(url, auth=requests.auth.HTTPDigestAuth('ana', '{PW}'))\n"), 1, call),
+            ("a.py", format!("client = httpx.Client(auth=httpx.BasicAuth(\"ana\", \"{PW}\"))\n"), 1, call),
+            ("a.py", format!("auth = aiohttp.BasicAuth(\"ana\", \"{PW}\")\n"), 1, call),
+            // A default given to a value read from the environment.
+            ("a.py", format!("password = os.environ.get(\"PGPASSWORD\", \"{PW}\")\n"), 1, quoted),
+            ("a.py", format!("secret = os.getenv(\"AGOL_PASSWORD\", \"{PW}\")\n"), 1, quoted),
+            ("a.py", format!("os.environ.setdefault(\"PGPASSWORD\", \"{PW}\")\n"), 1, quoted),
+            ("a.py", format!("os.putenv('PGPASSWORD', '{PW}')\n"), 1, quoted),
+            ("a.py", format!("key = os.environ.get(\"ARCGIS_API_KEY\", \"{m32}\")\n"), 1, quoted),
+            ("a.py", format!("key = os.getenv(\n    \"MAPBOX_ACCESS_TOKEN\",\n    \"{m32}\",\n)\n"), 3, quoted),
+            // The default given by its name, and a value to fall back on.
+            ("a.py", format!("password = os.getenv(\"PGPASSWORD\", default=\"{PW}\")\n"), 1, quoted),
+            ("a.py", format!("password = os.environ.get('PGPASSWORD', default='{PW}')\n"), 1, quoted),
+            ("a.r", format!("pw <- Sys.getenv(\"PGPASSWORD\", unset = \"{PW}\")\n"), 1, quoted),
+            ("a.py", format!("password = os.environ.get(\"PGPASSWORD\") or \"{PW}\"\n"), 1, quoted),
+            ("a.py", format!("pw = os.getenv(\"AGOL_PW\") or '{PW}'\n"), 1, quoted),
+            ("a.py", format!("conn = connect(password=os.getenv(\"PGPASSWORD\") or \"{PW}\", host=h)\n"), 1, quoted),
+            ("a.php", format!("$pw = getenv('DB_PASSWORD') ?: '{PW}';\n"), 1, quoted),
+            ("a.cs", format!("var p = Environment.GetEnvironmentVariable(\"PGPASSWORD\") ?? \"{PW}\";\n"), 1, quoted),
+            // Read from the environment as other languages do.
+            ("a.js", format!("const p = process.env.DB_PASSWORD || \"{PW}\";\n"), 1, quoted),
+            ("a.js", format!("const k = process.env[\"ARCGIS_API_KEY\"] ?? \"{m32}\";\n"), 1, quoted),
+            ("a.ts", format!("const k = import.meta.env.VITE_ARCGIS_API_KEY || \"{m32}\";\n"), 1, quoted),
+            ("a.ps1", format!("$p = $env:PGPASSWORD ?? \"{PW}\"\n"), 1, quoted),
+            ("a.rb", format!("db = ENV[\"DB_PASSWORD\"] || \"{PW}\"\n"), 1, quoted),
+            ("run.sh", format!("export PGPASSWORD=\"${{PGPASSWORD:-{PW}}}\"\n"), 1, password),
+            ("run.sh", format!("PGPASSWORD=${{PGPASSWORD:-{PW}}} psql -h db1 roads\n"), 1, password),
+            ("compose.yml", format!("      POSTGRES_PASSWORD: ${{POSTGRES_PASSWORD:-{PW}}}\n"), 1, password),
+            ("run.sh", format!(": \"${{ARCGIS_API_KEY:={m32}}}\"\n"), 1, "a token, key or secret"),
+            // Windows' own: a variable set for good, and what PowerShell
+            // makes a secret.
+            ("setup.bat", format!("setx PGPASSWORD {PW}\n"), 1, password),
+            ("setup.bat", format!("SETX ARCGIS_API_KEY {m32} /M\n"), 1, "a token, key or secret"),
+            ("setup.ps1", format!("[Environment]::SetEnvironmentVariable(\"PGPASSWORD\", \"{PW}\", \"User\")\n"), 1, quoted),
+            ("a.ps1", format!("$p = [Environment]::GetEnvironmentVariable(\"PGPASSWORD\", \"User\") ?? \"{PW}\"\n"), 1, quoted),
+            ("a.ps1", format!("$secure = ConvertTo-SecureString \"{PW}\" -AsPlainText -Force\n"), 1, call),
+            ("a.ps1", format!("$secure = ConvertTo-SecureString -String '{PW}' -AsPlainText -Force\n"), 1, call),
+            ("a.ps1", format!("$secure = convertto-securestring -AsPlainText -Force -String \"{PW}\"\n"), 1, call),
+            ("a.ps1", format!("$cred = New-Object System.Management.Automation.PSCredential (\"siteadmin\", (ConvertTo-SecureString \"{PW}\" -AsPlainText -Force))\n"), 1, call),
+            ("a.ps1", format!("$secure = \"{PW}\" | ConvertTo-SecureString -AsPlainText -Force\n"), 1, call),
+            // A string to fall back on, given to a name that holds a
+            // password.
+            ("a.py", format!("password = args.password or \"{PW}\"\n"), 1, quoted),
+            ("tool.py", format!("password = arcpy.GetParameterAsText(1) or \"{PW}\"\n"), 1, quoted),
+            ("a.js", format!("const password = opts.password || \"{PW}\";\n"), 1, quoted),
+            ("a.py", format!("conn = connect(user=u, password=p or \"{PW}\", host=h)\n"), 1, quoted),
+            ("a.py", format!("settings = {{\"password\": (stored or \"{PW}\")}}\n"), 1, quoted),
+            // Read from the environment inside another call.
+            ("a.py", format!("gis = GIS(url, \"ana\", os.environ.get(\"AGOL_PW\", \"{PW}\"))\n"), 1, quoted),
+            ("a.py", format!("auth = HTTPBasicAuth(\"ana\", os.getenv(\"PORTAL_PASSWORD\", \"{PW}\"))\n"), 1, quoted),
+            ("a.py", format!("r = requests.get(url, auth=(\"ana\", os.environ.get(\"PORTAL_PASSWORD\", \"{PW}\")))\n"), 1, quoted),
+            ("a.py", format!("gis = GIS(url, \"ana\", os.environ.get(\n    \"AGOL_PW\", \"{PW}\"))\n"), 2, quoted),
+            // Oracle: by place, and as user/password@database.
+            ("a.py", format!("conn = cx_Oracle.connect(\"gis\", \"{PW}\", \"db1.corp.example/orcl\")\n"), 1, call),
+            ("a.py", format!("conn = cx_Oracle.Connection(\"gis\", \"{PW}\", dsn)\n"), 1, call),
+            // SQL Server and MySQL, by place.
+            ("a.py", format!("conn = pymssql.connect(\"db1\", \"gis\", \"{PW}\", \"roads\")\n"), 1, call),
+            ("a.py", format!("conn = MySQLdb.connect(\"db1\", \"gis\", \"{PW}\", \"roads\")\n"), 1, call),
+            ("a.py", format!("conn = pymysql.connect(\"db1\", \"gis\", \"{PW}\", \"roads\")\n"), 1, call),
+            // A file server and a mail server: `login(user, password)`.
+            ("a.py", format!("ftp.login(\"ana\", \"{PW}\")\n"), 1, call),
+            ("a.py", format!("server.login(\"gis@county.example\", \"{PW}\")\n"), 1, call),
+            ("a.py", format!("ftp = FTP(\"ftp.county.example\", \"ana\", \"{PW}\")\n"), 1, call),
+            ("a.py", format!("ftp = ftplib.FTP_TLS(\"ftp.county.example\", \"ana\", \"{PW}\")\n"), 1, call),
+            ("a.py", format!("conn = oracledb.connect(\"gis/{PW}@db1.corp.example:1521/orcl\")\n"), 1, oracle),
+            ("a.py", format!("conn = cx_Oracle.connect('gis/{PW}@orcl')\n"), 1, oracle),
+            ("a.py", format!("dsn = \"gis/{PW}@//db1.corp.example:1521/orcl\"\n"), 1, oracle),
+            ("load.sh", format!("sqlplus gis/{PW}@orcl @load.sql\n"), 1, oracle),
+            ("load.sh", format!("sqlplus -s gis/{PW}@//db1:1521/orcl <<EOF\n"), 1, oracle),
+            ("load.sh", format!("sqlplus \"gis/{PW}@(DESCRIPTION=(ADDRESS=(HOST=db1)(PORT=1521))(CONNECT_DATA=(SID=orcl)))\"\n"), 1, oracle),
+            // With no database behind it, right after the program's name.
+            ("load.sh", format!("sqlplus -s gis/{PW} @load.sql\n"), 1, oracle),
+            ("load.bat", format!("C:\\oracle\\bin\\sqlplus.exe gis/{PW}\n"), 1, oracle),
+            ("dump.sh", format!("exp gis/{PW} file=gis.dmp\n"), 1, oracle),
+            ("dump.sh", format!("imp userid=gis/{PW} file=gis.dmp\n"), 1, oracle),
+            ("load.sql", format!("connect gis/{PW}\n"), 1, oracle),
+            ("load.bat", format!("sqlldr userid=gis/{PW}@orcl control=roads.ctl\n"), 1, oracle),
+            ("load.par", format!("userid=gis/{PW}@orcl\n"), 1, oracle),
+            ("dump.sh", format!("expdp gis/{PW}@orcl schemas=gis dumpfile=gis.dmp\n"), 1, oracle),
+            ("dump.sh", format!("impdp gis/{PW}@orcl schemas=gis dumpfile=gis.dmp\n"), 1, oracle),
+            ("dump.sh", format!("exp gis/{PW}@orcl file=gis.dmp\n"), 1, oracle),
+            ("dump.sh", format!("imp gis/{PW}@orcl file=gis.dmp full=y\n"), 1, oracle),
+            ("load.sql", format!("CONNECT gis/{PW}@orcl\n"), 1, oracle),
+            ("load.sql", format!("conn gis/{PW}@orcl\n"), 1, oracle),
+            ("run.sh", format!("ogr2ogr -f GeoJSON roads.json OCI:gis/{PW}@orcl:ROADS\n"), 1, oracle),
+            // A sign-in packed into one value.
+            ("call.sh", format!("curl -H \"Authorization: Basic {packed}\" https://gis.corp.example/rest\n"), 1, "Authorization: Basic"),
+            ("call.py", format!("headers = {{\"Authorization\": \"Basic {packed}\"}}\n"), 1, "Authorization: Basic"),
+            ("call.py", format!("headers = {{'authorization': 'basic {}'}}\n", basic("admin", "geoserver")), 1, "Authorization: Basic"),
+            // Several names given their values at once.
+            ("a.py", format!("USER, PASSWORD = \"gis\", \"{PW}\"\n"), 1, quoted),
+            ("a.py", format!("user, pwd = (\"gis\", \"{PW}\")\n"), 1, quoted),
+            ("a.py", format!("host, user, password, db = 'db1', 'gis', '{PW}', 'roads'\n"), 1, quoted),
+            ("a.go", format!("user, password := \"gis\", \"{PW}\"\n"), 1, quoted),
+            // `pw`, as `pass`.
+            ("a.py", format!("pw = \"{PW}\"\n"), 1, quoted),
+            ("a.py", format!("AGOL_PW = '{PW}'\n"), 1, quoted),
+            ("notes.md", format!("user: gis\npw: {PW}\n"), 2, password),
+            ("conf.yaml", format!("db_pw: {PW}\n"), 1, password),
+            ("run.sh", format!("plink -pw {PW} ana@files.corp.example\n"), 1, "on a command line"),
+            // MySQL's -p with the password right behind it.
+            ("run.sh", format!("mysql -u root -p{PW} gis < load.sql\n"), 1, "on a command line"),
+            ("run.sh", format!("mysqldump -uroot -p{PW} gis > gis.sql\n"), 1, "on a command line"),
+            ("run.sh", format!("mariadb --user=root -p'{PW}' gis\n"), 1, "on a command line"),
+        ];
+        let values = [PW, m32.as_str(), packed.as_str(), "geoserver"];
+        let mut wrong = missed(&cases, &values);
+        let windows: Vec<(&str, String, usize, &str)> = cases
+            .iter()
+            .map(|(path, text, line, what)| (*path, text.replace('\n', "\r\n"), *line, *what))
+            .collect();
+        wrong.extend(missed(&windows, &values));
+        assert!(
+            wrong.is_empty(),
+            "{} of {} are not found:\n{}",
+            wrong.len(),
+            2 * cases.len(),
+            wrong.join("\n")
+        );
+        // Oracle's `exp` and `imp` as items of a list: found before the
+        // two words stopped counting anywhere on a line, and still.
+        for text in [
+            format!("subprocess.run([\"exp\", \"gis/{PW}@orcl\", \"file=gis.dmp\"])\n"),
+            format!("os.system(\"imp gis/{PW}@orcl file=gis.dmp full=y\")\n"),
+            format!("subprocess.run([\"sqlplus\", \"gis/{PW}@orcl\", \"@load.sql\"])\n"),
+            format!("DSN = \"gis/{PW}@db1/orcl\"\n"),
+            format!("oraDsn = \"gis/{PW}@db1/orcl\"\n"),
+        ] {
+            let got = hit_in("a.py", &text);
+            assert!(
+                got.as_ref().is_some_and(|(_, w)| w.contains(oracle)),
+                "{text} -> {got:?}"
+            );
+        }
+        // An address with a user and a password in it was stopped before
+        // R-105, and still is.
+        for text in [
+            format!("url = \"postgresql://ana:{PW}@db1/roads\"\n"),
+            format!("engine = create_engine('oracle+oracledb://gis:{PW}@db1:1521/?service_name=orcl')\n"),
+        ] {
+            let got = hit_in("a.py", &text);
+            assert!(
+                got.as_ref().is_some_and(|(_, w)| w.contains("an address with a password")),
+                "{text} -> {got:?}"
+            );
+        }
+    }
+
+    /// Near misses of those calls and forms: a variable, a call or a value
+    /// read from the environment in the password's place, a call with too
+    /// few arguments, a stand-in, and ordinary text of the same shape.
+    #[test]
+    fn near_misses_of_the_well_known_calls_do_not() {
+        let cases: Vec<(&str, String)> = vec![
+            // GIS without a password written into it.
+            ("a.py", "gis = GIS(url, username, password)\n".into()),
+            ("a.py", "gis = GIS(\"https://www.arcgis.com\", \"ana\")\n".into()),
+            ("a.py", "gis = GIS(\"pro\")\n".into()),
+            ("a.py", "gis = GIS(profile=\"work\")\n".into()),
+            ("a.py", "gis = GIS(url, \"ana\", getpass.getpass())\n".into()),
+            ("a.py", "gis = GIS(url, \"ana\", os.environ[\"AGOL_PW\"])\n".into()),
+            ("a.py", "gis = GIS()\n".into()),
+            ("a.py", "gis = GIS(\"https://www.arcgis.com\", \"username\", \"password\")\n".into()),
+            ("a.py", "gis = GIS(\"https://www.arcgis.com\", \"ana\", verify_cert=False)\n".into()),
+            ("a.py", "gis = GIS(url, \"ana\", \"\")\n".into()),
+            ("a.py", "gis = GIS(url, \"ana\", f\"{pw}\")\n".into()),
+            ("a.py", "gis = GIS(url, \"ana\", pw + \"suffix1\")\n".into()),
+            ("a.py", "gis = GIS(*args)\ngis = GIS(**settings)\n".into()),
+            ("a.py", "gis = GIS(\n    url,\n    user,\n    password,\n)\nlayer = \"roads2026\"\n".into()),
+            ("a.py", "gis = GIS(\n    \"https://www.arcgis.com\",\n    \"ana\",\n    profile=\"county2026\",\n)\n".into()),
+            ("a.py", "class GIS(Base):\n    def __init__(self, url, username=None, password=None):\n        pass\n".into()),
+            ("a.py", "layer = QGIS(\"roads\", \"north\", \"zone2026\")\nweb = WebGIS(\"a\", \"b\", \"zone2026\")\n".into()),
+            ("notes.md", "The GIS(url, username, password) call signs in; ArcGIS (2026, \"release1\", \"build2026\") is not it.\n".into()),
+            ("notes.md", "Open GIS(\n\nand then, later, \"roads2026\",\n\"north2026\",\n\"zone2026\"\n".into()),
+            // arcpy calls without one.
+            ("a.py", "arcpy.SignInToPortal(arcpy.GetActivePortalURL(), user, pw)\n".into()),
+            ("a.py", "arcpy.SignInToPortal(\"https://gis.corp.example/portal\")\n".into()),
+            ("a.py", "arcpy.management.CreateDatabaseConnection(out, \"prod.sde\", \"SQL_SERVER\", \"db1\", \"OPERATING_SYSTEM_AUTH\")\n".into()),
+            ("a.py", "arcpy.management.CreateDatabaseConnection(out, \"prod.sde\", \"SQL_SERVER\", \"db1\", \"DATABASE_AUTH\", user, pw)\n".into()),
+            ("a.py", "arcpy.management.CreateDatabaseConnection(out, \"prod.sde\", \"SQL_SERVER\", \"db1\", \"DATABASE_AUTH\", \"gis\", \"#\", \"SAVE_USERNAME\")\n".into()),
+            ("a.py", "arcpy.management.CreateDatabaseConnection(out, \"roads2026.sde\", \"POSTGRESQL\", \"db1.corp.example\", \"DATABASE_AUTH\", \"gis2026\")\n".into()),
+            ("a.py", "egdb = arcpy.ArcSDESQLExecute(r\"C:\\connections\\prod2026.sde\")\n".into()),
+            ("a.py", "egdb = arcpy.ArcSDESQLExecute(\"db1\", \"5151\", \"roads2026\", user, pw)\n".into()),
+            // Web clients.
+            ("a.py", "r = requests.get(url, auth=(user, pw))\n".into()),
+            ("a.py", "options = {\"timeout\": 30, \"auth\": (user, pw)}\n".into()),
+            ("a.py", "auth = (\n    os.environ[\"AGOL_USER\"],\n    os.environ[\"AGOL_PW\"],\n)\nlayer = \"roads2026\"\n".into()),
+            ("a.py", "def fetch(url, auth: tuple = (\"\", \"\")):\n".into()),
+            ("a.py", "r = requests.get(url, auth=(\"ana\", password))\n".into()),
+            ("a.py", "r = requests.get(url, auth=(\"x-access-token\", token))\n".into()),
+            ("a.py", "r = requests.get(url, auth=(token, \"x-oauth-basic\"))\n".into()),
+            ("a.py", "r = requests.get(url, auth=(\"username\", \"password\"))\n".into()),
+            ("a.py", "auth = HTTPBasicAuth(user, pw)\n".into()),
+            ("a.py", "auth = HTTPBasicAuth(\"ana\", os.environ[\"AGOL_PW\"])\n".into()),
+            ("a.py", "client = httpx.Client(auth=httpx.BasicAuth(user, pw))\n".into()),
+            ("a.py", "auth = (\"roads2026\",)\nauthors = (\"ana\", \"benito2026\")\n".into()),
+            // The environment, read without a default that is a secret.
+            ("a.py", "password = os.environ.get(\"PGPASSWORD\")\n".into()),
+            ("a.py", "password = os.environ.get(\"PGPASSWORD\", \"\")\n".into()),
+            ("a.py", "password = os.getenv(\"PGPASSWORD\", None)\n".into()),
+            ("a.py", "host = os.environ.get(\"PGHOST\", \"db1.corp.example\")\n".into()),
+            ("a.py", "password = os.environ.get(\"PGPASSWORD\", default_pw)\n".into()),
+            ("a.py", "key = os.environ.get(\"ARCGIS_API_KEY\", \"<your key>\")\n".into()),
+            ("a.py", "os.environ.setdefault(\"PGPASSFILE\", \"/home/ana/.pgpass\")\n".into()),
+            ("a.py", "os.environ.setdefault(\"PGPASSWORD\", password)\n".into()),
+            ("a.py", "sort = os.environ.get(\"SORT_KEY\", \"name\")\n".into()),
+            ("a.py", "layer = settings.get(\"password_field\", \"PWD_HASH2\")\n".into()),
+            // Oracle without a password in it.
+            ("a.py", "conn = oracledb.connect(user=user, password=pw, dsn=dsn)\n".into()),
+            ("a.py", "conn = cx_Oracle.connect(user, pw, dsn)\n".into()),
+            ("a.py", "conn = cx_Oracle.connect(\"gis\", pw, \"db1.corp.example/orcl\")\n".into()),
+            ("a.py", "conn = oracledb.connect(user=\"gis\", password=pw, dsn=\"db1.corp.example:1521/orcl\")\n".into()),
+            ("a.sh", "sqlplus /nolog\n".into()),
+            ("a.sh", "sqlplus ana@roads\n".into()),
+            ("a.sh", "sqlplus -s gis@orcl @scripts/load2026.sql\n".into()),
+            ("a.sh", "sqlplus gis/$ORA_PW@orcl @load.sql\n".into()),
+            ("a.sh", "sqlplus / as sysdba\n".into()),
+            ("a.sh", "expdp gis@orcl directory=dp2026 dumpfile=roads2026.dmp\n".into()),
+            ("a.sh", "expdp gis@orcl dumpfile=exports/roads2026.dmp logfile=logs/run2026\n".into()),
+            ("a.sh", "sqlldr gis@orcl control=ctl/roads2026.ctl log=logs/run2026\n".into()),
+            ("a.sh", "exp file=dumps/roads2026.dmp owner=gis\n".into()),
+            ("a.sh", "sqlplus -s /nolog @scripts/load2026.sql\n".into()),
+            ("a.sql", "connect / as sysdba\nconnect gis@orcl\n".into()),
+            ("a.md", "To connect roads2026/north2026 lanes, see the plan.\n".into()),
+            ("a.md", "Connect roads/trails2026 layers before the north2026 run.\n".into()),
+            ("a.md", "exp x/y2z3w4 is the ratio we plot; imp a/b2c3d4 was dropped.\n".into()),
+            ("a.sh", "imp userid=gis/${ORA_PW}@orcl file=gis2026.dmp\n".into()),
+            ("notes.md", "The layer is \"ana/roads@2024\" in the old naming.\n".into()),
+            ("notes.md", "Copied to data/2024@v1 and to exports/roads2026@final.\n".into()),
+            ("a.yml", "    uses: actions/checkout@v4\n    uses: county/deploy2026@main\n".into()),
+            ("a.md", "docker pull ghcr.io/county/roads2026@sha256:0a1b2c\n".into()),
+            // Addresses without a password.
+            ("a.py", "url = \"postgresql://ana@db1/roads\"\n".into()),
+            ("a.py", "url = f\"postgresql://{user}:{pw}@db1/roads\"\n".into()),
+            ("a.py", "url = \"https://example.com:8443/arcgis\"\n".into()),
+            // The word Basic without a sign-in behind it.
+            ("a.md", "Authorization: Basic <credentials>\n".into()),
+            ("a.md", format!("Authorization: Basic {}\n", basic("username", "password"))),
+            ("a.md", format!("Authorization: Basic {}\n", basic("user", "pass"))),
+            ("a.md", format!("Authorization: Basic {}\n", basic("aladdin", "opensesame"))),
+            ("a.md", format!("Authorization: Basic {}\n", basic("Aladdin", "open sesame"))),
+            ("a.py", "headers = {\"Authorization\": \"Basic \" + b64encode(pair).decode()}\n".into()),
+            ("a.py", "headers = {\"Authorization\": f\"Basic {packed}\"}\n".into()),
+            ("a.md", "WWW-Authenticate: Basic realm=\"arcgis2026\"\nBasic authorization1234 is off here.\n".into()),
+            ("a.md", format!("The word Basic {} alone says nothing.\n", basic("gis", PW))),
+            // Several names at once, none of them given a secret.
+            ("a.py", "x, y = \"12.5\", \"48.1\"\n".into()),
+            ("a.py", "user, password = \"gis\", getpass.getpass()\n".into()),
+            ("a.py", "user, password = line.split(\",\")\n".into()),
+            ("a.py", "user, password = creds\n".into()),
+            ("a.py", "USER, PASSWORD = \"gis\", \"changeme\"\n".into()),
+            ("a.py", "name, layer = \"roads2026\", \"north2026\"\n".into()),
+            ("a.py", "if user == \"gis\", password:\n".into()),
+            // `pw` with its other meanings.
+            ("a.py", "pw = get_pw()\n".into()),
+            ("a.py", "pw = args.pw\n".into()),
+            ("a.py", "pw = \"1024px\"\npw: 12.5mm\n".into()),
+            ("conf.yaml", "pw: 1024px\npw: 0.5\n".into()),
+            ("a.py", "kpw = \"roads2026\"\nmpw: north2026\n".into()),
+            // MySQL without a password on the line.
+            ("a.sh", "mysql -uroot -p$MYSQL_PW gis\n".into()),
+            ("a.sh", "mysql -u root -p\"$DB_PASS1\" gis\n".into()),
+            ("a.sh", "mysql -u root -P 3306 gis2026\n".into()),
+            ("a.sh", "find . -name \"*.sql\" -print0 | xargs -0 mysql -u root\n".into()),
+            ("a.sh", "tar -xpzf roads2026.tgz\npython -profile1x run.py\n".into()),
+            ("a.sh", "mysql -u root -p gis2026\n".into()),
+            ("a.sh", "mysqldump -u root -p --databases gis2026 > out2026.sql\n".into()),
+            ("a.sh", "mysqldump -u root gis | ssh -p2222 backup@host \"cat > gis2026.sql\"\n".into()),
+            // A blank before the bracket, where it is no call.
+            ("a.py", "gis = GIS (url, username, password)\n".into()),
+            ("notes.md", "the three GIS (\"ArcGIS\", \"QGIS\", \"MapInfo2026\") packages\n".into()),
+            ("a.py", "# the three GIS (\"ArcGIS\", \"QGIS\", \"MapInfo2026\") packages\n".into()),
+            // A bracket left open after a call's name, in words: what
+            // follows are not its arguments.
+            ("a.py", "# our GIS(the county's\nprint \"roads\", \"north\", \"zone2026\"\n".into()),
+            ("a.py", "# Sign in to the GIS (the county portal,\n# not ArcGIS Online) before running.\nprint \"roads\", \"north\", \"zone2026\"\n".into()),
+            ("notes.md", "We use GIS(ArcGIS Online\nfor \"roads\", \"north\", \"zone2026\"\n".into()),
+            ("a.py", "# gis = GIS(url,\n#           user, pw)\nprint \"roads\", \"north\", \"zone2026\"\n".into()),
+            // arcpy's other tools without a password written into them.
+            ("a.py", "arcpy.management.CreateDatabaseUser(sde, \"OPERATING_SYSTEM_USER\", \"COUNTY\\\\editor1\")\n".into()),
+            ("a.py", "arcpy.management.CreateDatabaseUser(sde, \"DATABASE_USER\", \"editor1\", pw, \"editors2026\")\n".into()),
+            ("a.py", "arcpy.management.CreateEnterpriseGeodatabase(\"SQL_Server\", \"db1\", \"roads2026\", \"OPERATING_SYSTEM_AUTH\", \"\", \"\", \"SDE_SCHEMA\", \"sde\", sde_pw, \"\", keycodes)\n".into()),
+            ("a.py", "arcpy.management.CreateDatabaseConnectionString(\"SQL_SERVER\", \"db1.corp.example\", \"OPERATING_SYSTEM_AUTH\")\n".into()),
+            ("a.py", "arcpy.management.CreateDatabaseConnectionString(\"SQL_SERVER\", \"db1\", \"DATABASE_AUTH\", \"gis\", pw, \"roads2026\")\n".into()),
+            ("a.py", "gis.users.create(row[\"username\"], row[\"password\"], row[\"first\"], row[\"last\"], row[\"email\"])\n".into()),
+            ("a.py", "gis.users.create(username=name, password=first_password, firstname=\"Ana2026\", lastname=\"Gis2026\", email=mail)\n".into()),
+            ("a.py", "gis.groups.create(\"Roads2026\", \"roads,north2026\")\n".into()),
+            // Other clients without one.
+            ("a.py", "conn = pymssql.connect(\"db1\", \"gis\", pw, \"roads2026\")\n".into()),
+            ("a.py", "conn = pymssql.connect(server=\"db1\", user=\"gis\", password=pw, database=\"roads2026\")\n".into()),
+            ("a.py", "conn = MySQLdb.connect(\"db1.corp.example\", \"gis2026\")\n".into()),
+            ("a.py", "ftp.login()\nftp.login(user, pw)\nftp.login(\"ana\", getpass.getpass())\n".into()),
+            ("a.py", "ftp.login(\"anonymous\", \"ana@county.gov\")\n".into()),
+            ("a.py", "ftp = FTP(\"ftp.county.example\", \"anonymous\", \"ana@county.gov\")\n".into()),
+            ("a.py", "ftp = FTP(\"ftp.county.example\")\nftp.cwd(\"roads2026\")\n".into()),
+            // The environment: a name that holds no secret, a path to a key.
+            ("a.py", "key = os.environ.get(\"S3_KEY\", \"exports/2026/roads_north_v2.parquet\")\n".into()),
+            ("a.py", "field = os.getenv(\"JOIN_KEY\", \"parcel_id_2026_north\")\n".into()),
+            ("a.py", "mk = os.getenv(\"MONKEY\", \"capuchin-2026-north-x1\")\n".into()),
+            ("a.py", "key_path = os.getenv(\"PRIVATE_KEY\", \"keys/portal2026.pem\")\n".into()),
+            ("a.py", "password = os.getenv(\"PGPASSWORD\", default=None)\n".into()),
+            ("a.py", "host = os.getenv(\"PGHOST\", default=\"db1.corp.example\")\n".into()),
+            ("a.py", "password = os.getenv(\"PGPASSWORD\") or default_pw\n".into()),
+            ("a.py", "password = os.environ.get(\"PGPASSWORD\") or getpass.getpass()\n".into()),
+            ("a.py", "password = os.environ.get(\"PGPASSWORD\") or \"\"\n".into()),
+            ("a.py", "host = os.environ.get(\"PGHOST\") or \"db1.corp.example\"\n".into()),
+            ("a.py", "gis = GIS(url, \"ana\", os.environ.get(\"AGOL_PW\"))\n".into()),
+            ("a.py", "gis = GIS(url, \"ana\", os.environ.get(\"AGOL_PW\", \"\"))\n".into()),
+            // Windows' own, without a password written out.
+            ("setup.bat", "setx PGHOST db1x2026\nsetx PGPASSWORD %NEW_PW1%\nsetx /?\nsetx PGPASSWORD\n".into()),
+            ("setup.bat", "echo setx sets it for good; PGPASSWORD roads2026 is not how\n".into()),
+            ("a.ps1", "$t = [Environment]::GetEnvironmentVariable(\"PGPASSWORD\", \"Machine\")\n".into()),
+            ("a.ps1", "$t = [Environment]::GetEnvironmentVariable(\"PGPASSWORD\", \"Process\")\n".into()),
+            ("a.ps1", "[Environment]::SetEnvironmentVariable(\"PGPASSWORD\", $plain, \"User\")\n".into()),
+            ("a.ps1", "[Environment]::SetEnvironmentVariable(\"PGHOST\", \"db1.corp.example\", \"Machine\")\n".into()),
+            ("a.ps1", "$secure = ConvertTo-SecureString $env:PORTAL_PW -AsPlainText -Force\n".into()),
+            ("a.ps1", "$secure = ConvertTo-SecureString $plain -AsPlainText -Force\n".into()),
+            ("a.ps1", "$secure = ConvertTo-SecureString \"$plain\" -AsPlainText -Force\n".into()),
+            ("a.ps1", "$secure = ConvertTo-SecureString (Get-Content \"pw2026.txt\") -AsPlainText -Force\n".into()),
+            ("a.ps1", "$secure = Get-Content \"pw2026.txt\" | ConvertTo-SecureString -AsPlainText -Force\n".into()),
+            ("a.ps1", "$secure = Get-Content \"pw2026.txt\" | ConvertTo-SecureString\n".into()),
+            ("a.ps1", "$secure = Read-Host \"Password for roads2026\" -AsSecureString\n".into()),
+            ("a.ps1", "# ConvertTo-SecureString wants -AsPlainText for \"roads2026\" too\n".into()),
+            ("a.py", "ftp.login(\"ftp\", \"ana@county.gov\")\n".into()),
+            // A fallback that is no password written out.
+            ("a.py", "password = args.password or getpass.getpass()\n".into()),
+            ("a.py", "password = args.password or \"\"\n".into()),
+            ("a.py", "password = args.password or \"changeme\"\n".into()),
+            ("a.py", "pwd = os.getcwd() or \"C:/work2026\"\n".into()),
+            ("a.py", "title = heading or \"Roads2026x\"\n".into()),
+            ("a.py", "token = header.get(\"X-Token\") or \"anonymous\"\n".into()),
+            ("a.py", "if password == expected or \"x1y2z3w4\" in names:\n".into()),
+            ("a.py", "user = args.user or \"gis2026\"; password = args.password\n".into()),
+            ("a.py", "password = floor or 1\npassword = color or \"\"\n".into()),
+            ("a.js", "const password = opts.password || prompt(\"Password for roads2026:\");\n".into()),
+            // (Python's own imaplib has this line: the fallback is the
+            // host's, inside a call's arguments.)
+            ("a.py", "PASSWD = getpass.getpass(\"IMAP password for %s on %s: \" % (USER, host or \"localhost\"))\n".into()),
+            ("a.py", "password = ask(prompts[kind or \"default2026\"])\n".into()),
+            // The environment read elsewhere, without a secret to fall
+            // back on.
+            ("a.js", "const host = process.env.DB_HOST || \"db1.corp.example\";\n".into()),
+            ("a.js", "const p = process.env.DB_PASSWORD;\nconst q = process.env.DB_PASSWORD || \"\";\n".into()),
+            ("a.js", "const p = process.env.DB_PASSWORD || fail(\"DB_PASSWORD is not set, see notes2026\");\n".into()),
+            ("a.js", "const mode = process.env.NODE_ENV || \"development2026\";\n".into()),
+            ("a.js", "const port = env.PORT ?? \"8080x1\";\n".into()),
+            ("a.ps1", "$p = $env:PGPASSWORD\n$h = $env:PGHOST ?? \"db1.corp.example\"\n".into()),
+            ("a.cs", "var p = Environment.GetEnvironmentVariable(\"PGPASSWORD\") ?? throw new Exception(\"unset2026\");\n".into()),
+            ("run.sh", "export PGPASSWORD=\"${PGPASSWORD:-}\"\n".into()),
+            ("run.sh", "export PGPASSWORD=\"${PGPASSWORD:?PGPASSWORD is not set, see notes2026}\"\n".into()),
+            ("run.sh", "export PGPASSWORD=\"${PGPASSWORD:-$DEFAULT_PW1}\"\n".into()),
+            ("run.sh", "export PGHOST=\"${PGHOST:-db1.corp.example}\" PGPORT=\"${PGPORT:-5432}\" PGDATABASE=\"${PGDATABASE:-roads2026}\"\n".into()),
+            ("compose.yml", "      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}\n      POSTGRES_PASSWORD_FILE: ${POSTGRES_PASSWORD_FILE:-/run/secrets/db2026}\n".into()),
+            ("ci.yml", "          PGPASSWORD: ${{ secrets.PGPASSWORD }}\n".into()),
+            ("a.js", "const s = `${password}` + `${token.length}x2026abc`;\n".into()),
+            // Oracle's shape where it is something else: the words `exp`
+            // and `imp`, letters inside a word, a template, a variable.
+            ("a.py", "y = np.exp(x/sigma2@w)\n".into()),
+            ("a.py", "imp.reload(module); path = \"roads2026/north2026@v1\"\n".into()),
+            ("a.py", "import imp, os  # see roads2026/north2026@v1\n".into()),
+            ("a.md", "Copied the roadsnorth layer to exports/roads2026@final.\n".into()),
+            ("a.bat", "sqlplus %ORA_USER%/%ORA_PW%@%ORA_DB% @load.sql\n".into()),
+            ("a.py", "cmd = f\"sqlplus {user}/{pw}@{dsn} @load.sql\"\n".into()),
+            ("a.py", "cmd = \"sqlplus {}/{}@{} @load.sql\".format(user, pw, dsn)\n".into()),
+            ("a.py", "cmd = \"sqlplus %s/%s@%s\" % (user, pw, dsn)\n".into()),
+            ("a.py", "conn = cx_Oracle.connect(user + \"/\" + pw + \"@\" + dsn)\n".into()),
+            ("a.md", "sqlplus username/password@database\n".into()),
+            ("a.py", "cx_Oracle.init_oracle_client(lib_dir=\"oracle/instantclient19\")\n".into()),
+            // `pw` as a pulse's width.
+            ("conf.yaml", "pw: 10.25ns\npw: 1500us\n".into()),
+        ];
+        let wrong: Vec<String> = cases
+            .iter()
+            .flat_map(|(path, text)| [(*path, text.clone()), (*path, text.replace('\n', "\r\n"))])
+            .filter_map(|(path, text)| {
+                hit_in(path, &text).map(|(line, what)| {
+                    format!("{path} should not stop: {text:?} -> line {line} ({what})")
+                })
+            })
+            .collect();
+        assert!(
+            wrong.is_empty(),
+            "{} of {} stop:\n{}",
+            wrong.len(),
+            2 * cases.len(),
+            wrong.join("\n")
+        );
+    }
+
+    /// A file may be one long line (a page saved by a program, or one
+    /// made to be slow): the search reads it in a time that grows with its
+    /// length, not with the square of it. Each of these lines took from
+    /// many seconds to minutes before; a second or two each is a wide
+    /// margin for a slow machine.
+    #[test]
+    fn a_long_line_is_searched_in_time_that_grows_with_its_length() {
+        for unit in [
+            "pw:",
+            "password=",
+            "PWD=",
+            "token:",
+            "export token:",
+            "${PW:-",
+            // (Put together here, so that this file's own lines are not
+            // taken for a password written out.)
+            concat!("pw=", "abc123 "),
+            concat!("the password is ", "abc123 "),
+            "sk-",
+            "xoxb-",
+            "AKIA",
+            "github_pat_",
+            "eyJ-",
+            "://a:b@",
+            "https://h/p?token=",
+            "GIS(",
+            "getenv(\"PW\") or ",
+        ] {
+            let line = unit.repeat(100_000 / unit.len());
+            for path in ["a.py", "a.md"] {
+                let started = std::time::Instant::now();
+                let _ = find(path, line.as_bytes(), &[]);
+                let took = started.elapsed();
+                assert!(
+                    took < std::time::Duration::from_secs(5),
+                    "a 100 KB line of {unit:?} in {path} took {took:?}"
+                );
+            }
+        }
+    }
+
+    /// The one thing that bound costs: in a run of text with no blank,
+    /// quote or separator in it, only the first sixteen names are looked
+    /// at as names given a value. A setting is found as before, also at
+    /// the end of a long line of settings.
+    #[test]
+    fn only_the_first_names_of_one_unbroken_run_are_looked_at() {
+        let run = |names: usize| format!("{}pw={PW}\n", "pw=/x:".repeat(names));
+        assert!(hit_in("conf.ini", &run(15)).is_some());
+        assert!(hit_in("conf.ini", &run(16)).is_none());
+        // Apart, each is a run of its own.
+        let apart = format!("{}pw={PW}\n", "pw=/x; ".repeat(400));
+        assert!(hit_in("conf.ini", &apart).is_some());
+        // The same for the parts of addresses that stand inside one
+        // another (the `${X}` makes each value but the last a template).
+        let parts = |n: usize| {
+            format!(
+                "https://h/p?{}key={}\n",
+                "key=${X}https://h/p?".repeat(n),
+                mixed(24)
+            )
+        };
+        assert!(hit_in("a.md", &parts(15)).is_some());
+        assert!(hit_in("a.md", &parts(16)).is_none());
+        let apart = format!("https://h/p?{}key={}\n", "key=x&".repeat(400), mixed(24));
+        assert!(hit_in("a.md", &apart).is_some());
+    }
+
+    /// A real password may hold a sign that templates use (`$`, `%`, `*`,
+    /// braces) or a word that stand-ins use (`password`, `example`): it is
+    /// found all the same. Each of these went through before (the review
+    /// of R-105 sent them, and read them to the assistant).
+    #[test]
+    fn a_password_with_a_sign_or_a_word_of_a_stand_in_stops_a_sync() {
+        let quoted = "a quoted value";
+        let address = "an address with a password";
+        let cases: Vec<(&str, String, &str)> = vec![
+            ("a.py", "password = \"Password123!\"\n".into(), quoted),
+            ("a.py", "password = \"Parc3l$View\"\n".into(), quoted),
+            ("conf.yaml", "password: \"P@ss$w0rd\"\n".into(), quoted),
+            ("run.sh", format!("export PGPASSWORD='{}'\n", "Dummy!Road55"), quoted),
+            ("run.sh", "PGPASSWORD=\"Tr4ffic$Count26\" psql -h db1 -U gis\n".into(), quoted),
+            ("conf.xml", format!("<password>{}</password>\n", "Tr4ffic$Count"), "between tags"),
+            ("conf.json", "{\"password\": \"Example#2026\"}\n".into(), quoted),
+            ("a.py", format!("engine = create_engine(\"postgresql://gis_reader:{}@db1.corp.example:5432/gis\")\n", "Dra1nage%21Map"), address),
+            ("a.py", "password = \"GISpassword2026\"\n".into(), quoted),
+            ("a.py", "password = \"MySecret#1\"\n".into(), quoted),
+            ("a.py", "password = \"Yourtown2026!\"\n".into(), quoted),
+            ("a.py", "password = \"Tr4ffic*Count\"\n".into(), quoted),
+            ("a.py", "password = \"100%Roads!\"\n".into(), quoted),
+            ("a.py", "password = \"Roads{2026}\"\n".into(), quoted),
+            ("a.py", "password = \"Roads<3Maps\"\n".into(), quoted),
+            ("a.py", "db_password = \"todo-Roads26\"\n".into(), quoted),
+            ("conf.ini", format!("password = {}\n", "Tr4ffic$Count26"), "a password written into the file"),
+            ("notes.txt", format!("https://svc_gis:{}@gis.corp.example/arcgis/rest/services\n", "Bridge%23Insp3ct"), address),
+            ("a.py", "params = {\"username\": \"svc_gis\", \"password\": \"R0adway$Data\", \"f\": \"json\"}\n".into(), quoted),
+            ("a.py", "conn = psycopg2.connect(host=\"db1\", user=\"gis\", password=\"Parc3l$View\")\n".into(), quoted),
+            // More of the same kind.
+            ("a.py", "password = \"Pa$$w0rd!\"\n".into(), quoted),
+            ("a.py", "password = \"M0ney$Maker\"\n".into(), quoted),
+            ("a.py", "password = \"Kennwort2026!\"\n".into(), quoted),
+            ("a.py", "password = \"password123!\"\n".into(), quoted),
+            ("conf.yaml", format!("password: {}\n", "Example#2026"), "a password written into the file"),
+            ("a.py", format!("url = \"https://admin:{}@gis.corp.example/\"\n", "Secret123"), address),
+            ("a.py", format!("url = \"mongodb://gis:{}@db1/roads\"\n", "p%40ssw0rd"), address),
+            ("notes.md", format!("| user | password |\n|---|---|\n| gis | {} |\n", "Tr4ffic$Count26"), "in a table"),
+            ("conf.pgpass", format!("db1.corp.example:5432:roads:gis:{}\n", "Tr4ffic$Count26"), ".pgpass"),
+        ];
+        let mut wrong = Vec::new();
+        for (path, text, what) in &cases {
+            for text in [text.clone(), text.replace('\n', "\r\n")] {
+                let line = text.lines().count();
+                match hit_in(path, &text) {
+                    Some((at, said)) if at == line && said.contains(what) => {}
+                    got => wrong.push(format!("{path}: {text:?} -> {got:?}")),
+                }
+            }
+        }
+        assert!(
+            wrong.is_empty(),
+            "{} of {} are not found:\n{}",
+            wrong.len(),
+            2 * cases.len(),
+            wrong.join("\n")
+        );
+    }
+
+    /// What a stand-in is: a value that is a template (`${…}`, `$NAME`,
+    /// `%NAME%`, `{name}`, `<…>`), put together from parts, a mask, a
+    /// password's hash, or little more than a word that says so. These
+    /// stay quiet.
+    #[test]
+    fn a_template_a_mask_or_a_word_that_says_so_is_a_stand_in() {
+        let cases: Vec<(&str, String)> = vec![
+            // A template as the whole value, or only templates and what
+            // stands between them.
+            ("a.py", "password = \"${DB_PASSWORD}\"\n".into()),
+            ("a.py", "password = \"$DB_PASSWORD\"\n".into()),
+            ("a.py", "password = \"%DB_PASSWORD%\"\n".into()),
+            ("a.py", "password = \"{password}\"\n".into()),
+            ("a.py", "url = f\"postgresql://{user}:{pw}@db1/roads\"\n".into()),
+            ("a.py", "password = \"<your password>\"\n".into()),
+            ("a.py", "password = \"<your-password>\"\n".into()),
+            ("a.py", "password = \"$(pwgen_once)\"\n".into()),
+            ("a.py", "password = \"${PREFIX}-${SUFFIX}\"\n".into()),
+            ("run.sh", "PGPASSWORD=\"$PGUSER:$PGPASS\" psql\n".into()),
+            ("a.py", "password = \"{}:{}:{}\".format(a, b, c)\n".into()),
+            ("a.py", "password = \"%s_%s_%s\" % (a, b, c)\n".into()),
+            ("a.py", "password = \"{{vault_password}}\"\n".into()),
+            ("a.rb", "password = \"#{vault_password}\"\n".into()),
+            ("a.erb", "password: \"<%=vault_password%>\"\n".into()),
+            ("a.py", "password = \"%(db_password)s\"\n".into()),
+            ("a.ps1", "$password = \"$env:PGPASSWORD\"\n".into()),
+            ("ci.yml", "          password: ${{ secrets.DB_PASSWORD }}\n".into()),
+            ("conf.yaml", "password: $ANSIBLE_VAULT;1.1;AES256\n".into()),
+            ("run.bat", "set PGPASSWORD=%1\nset PGPASSWORD=%NEW_PASSWORD_1%\n".into()),
+            // Put together from parts, with other text between.
+            ("a.py", "password = f\"gis-{suffix2026}\"\n".into()),
+            ("a.py", "password = \"gis_%s\" % year2026\n".into()),
+            ("a.py", "password = \"prefix2026-${SUFFIX}\"\n".into()),
+            ("run.sh", "export PGPASSWORD=${PGPASSWORD:?PW2026 is not set}\n".into()),
+            ("conf.xml", "<password>{cipher}AQB2c3d4e5f6g7h8</password>\n".into()),
+            // A path that starts at a variable.
+            ("a.sh", "pwd=\"$HOME/project2026\"\n".into()),
+            ("a.bat", "set pwd=\"%USERPROFILE%\\work2026\"\n".into()),
+            // A mask.
+            ("a.py", "password = \"********\"\n".into()),
+            ("a.py", "password = \"xxxxxxxx\"\n".into()),
+            ("a.py", "password = \"XXXX-XXXX-1234\"\n".into()),
+            ("a.py", "password = \"Wint***\"\n".into()),
+            ("notes.txt", "password: ******** (hidden)\n".into()),
+            // A password's hash is not the password.
+            ("a.py", "password = \"$2b$12$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy\"\n".into()),
+            ("users.json", "{\"password\": \"pbkdf2_sha256$600000$Zm9vYmFyMTIz$3q2+7wAbCdEfGh1234567890abcdefghijklmn=\"}\n".into()),
+            ("a.py", "password = \"$6$rounds=5000$usesomesillysalt$D4IrlXatmP7rx3P3InaxBeoomnAihCKRVQP22JkLQ4hBE2\"\n".into()),
+            // Little more than a word that says so: no digit, or digits
+            // with neither a capital beside small letters nor a sign.
+            ("a.py", "password = \"your-password-here\"\n".into()),
+            ("a.py", "password = \"changeme\"\n".into()),
+            ("conf.yaml", "password: example\n".into()),
+            ("conf.yaml", "secret: \"secret\"\n".into()),
+            ("a.py", "password = \"password123\"\n".into()),
+            ("a.py", "password = \"PASSWORD_123\"\n".into()),
+            ("a.py", "password = \"YOUR_PASSWORD_1\"\n".into()),
+            ("a.py", "password = \"changeme123\"\n".into()),
+            ("a.py", "password = \"mypassword\"\n".into()),
+            ("a.py", "assert login(\"ana\", \"wrong-password\") is False\n".into()),
+            ("labels.json", "{\"password\": \"Passwort\", \"user\": \"Benutzer\"}\n".into()),
+            ("labels.json", "{\"password\": \"Contraseña\"}\n".into()),
+            // In an address.
+            ("a.py", "url = \"https://user:password@gis.corp.example/\"\n".into()),
+            ("a.py", "url = \"ftp://user:%s@files.corp.example/\" % pw\n".into()),
+            ("a.py", "url = \"https://{user}:{password}@gis.corp.example/\"\n".into()),
+            ("a.sh", "url=\"https://$USER:$PASS@gis.corp.example/\"\n".into()),
+            ("a.py", "url = \"https://user:${PASS}@gis.corp.example/\"\n".into()),
+            ("a.md", "https://user:<password>@gis.corp.example/\n".into()),
+            ("a.md", "https://user:****@gis.corp.example/\n".into()),
+            ("a.md", "https://user:%7Bpassword%7D@gis.corp.example/\n".into()),
+            // What the corpus showed: a pattern, a thing's name in braces
+            // (Windows' own constant), signs written as an address writes
+            // them, a pattern's braces around the `:`, and two letters
+            // among the characters of packed data.
+            ("a.py", "token = r\"[-!#$%&'*+.^_`|~0-9a-zA-Z]+\"\n".into()),
+            ("a.py", "password = r\"^(?=.*[A-Z])(?=.*\\d).{8,}$\"\n".into()),
+            ("a.rs", "pub const SERVICE_ACCOUNT_PASSWORD: &'static str = \"_SA_{262E99C9-6160-4871-ACEC-4E61736B6F21}\";\n".into()),
+            ("a.rs", "check_body(b\"username=user&password=secure%20password\").await;\n".into()),
+            ("data.json", "\"password\": \"%3A%40c\",\n\"password\": \"%60%7B%7D\",\n\"password\": \"pass%5B%7F\",\n".into()),
+            ("data.json", "\"pattern\": [ \"https://foo{\\\\:}bar@example.com\" ],\n".into()),
+            ("a.go", "url := \"http://My%20User:My%20Pass@dummy.faketld/\"\n".into()),
+            ("a.js", "const tree = decode(\"wNZtR@3p]Pw:5pZhNvjBp.woe_g5u-r4JwF!%DtO3:ooc7&!#:p^\");\n".into()),
+            // A key that says it is an example stays one, whatever else is
+            // in it (Amazon's own, from its guides).
+            ("conf.ini", "aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n".into()),
+            ("a.py", "api_key = \"sk_test_YourKey1234567890abcdef\"\n".into()),
+            ("a.py", "token = \"{TOKEN}\"\nsecret = \"<client-secret-1234567890>\"\n".into()),
+        ];
+        let wrong: Vec<String> = cases
+            .iter()
+            .flat_map(|(path, text)| [(*path, text.clone()), (*path, text.replace('\n', "\r\n"))])
+            .filter_map(|(path, text)| {
+                hit_in(path, &text).map(|(line, what)| {
+                    format!("{path} should not stop: {text:?} -> line {line} ({what})")
+                })
+            })
+            .collect();
+        assert!(
+            wrong.is_empty(),
+            "{} of {} stop:\n{}",
+            wrong.len(),
+            2 * cases.len(),
+            wrong.join("\n")
+        );
+    }
+
+    /// More everyday forms that the review of R-105 got through, each on
+    /// its own with the line the finding must name (the last line of the
+    /// text), and with both line endings.
+    #[test]
+    fn more_forms_from_the_review_stop_a_sync() {
+        let quoted = "a quoted value";
+        let password = "a password written into the file";
+        let call = "handed to a call that signs in";
+        let line = "on a command line";
+        let tags = "between tags";
+        let p = "Bridge!Deck88";
+        let cases: Vec<(&str, String, &str)> = vec![
+            // A name that ends in `_pw`, whatever stands before it.
+            ("run.sh", format!("arcpy_user=svc_gis arcpy_pw={} python publish.py\n", "Fl4gger!Stop"), password),
+            ("a.py", "new_pw = \"Tr4ffic!Count26\"\n".into(), quoted),
+            ("a.py", "sde_pw = \"Tr4ffic!Count26\"\n".into(), quoted),
+            ("a.py", "PW = \"Tr4ffic!Count26\"\n".into(), quoted),
+            ("notes.md", format!("pw: {p}\n"), password),
+            ("notes.md", format!("PW = {p}\n"), password),
+            // A secret shorter than a key, that reads as a password.
+            ("a.py", "secret = \"Tr4ffic!Count26\"\n".into(), quoted),
+            ("a.py", "client_secret = \"Ab1cdefg\"\n".into(), quoted),
+            // In a sentence, set as code.
+            ("README.md", format!("- Sign in to the portal as `svc_gis` with the password `{p}` (Dana rotates it each quarter).\n"), password),
+            ("notes.md", format!("password `{p}`\n"), password),
+            ("notes.md", format!("User `stage_gis`, password `{}` (expires in March).\n", "St4ge!Note"), password),
+            ("notes.md", format!("Password for staging: {p}\n"), password),
+            ("notes.md", format!("The password for the test portal: {p}\n"), password),
+            // The word in German, Spanish and French.
+            ("zugang.md", format!("Benutzer: test_gis\nPasswort: {}\n", "Br0cken!Weg"), password),
+            ("notes.md", format!("Kennwort: {p}\n"), password),
+            ("notes.md", format!("Contraseña: {p}\n"), password),
+            ("notes.md", format!("contrasena: {p}\n"), password),
+            ("notes.md", format!("Mot de passe : {p}\n"), password),
+            ("a.py", "kennwort = \"Br0cken!Weg\"\n".into(), quoted),
+            ("conf.yaml", "db_passwort: \"Br0cken!Weg\"\n".into(), quoted),
+            ("a.py", "contraseña = \"Br0cken!Weg\"\n".into(), quoted),
+            ("a.py", "mot_de_passe = \"Br0cken!Weg\"\n".into(), quoted),
+            // A settings file that names it in the tag.
+            ("conf.xml", format!("<entry key=\"password\">{}</entry>\n", "Yam1!Config"), tags),
+            ("conf.xml", format!("<entry key=\"passwd\">{}</entry>\n", "Tr4fficCount26"), tags),
+            ("conf.xml", "<property name=\"password\" value=\"Yam1!Config\"/>\n".into(), tags),
+            ("conf.xml", "<add key=\"DbPassword\" value=\"Yam1!Config\" />\n".into(), tags),
+            // On a command line.
+            ("notes.txt", format!("-pw {}\n", "Tr4fficCount26"), line),
+            ("run.bat", format!("plink -l gisops -P 22 -pw {} gis1.corp.example\n", "Secr3t!x"), line),
+            ("backup.sh", format!("mysqldump -h my1.corp.example -u gis -p{} catalog > catalog.sql\n", "B4ckup!Now"), line),
+            ("backup.sh", format!("mysql -ugis -p{} catalog\n", "B4ckupNow9"), line),
+            ("pack.sh", format!("7z a -p{} out.7z out/\n", "Tr4fficCount26"), line),
+            ("pack.bat", format!("\"C:\\Program Files\\7-Zip\\7z.exe\" a -mhe=on -p{} out.7z out\n", "Tr4fficCount26"), line),
+            ("map_drive.bat", format!("@echo off\nnet use Z: \\\\fs1.corp.example\\gis /user:CORP\\svc_gis {} /persistent:no\n", "Sh4re!Drive9"), line),
+            ("map_drive.bat", format!("NET USE Z: \\\\fs1.corp.example\\gis {} /USER:svc_gis\n", "Sh4re!Drive9"), line),
+            ("call.sh", "curl -H \"Authorization: Basic c3ZjX2dpczpCcmlkZ2UjSW5zcDNjdA==\" https://gis.corp.example/x\n".into(), "Authorization: Basic"),
+            ("connect.ps1", "$secure = ConvertTo-SecureString \"W1nter!Roads\" -AsPlainText -Force\n".into(), call),
+            // A call that signs in, and a pair kept for one.
+            ("a.py", "ftp.login(\"gisftp\", \"Up1oad!Tiles\")\n".into(), call),
+            ("a.py", "server.login(\"gis-reports@corp.example\", \"M4il!Report26\")\n".into(), call),
+            ("a.py", "login(\"gis_reader\", \"Tr4ffic!Count26\")\n".into(), call),
+            ("a.py", "creds = (\"gis_reader\", \"Tr4ffic!Count26\")\n".into(), call),
+            ("a.py", "PORTAL_PW = os.getenv(\"PORTAL_PW\") or \"Detour#Route5\"\n".into(), quoted),
+            // Found before, and still: a password of plain words with an
+            // underscore, for a name that can only hold a password; 40
+            // hex digits beside the word token on a line that speaks of a
+            // hash somewhere else.
+            ("a.py", "conn = pg_conn(user=\"columbus_rw\", password=\"columbus_rw_test\")\n".into(), quoted),
+            ("users.sql", "CREATE USER roads IDENTIFIED BY \"roads_owner_test\" QUOTA UNLIMITED ON users;\n".into(), "in a database command"),
+            ("vectors.json", format!("[{{\"Name\":\"KEM, HKDF-SHA256\",\"note\":\"{}\",\"token\":\"{}\"}}]\n", "x".repeat(120), "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b"), "40 hex digits"),
+        ];
+        let mut wrong = Vec::new();
+        for (path, text, what) in &cases {
+            for text in [text.clone(), text.replace('\n', "\r\n")] {
+                let at = text.lines().count();
+                match hit_in(path, &text) {
+                    Some((found, said)) if found == at && said.contains(what) => {}
+                    got => wrong.push(format!("{path}: {text:?} -> {got:?}")),
+                }
+            }
+        }
+        assert!(
+            wrong.is_empty(),
+            "{} of {} are not found:\n{}",
+            wrong.len(),
+            2 * cases.len(),
+            wrong.join("\n")
+        );
+    }
+
+    /// And their near misses, with the false stops the review found.
+    #[test]
+    fn near_misses_of_the_forms_from_the_review_do_not() {
+        let cases: Vec<(&str, String)> = vec![
+            // `_pw` with another meaning, or with no password written out.
+            ("a.py", "page_pw = \"1024px\"\npulse_pw = \"10.25ns\"\nkpw = \"roads2026\"\n".into()),
+            ("run.sh", "arcpy_pw=$ARCPY_PW python publish.py\nnew_pw=\"$(pwgen_once)\"\n".into()),
+            // A secret that is a short ordinary value.
+            ("a.py", "secret = False\nis_secret = \"Y\"\nsecret = \"kafka-topic-1\"\nsecret = \"IH0035-KG\"\n".into()),
+            ("a.py", "token = \"CONGRESS\"\nfirst_token = \"1200\"\nsuffix_token = \"AVE\"\nexpected_token = \"IH0035-KG\"\n".into()),
+            ("a.py", "client_secret = \"<client-secret>\"\nsecret_name = \"Portal-Pw1x\"\n".into()),
+            // The word password with code beside it that is no password.
+            ("README.md", "Use the `--password` flag, or the password `varchar2` column.\n".into()),
+            ("README.md", "The password `policy` setting; see password `${PORTAL_PW}`.\n".into()),
+            ("a.js", "const password = `${process.env.PW1}`;\n".into()),
+            ("notes.md", "Password for staging: ask Dana\nPassword for staging: see vault1 entry\nPassword for gis: 12 characters\n".into()),
+            // The word in other languages, with no password after it.
+            ("notes.md", "Passwort: siehe Tresor\nKennwort: (bei Dana erfragen)\nContraseña: la misma de siempre\nMot de passe : demander\n".into()),
+            ("a.py", "kennwort_feld = \"PWD2026x\"\npasswort = os.environ[\"PORTAL_PW\"]\n".into()),
+            ("labels.json", "{\"passwort\": \"Kennwort\", \"kennwort\": \"Passwort\"}\n".into()),
+            // A settings file that names it, with no password written out.
+            ("conf.xml", "<entry key=\"password\"></entry>\n<entry key=\"password\">${db.password}</entry>\n".into()),
+            ("conf.xml", "<property name=\"password\" value=\"${DB_PASSWORD}\"/>\n<property name=\"passwordField\" value=\"PWD2026x\"/>\n".into()),
+            ("form.html", "<input name=\"password\" type=\"password\" value=\"\"/>\n<input type=\"password\" name=\"password\" placeholder=\"Wint3r2026x\">\n".into()),
+            ("conf.xml", "<field name=\"password\" type=\"varchar2\"/>\n<property name=\"user\" value=\"gis2026x\"/>\n".into()),
+            // Command lines.
+            ("pack.sh", "7z a -p out2026.7z out/\n7z x -o./out2026 a2026.7z\n7z a -mx9 -mhe=on out2026.7z out\n7z a -p$ZIP_PW1 out.7z\n".into()),
+            ("pack.sh", "tar -xpzf roads2026.tgz\nunzip -p roads2026.zip > x\n".into()),
+            ("map_drive.bat", "net use Z: \\\\fs1.corp.example\\gis /user:CORP\\svc_gis * /persistent:no\nnet use Z: \\\\fs1.corp.example\\gis /user:CORP\\svc_gis\n".into()),
+            ("map_drive.bat", "net use Z: /delete\nnet use Z: \\\\fs1\\gis2026 /persistent:yes\nnet use Z: \\\\fs1\\gis %SHARE_PW1% /user:svc_gis2026\nnet user svc_gis2026 /domain\n".into()),
+            // Calls with no password written out.
+            ("a.py", "assert login(\"ana\", \"wrong-password\") is False\nlogin(user, \"roads2026x\")\nlogin(\"ana\")\n".into()),
+            ("a.py", "creds = (user, pw)\ncreds = (\"gis_reader\", os.environ[\"PW\"])\ncredits = (\"ana\", \"roads2026x\")\n".into()),
+            // The review's false stops: a plain word with an underscore,
+            // and a hash that stands beside the word token.
+            ("a.py", "pwd = \"row_widths\"\npassword_column = \"pw_hash\"\n".into()),
+            ("emoji.go", "\t\"secret\":                               \"\\u3299\\ufe0f\",\n".into()),
+            ("a.py", "token_hash = \"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b\"\n".into()),
+            ("a.py", "# sha1 of the token table: 2b09fe4c1d3e5a7b9c0d1e2f3a4b5c6d7e8f9a0b\n".into()),
+            ("a.md", "The token's SHA-256: 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\n".into()),
+            ("a.md", "md5 of the secret file: 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b\n".into()),
+        ];
+        let wrong: Vec<String> = cases
+            .iter()
+            .flat_map(|(path, text)| [(*path, text.clone()), (*path, text.replace('\n', "\r\n"))])
+            .filter_map(|(path, text)| {
+                hit_in(path, &text).map(|(line, what)| {
+                    format!("{path} should not stop: {text:?} -> line {line} ({what})")
+                })
+            })
+            .collect();
+        assert!(
+            wrong.is_empty(),
+            "{} of {} stop:\n{}",
+            wrong.len(),
+            2 * cases.len(),
+            wrong.join("\n")
+        );
     }
 
     #[test]

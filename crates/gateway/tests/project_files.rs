@@ -530,6 +530,15 @@ async fn paths_and_files_the_rules_refuse_stay_refused() {
         (".env", "password or key"),
         ("keys/server.pem", "password or key"),
         ("db/prod.sde", "connection file"),
+        // R-105: other tools' token files, and map documents and layer
+        // files, which can hold a saved connection.
+        (".npmrc", "password or key"),
+        (".pypirc", "password or key"),
+        ("County.aprx", "can hold a saved connection"),
+        ("maps/roads.mxd", "can hold a saved connection"),
+        ("maps/roads.lyrx", "can hold a saved connection"),
+        ("county.qgs", "can hold a saved connection"),
+        ("county.qgz", "can hold a saved connection"),
     ];
     if cfg!(unix) {
         cases.push(("link.txt", "links are never followed"));
@@ -606,6 +615,13 @@ async fn paths_and_files_the_rules_refuse_stay_refused() {
         json!({"action": "write", "path": "places.kml", "text": "<kml/>"}),
         json!({"action": "write", "path": "book.xlsx", "text": "x"}),
         json!({"action": "write", "path": "cache.sqlite", "text": "x"}),
+        // R-105: data formats the list lacked.
+        json!({"action": "write", "path": "tiles.mbtiles", "text": "x"}),
+        json!({"action": "write", "path": "dem.asc", "text": "ncols 2\nnrows 2\n1 2\n3 4\n"}),
+        json!({"action": "write", "path": "points.xyz", "text": "1 2 3\n"}),
+        json!({"action": "write", "path": "town.osm", "text": "<osm/>"}),
+        json!({"action": "write", "path": "town.osm.pbf", "text": "x"}),
+        json!({"action": "write", "path": "loose.gdbtable", "text": "x"}),
     ] {
         let e = err(&files(&c, args.clone()).await);
         assert!(
@@ -672,6 +688,13 @@ async fn paths_and_files_the_rules_refuse_stay_refused() {
         "Tool.app/Contents/MacOS/tool.py",
         "tools/Daily.workflow/notes.md",
         "a.app/x.py",
+        // R-105: Office files that carry macros.
+        "report.docm",
+        "letter.dotm",
+        "slides.pptm",
+        "addin.ppam",
+        "addin.xlam",
+        "book.xltm",
     ] {
         let e = err(&files(
             &c,
@@ -771,7 +794,7 @@ async fn paths_and_files_the_rules_refuse_stay_refused() {
 
 // Made up for these tests, and put together here so that no line of this
 // file looks like a credential: none is real.
-const PASSWORD: &str = "Wint3r2026";
+const PASSWORD: &str = concat!("Wint3r", "2026");
 fn made_up_token() -> String {
     format!("gh{}_{}", "p", "0123456789abcdefghijABCDEFGHIJ012345")
 }
@@ -969,6 +992,336 @@ async fn a_script_that_holds_a_secret_is_not_run_and_such_a_helper_is_not_copied
             && l.contains("line 3")),
         "{audit}"
     );
+}
+
+/// Everyday ways of writing a password down that the re-check of R-103
+/// read to the assistant (R-105): in a comment, a docstring, a note's
+/// emphasis or table, a notebook's text, a subscript, a command line. Such
+/// a file is not read to the assistant and not written by it; files that
+/// only name a password still are. (`columbus_shared::secrets` holds the
+/// full list of forms and near misses.)
+#[tokio::test]
+async fn everyday_forms_of_a_password_are_not_read_to_the_assistant_or_written_by_it() {
+    let env = setup(None, "allow_project_files: true\n");
+    let files_dir = env.files("review");
+    std::fs::create_dir_all(&files_dir).unwrap();
+    let long = "a1B2c3D4e5F6g7H8i9J0".repeat(2);
+    let cases: Vec<(&str, String, &str)> = vec![
+        (
+            "comment.py",
+            format!("# sign in as gis_reader, password: {PASSWORD}\nprint('x')\n"),
+            "line 1 (a password written into the file)",
+        ),
+        (
+            "docstring.py",
+            format!("\"\"\"Loads roads.\n\nlogin: gis_reader\npassword: {PASSWORD}\n\"\"\"\nprint(1)\n"),
+            "line 4 (a password written into the file)",
+        ),
+        (
+            "environ.py",
+            format!("import os\nos.environ[\"PGPASSWORD\"] = \"{PASSWORD}\"\n"),
+            "line 2 (a password or key written into the file (a quoted value))",
+        ),
+        (
+            "index.py",
+            format!("cfg = {{}}\ncfg['password'] = '{PASSWORD}'\n"),
+            "line 2 (a password or key written into the file (a quoted value))",
+        ),
+        (
+            "typed.py",
+            format!("password: str = \"{PASSWORD}\"\n"),
+            "line 1 (a password or key written into the file (a quoted value))",
+        ),
+        (
+            "load.R",
+            format!("# password: {PASSWORD}\npassword <- \"{PASSWORD}\"\n"),
+            "line 1 (a password written into the file), line 2 (a password or key written into the file (a quoted value))",
+        ),
+        (
+            "bold.md",
+            format!("# Signing in\n\n**Password:** {PASSWORD}\n"),
+            "line 3 (a password written into the file)",
+        ),
+        (
+            "code.md",
+            format!("- Password: `{PASSWORD}`\n"),
+            "line 1 (a password written into the file)",
+        ),
+        (
+            "table.md",
+            format!("| user | password |\n|---|---|\n| gis_reader | {PASSWORD} |\n"),
+            "line 3 (a password or key written into the file (in a table))",
+        ),
+        (
+            "notebook.ipynb",
+            format!("{{\n \"cells\": [\n  {{\n   \"cell_type\": \"markdown\",\n   \"source\": [\n    \"password: {PASSWORD}\\n\"\n   ]\n  }}\n ]\n}}"),
+            "line 6 (a password written into the file)",
+        ),
+        (
+            "conn.xml",
+            format!("<connection>\n  <password>{PASSWORD}</password>\n</connection>\n"),
+            "line 2 (a password or key written into the file (between tags))",
+        ),
+        (
+            "conf.yaml",
+            format!("user: gis\npass: {PASSWORD}\ntoken: {long}\n"),
+            "line 2 (a password written into the file), line 3 (a token, key or secret written into the file)",
+        ),
+        (
+            "users.sql",
+            format!("CREATE USER gis WITH PASSWORD '{PASSWORD}';\n"),
+            "line 1 (a password written into the file (in a database command))",
+        ),
+        (
+            "sde_cmd.txt",
+            format!("sdetable -o list -u gis -p {PASSWORD}\n"),
+            "line 1 (a password written into the file (on a command line))",
+        ),
+        // Handed to a well-known call by its place, with no name beside it.
+        (
+            "sign_in.py",
+            format!("from arcgis.gis import GIS\ngis = GIS(\"https://www.arcgis.com\", \"ana\", \"{PASSWORD}\")\n"),
+            "line 2 (a password written into the file (handed to a call that signs in))",
+        ),
+        (
+            "sign_in_long.py",
+            format!("gis = GIS(\n    \"https://gis.corp.example/portal\",\n    \"ana\",\n    \"{PASSWORD}\",\n)\n"),
+            "line 4 (a password written into the file (handed to a call that signs in))",
+        ),
+        (
+            "fetch.py",
+            format!("import requests\nr = requests.get(url, auth=(\"ana\", \"{PASSWORD}\"))\n"),
+            "line 2 (a password written into the file (handed to a call that signs in))",
+        ),
+        (
+            "env.py",
+            format!("import os\npassword = os.environ.get(\"PGPASSWORD\", \"{PASSWORD}\")\n"),
+            "line 2 (a password or key written into the file (a quoted value))",
+        ),
+        (
+            "load.sh",
+            format!("sqlplus gis/{PASSWORD}@orcl @load.sql\n"),
+            "line 1 (a password written into the file (an Oracle sign-in, user/password@database))",
+        ),
+        (
+            "pair.py",
+            format!("USER, PASSWORD = \"gis\", \"{PASSWORD}\"\n"),
+            "line 1 (a password or key written into the file (a quoted value))",
+        ),
+        // A password to fall back on, and more calls that take one by its
+        // place.
+        (
+            "tool.py",
+            format!("import arcpy\npassword = arcpy.GetParameterAsText(1) or \"{PASSWORD}\"\n"),
+            "line 2 (a password or key written into the file (a quoted value))",
+        ),
+        (
+            "env_named.py",
+            format!("import os\npassword = os.getenv(\"PGPASSWORD\", default=\"{PASSWORD}\")\n"),
+            "line 2 (a password or key written into the file (a quoted value))",
+        ),
+        (
+            "run.sh",
+            format!("export PGPASSWORD=\"${{PGPASSWORD:-{PASSWORD}}}\"\npsql -h db1 roads\n"),
+            "line 1 (a password written into the file)",
+        ),
+        (
+            "admin.py",
+            format!("arcpy.management.CreateDatabaseUser(sde, \"DATABASE_USER\", \"editor1\", \"{PASSWORD}\")\n"),
+            "line 1 (a password written into the file (handed to a call that signs in))",
+        ),
+        (
+            "mssql.py",
+            format!("import pymssql\nconn = pymssql.connect(\"db1\", \"gis\", \"{PASSWORD}\", \"roads\")\n"),
+            "line 2 (a password written into the file (handed to a call that signs in))",
+        ),
+        (
+            "nested.py",
+            format!("gis = GIS(url, \"ana\", os.environ.get(\"AGOL_PW\", \"{PASSWORD}\"))\n"),
+            "line 1 (a password or key written into the file (a quoted value))",
+        ),
+        // A real password with a sign or a word that stand-ins use, and
+        // the word in another language (the review after R-105's re-check).
+        (
+            "sign.py",
+            "password = \"Parc3l$View\"\n".to_string(),
+            "line 1 (a password or key written into the file (a quoted value))",
+        ),
+        (
+            "word.py",
+            "password = \"Password123!\"\n".to_string(),
+            "line 1 (a password or key written into the file (a quoted value))",
+        ),
+        (
+            "uri.py",
+            format!(
+                "engine = create_engine(\"postgresql://gis_reader:{}@db1.corp.example:5432/gis\")\n",
+                "Dra1nage%21Map"
+            ),
+            "line 1 (an address with a password in it)",
+        ),
+        (
+            "zugang.md",
+            format!("Benutzer: test_gis\nPasswort: {}\n", "Br0cken!Weg"),
+            "line 2 (a password written into the file)",
+        ),
+    ];
+    // What the person (or a colleague, through sync) put there.
+    for (name, text, _) in &cases {
+        std::fs::write(files_dir.join(name), text).unwrap();
+    }
+    let fine = [
+        (
+            "plain.py",
+            "\"\"\"Load the roads.\n\n    password: the database password, read from the environment\n\"\"\"\nimport os\n\n# ask Ana for the password; it is kept by Columbus, never here\npassword = os.environ[\"PGPASSWORD\"]\nos.environ[\"PGPASSWORD\"] = password\ngis = GIS(url, username, password)\ngis = GIS(\"https://www.arcgis.com\", \"ana\", getpass.getpass())\nr = requests.get(url, auth=(user, pw))\nhost = os.environ.get(\"PGHOST\", \"db1.corp.example\")\npw = get_pw()\npassword = os.environ.get(\"PGPASSWORD\") or getpass.getpass()\nkey = os.environ.get(\"S3_KEY\", \"exports/2026/roads_north_v2.parquet\")\nftp.login(\"anonymous\", \"ana@county.gov\")\ny = np.exp(x/sigma2@w)\npassword = \"${DB_PASSWORD}\"\npassword = \"your-password-here\"\npwd = \"row_widths\"\ntoken_hash = \"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b\"\n",
+        ),
+        (
+            "plain.md",
+            "**Password:** in the credential store\n\n| user | password |\n|---|---|\n| gis_reader | <ask Ana> |\n\nUse `--password` to give it, or leave it out to be asked.\n",
+        ),
+        ("run.json", "{\"pwd\": \"/home/ana/project\"}\n"),
+    ];
+    for (name, text) in &fine {
+        std::fs::write(files_dir.join(name), text).unwrap();
+    }
+    let before = snapshot(&files_dir);
+    let c = start(&env, Some("review")).await;
+
+    for (name, _, at) in &cases {
+        let e = err(&files(&c, json!({"action": "read", "path": name})).await);
+        assert!(
+            e.contains(&format!("{name} is not read to you")) && e.contains(at),
+            "{name}: {e}"
+        );
+        assert!(
+            !e.contains(PASSWORD) && !e.contains(&long) && !e.contains("gis_reader"),
+            "nothing of the file's text: {e}"
+        );
+    }
+    // Files that only name a password read as before.
+    for (name, text) in &fine {
+        let r = ok(&files(&c, json!({"action": "read", "path": name})).await);
+        assert_eq!(r["result"]["text"].as_str().unwrap(), *text, "{name}");
+    }
+    // The assistant writes none of them either, and is told the line.
+    for (name, text, at) in &cases {
+        let path = format!("written/{name}");
+        let e = err(&files(&c, json!({"action": "write", "path": path, "text": text})).await);
+        assert!(
+            e.contains("was not written") && e.contains(at),
+            "{name}: {e}"
+        );
+        assert!(!e.contains(PASSWORD) && !e.contains(&long), "{e}");
+    }
+    assert!(!files_dir.join("written").exists());
+    for (name, text) in &fine {
+        let path = format!("written/{name}");
+        assert_eq!(
+            written(&c, &path, text).await["result"]["status"],
+            "written",
+            "{name}"
+        );
+    }
+    std::fs::remove_dir_all(files_dir.join("written")).unwrap();
+    assert_eq!(snapshot(&files_dir), before, "nothing else changed");
+    c.cancel().await.unwrap();
+    let audit = env.audit();
+    assert!(
+        !audit.contains(PASSWORD) && !audit.contains(&long),
+        "the audit log holds no secret"
+    );
+}
+
+/// The same for a script run by its path and for its helpers (R-105): a
+/// password in a comment keeps a script from running, and a helper that
+/// sets one in the environment is not copied beside a script.
+#[tokio::test]
+async fn a_password_in_a_comment_or_set_in_the_environment_keeps_a_script_from_running() {
+    let Some(py) = engine() else { return };
+    let env = setup(
+        Some(&py),
+        "allow_scripts: true\nscripts: { approval: none }\nallow_project_files: true\n",
+    );
+    let files_dir = env.files("review");
+    std::fs::create_dir_all(files_dir.join("jobs")).unwrap();
+    std::fs::write(
+        files_dir.join("jobs").join("comment_main.py"),
+        format!("# password: {PASSWORD}\nprint(open(__file__).read())\n"),
+    )
+    .unwrap();
+    // A sign-in with the password handed to the call by its place.
+    std::fs::create_dir_all(files_dir.join("portal")).unwrap();
+    std::fs::write(
+        files_dir.join("portal").join("sign_in.py"),
+        format!("GIS = print\ngis = GIS(\"https://www.arcgis.com\", \"ana\", \"{PASSWORD}\")\n"),
+    )
+    .unwrap();
+    std::fs::write(
+        files_dir.join("jobs").join("main.py"),
+        "import geom\nfor name in ['comment_helper', 'environ_helper']:\n    try:\n        __import__(name)\n        print(name, 'came along')\n    except ImportError:\n        print(name, 'is not here')\nprint(geom.describe(2))\n",
+    )
+    .unwrap();
+    std::fs::write(files_dir.join("jobs").join("geom.py"), HELPER).unwrap();
+    std::fs::write(
+        files_dir.join("jobs").join("comment_helper.py"),
+        format!("# the prod password: {PASSWORD}\nSHOW = open(__file__).read()\n"),
+    )
+    .unwrap();
+    std::fs::write(
+        files_dir.join("jobs").join("environ_helper.py"),
+        format!("import os\nos.environ[\"PGPASSWORD\"] = \"{PASSWORD}\"\n"),
+    )
+    .unwrap();
+    let c = start(&env, Some("review")).await;
+
+    let e = err(&call(&c, "run_python", json!({"script": "jobs/comment_main.py"})).await);
+    assert!(
+        e.contains("jobs/comment_main.py is not run")
+            && e.contains("line 1 (a password written into the file)"),
+        "{e}"
+    );
+    assert!(!e.contains(PASSWORD), "{e}");
+    let e = err(&call(&c, "run_python", json!({"script": "portal/sign_in.py"})).await);
+    assert!(
+        e.contains("portal/sign_in.py is not run")
+            && e.contains(
+                "line 2 (a password written into the file (handed to a call that signs in))"
+            ),
+        "{e}"
+    );
+    assert!(!e.contains(PASSWORD), "{e}");
+
+    let ran = call(&c, "run_python", json!({"script": "jobs/main.py"})).await;
+    if !can_confine() {
+        assert!(err(&ran).contains("confined"));
+    } else {
+        let ran = ok(&ran);
+        assert_eq!(ran["result"]["status"], "done", "{ran}");
+        let out = ran["result"]["stdout"].as_str().unwrap();
+        assert!(
+            out.contains("comment_helper is not here")
+                && out.contains("environ_helper is not here")
+                && out.contains("helper says 2 parcels"),
+            "{ran}"
+        );
+        let skipped = ran["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|k| k["id"] == "script.helper_skipped")
+            .unwrap_or_else(|| panic!("the skipped helpers are named: {ran}"));
+        let said = skipped["message"].as_str().unwrap();
+        assert!(
+            said.contains("comment_helper.py")
+                && said.contains("line 1 (a password written into the file)")
+                && said.contains("environ_helper.py")
+                && said.contains("line 2 (a password or key written into the file"),
+            "{said}"
+        );
+        assert!(!ran.to_string().contains(PASSWORD), "{ran}");
+    }
+    c.cancel().await.unwrap();
+    assert!(!env.audit().contains(PASSWORD));
 }
 
 /// `columbus-project.yaml` at the top of the folder holds the project's

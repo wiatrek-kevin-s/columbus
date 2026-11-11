@@ -2,14 +2,15 @@
 // apps. A chat is the panel; its session's map fills the window behind it,
 // and its files open in the side sheet. Everything the model, the server
 // or a file says is shown as text, never as markup.
-import { $, el, h, icon, iconButton, menuButton, fitSelect, invoke, listen, store, button, redraw, placeHead, sec, when, ago, shortWhen, era, size, plural, timeLeft, clientName, toast, emptyState, askConfirm, askText, openSide, closeSide, openOutputs, closeOutputs, outputsOpen, setOutputsFull, setOutputsHead, insets, onLayout, savePrefs, numbered } from "../core.js";
+import { $, el, h, put, icon, iconButton, menuButton, fitSelect, invoke, listen, store, button, redraw, placeHead, sec, when, ago, shortWhen, era, size, plural, timeLeft, clientName, toast, emptyState, askConfirm, askText, openSide, closeSide, openOutputs, closeOutputs, outputsOpen, setOutputsFull, setOutputsHead, insets, onLayout, savePrefs, numbered } from "../core.js";
 import { openWebLayerEditor, onChange as onWebLayersChange } from "./maplayers.js";
 import { setupState, notices, firstSteps } from "./start.js";
 
 // Model and thinking names, once the chat settings are read.
 const NAMES = new Map();
 const nameOf = (id) => NAMES.get(id) || id;
-const MODEL_NOTE = "The chat sends your messages and the results it reads to the AI service you chose (Settings › Assistant).";
+// What a chat's model box says when it is pointed at: where the chat's words go.
+const modelNote = (name) => `This chat sends your messages and the results it reads to ${name || "the AI service you chose"} (Settings › Assistant).`;
 
 // ---------- The live chat (one at a time, as before) ----------
 const live = {
@@ -945,6 +946,8 @@ function buildLive() {
   const sub = h("span", { class: "sub", id: "chat-sub" });
   // This chat's model and thinking level: from Settings for a new chat,
   // changeable between messages.
+  // The service the chat talks to (a chat keeps it to its end), then its model.
+  const serviceName = h("span", { id: "chat-service", class: "muted small" });
   const modelSel = h("select", { id: "chat-model", class: "pick", "aria-label": "Model for this chat" });
   const effortSel = h("select", { id: "chat-effort", class: "pick", "aria-label": "Thinking level for this chat" });
   const onPick = async () => {
@@ -959,14 +962,19 @@ function buildLive() {
       await updateChip();
     }
   };
-  modelSel.addEventListener("change", () => { fitSelect(modelSel); onPick(); });
-  effortSel.addEventListener("change", () => { fitSelect(effortSel); onPick(); });
+  modelSel.addEventListener("change", () => { fitSelect(modelSel); sayPicks(); onPick(); });
+  effortSel.addEventListener("change", () => { fitSelect(effortSel); sayPicks(); onPick(); });
   // The message box with its send button; under it, quietly: where the
-  // chat works, and the model it uses.
+  // chat works, and the AI it uses. They are two groups: on one line where
+  // the column is wide enough for both whole, and where it is not (the
+  // panel on the right is open) the AI takes a line of its own, so nothing
+  // is cut to make room.
   const composer = h("form", { id: "composer" },
     h("label", { for: "text", class: "visually-hidden" }, "Message"),
     h("div", { class: "box" }, text, stop, send),
-    h("div", { class: "under", id: "chat-foot" }, sub, status, h("span", { class: "spacer" }), modelSel, effortSel));
+    h("div", { class: "under", id: "chat-foot" },
+      h("span", { class: "place", id: "chat-place" }, sub, status),
+      h("span", { class: "ai", id: "chat-ai" }, serviceName, modelSel, effortSel)));
   const projectBox = h("details", { class: "project-note", id: "chat-project", hidden: true });
   const col = h("section", { class: "chatcol", "aria-label": "Chat" }, head, greeting, projectBox, tray, log, composer);
   view.append(col);
@@ -1064,6 +1072,7 @@ async function start() {
     live.started = true;
     live.session = s.session || null;
     live.chatId = s.chat || null;
+    live.service = s.service || null;
     live.map.setSession(live.session);
     if (live.chatId) history.replaceState(null, "", `#/chats/c/${encodeURIComponent(live.chatId)}`);
     $("status").textContent = "";
@@ -1075,7 +1084,7 @@ async function start() {
   } catch (err) {
     $("status").textContent = "";
     live.log.append(el("div", "error", String(err)));
-    if (/API key|server was not found/i.test(String(err))) {
+    if (/Settings › Assistant|assistant\.hosts|server was not found/i.test(String(err))) {
       live.log.append(h("p", { class: "small" }, h("a", { href: "#/settings/ai" }, "Set up the AI in Settings › Assistant")));
     }
     store.set("chatstate", "failed");
@@ -1096,9 +1105,11 @@ function drawSub() {
   const projects = store.projects?.projects || [];
   if (!live.started && !live.run) {
     // Before the first message, the project can still be chosen.
-    const pick = h("select", { id: "chat-project-pick", class: "pick", "aria-label": "Project for this chat", title: "A project gives a chat its instructions and narrows the connections it may use." },
+    const pick = h("select", { id: "chat-project-pick", class: "pick", "aria-label": "Project for this chat" },
       h("option", { value: "" }, "No project"), ...projects.map((p) => h("option", { value: p.id }, p.name)), h("option", { value: "+" }, "Projects…"));
     pick.value = live.project && projects.some((p) => p.id === live.project) ? live.project : "";
+    // (A long name is cut in the picker: pointed at, it is said whole.)
+    pick.title = `${pick.value ? `${projectName(pick.value)}. ` : ""}A project gives a chat its instructions and narrows the connections it may use.`;
     pick.addEventListener("change", () => {
       if (pick.value === "+") { pick.value = live.project || ""; location.hash = "#/projects"; return; }
       live.project = pick.value || null;
@@ -1109,10 +1120,13 @@ function drawSub() {
   } else {
     // Under the message box: the project this chat works in; a chat opened
     // from a workflow run says which, with a way back to its report.
+    // (Each says its name whole when pointed at: a very long one is cut
+    // where a line of its own cannot hold it.)
     const project = live.project
-      ? h("a", { href: `#/projects/${encodeURIComponent(live.project)}`, title: "This chat's project: its instructions and the connections it may use" }, projectName(live.project))
+      ? h("a", { href: `#/projects/${encodeURIComponent(live.project)}`, title: `${projectName(live.project)}. This chat's project: its instructions and the connections it may use.` }, projectName(live.project))
       : live.run ? null : h("a", { href: "#/projects", title: "Not in a project. Projects give a chat instructions and narrow the connections it may use." }, "No project");
-    const run = live.run ? h("a", { id: "chat-run", href: `#/workflows/${encodeURIComponent(live.run.workflow)}/${encodeURIComponent(live.run.run)}`, title: "The run this chat opened" }, `${live.run.name || live.run.workflow} run`) : null;
+    const runName = live.run ? `${live.run.name || live.run.workflow} run` : "";
+    const run = live.run ? h("a", { id: "chat-run", href: `#/workflows/${encodeURIComponent(live.run.workflow)}/${encodeURIComponent(live.run.run)}`, title: `${runName}. The run this chat opened.` }, runName) : null;
     sub.replaceChildren(...[project, project && run ? h("span", { class: "sep" }) : null, run].filter(Boolean));
   }
   // What the assistant is following, in plain sight.
@@ -1138,6 +1152,7 @@ async function newChat(project = null, run = null) {
   live.busy = false;
   live.chatId = null;
   live.session = null;
+  live.service = null;
   live.pick = null;
   live.cards.clear();
   live.log.replaceChildren();
@@ -1176,7 +1191,7 @@ async function emptyChat() {
   if (seq !== emptySeq || !box.isConnected) return;
   box.append(...notices(s.st));
   const c = s.chat;
-  if (c && c.has_key && c.server_found && (c.server_older || !c.engine)) {
+  if (c && c.ready && c.server_found && (c.server_older || !c.engine)) {
     box.append(h("div", { class: "notice warn" }, h("div", {},
       c.server_older ? `The Columbus server this chat uses is version ${c.server_version}, older than this app (${c.app_version}), so the map and newer tools may not work. ` : "The GIS engine was not found, so tools that read data will fail. ",
       h("a", { href: "#/settings/ai" }, "See Settings › Assistant"), ".")));
@@ -1186,12 +1201,20 @@ async function emptyChat() {
   // under it.
   document.body.classList.toggle("setup", !!s.needsSetup && !s.done.ai);
   if (s.needsSetup) {
-    box.append(firstSteps(s, () => emptyChat()));
+    // (A step may have changed the AI service: the chat's boxes follow.)
+    box.append(firstSteps(s, () => { updateChip(); emptyChat(); }));
     return;
   }
-  if (c && (!c.has_key || !c.server_found)) {
-    box.append(h("div", { class: "notice warn" }, h("div", {},
-      !c.has_key ? "No AI is connected yet. " : "Columbus's server was not found. ",
+  if (c && (!c.ready || !c.server_found)) {
+    // What is missing, said once: the organization's leave, a key, a model, the server.
+    const v = c.services.find((x) => x.id === c.service);
+    const why = c.ready ? "Columbus's server was not found. "
+      : v && !v.allowed ? `${v.why_not} `
+        : v && v.problem ? `${v.problem} `
+          : c.key_needed && !c.has_key ? "No AI is connected yet. "
+            : !c.model ? `No model is chosen for ${c.service_name} yet. `
+              : "No AI is connected yet. ";
+    box.append(h("div", { class: "notice warn", id: "chat-not-ready" }, h("div", {}, why,
       h("a", { href: "#/settings/ai" }, "Set it up in Settings › Assistant"), ".")));
   }
   if (document.activeElement === document.body) $("text")?.focus();
@@ -1227,26 +1250,58 @@ async function emptyChat() {
 async function updateChip() {
   try {
     const s = await invoke("chat_settings");
-    const pick = live.pick || { model: s.model, effort: s.effort };
-    for (const [id, l] of s.models) NAMES.set(id, l.replace(/ \(.*\)$/, ""));
-    for (const [id, l] of s.efforts) if (id) NAMES.set(`effort:${id}`, l.replace(/ \(.*\)$/, ""));
+    // A chat that has started keeps its service; a new one shows the one
+    // chosen in Settings.
+    const id = (live.started && (live.service || s.chat_service)) || s.service;
+    // A choice made for another service does not carry over to this one.
+    if (!live.started && live.pick && live.shownService && live.shownService !== id) live.pick = null;
+    live.shownService = id;
+    const v = s.services.find((x) => x.id === id) || s.services.find((x) => x.id === s.service);
+    const mine = id === s.service;
+    const pick = live.pick || { model: mine ? s.model : (v && v.model) || "", effort: mine ? s.effort : "" };
+    for (const x of s.services) for (const [m, l] of x.models) NAMES.set(m, l.replace(/ \(.*\)$/, ""));
+    for (const x of s.services) for (const [e, l] of x.efforts) if (e) NAMES.set(`effort:${e}`, l.replace(/ \(.*\)$/, ""));
+    // The service's own models, the ones it listed, the one in use.
+    const models = v ? [...v.models] : [];
+    for (const m of [pick.model, ...(mine ? s.models.map(([m2]) => m2) : []), ...((v && v.listed) || [])]) {
+      if (m && !models.some(([m2]) => m2 === m)) models.push([m, m]);
+    }
+    const efforts = v ? v.efforts : s.efforts;
     const fill = (sel, items, cur, label) => {
-      sel.replaceChildren(...items.map(([id, l]) => {
-        const o = el("option", null, label(id, l));
-        o.value = id;
-        o.selected = id === cur;
+      sel.replaceChildren(...items.map(([m, l]) => {
+        const o = el("option", null, label(m, l));
+        o.value = m;
+        o.selected = m === cur;
         return o;
       }));
     };
-    fill($("chat-model"), s.models, pick.model, (_, l) => l.replace(/ \(.*\)$/, ""));
-    fill($("chat-effort"), s.efforts, pick.effort, (id, l) => id ? `Thinking: ${l.replace(/ \(.*\)$/, "").toLowerCase()}` : "Thinking: default");
-    const rows = store.info?.policy?.in_force?.return_rows;
-    $("chat-model").title = `${MODEL_NOTE} ${(s.models.find(([id]) => id === pick.model) || [0, ""])[1]}${rows ? ` It sees at most ${Number(rows).toLocaleString()} rows per call (your organization's policy).` : ""}`;
-    $("chat-effort").title = "How much the model thinks before it answers. Higher is slower, costs more and is more thorough.";
+    if (!models.length) models.push(["", "No model chosen"]);
+    fill($("chat-model"), models, pick.model, (_, l) => l.replace(/ \(.*\)$/, ""));
+    fill($("chat-effort"), efforts, pick.effort, (e, l) => e ? `Thinking: ${l.replace(/ \(.*\)$/, "").toLowerCase()}` : "Thinking: default");
+    // A service with one level has nothing to choose.
+    $("chat-effort").hidden = efforts.length < 2;
+    const name = v ? v.name : s.service_name;
+    live.shownName = name || "";
+    $("chat-service").textContent = name || "";
+    $("chat-service").title = modelNote(name);
+    sayPicks();
     fitSelect($("chat-model"));
     fitSelect($("chat-effort"));
     drawSub();
   } catch { /* none */ }
+}
+
+// What the two pickers say when pointed at: the choice in full first (a
+// long model id is cut in the picker), then what it means. Said again when
+// the person chooses another.
+function sayPicks() {
+  const model = $("chat-model");
+  const effort = $("chat-effort");
+  if (!model || !effort) return;
+  const chosen = (sel) => (sel.selectedOptions[0] ? sel.selectedOptions[0].textContent : "");
+  const rows = store.info?.policy?.in_force?.return_rows;
+  model.title = `${chosen(model)}. ${modelNote(live.shownName)}${rows ? ` It sees at most ${Number(rows).toLocaleString()} rows per call (your organization's policy).` : ""}`;
+  effort.title = `${chosen(effort)}. How much the model thinks before it answers. Higher is slower, costs more and is more thorough.`;
 }
 
 // Events of the live chat, wherever the window is.
@@ -1401,7 +1456,13 @@ async function showSaved(main, id) {
     const s = store.chats.find((c) => c.id === id);
     title.textContent = s ? s.title : "Chat";
     title.title = title.textContent;
-    sub.replaceChildren(...(meta.project ? [h("a", { href: `#/projects/${encodeURIComponent(meta.project)}` }, projectName(meta.project)), " · "] : []), when(lines[0]?.ts));
+    // Where it ran: its project, the AI service and model it started on, and when.
+    const ran = [meta.service_name || (meta.model ? "Anthropic" : null), meta.model ? nameOf(meta.model) : null].filter(Boolean).join(", ");
+    // (A chat saved before these were written down says when it was, and
+    // nothing in their place.)
+    sub.replaceChildren();
+    put(sub, meta.project ? [h("a", { href: `#/projects/${encodeURIComponent(meta.project)}` }, projectName(meta.project)), " · "] : null,
+      ran ? [h("span", { id: "saved-service" }, ran), " · "] : null, when(lines[0]?.ts));
     const r = new Renderer(logEl, false, (pid) => map.files(pid), (handle) => map.table(handle));
     for (const l of lines) r.event(l);
     r.finish();

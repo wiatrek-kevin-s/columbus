@@ -106,7 +106,8 @@ review:
 
 After the steps, Columbus reads those rows itself (under the person's rules: row filters,
 hidden fields and the per-call row limit apply) and sends them with the criteria to Anthropic,
-using the API key the person saved in the Columbus app. The model has **no tools**: it cannot
+using the Anthropic key the person saved in the Columbus app (a review runs on Anthropic
+whichever AI service the app's own chat is set to). The model has **no tools**: it cannot
 read anything else or change anything. Its notes (a summary and the flagged rows) go in the
 report, marked as the AI's. The AI's flags never change the run's status: they are notes for
 the person to read, not checks. If it cannot run (no key, the service is busy, an answer that

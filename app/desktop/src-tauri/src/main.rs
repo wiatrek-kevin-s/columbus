@@ -42,6 +42,7 @@ use std::time::Duration;
 
 use serde::Serialize;
 
+mod assistant;
 mod chat;
 mod datagroups;
 mod doc_import;
@@ -466,8 +467,13 @@ fn main() {
             chat_open_map,
             chat::chat_settings,
             chat::chat_save_settings,
-            chat::chat_set_key,
-            chat::chat_clear_key,
+            assistant::chat_set_key,
+            assistant::chat_clear_key,
+            assistant::chat_use_service,
+            assistant::chat_service_save,
+            assistant::chat_service_remove,
+            assistant::chat_models,
+            assistant::chat_other_apps,
             chat::chat_start,
             chat::chat_send,
             chat::chat_set_model,

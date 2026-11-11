@@ -120,6 +120,30 @@ const IGNORED: &[(&str, &str)] = &[
     ("query.iqy", "runs or follows"),
     ("sheet.slk", "runs or follows"),
     ("Tool.app/Contents/Info.plist", "runs or follows"),
+    // R-105: other tools' token files; map documents and layer files,
+    // which can hold a saved connection; data formats the list lacked;
+    // Office files that carry macros.
+    (".npmrc", "password"),
+    (".pypirc", "password"),
+    ("County.aprx", "saved connection"),
+    ("roads.mxd", "saved connection"),
+    ("roads.mapx", "saved connection"),
+    ("roads.lyrx", "saved connection"),
+    ("old-roads.lyr", "saved connection"),
+    ("county.qgs", "saved connection"),
+    ("county.qgz", "saved connection"),
+    ("tiles.mbtiles", "geodata"),
+    ("dem.asc", "geodata"),
+    ("points.xyz", "geodata"),
+    ("town.osm", "geodata"),
+    ("town.osm.pbf", "geodata"),
+    ("loose.gdbtable", "geodata"),
+    ("report.docm", "runs or follows"),
+    ("letter.dotm", "runs or follows"),
+    ("slides.pptm", "runs or follows"),
+    ("addin.ppam", "runs or follows"),
+    ("addin.xlam", "runs or follows"),
+    ("book.xltm", "runs or follows"),
 ];
 
 #[tokio::test]
@@ -278,6 +302,351 @@ async fn text_that_looks_like_a_token_or_a_key_stops_the_sync_before_anything_is
     assert!(rep.stopped.is_none());
     assert_eq!(rep.sent.len(), 2);
     assert!(!r.lock().unwrap().ever_held(token.as_bytes()));
+}
+
+/// Everyday ways of writing a password down that the re-check of R-103
+/// sent through (R-105): each alone in a folder, with a harmless file
+/// beside it. The sync stops before anything is sent, names the file and
+/// the line, and the server never holds the value. (The scan's own tests,
+/// `columbus_shared::secrets`, hold the full list of forms and near
+/// misses.)
+#[tokio::test]
+async fn everyday_forms_of_a_password_stop_the_sync_before_anything_is_sent() {
+    // Made up, and put together here so that no line of this file looks
+    // like a credential.
+    let pw = format!("Wint3r{}", 2026);
+    let long = "a1B2c3D4e5F6g7H8i9J0".repeat(2);
+    // The user gis and that password, packed as a request's Basic sign-in
+    // packs them.
+    let packed = format!("Z2lzOldpbnQ{}", "zcjIwMjY=");
+    let cases: Vec<(&str, String, usize)> = vec![
+        // In a script's comment or docstring.
+        (
+            "load.py",
+            format!("import os\n# login gis_reader, password: {pw}\nprint(1)\n"),
+            2,
+        ),
+        ("load.py", format!("# PWD={pw};\n"), 1),
+        (
+            "load.py",
+            format!("\"\"\"Loads roads.\n\nlogin: gis_reader\npassword: {pw}\n\"\"\"\n"),
+            4,
+        ),
+        (
+            "load.py",
+            format!("# machine git.corp.example login ana password {pw}\n"),
+            1,
+        ),
+        (
+            "load.py",
+            format!("# db.corp.example:5432:gis:gis_reader:{pw}\n"),
+            1,
+        ),
+        ("load.R", format!("# password: {pw}\n"), 1),
+        // Assignments.
+        (
+            "load.py",
+            format!("import os\nos.environ[\"PGPASSWORD\"] = \"{pw}\"\n"),
+            2,
+        ),
+        ("load.py", format!("cfg['password'] = '{pw}'\n"), 1),
+        ("load.py", format!("password: str = \"{pw}\"\n"), 1),
+        ("load.R", format!("password <- \"{pw}\"\n"), 1),
+        // Notes.
+        ("notes.md", format!("**Password:** {pw}\n"), 1),
+        ("notes.md", format!("Password: `{pw}`\n"), 1),
+        ("notes.md", format!("- Password: **{pw}**\n"), 1),
+        (
+            "notes.md",
+            format!("| user | password |\n|---|---|\n| gis_reader | {pw} |\n"),
+            3,
+        ),
+        ("notes.md", format!("The password is {pw}.\n"), 1),
+        (
+            "nb.ipynb",
+            format!("{{\n \"cells\": [\n  {{\n   \"cell_type\": \"markdown\",\n   \"source\": [\n    \"password: {pw}\\n\"\n   ]\n  }}\n ]\n}}\n"),
+            6,
+        ),
+        // Tags, settings, database commands, command lines.
+        (
+            "conn.xml",
+            format!("<connection><user>gis</user><password>{pw}</password></connection>\n"),
+            1,
+        ),
+        (
+            "conf.yaml",
+            format!("portal: https://gis.corp.example/portal\ntoken: {long}\n"),
+            2,
+        ),
+        ("conf.ini", format!("[arcgis]\napi_key = {long}\n"), 2),
+        ("conf.yaml", format!("client_secret: {long}\n"), 1),
+        ("conf.yaml", format!("user: gis\npass: {pw}\n"), 2),
+        (
+            "users.sql",
+            format!("CREATE USER gis WITH PASSWORD '{pw}';\n"),
+            1,
+        ),
+        (
+            "users.sql",
+            format!("ALTER USER gis IDENTIFIED BY '{pw}';\n"),
+            1,
+        ),
+        (
+            "run.sh",
+            format!("sqlcmd -S db -U gis -P {pw} -Q 'select 1'\n"),
+            1,
+        ),
+        (
+            "run.sh",
+            format!("python publish.py --user gis --password {pw}\n"),
+            1,
+        ),
+        ("run.sh", format!("publish --password={pw}\n"), 1),
+        // Handed to a well-known call by its place, with no name beside it.
+        (
+            "sign_in.py",
+            format!("from arcgis.gis import GIS\ngis = GIS(\"https://www.arcgis.com\", \"ana\", \"{pw}\")\n"),
+            2,
+        ),
+        (
+            "sign_in.py",
+            format!("gis = GIS(\n    \"https://gis.corp.example/portal\",\n    \"ana\",\n    \"{pw}\",\n)\n"),
+            4,
+        ),
+        (
+            "connect.py",
+            format!("arcpy.management.CreateDatabaseConnection(out, \"prod.sde\", \"SQL_SERVER\", \"db1\", \"DATABASE_AUTH\", \"gis\", \"{pw}\")\n"),
+            1,
+        ),
+        (
+            "connect.py",
+            format!("arcpy.SignInToPortal(\"https://gis.corp.example/portal\", \"ana\", \"{pw}\")\n"),
+            1,
+        ),
+        (
+            "fetch.py",
+            format!("import requests\nr = requests.get(url, auth=(\"ana\", \"{pw}\"))\n"),
+            2,
+        ),
+        (
+            "load.py",
+            format!("password = os.environ.get(\"PGPASSWORD\", \"{pw}\")\n"),
+            1,
+        ),
+        (
+            "load.py",
+            format!("conn = cx_Oracle.connect(\"gis\", \"{pw}\", \"db1.corp.example/orcl\")\n"),
+            1,
+        ),
+        (
+            "load.py",
+            format!("conn = oracledb.connect(\"gis/{pw}@db1.corp.example:1521/orcl\")\n"),
+            1,
+        ),
+        ("load.sh", format!("sqlplus gis/{pw}@orcl @load.sql\n"), 1),
+        (
+            "call.sh",
+            format!("curl -H \"Authorization: Basic {packed}\" https://gis.corp.example/rest\n"),
+            1,
+        ),
+        ("load.py", format!("USER, PASSWORD = \"gis\", \"{pw}\"\n"), 1),
+        ("notes.md", format!("user: gis\npw: {pw}\n"), 2),
+        ("dump.sh", format!("mysqldump -uroot -p{pw} gis > gis.sql\n"), 1),
+        // A password to fall back on, also inside another call.
+        (
+            "load.py",
+            format!("password = os.getenv(\"PGPASSWORD\", default=\"{pw}\")\n"),
+            1,
+        ),
+        (
+            "load.py",
+            format!("password = os.environ.get(\"PGPASSWORD\") or \"{pw}\"\n"),
+            1,
+        ),
+        (
+            "tool.py",
+            format!("password = arcpy.GetParameterAsText(1) or \"{pw}\"\n"),
+            1,
+        ),
+        (
+            "run.sh",
+            format!("export PGPASSWORD=\"${{PGPASSWORD:-{pw}}}\"\n"),
+            1,
+        ),
+        // (A `.js` file never leaves by sync: Windows runs one on a
+        // double click. TypeScript does.)
+        (
+            "map.ts",
+            format!("const p = process.env.DB_PASSWORD || \"{pw}\";\n"),
+            1,
+        ),
+        (
+            "setup.ps1",
+            format!("$secure = ConvertTo-SecureString \"{pw}\" -AsPlainText -Force\n"),
+            1,
+        ),
+        (
+            "sign_in.py",
+            format!("gis = GIS(url, \"ana\", os.environ.get(\"AGOL_PW\", \"{pw}\"))\n"),
+            1,
+        ),
+        // More calls that take a password by its place.
+        (
+            "admin.py",
+            format!("arcpy.management.CreateDatabaseUser(sde, \"DATABASE_USER\", \"editor1\", \"{pw}\")\n"),
+            1,
+        ),
+        (
+            "admin.py",
+            format!("gis.users.create(\"ana2\", \"{pw}\", \"Ana\", \"Gis\", \"ana@county.example\")\n"),
+            1,
+        ),
+        (
+            "load.py",
+            format!("conn = pymssql.connect(\"db1\", \"gis\", \"{pw}\", \"roads\")\n"),
+            1,
+        ),
+        (
+            "mail.py",
+            format!("server.login(\"gis@county.example\", \"{pw}\")\n"),
+            1,
+        ),
+    ];
+    // What the review after that sent through: a real password with a sign
+    // or a word that stand-ins use, and more everyday forms. (Made-up
+    // passwords, as everywhere here.)
+    let more: Vec<(&str, String, usize)> = vec![
+        ("load.py", "password = \"Password123!\"\n".into(), 1),
+        ("load.py", "password = \"Parc3l$View\"\n".into(), 1),
+        (
+            "run.sh",
+            "PGPASSWORD=\"Tr4ffic$Count26\" psql -h db1 -U gis\n".into(),
+            1,
+        ),
+        (
+            "load.py",
+            format!(
+                "engine = create_engine(\"postgresql://gis_reader:{}@db1.corp.example:5432/gis\")\n",
+                "Dra1nage%21Map"
+            ),
+            1,
+        ),
+        ("conf.json", "{\"password\": \"Example#2026\"}\n".into(), 1),
+        (
+            "zugang.md",
+            format!("Benutzer: test_gis\nPasswort: {}\n", "Br0cken!Weg"),
+            2,
+        ),
+        (
+            "README.md",
+            format!("Sign in to the portal as `svc_gis` with the password `{}`.\n", "Bridge!Deck88"),
+            1,
+        ),
+        (
+            "conf.xml",
+            format!("<entry key=\"password\">{}</entry>\n", "Yam1!Config"),
+            1,
+        ),
+        (
+            "notes.txt",
+            format!("net use Z: \\\\fs1.corp.example\\gis /user:CORP\\svc_gis {} /persistent:no\n", "Sh4re!Drive9"),
+            1,
+        ),
+        (
+            "pack.sh",
+            format!("7z a -p{} out.7z out/\n", "Tr4fficCount26"),
+            1,
+        ),
+        ("load.py", "secret = \"Tr4ffic!Count26\"\n".into(), 1),
+        ("load.py", "login(\"gis_reader\", \"Tr4ffic!Count26\")\n".into(), 1),
+    ];
+    let cases: Vec<(&str, String, usize)> = cases.into_iter().chain(more).collect();
+    for (name, text, line) in &cases {
+        let r = repo();
+        let host = MemoryHost::new(r.clone(), "Ana");
+        let mut ana = Person::new("ana");
+        ana.write("ok.md", "fine\n");
+        ana.write(name, text);
+        let asked = host.asked.load(Ordering::SeqCst);
+        let rep = ana.sync(&host).await;
+        let found = rep
+            .stopped
+            .as_ref()
+            .unwrap_or_else(|| panic!("{name} went through: {text:?}"));
+        let at: Vec<(&str, usize)> = found.iter().map(|f| (f.path.as_str(), f.line)).collect();
+        assert_eq!(at, [(*name, *line)], "{text:?}: {found:?}");
+        // Nothing was sent: not this file, not the harmless one.
+        assert!(rep.sent.is_empty() && rep.commit.is_none(), "{name}");
+        assert_eq!(host.asked.load(Ordering::SeqCst), asked, "{name}");
+        assert!(r.lock().unwrap().is_empty(), "{name}");
+        // The report names the file and the line, never the value.
+        let said = format!("{rep:?} {}", serde_json::to_string(&rep).unwrap());
+        assert!(
+            !said.contains(&pw) && !said.contains(&long) && !said.contains(&packed),
+            "{said}"
+        );
+    }
+
+    // A note as Windows often saves it (UTF-16 with its mark in front,
+    // what PowerShell's `>` writes) is read as the text it is.
+    let r = repo();
+    let host = MemoryHost::new(r.clone(), "Ana");
+    let mut ana = Person::new("ana");
+    let note: Vec<u8> = [0xFF, 0xFE]
+        .into_iter()
+        .chain(
+            format!("user: gis\r\npassword: {pw}\r\n")
+                .encode_utf16()
+                .flat_map(u16::to_le_bytes),
+        )
+        .collect();
+    ana.write("notes.txt", &note);
+    let rep = ana.sync(&host).await;
+    let found = rep.stopped.as_ref().expect("the UTF-16 note went through");
+    assert_eq!((found[0].path.as_str(), found[0].line), ("notes.txt", 2));
+    assert!(rep.sent.is_empty() && r.lock().unwrap().is_empty());
+}
+
+/// And ordinary scripts, notes and settings that only name a password go
+/// through in one sync: the near misses of the forms above.
+#[tokio::test]
+async fn files_that_name_a_password_without_giving_one_are_sent() {
+    let r = repo();
+    let host = MemoryHost::new(r.clone(), "Ana");
+    let mut ana = Person::new("ana");
+    let files = [
+        (
+            "scripts/load.py",
+            "\"\"\"Load the roads.\n\n    password: the database password, read from the environment\n\"\"\"\nimport os\n\n# ask Ana for the password; it is kept by Columbus, never here\npassword = os.environ[\"PGPASSWORD\"]\npassword: str\nos.environ[\"PGPASSWORD\"] = password\ncfg = {}\ncfg['password'] = get_password()\nconn = connect(user=user, password=pw2026x)  # as set above\ngis = GIS(url, username, password)\ngis = GIS(\"https://www.arcgis.com\", \"ana\", getpass.getpass())\ngis = GIS(\"pro\")\nr = requests.get(url, auth=(user, pw))\nhost = os.environ.get(\"PGHOST\", \"db1.corp.example\")\npassword = os.environ.get(\"PGPASSWORD\")\nconn = oracledb.connect(user=user, password=pw, dsn=dsn)\nx, y = \"12.5\", \"48.1\"\npw = get_pw()\npassword = os.getenv(\"PGPASSWORD\", default=None)\npassword = os.environ.get(\"PGPASSWORD\") or getpass.getpass()\nkey = os.environ.get(\"S3_KEY\", \"exports/2026/roads_north_v2.parquet\")\nftp.login(\"anonymous\", \"ana@county.gov\")\nconn = pymssql.connect(\"db1\", \"gis\", pw, \"roads2026\")\ny = np.exp(x/sigma2@w)\npassword = \"${DB_PASSWORD}\"\npassword = \"%DB_PASSWORD%\"\npassword = \"your-password-here\"\npwd = \"row_widths\"\ntoken_hash = \"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b\"\nurl = f\"postgresql://{user}:{pw}@db1/roads\"\n",
+        ),
+        ("scripts/load.R", "password <- Sys.getenv(\"PGPASSWORD\")\npwd <- getwd()\n"),
+        (
+            "notes.md",
+            "# Signing in\n\nAsk Ana for the password.\n\n**Password:** in the credential store\n\n| user | password |\n|---|---|\n| gis_reader | <ask Ana> |\n\nThe password is 12 characters or more.\nUse `--password` to give it, or leave it out to be asked.\nThe layer is \"ana/roads@2024\" in the old naming.\nAuthorization: Basic <credentials>\nPasswort: siehe Tresor\nPassword for staging: ask Dana\n",
+        ),
+        (
+            "conf/settings.yaml",
+            "portal: https://gis.corp.example/portal\ntoken: ${ARCGIS_TOKEN}\npass: true\nfields:\n  password: varchar2\n",
+        ),
+        ("conf/app.xml", "<settings><password/><user>gis</user></settings>\n"),
+        (
+            "run.sh",
+            "publish --password\nmysql -u root -p\nmkdir -p output2026\npsql -U gis -p 5432 -h db1host\nsqlplus /nolog\nsqlplus ana@roads\nexport PGPASSWORD=\"${PGPASSWORD:-}\"\nexport PGHOST=\"${PGHOST:-db1.corp.example}\"\n",
+        ),
+        (
+            "users.sql",
+            "ALTER USER gis WITH PASSWORD '<new password>';\nALTER USER gis IDENTIFIED BY :new_pw;\n",
+        ),
+        ("run.json", "{\"pwd\": \"/home/ana/project\"}\n"),
+    ];
+    for (path, text) in files {
+        ana.write(path, text);
+    }
+    let rep = ana.sync(&host).await;
+    assert!(rep.stopped.is_none(), "{:?}", rep.stopped);
+    assert_eq!(rep.sent.len(), files.len());
+    let on_server = r.lock().unwrap().files("main");
+    assert_eq!(on_server.len(), files.len());
 }
 
 #[tokio::test]

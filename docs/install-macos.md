@@ -4,7 +4,7 @@ Columbus is a governed GIS server for AI agents. It runs on your computer, besid
 
 This build is for Macs with Apple Silicon (M1 and later) on macOS 15 or later (the engine's pinned packages, such as rasterio 1.5, publish Apple Silicon wheels for macOS 15 and later only). The Columbus app (step 5) is optional. These steps are for Columbus 0.15.0. For Windows, see [install.md](install.md).
 
-**Updating from 0.14?** Install the new `.mcpb` and app as in steps 4 and 5. The engine's packages did not change, so step 2 need not be run again. Nothing loosens by itself: working freely on copies, toolboxes, project files and sync are off until you choose them in the app (step 3) or your organization writes them in `policy.yaml`. The app's window is new: a sidebar, the chat, and a panel on the right. (From 0.13 or earlier, also run the engine setup, step 2, once more.)
+**Updating from 0.14?** Install the new `.mcpb` and app as in steps 4 and 5. The engine's packages did not change, so step 2 need not be run again. Nothing loosens by itself: working freely on copies, toolboxes, project files and sync are off until you choose them in the app (step 3) or your organization writes them in `policy.yaml`. The app's chat keeps using Anthropic, with the key you saved, until you choose another AI service (step 5). The app's window is new: a sidebar, the chat, and a panel on the right. (From 0.13 or earlier, also run the engine setup, step 2, once more.)
 
 ## What works on a Mac
 
@@ -76,24 +76,29 @@ The policy keys that are new in 0.15, all off or empty until someone sets them (
 | `allow_toolboxes` | Toolboxes may be installed and used (step 8). `toolboxes: { catalogue: false }` stops Columbus's catalogue from downloading any |
 | `allow_project_files` | Your assistant may read and write text files in a project's own folder, and run scripts kept there |
 | `allow_sync` | A project's files may sync with a Git server when you press **Sync** (step 9). `sync: { hosts: [...] }` names the only servers allowed |
+| `assistant.hosts` | The only AI services the app's own chat may use (step 5, **Chat in the app**), by host name: `assistant: { hosts: [api.anthropic.com] }`, or `localhost` for a model on the Mac itself. Empty, you choose the service. It does not limit which other AI app you connect to Columbus (step 4) |
 
 SQL Server connections also need unixODBC and Microsoft ODBC Driver 18 (`brew install unixodbc`, then [Microsoft's instructions](https://learn.microsoft.com/sql/connect/odbc/linux-mac/install-microsoft-odbc-driver-sql-server-macos)). Everything else works without them.
 
-## 4. Connect Claude desktop
+## 4. Connect your AI client
 
-**The extension:** download `columbus-<version>-macos-arm64.mcpb` from the release and open it; Claude desktop installs it as an extension. Paste the Python path from step 2 into **Engine Python** (required). The folder fields can stay empty from version 0.1.4; in earlier versions, fill them in (Connections folder: `~/Library/Application Support/Columbus/connections`), because an empty field reached the server as the text `${user_config.connections}`. In a file picker, Cmd+Shift+G lets you paste a path.
+Any AI app that speaks MCP can use Columbus, with its own model and its own subscription. (To chat in the Columbus app itself, with an AI service you choose, see **Chat in the app** under step 5.)
 
-**Or the config file:** in Claude desktop, Settings → Developer → Edit Config, and add (with your own user name):
+**Claude desktop, the extension:** download `columbus-<version>-macos-arm64.mcpb` from the release and open it; Claude desktop installs it as an extension. Paste the Python path from step 2 into **Engine Python** (required). The folder fields can stay empty from version 0.1.4; in earlier versions, fill them in (Connections folder: `~/Library/Application Support/Columbus/connections`), because an empty field reached the server as the text `${user_config.connections}`. In a file picker, Cmd+Shift+G lets you paste a path.
+
+**Or its config file:** in Claude desktop, Settings → Developer → Edit Config, and add (with your own user name):
 
 ```json
 {
   "mcpServers": {
-    "columbus": { "command": "/Users/<you>/Columbus/columbus-mcp", "args": ["serve"] }
+    "columbus": { "command": "/Users/<you>/Columbus/columbus-mcp", "args": [] }
   }
 }
 ```
 
-Restart Claude desktop, then ask it to call `whoami`. It shows what Columbus allows in this session, where approvals will appear, and that the engines are ready.
+**Another AI app** (GitHub Copilot in VS Code, the Copilot CLI or a JetBrains IDE; Cursor; Codex; Gemini CLI; Claude Code; LM Studio): you add an entry for `columbus-mcp` to that app's own settings file. The Columbus app shows the file and the exact entry for this Mac, with a button that copies it: **Settings › Assistant › Use Columbus from another AI app** (step 5). Gemini CLI (`~/.gemini/settings.json`), Claude Code (`.mcp.json` at the top of a project) and LM Studio (`~/.lmstudio/mcp.json`) take the entry above as written. GitHub Copilot in VS Code and the Copilot CLI (`~/.copilot/mcp-config.json`) and Cursor (`~/.cursor/mcp.json`) want a `"type"` line in it as well, and Copilot a `"tools"` line; JetBrains IDEs put it under `servers` in place of `mcpServers`; Codex keeps its own kind of file (`~/.codex/config.toml`). The app's page and the [technical reference](reference.md#connect-another-ai-app) give each one exactly. These files changed during 2026; they are written here as read on 2026-11-11.
+
+Restart Claude desktop (or your AI app), then ask it to call `whoami`. It shows what Columbus allows in this session, where approvals will appear, and that the engines are ready.
 
 ## 5. The Columbus app (optional)
 
@@ -103,15 +108,33 @@ The app is one window with three parts: a sidebar on the left, the chat (or the 
 xattr -dr com.apple.quarantine /Applications/Columbus.app
 ```
 
-Open Columbus while your assistant is working (ask it to call `whoami` if no session is listed). Under **Chats**, a session from Claude desktop is in the list with your own chats. Open it to see what its assistant did, with its map in the panel on the right; its files are under **Files this chat made** in the **⋯** menu. Requests that need your decision are listed in **Activity**, under **Waiting for you**, and above the session's activity, with **Decide in browser**: you decide them in your AI app's own prompt or on the page Columbus opens in your browser, never in the app, so no other program can approve them for you. The street background is off until you turn it on (map tiles come from OpenFreeMap, which then sees the area in view); the **Street background** switch in **Settings** sets whether it starts on.
+Open Columbus while your assistant is working (ask it to call `whoami` if no session is listed). Under **Chats**, a session from Claude desktop or another AI app is in the list with your own chats. Open it to see what its assistant did, with its map in the panel on the right; its files are under **Files this chat made** in the **⋯** menu. Requests that need your decision are listed in **Activity**, under **Waiting for you**, and above the session's activity, with **Decide in browser**: you decide them in your AI app's own prompt or on the page Columbus opens in your browser, never in the app, so no other program can approve them for you. The street background is off until you turn it on (map tiles come from OpenFreeMap, which then sees the area in view); the **Street background** switch in **Settings** sets whether it starts on.
 
-The app opens on a question in the middle of the window: a new chat, with things to try. The first time, in place of the question, it says **Start with your data**, with **Add data** to add a first connection (read only, unless you choose otherwise). Two checks are under it: connect an AI for the app's own chat, and the GIS engine. Each can be skipped, and **Skip setup** skips them all. Under the checks it asks how your assistant should work (step 3).
+The app opens on a question in the middle of the window: a new chat, with things to try. The first time, in place of the question, it says **Start with your data**, with **Add data** to add a first connection (read only, unless you choose otherwise). Two checks are under it: connect an AI for the app's own chat (choose the AI service, and save its key where it takes one), and the GIS engine. Each can be skipped, and **Skip setup** skips them all. Under the checks it asks how your assistant should work (step 3).
 
 **Classic windows**, at the foot of **Settings**, opens the previous session list and settings window, kept for now in case you prefer them.
 
 ### Chat in the app
 
-The app can also chat with Claude itself, using an Anthropic API key (billed by Anthropic per use, separate from a Claude subscription; create one at console.anthropic.com). Open **Settings › Assistant** (or use the check on the first-run screen), paste the key and press **Save key**: it goes into your computer's credential store, and the app can never read it back. Then press **New chat**. The chat starts its own Columbus session from the server that comes with the app (or, in a build without one, the one in `~/Columbus`), so the same policy, connections and checks apply. The GIS engine it uses can be chosen in **Settings › Assistant**; choosing another asks you to confirm first. Its steps fold into one line per turn (open it to see each step, with **Provenance** for results that made data). The last result of a turn is a card with **Table**, which opens the table on the map, and **How it was made**, which shows its checks, inputs and files; both open in the panel on the right. That panel opens with the chat's map the first time your assistant makes a result, and **Map**, at the top of the chat, opens and closes it. **Fill the window with the map**, in the chat's **⋯** menu, puts the chat away so the map has the window, and **Show the chat again**, in the panel's head, brings it back. When something needs your approval, the chat shows a card (**Columbus needs your OK**) with **Allow once**, **Allow for this chat** where Columbus offers it, and **Decline**. Under **Work freely on copies** a script that stays in the sandbox runs without a card. Under **Ask me before each script**, and for any script that needs the network or runs outside the sandbox, the card shows the code the AI wrote in its own box, apart from what Columbus says about the run: read it before allowing. **New chat** ends the chat and its session; your chats are kept on this computer, listed under **Chats** and found with **Ctrl+K** (⌘K on a Mac), but an ended chat cannot be continued. Closing the app's window ends the chat.
+The app has a chat of its own, and you choose the AI it talks to. Open **Settings › Assistant** (or use the check on the first-run screen), choose the service under **Service for new chats**, paste its key and press **Save key**. The key goes into your computer's credential store (your Keychain), never into a file, and the app can never read it back. Each service has its own key, sent only to that service. The service bills you for what its key uses; a Claude or ChatGPT subscription does not cover it.
+
+| Service, as the app lists it | Where its key comes from | To know |
+| --- | --- | --- |
+| Anthropic | console.anthropic.com | The Claude models. Billed per use |
+| OpenAI | platform.openai.com, under API keys | Billed per use |
+| xAI (Grok) | console.x.ai | Billed per use |
+| Google Gemini | aistudio.google.com | Billed under the Gemini API's terms |
+| OpenRouter | openrouter.ai | Billed per use. It passes your chat on to the company whose model you pick |
+| Ollama on this computer | No key | No bill. Ollama must be running, with a model pulled that can call tools and a context length of about 32,000 tokens or more |
+| LM Studio on this computer | A key only if you turned on its sign-in | No bill. Its local server must be running, with a model loaded that can call tools and a context length of about 32,000 tokens or more |
+
+With Ollama or LM Studio the model runs on your own Mac, and nothing is sent to an AI company. Small local models often call tools unreliably. **Any other service** that speaks one of three common request formats can be added with **Add another service**: Azure OpenAI, Mistral, DeepSeek, Groq, Together, Amazon Bedrock, or your organization's own gateway. You give it a name, its address, the format and how its key is sent. Adding one asks for Touch ID or your Mac password first, because it changes where your messages, and the rows your assistant reads, are sent.
+
+Anthropic, OpenAI, xAI and Google Gemini come with a short list of models. For any service, **Load the list from the service** asks the service for its own list, and **Another model's id** takes one you type. A chat shows its service under the message box and keeps it to its end: in a chat you can change the model, not the service. Whatever service you choose, what your assistant reads is sent to it: choosing a service is choosing who sees those rows. Your organization can name the only services allowed (`assistant.hosts`, step 3).
+
+No key of any service was used while this was built: every service, Anthropic too, was tested against stand-ins. The services new in 0.15 were built from each one's published description, so your first chat with OpenAI, xAI, Gemini or one of the others is its first meeting with the real thing ([manual-checks.md](manual-checks.md), H-6). A GitHub Copilot subscription cannot be used in this chat: GitHub supports that only through a program of its own, which Columbus does not ship. Copilot works as an AI app connected to Columbus (step 4). A workflow's optional AI review does not follow this choice: it still uses Anthropic, with the Anthropic key.
+
+Then press **New chat**. The chat starts its own Columbus session from the server that comes with the app (or, in a build without one, the one in `~/Columbus`), so the same policy, connections and checks apply. The GIS engine it uses can be chosen in **Settings › Assistant**; choosing another asks you to confirm first. Its steps fold into one line per turn (open it to see each step, with **Provenance** for results that made data). The last result of a turn is a card with **Table**, which opens the table on the map, and **How it was made**, which shows its checks, inputs and files; both open in the panel on the right. That panel opens with the chat's map the first time your assistant makes a result, and **Map**, at the top of the chat, opens and closes it. **Fill the window with the map**, in the chat's **⋯** menu, puts the chat away so the map has the window, and **Show the chat again**, in the panel's head, brings it back. When something needs your approval, the chat shows a card (**Columbus needs your OK**) with **Allow once**, **Allow for this chat** where Columbus offers it, and **Decline**. Under **Work freely on copies** a script that stays in the sandbox runs without a card. Under **Ask me before each script**, and for any script that needs the network or runs outside the sandbox, the card shows the code the AI wrote in its own box, apart from what Columbus says about the run: read it before allowing. **New chat** ends the chat and its session; your chats are kept on this computer, listed under **Chats** and found with **Ctrl+K** (⌘K on a Mac), but an ended chat cannot be continued. Closing the app's window ends the chat.
 
 ## 6. ArcGIS sign-in (optional)
 
@@ -153,7 +176,7 @@ New in 0.15. With sync turned on (`allow_sync`; **Work freely on copies** sets i
 2. **Link the project:** on the project's page, **Link this project**, then one of your repositories, another one written as `owner/name`, or a new private one. Linking sends none of your files.
 3. **Check for changes** only reads. **Sync** gets the server's changes, then sends yours as one change, with your note.
 
-A file changed on both sides is kept twice, and you choose: **Keep mine**, **Keep theirs** or **Keep both**. Data, keys and big files never sync (GeoPackages, shapefiles, file geodatabases, GeoTIFFs, GeoJSON, CSV and Excel files, databases, `.env`, `.sde`, files over 5 MB, the `outputs` folder), a file your assistant wrote in a chat that had read one of your sources is held back until you choose **Send it anyway**, every other file in the folder is sent (but for links, a `.git` folder, a Python environment or its cache, and names another system cannot hold) and is listed before it goes, and text that looks like a password or a token stops the sync before anything is sent. This is not a Git clone: one branch, no history on the Mac, and nothing syncs by itself. Sync was tested against stand-in servers, never a real GitHub or Gitea: try it first on a repository that does not matter ([manual-checks.md](manual-checks.md), H-4).
+A file changed on both sides is kept twice, and you choose: **Keep mine**, **Keep theirs** or **Keep both**. Data, keys and big files never sync (GeoPackages, shapefiles, file geodatabases, GeoTIFFs, GeoJSON, CSV and Excel files, databases, `.env`, `.sde`, files over 5 MB, the `outputs` folder; a table saved as `.txt` or `.json` is not recognized as data), a file your assistant wrote in a chat that had read one of your sources is held back until you choose **Send it anyway**, every other file in the folder is sent (but for links, a `.git` folder, a Python environment or its cache, and names another system cannot hold) and is listed before it goes, and text that looks like a password or a token stops the sync before anything is sent. This is not a Git clone: one branch, no history on the Mac, and nothing syncs by itself. Sync was tested against stand-in servers, never a real GitHub or Gitea: try it first on a repository that does not matter ([manual-checks.md](manual-checks.md), H-4).
 
 ## 10. Skills
 

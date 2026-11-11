@@ -229,6 +229,10 @@ jobs:
           python -m pip install --require-hashes -r workers/python/requirements-ci.txt
           dbus-run-session -- xvfb-run -a -s "-screen 0 1400x900x24" python app/desktop/e2e/chat.py target/debug/columbus-mcp app/desktop/src-tauri/target/debug/columbus-desktop
           dbus-run-session -- xvfb-run -a -s "-screen 0 1400x900x24" python app/desktop/e2e/settings.py target/debug/columbus-mcp app/desktop/src-tauri/target/debug/columbus-desktop
+          # The chat on any AI service: stand-ins for the three request formats, a service added by address, the organization's assistant.hosts, other AI apps (T-38).
+          dbus-run-session -- xvfb-run -a -s "-screen 0 1400x900x24" python app/desktop/e2e/services.py target/debug/columbus-mcp app/desktop/src-tauri/target/debug/columbus-desktop
+          # The line under the chat's message box in windows 1024 to 1440 wide, the panel on the right open and closed: nothing cut to nothing, nothing outside it.
+          dbus-run-session -- xvfb-run -a -s "-screen 0 1600x1000x24" python app/desktop/e2e/foot.py target/debug/columbus-mcp app/desktop/src-tauri/target/debug/columbus-desktop
           # Files and ArcGIS connections, ArcGIS sign-in against the fake portal, Settings › Environments (T-12).
           cargo build -p columbus-mcp --example fake_oauth_server --locked
           dbus-run-session -- xvfb-run -a -s "-screen 0 1400x900x24" python app/desktop/e2e/sources.py target/debug/columbus-mcp app/desktop/src-tauri/target/debug/columbus-desktop

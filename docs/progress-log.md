@@ -143,6 +143,11 @@ Kit version 1.1 · as of 2026-11-08, session S1 not started
 | 2026-11-11 | CI on the merged fixes (7077969): Desktop app (ubuntu-latest) failed in `toolboxes.py`, where the test typed `/usr/bin/env` as "a program in a system folder" and waited for the refusal. CI's Linux runners are now Ubuntu 26.04; the app looks at where a program really is, and the likeliest cause is that `env` there is a link to a file kept in a folder of its own, so the app rightly offered to add it. The test now puts its own program straight into the folder for temporary files, which is a system-kept place on every system. The app is unchanged | The check's intent is unchanged (a program directly in a system-kept folder is refused before anything is asked, with the same words); only the fixture no longer depends on how a distribution packages its tools. Not reproduced here (this machine is Ubuntu 24.04, where `env` is a plain file and the old test passed); the changed test passes here, and CI shows whether the cause was right | Decided |
 | 2026-11-11 | The re-check's finding 1 (the secret scan misses everyday forms) is treated as Fix now, though the re-checker scored it 24: `docs/final-review.md` puts "data lost or leaked" at severity 10, and a database password sent to a Git server or an AI service is that, so severity 9 or more with likelihood 3. It becomes R-105 with the cheap neighbours (findings 3, 4, 5, 8 in part), built by a fresh builder; a fresh subagent then tries the scan again with forms of its own | The rule for Fix now is the review's, not the reviewer's arithmetic; the one re-check the rules ask for has been spent on R-103 and R-104, so R-105 gets a narrow check of its own rather than none | Decided |
 | 2026-11-11 | Pull request 26 is merged with R-105 still open: it holds the review's fixes as re-checked, and nothing is published. R-105 follows in a small pull request of its own; the work on D-22 after that | Main gains the fixes now; a later stop of this session leaves a clean, green state | Decided |
+| 2026-11-11 | Pull request 26 merged as f8eff45 after all 14 CI jobs passed on cc4b61e (run 43069750717); `main` green afterwards (run 43072793677). Pull request 28 holds D-22, R-105 to R-107 and their records | D-8 | Done |
+| 2026-11-11 | D-22 as built (the builder's choices, from its report): `Chat::start` stays Anthropic so that the six earlier tests are untouched, and the app uses `start_with`; one second try per chat without the optional fields; a model change in the Responses format drops reasoning items; an added service's address, format and key header are recorded in the credential store and checked at each use, so on Linux no service can be added; an unreadable policy file allows no service; a service on this computer is never reached through a proxy; the streaming idle limit is 600 seconds for the new formats | Each keeps a promise of D-22 (R-25, R-26) or keeps Anthropic's path as it was | Decided |
+| 2026-11-11 | The owner asked on 2026-11-11, while the review's fixes were being built, to finish now and drop what is not needed. Dropped: the independent re-check of R-105's second part, R-106 and R-107 (T-40 is marked blocked, not done); plainer tool schemas on the second try; the Mac keychain wording; the separate words pass on the docs by the builder (done by the coordinator instead). Kept: every fix that was complete and tested, CI on three systems before the merge, and the records | The owner's instruction. A Fix-now finding (14) and the security finding (1) were in hand and tested, so they were finished rather than left | Decided by owner |
+| 2026-11-11 | R-106: where the line for a stand-in is drawn means two known costs: a password that is exactly `$` and a name (`$ummer2026`) reads as a variable, and one holding a name in braces as put together from parts. `pwd = "row_widths"` is let through for the name `pwd` only | Applied to every password name, the exemption let the repository's own test password through | Decided |
+| 2026-11-11 | Branches: nothing was deleted. The owner asked for a clean-up; the build session's Git access refuses a push that deletes another branch, and that was not worked around. The lists and one command go to the owner | A refusal that is deliberate is not a blocker to work past | Decided |
 
 ## Change requests
 
@@ -158,6 +163,50 @@ Status: raised, approved, declined, or Sent to Blueprint (touches a one-way door
 ## Handoff notes
 
 Newest first, written as you go. Mark each claim verified (checked this session) or unverified.
+
+### Hand-over: Columbus 0.15.0, part 3 and the addendum (2026-11-11)
+
+Where things stand when this note is written (verified here unless marked):
+
+- **On `main`:** part 3 as planned in `docs/build-brief-3.md` (pull requests 23 to 26) and, once pull request 28 is merged, its addendum (D-22, any AI service) with the fixes of two independent reviews. Version 0.15.0 in the manifests. **Nothing is published** (D-21): the Download link still gives 0.14.0 until the owner asks for a release.
+- **Tasks:** T-26 to T-39 done; R-103 to R-107 done; T-35 done. T-40 is blocked on one thing: the re-check of the last fixes was not run, because the owner asked on 2026-11-11 to finish now and drop what is not needed. T-36 is this hand-over. T-18 and R-102 are as they were (the owner's optional checks; the ArcGIS sign-in route).
+- **What was never tried on the real thing** (the owner's optional checks in `docs/manual-checks.md`): the GeoLibre program (H-3); a real GitHub or Gitea (H-4); arcpy on a real ArcGIS Pro (H-2, named H-5 in brief 3); any AI service in this build, the services new in 0.15 never (H-6); the app's pages on Windows and macOS beyond what CI builds and runs.
+- **Put to the owner in the hand-over message:** publishing 0.15; the branches (below); the app creating the policy file on a new computer; a Copilot subscription inside the app's own chat (needs GitHub's own program, outside the licences of baseline item 5); whether map documents, layer files and batch files should sync after a warning; the repository's About text and social picture (not editable from the build session; `docs/images/social-card.png` still shows the window from before 0.15); a line in `CLAUDE.md` naming `docs/build-brief-3.md` as a source (the build session may not edit that file); the re-check of the last fixes.
+- **Branches (the owner's request of 2026-11-11, checked read-only):** the build session's access does not allow deleting a branch (the attempt on one merged branch was refused and not worked around). 22 branches are fully in `main`; 14 older ones have every commit under a release tag; 5 older ones and `deps/engine-requirements-20261109` hold a few commits found nowhere else; 6 belong to open Dependabot pull requests; `rustgis-pilot` holds 4 commits found nowhere else. The lists are in the hand-over message.
+- **If a later session continues:** start from this note and `docs/tasks.json`. Open ends, none blocking: the re-check of R-106 and R-107; plainer tool schemas on the chat's second try (the likeliest first failure with Google Gemini); the wording when a Mac's keychain prompt is declined; the settings file can move new chats to another service that already has a key (review finding 9); choosing several held files at once in Sync.
+
+### Review of any AI and of the password search (T-40, 2026-11-11)
+
+A fresh subagent that built none of it reviewed pull request 28 at 0059d8f and fixed nothing.
+
+- **Verdict (the reviewer's):** the any-AI part has no Fix-now finding: where a key goes, redirects, the organization's limit, approvals, the caps and Stop held against about 150 runs with its own stand-in services and its own script against the real app. The search for passwords has one Fix-now finding besides the class then being built.
+- **Findings and what was done with each:**
+
+| # | Finding | Label | Done |
+|---|---|---|---|
+| 1 | A key saved for an added service followed an address rewritten in the settings file, once the person re-confirmed as the app told them to | Fix when convenient (20; severity 10) | R-107 |
+| 2 | GitHub Copilot is not where a person looks: no word in the service list or the first run | Fix when convenient (20) | R-107 |
+| 3 | A local service that is not running was blamed on the network | Accept (18) | R-107 |
+| 4 | A key made of words broke ordinary work (pieces removed from text; tool calls refused) | Accept (10) | R-107 |
+| 5 | Docs said more than the code, and implied Anthropic had met the real service in this build | Accept (15) | Reworded |
+| 6 | A workflow's AI review was outside `assistant.hosts` | Accept (12) | R-107 |
+| 7 | After a failed message the next request held two of the person's messages in a row | Accept (8) | R-107 |
+| 8 | What a service sends beyond the reply was kept without limit | Accept (4) | R-107 (caps) |
+| 9 | The settings file can move new chats to another service that already has a key | Accept (6) | Logged |
+| 10 | A slow error body held the chat | Accept (3) | R-107 |
+| 11 | Token counts were added unchecked | Accept (2) | R-107 |
+| 12 | Local models: a model without tools got a refusal with no advice; Ollama ignored the length limit as sent | Accept (16) | R-107 |
+| 13 | On a Mac, declining the keychain prompt reads as something else (read only) | Accept (6) | Dropped on the owner's instruction to finish; logged |
+| 14 | A password that looks like a template passed the search in every form | **Fix now** (30; severity 10) | R-106 |
+| 15 | Other everyday forms missed | Fix when convenient (20) | R-106 (the cheap ones); the rest listed in the reference as not found |
+| 16 | A password handed to a call by its place (the class then being built) | Fix now | R-105, second part |
+| 17 | Batch files, map documents and layer files never sync, with no way round | Accept (16), the owner's call | To the owner in the hand-over |
+| 18 | Names still sent by Sync (`.bak .dmp .pbix .twbx .tfstate .ovpn`, `*.env`) | Accept (12) | R-106 |
+| 19 | False stops older than R-105 | Accept (8) | R-106 (two let through) |
+
+- **Where the first real request to each service is most likely to fail (the reviewer's order):** a local model without tool calling or with a small context; Google Gemini refusing a keyword of the tool schemas (then no chat would work there; plainer schemas on the second try were planned and dropped for time); xAI; OpenAI (the shapes agree with its SDK's types; behaviour rests on assumption); OpenRouter; added services.
+- **Not checked by the review:** anything at run time on Windows or macOS; any real AI service or AI app; a screen reader.
+- **The one re-check of the fixes was not run:** see T-40 in `docs/tasks.json`.
 
 ### Re-check of the review's fixes (2026-11-11)
 

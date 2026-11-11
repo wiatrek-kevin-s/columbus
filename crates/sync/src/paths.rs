@@ -100,7 +100,8 @@ pub fn refused_name(name: &str) -> Option<&'static str> {
 /// (R-103). Kept out, on both sides (never sent, never fetched):
 ///
 /// * passwords, keys and connection files (`.env*`, `.pgpass`, `id_rsa`,
-///   `.pem`, `.sde`, `.dsn` …);
+///   `.pem`, `.sde`, `.dsn` …), and map documents and layer files, which
+///   can hold a saved connection (`.aprx`, `.mxd`, `.lyrx`, `.qgs` …);
 /// * data (geodata such as `.gpkg`, shapefile parts, `.geojson`, rasters;
 ///   tables and databases such as `.csv`, `.xlsx`, `.parquet`, `.sqlite`):
 ///   data leaves Columbus only through an export (D-19, D-20);
@@ -125,6 +126,9 @@ pub fn ignored(path: &str) -> Option<&'static str> {
         Kind::Key => "keys and certificates are on the ignore list",
         Kind::Passwords => "password files are on the ignore list",
         Kind::Connection => "connection files are on the ignore list (they can hold a password)",
+        Kind::MapDocument => {
+            "map documents and layer files are on the ignore list (they can hold a saved connection)"
+        }
         Kind::Runs => RUNS,
         Kind::Geodata => "geodata is on the ignore list (data leaves Columbus only through export)",
         Kind::Table => {
@@ -319,6 +323,33 @@ mod tests {
             ("prod.dsn", "connection"),
             ("prod.udl", "connection"),
             ("cube.odc", "connection"),
+            // The re-check's (R-105): other tools' token files; map
+            // documents and layer files; data formats the list lacked;
+            // Office files that carry macros.
+            (".npmrc", "password"),
+            ("home/.pypirc", "password"),
+            ("County.aprx", "saved connection"),
+            ("maps/roads.mxd", "saved connection"),
+            ("roads.mapx", "saved connection"),
+            ("roads.lyrx", "saved connection"),
+            ("roads.LYR", "saved connection"),
+            ("county.qgs", "saved connection"),
+            ("county.qgz", "saved connection"),
+            ("tiles.mbtiles", "geodata"),
+            ("dem.asc", "geodata"),
+            ("points.xyz", "geodata"),
+            ("town.osm", "geodata"),
+            ("town.osm.pbf", "geodata"),
+            ("loose/a00000009.gdbtable", "geodata"),
+            ("loose/a00000009.gdbtablx", "geodata"),
+            ("loose/a00000009.gdbindexes", "geodata"),
+            ("loose/a00000009.spx", "geodata"),
+            ("report.docm", "runs or follows"),
+            ("letter.dotm", "runs or follows"),
+            ("slides.pptm", "runs or follows"),
+            ("addin.ppam", "runs or follows"),
+            ("addin.xlam", "runs or follows"),
+            ("book.xltm", "runs or follows"),
             // Files the system runs or follows when they are opened, as a
             // file or as a folder on the way.
             ("open me.bat", "runs or follows"),
@@ -357,6 +388,9 @@ mod tests {
             "tool.ps1",
             "query.sql",
             "columbus-project.yaml",
+            "notes.npmrc",
+            "report.docx",
+            "style.qml",
         ] {
             assert_eq!(ignored(path), None, "{path}");
         }

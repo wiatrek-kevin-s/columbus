@@ -182,7 +182,8 @@ pub fn parts(path: &str) -> Result<Vec<String>, String> {
     Ok(parts)
 }
 
-/// A name that looks like a password, key or connection file
+/// A name that looks like a password, key or connection file, or is a map
+/// document or a layer file, which can hold a saved connection
 /// ([`file_kinds`], the table shared with sync). The assistant never gets a
 /// password or a connection file (D-16, B1), so it neither reads nor writes
 /// these, whoever put them in the folder.
@@ -192,6 +193,7 @@ pub fn kept_from_assistant(name: &str) -> Option<&'static str> {
             "it looks like a password or key file, which the assistant never reads or writes",
         ),
         Kind::Connection => Some("it looks like a connection file, which the assistant never reads or writes (connections stay with Columbus)"),
+        Kind::MapDocument => Some("it is a map document or a layer file, which can hold a saved connection (a server, a user, sometimes a password); the assistant never reads or writes those (connections stay with Columbus)"),
         _ => None,
     }
 }
@@ -199,9 +201,10 @@ pub fn kept_from_assistant(name: &str) -> Option<&'static str> {
 /// Why the assistant may not write a file of this name, if it may not:
 /// the project's shared settings (sync writes them), or one of the kinds
 /// that never sync ([`file_kinds`]): a password, key or connection file,
-/// a type the system runs when it is opened (as the file's own name or a
-/// folder's on the way: `Tool.app/…`), data, an archive, a file the system
-/// makes for itself. Data leaves a chat only through an export (D-19).
+/// a map document, a type the system runs when it is opened (as the file's
+/// own name or a folder's on the way: `Tool.app/…`), data, an archive, a
+/// file the system makes for itself. Data leaves a chat only through an
+/// export (D-19).
 pub fn write_problem(parts: &[String]) -> Option<String> {
     let name = parts.last()?;
     if parts.len() == 1 && name.eq_ignore_ascii_case(SETTINGS_FILE) {
@@ -236,7 +239,7 @@ pub fn write_problem(parts: &[String]) -> Option<String> {
             "{name} is a file the system makes for itself; the assistant does not write it"
         )),
         // Told apart above.
-        Kind::EnvFile | Kind::Key | Kind::Passwords | Kind::Connection => None,
+        Kind::EnvFile | Kind::Key | Kind::Passwords | Kind::Connection | Kind::MapDocument => None,
     }
 }
 
@@ -475,6 +478,31 @@ mod tests {
             ("prod.sde", "connection file"),
             ("server.AGS", "connection file"),
             ("prod.dsn", "connection file"),
+            // Other tools' token files, and map documents and layer
+            // files, which can hold a saved connection (R-105).
+            (".npmrc", "password or key"),
+            (".pypirc", "password or key"),
+            ("County.aprx", "can hold a saved connection"),
+            ("maps/roads.mxd", "can hold a saved connection"),
+            ("roads.lyrx", "can hold a saved connection"),
+            ("roads.LYR", "can hold a saved connection"),
+            ("roads.mapx", "can hold a saved connection"),
+            ("county.qgs", "can hold a saved connection"),
+            ("county.qgz", "can hold a saved connection"),
+            // Office files that carry macros (R-105).
+            ("report.docm", "runs or follows"),
+            ("letter.dotm", "runs or follows"),
+            ("slides.pptm", "runs or follows"),
+            ("addin.ppam", "runs or follows"),
+            ("addin.xlam", "runs or follows"),
+            ("book.xltm", "runs or follows"),
+            // Data formats the list lacked (R-105).
+            ("tiles.mbtiles", "only through an export"),
+            ("dem.asc", "only through an export"),
+            ("points.xyz", "only through an export"),
+            ("town.osm", "only through an export"),
+            ("town.osm.pbf", "only through an export"),
+            ("a00000009.gdbtable", "only through an export"),
             // Files that run when they are opened (R-104): more kinds, and
             // every part of the path, not only the file's own name.
             ("tool.pyw", "runs or follows"),
@@ -507,10 +535,20 @@ mod tests {
         assert!(kept_from_assistant("notes.md").is_none());
         assert!(kept_from_assistant("keys.txt").is_none());
         // Data and files that run are not written, and can be read when the
-        // person put them there: only passwords, keys and connection files
-        // are kept from the assistant altogether.
-        for readable in ["codes.csv", "open me.bat", "bundle.zip", "roads.geojson"] {
+        // person put them there: only passwords, keys, connection files and
+        // map documents are kept from the assistant altogether.
+        for readable in [
+            "codes.csv",
+            "open me.bat",
+            "bundle.zip",
+            "roads.geojson",
+            "report.docm",
+            "dem.asc",
+        ] {
             assert!(kept_from_assistant(readable).is_none(), "{readable}");
+        }
+        for kept in ["roads.lyrx", "county.qgs", "County.aprx", ".npmrc"] {
+            assert!(kept_from_assistant(kept).is_some(), "{kept}");
         }
     }
 

@@ -1,11 +1,12 @@
-//! The chat's side of the app: settings, the API key in the operating
-//! system's credential store, and one chat at a time driving its own
-//! Columbus session (see the `columbus-chat` crate). The chat lives in the
+//! The chat's side of the app: settings, and one chat at a time driving its
+//! own Columbus session (see the `columbus-chat` crate) on the AI service
+//! the person chose (`assistant.rs`: the services, their keys in the
+//! operating system's credential store, the organization's say). The chat lives in the
 //! main window (`MAIN`); each chat's transcript is kept in the app's data
 //! folder (`chats/<id>.jsonl`) so chats can be listed and searched.
 //!
 //! Only the main window may call these commands (capabilities/main.json),
-//! and events go to that window only. The API key never reaches a web
+//! and events go to that window only. A service's key never reaches a web
 //! page: the window can set it, ask whether one is set, or clear it, but
 //! not read it.
 
@@ -14,17 +15,13 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use columbus_chat::{
-    effort_ok, model_ok, Answer, Cancel, Chat, Config, Event, Prompt, Ui, EFFORTS, MODELS,
-};
+use columbus_chat::{Answer, Cancel, Chat, Config, Event, KeyRule, Prompt, Ui};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::{oneshot, Mutex};
 
 /// The window the chat lives in.
 pub const MAIN: &str = "main";
-const KEY_SERVICE: &str = "columbus-app";
-const KEY_ACCOUNT: &str = "anthropic-api-key";
 /// The engine the person confirmed in Settings, kept where a program that
 /// only writes the settings file cannot change it.
 const ENGINE_ACCOUNT: &str = "confirmed-engine";
@@ -43,15 +40,37 @@ pub struct ChatState {
     next_prompt: std::sync::atomic::AtomicU64,
     /// The current chat's transcript file.
     transcript: std::sync::Mutex<Option<PathBuf>>,
+    /// The running chat's service: its id, its name and its host. A chat
+    /// keeps its service to its end.
+    service: std::sync::Mutex<Option<(String, String, String)>>,
+    /// The models each service's own list named, since the app started.
+    pub listed: std::sync::Mutex<HashMap<String, Vec<String>>>,
 }
 
+/// The app's own settings, `settings.json` (F-19 for the parts about AI
+/// services).
 #[derive(Serialize, Deserialize, Clone, Default)]
 pub struct Settings {
+    /// The AI service new chats use; absent, Anthropic.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service: Option<String>,
+    /// Anthropic's model, where earlier versions kept the one model.
     #[serde(default)]
     pub model: Option<String>,
-    /// The thinking level new chats start with ("" or absent: the model's own).
+    /// The model chosen for each service, by the service's id.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub models: std::collections::BTreeMap<String, String>,
+    /// The thinking level new chats start with ("" or absent: the model's
+    /// own), where the service takes it.
     #[serde(default)]
     pub effort: Option<String>,
+    /// The services the person added by address.
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "crate::assistant::lenient"
+    )]
+    pub services: Vec<crate::assistant::Added>,
     /// A server chosen in an earlier version: no longer started (the app
     /// has its own), only read to suggest the engine beside it.
     #[serde(default)]
@@ -59,23 +78,6 @@ pub struct Settings {
     /// The GIS engine's Python, when the person chose one in Settings.
     #[serde(default)]
     pub engine: Option<PathBuf>,
-}
-
-impl Settings {
-    /// The default model for new chats: the saved one while it is offered.
-    fn model(&self) -> String {
-        self.model
-            .clone()
-            .filter(|m| model_ok(m))
-            .unwrap_or_else(|| MODELS[0].0.to_string())
-    }
-
-    fn effort(&self) -> String {
-        self.effort
-            .clone()
-            .filter(|e| effort_ok(e))
-            .unwrap_or_default()
-    }
 }
 
 fn settings_path(app: &AppHandle) -> Option<PathBuf> {
@@ -90,6 +92,28 @@ pub(crate) fn load(app: &AppHandle) -> Settings {
         .and_then(|p| std::fs::read_to_string(p).ok())
         .and_then(|t| serde_json::from_str(&t).ok())
         .unwrap_or_default()
+}
+
+/// Write the settings file (whole, or not at all).
+pub(crate) fn save(app: &AppHandle, s: &Settings) -> Result<(), String> {
+    let p = settings_path(app).ok_or("no settings folder")?;
+    let text = serde_json::to_string_pretty(s).map_err(|e| e.to_string())?;
+    crate::settings::write_atomic(&p, &text)
+}
+
+/// Where a service's requests go: its own address. Test builds only: for
+/// a service Columbus knows, whose address is fixed in code, the app's
+/// end-to-end tests put a stand-in in its place (`COLUMBUS_APP_API_BASE`).
+/// A service the person added is always spoken to at its own address.
+pub(crate) fn address_in_use(own: &str, builtin: bool) -> String {
+    #[cfg(debug_assertions)]
+    if builtin {
+        if let Ok(b) = std::env::var("COLUMBUS_APP_API_BASE") {
+            return b;
+        }
+    }
+    let _ = builtin;
+    own.to_string()
 }
 
 const EXE: &str = if cfg!(windows) {
@@ -321,7 +345,7 @@ pub(crate) fn is_bundled(p: &Path) -> bool {
 
 /// The environment the chat gives its server: the engine, unless it is the
 /// one beside the server (which the server finds itself).
-fn server_env(s: &Settings, srv: &Path) -> Vec<(String, String)> {
+pub(crate) fn server_env(s: &Settings, srv: &Path) -> Vec<(String, String)> {
     if std::env::var_os("COLUMBUS_PYTHON").is_some_and(|v| !v.is_empty()) {
         return vec![];
     }
@@ -358,78 +382,37 @@ fn store() -> Result<(), String> {
     }
 }
 
-/// What this app has read from the credential store since it started, by
-/// account: each item is read once per run. On a Mac every read can ask
-/// for the person's password (until they choose Always Allow, and again
-/// after each update), so pages that ask often must not read again.
-static READ: std::sync::Mutex<Vec<(&'static str, Option<String>)>> =
-    std::sync::Mutex::new(Vec::new());
-
-fn cached(account: &'static str) -> Option<String> {
-    let mut read = READ.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some((_, v)) = read.iter().find(|(a, _)| *a == account) {
-        return v.clone();
-    }
-    // Read once; a refusal (the person declined the prompt) also counts,
-    // so the app doesn't ask again this run.
-    let v = store().ok().and_then(|()| {
-        keyring_core::Entry::new(KEY_SERVICE, account)
-            .ok()?
-            .get_password()
-            .ok()
-    });
-    read.push((account, v.clone()));
-    v
-}
-
-fn remember(account: &'static str, v: Option<String>) {
-    let mut read = READ.lock().unwrap_or_else(|e| e.into_inner());
-    read.retain(|(a, _)| *a != account);
-    read.push((account, v));
-}
-
 /// The engine path recorded when the person confirmed it.
 fn confirmed_engine() -> Option<PathBuf> {
-    cached(ENGINE_ACCOUNT)
+    crate::assistant::secret(ENGINE_ACCOUNT)
         .filter(|p| !p.is_empty())
         .map(PathBuf::from)
 }
 
 fn record_engine(p: Option<&Path>) -> Result<(), String> {
-    store()?;
-    let e = keyring_core::Entry::new(KEY_SERVICE, ENGINE_ACCOUNT).map_err(|e| e.to_string())?;
     match p {
-        Some(p) => {
-            let v = p.display().to_string();
-            e.set_password(&v).map_err(|e| e.to_string())?;
-            remember(ENGINE_ACCOUNT, Some(v));
-            Ok(())
-        }
-        None => match e.delete_credential() {
-            Ok(()) | Err(keyring_core::Error::NoEntry) => {
-                remember(ENGINE_ACCOUNT, None);
-                Ok(())
-            }
-            Err(e) => Err(e.to_string()),
-        },
+        Some(p) => crate::assistant::set_secret(ENGINE_ACCOUNT, &p.display().to_string()),
+        None => crate::assistant::delete_secret(ENGINE_ACCOUNT),
     }
-}
-
-pub(crate) fn read_key() -> Option<String> {
-    // Development and tests only.
-    #[cfg(debug_assertions)]
-    if let Ok(k) = std::env::var("COLUMBUS_APP_API_KEY") {
-        return Some(k);
-    }
-    cached(KEY_ACCOUNT)
 }
 
 #[derive(Serialize)]
 pub struct SettingsView {
+    /// The service new chats use, every service there is, and what the
+    /// organization says of them.
+    #[serde(flatten)]
+    services: crate::assistant::Services,
+    /// Of the service new chats use: whether a key is saved for it.
     has_key: bool,
     /// The saved key's last four characters, so the person can tell which
     /// key it is; the key itself never reaches the window.
     key_hint: Option<String>,
+    /// Whether that service needs a key at all.
+    key_needed: bool,
+    /// Whether a chat could start on it now: it has the key it needs and a
+    /// model, and the organization allows it.
+    ready: bool,
+    /// Its model and thinking level for new chats, and what it offers.
     model: String,
     models: Vec<(String, String)>,
     effort: String,
@@ -452,6 +435,9 @@ pub struct SettingsView {
     /// The running chat's own Columbus session, so the page never lists it
     /// among other AI apps' sessions (after a reload, say).
     session: Option<String>,
+    /// The running chat's service, which it keeps to its end.
+    chat_service: Option<String>,
+    chat_service_name: Option<String>,
 }
 
 struct ServerInfo {
@@ -490,34 +476,29 @@ pub async fn chat_settings(
     let info = tauri::async_runtime::spawn_blocking(move || server_info(&s2))
         .await
         .map_err(|e| e.to_string())?;
-    let key_hint = tauri::async_runtime::spawn_blocking(|| {
-        read_key().filter(|k| !k.is_empty()).map(|k| {
-            let tail: String = k
-                .chars()
-                .rev()
-                .take(4)
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-                .collect();
-            tail
-        })
+    // (The credential store is read off the main thread: on a Mac it may
+    // ask the person first.)
+    let s3 = s.clone();
+    let listed = st.listed.lock().expect("listed").clone();
+    let (services, now) = tauri::async_runtime::spawn_blocking(move || {
+        (
+            crate::assistant::services_view(&s3, &listed),
+            crate::assistant::now(&s3, &listed),
+        )
     })
     .await
-    .unwrap_or(None);
+    .map_err(|e| e.to_string())?;
+    let running = st.service.lock().expect("service").clone();
     Ok(SettingsView {
-        has_key: key_hint.is_some(),
-        key_hint,
-        model: s.model(),
-        models: MODELS
-            .iter()
-            .map(|(a, b)| (a.to_string(), b.to_string()))
-            .collect(),
-        effort: s.effort(),
-        efforts: EFFORTS
-            .iter()
-            .map(|(a, b)| (a.to_string(), b.to_string()))
-            .collect(),
+        services,
+        has_key: now.has_key,
+        key_hint: now.key_hint,
+        key_needed: now.key_needed,
+        ready: now.ready,
+        model: now.model,
+        models: now.models,
+        effort: now.effort,
+        efforts: now.efforts,
         server_found: info.in_use.is_some(),
         server_in_use: info.in_use.as_ref().map(|p| p.display().to_string()),
         server_version: info.version.map(|(a, b, c)| format!("{a}.{b}.{c}")),
@@ -533,28 +514,42 @@ pub async fn chat_settings(
             .collect(),
         chatting: st.chat.lock().await.is_some(),
         session: st.session.lock().expect("session").clone(),
+        chat_service: running.as_ref().map(|r| r.0.clone()),
+        chat_service_name: running.map(|r| r.1),
     })
 }
 
+/// Save the model and the thinking level new chats start with on the
+/// service in use, and the GIS engine. A model is one the service lists
+/// or any plain model id the person typed; with none given, the choice
+/// stays as it is.
 #[tauri::command]
 pub async fn chat_save_settings(
     app: AppHandle,
-    model: String,
+    model: Option<String>,
     effort: Option<String>,
     engine: Option<String>,
 ) -> Result<(), String> {
-    if !model_ok(&model) {
-        return Err("unknown model".into());
+    let old = load(&app);
+    let id = crate::assistant::chosen(&old);
+    let r = crate::assistant::resolve(&old, &id)?;
+    let model = model
+        .map(|m| m.trim().to_string())
+        .filter(|m| !m.is_empty());
+    if let Some(m) = &model {
+        if !r.service.model_ok(m) {
+            return Err("that is not a model id: use letters, digits and . _ : / @ + - only, at most 200 characters".into());
+        }
     }
-    let effort = effort.unwrap_or_default();
-    if !effort_ok(&effort) {
-        return Err("unknown thinking level".into());
+    if let Some(e) = &effort {
+        if !r.service.effort_ok(e) {
+            return Err("unknown thinking level".into());
+        }
     }
     let wanted = engine
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty())
         .map(PathBuf::from);
-    let old = load(&app);
     let chats = chats_dir(&app);
     // The engine is a program the chat's server runs: choosing one is
     // confirmed by the person at the keyboard, like any widening setting.
@@ -581,17 +576,23 @@ pub async fn chat_save_settings(
         })
         .await
         .map_err(|e| e.to_string())??;
-    let s = Settings {
-        model: Some(model),
-        effort: Some(effort),
-        server: old.server,
-        engine,
-    };
-    let p = settings_path(&app).ok_or("no settings folder")?;
-    if let Some(d) = p.parent() {
-        std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
+    // (Read again: confirming an engine at the keyboard can take a while,
+    // and only what this command sets is changed.)
+    let mut s = load(&app);
+    s.engine = engine;
+    if let Some(m) = model {
+        if id == crate::assistant::DEFAULT_SERVICE {
+            // Where earlier versions kept it, too.
+            s.model = Some(m.clone());
+        }
+        s.models.insert(id, m);
     }
-    std::fs::write(p, serde_json::to_vec_pretty(&s).unwrap_or_default()).map_err(|e| e.to_string())
+    // A service that takes no level leaves the saved one as it is, for the
+    // services that do.
+    if let Some(e) = effort.filter(|_| r.service.efforts.len() > 1) {
+        s.effort = Some(e);
+    }
+    save(&app, &s)
 }
 
 /// A Windows path to another computer (`\\server\share\...`) or a device
@@ -654,41 +655,6 @@ pub(crate) fn server_ok(p: &Path, chats: Option<&Path>) -> Result<PathBuf, Strin
         }
     }
     Ok(full)
-}
-
-#[tauri::command]
-pub async fn chat_set_key(key: String) -> Result<(), String> {
-    let key = key.trim().to_string();
-    if key.len() < 20 || key.chars().any(char::is_whitespace) {
-        return Err("that does not look like an API key".into());
-    }
-    tauri::async_runtime::spawn_blocking(move || {
-        store()?;
-        keyring_core::Entry::new(KEY_SERVICE, KEY_ACCOUNT)
-            .and_then(|e| e.set_password(&key))
-            .map_err(|e| format!("could not save the key: {e}"))?;
-        remember(KEY_ACCOUNT, Some(key));
-        Ok(())
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
-
-#[tauri::command]
-pub async fn chat_clear_key() -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(|| {
-        store()?;
-        match keyring_core::Entry::new(KEY_SERVICE, KEY_ACCOUNT).and_then(|e| e.delete_credential())
-        {
-            Ok(()) | Err(keyring_core::Error::NoEntry) => {
-                remember(KEY_ACCOUNT, None);
-                Ok(())
-            }
-            Err(e) => Err(e.to_string()),
-        }
-    })
-    .await
-    .map_err(|e| e.to_string())?
 }
 
 /// The chat window, as the chat sees it: events go to the `chat` window,
@@ -759,6 +725,9 @@ pub struct Started {
     tools: usize,
     /// The transcript's id, under which the chat is listed.
     chat: Option<String>,
+    /// The service the chat runs on, to its end.
+    service: Option<String>,
+    service_name: Option<String>,
 }
 
 /// Start a chat (its own Columbus session) if none is running.
@@ -775,20 +744,49 @@ pub async fn chat_start(
     if slot.is_some() {
         // Already running (a reply may be holding it): answer without
         // waiting for the reply.
+        let running = st.service.lock().expect("service").clone();
         return Ok(Started {
             session: st.session.lock().expect("session").clone(),
             tools: 0,
             chat: current_id(&st),
+            service: running.as_ref().map(|r| r.0.clone()),
+            service_name: running.map(|r| r.1),
         });
     }
     let s = load(&app);
+    // The service new chats use: set up, as the person confirmed it, and
+    // allowed by the organization (checked here, whatever the page showed).
+    let s2 = s.clone();
+    let (service, key) = tauri::async_runtime::spawn_blocking(move || {
+        let id = crate::assistant::chosen(&s2);
+        let r = crate::assistant::usable(&s2, &id)?;
+        let key = if r.service.key == KeyRule::None {
+            None
+        } else {
+            crate::assistant::read_key(&s2, &id)
+        };
+        Ok::<_, String>((r, key))
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    let name = service.service.name.clone();
+    if service.service.key == KeyRule::Needed && key.is_none() {
+        return Err(format!(
+            "No key is saved for {name}. Add one in Settings › Assistant."
+        ));
+    }
     // This chat's own choice, else the default from Settings.
-    let model = model.unwrap_or_else(|| s.model());
-    let effort = effort.unwrap_or_else(|| s.effort());
-    if !model_ok(&model) {
+    let model = model
+        .filter(|m| !m.is_empty())
+        .or_else(|| crate::assistant::model_for(&s, &service))
+        .ok_or_else(|| {
+            format!("No model is chosen for {name}. Choose one in Settings › Assistant.")
+        })?;
+    let effort = effort.unwrap_or_else(|| crate::assistant::effort_for(&s, &service));
+    if !service.service.model_ok(&model) {
         return Err("unknown model".into());
     }
-    if !effort_ok(&effort) {
+    if !service.service.effort_ok(&effort) {
         return Err("unknown thinking level".into());
     }
     // A chat in a project: the project must be readable now (the server
@@ -827,18 +825,7 @@ pub async fn chat_start(
     let srv = tauri::async_runtime::spawn_blocking(move || server_ok(&srv, chats.as_deref()))
         .await
         .map_err(|e| e.to_string())??;
-    let key = tauri::async_runtime::spawn_blocking(read_key)
-        .await
-        .ok()
-        .flatten()
-        .filter(|k| !k.is_empty())
-        .ok_or("No API key is set. Add one in Settings.")?;
-    #[allow(unused_mut)]
-    let mut api_base = "https://api.anthropic.com".to_string();
-    #[cfg(debug_assertions)]
-    if let Ok(b) = std::env::var("COLUMBUS_APP_API_BASE") {
-        api_base = b;
-    }
+    let api_base = address_in_use(&service.address, service.added.is_none());
     let mut env = server_env(&s, &srv);
     // Always set, so an Unfiled chat never inherits a project from the
     // app's own environment (empty means none).
@@ -856,31 +843,37 @@ pub async fn chat_start(
     let cfg = Config {
         server_env: env,
         server: srv,
-        api_key: key,
+        api_key: key.unwrap_or_default(),
         model: model.clone(),
         effort: effort.clone(),
         api_base,
     };
     let cancel = Cancel::default();
     *st.cancel.lock().expect("cancel") = cancel.clone();
-    let chat = Chat::start(cfg, Arc::new(WindowUi { app: app.clone() }), cancel)
-        .await
-        .map_err(|e| e.to_string())?;
+    let service_id = service.service.id.clone();
+    let chat = Chat::start_with(
+        cfg,
+        service.service.clone(),
+        Arc::new(WindowUi { app: app.clone() }),
+        cancel,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
     let session = chat.session().map(String::from);
     let id = new_transcript(
         &app,
         &st,
-        session.as_deref(),
-        &model,
-        &effort,
-        project.as_deref(),
-        run.as_ref(),
+        serde_json::json!({"session": session, "service": service_id, "service_name": name,
+            "model": model, "effort": effort, "project": project, "run": run}),
     );
     let started = Started {
         session,
         tools: chat.tool_count(),
         chat: id,
+        service: Some(service_id.clone()),
+        service_name: Some(name.clone()),
     };
+    *st.service.lock().expect("service") = Some((service_id, name, service.host.clone()));
     *st.session.lock().expect("session") = started.session.clone();
     *slot = Some(Arc::new(Mutex::new(chat)));
     Ok(started)
@@ -903,6 +896,15 @@ pub async fn chat_send(
         .await
         .clone()
         .ok_or("the chat has not started")?;
+    // The organization's list is checked before each message: a chat that
+    // was running when the rules changed sends nothing more to a service
+    // they no longer allow.
+    let running = st.service.lock().expect("service").clone();
+    if let Some((_, name, host)) = running {
+        tauri::async_runtime::spawn_blocking(move || crate::assistant::org_allows(&name, &host))
+            .await
+            .map_err(|e| e.to_string())??;
+    }
     record(&app, &serde_json::json!({"kind": "you", "text": text}));
     let cancel = st.cancel.lock().expect("cancel").clone();
     tauri::async_runtime::spawn(async move {
@@ -1021,6 +1023,7 @@ async fn end(app: &AppHandle, st: &ChatState) {
     let chat = st.chat.lock().await.take();
     *st.session.lock().expect("session") = None;
     *st.transcript.lock().expect("transcript") = None;
+    *st.service.lock().expect("service") = None;
     if let Some(c) = chat {
         // A reply still holding the chat stops at the cancel; close the
         // session once it lets go, in the background: the chat is already
@@ -1074,15 +1077,7 @@ fn current_id(st: &ChatState) -> Option<String> {
         .map(String::from)
 }
 
-fn new_transcript(
-    app: &AppHandle,
-    st: &ChatState,
-    session: Option<&str>,
-    model: &str,
-    effort: &str,
-    project: Option<&str>,
-    run: Option<&OpenRun>,
-) -> Option<String> {
+fn new_transcript(app: &AppHandle, st: &ChatState, about: serde_json::Value) -> Option<String> {
     let dir = chats_dir(app)?;
     std::fs::create_dir_all(&dir).ok()?;
     let now = std::time::SystemTime::now()
@@ -1092,10 +1087,12 @@ fn new_transcript(
     let id = format!("c{now}-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
     let path = dir.join(format!("{id}.jsonl"));
     *st.transcript.lock().expect("transcript") = Some(path);
-    record(
-        app,
-        &serde_json::json!({"kind": "meta", "id": id, "session": session, "model": model, "effort": effort, "project": project, "run": run}),
-    );
+    // The first line: what the chat is (its session, the AI service and
+    // model it starts on, its project, a run it opened).
+    let mut meta = about;
+    meta["kind"] = serde_json::json!("meta");
+    meta["id"] = serde_json::json!(id);
+    record(app, &meta);
     Some(id)
 }
 
@@ -1191,6 +1188,8 @@ pub struct ChatSummary {
     id: String,
     title: String,
     session: Option<String>,
+    /// The AI service it ran on (none: a chat from before services, on Anthropic).
+    service: Option<String>,
     model: Option<String>,
     started: Option<String>,
     updated: Option<String>,
@@ -1226,6 +1225,9 @@ fn summary(id: &str, lines: &[serde_json::Value], live: bool) -> ChatSummary {
         id: id.to_string(),
         title,
         session: meta.and_then(|m| m["session"].as_str()).map(String::from),
+        service: meta
+            .and_then(|m| m["service_name"].as_str())
+            .map(String::from),
         model: meta.and_then(|m| m["model"].as_str()).map(String::from),
         started: lines
             .first()
