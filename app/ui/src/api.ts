@@ -5,6 +5,8 @@
 // memory (never a cookie or browser storage) and sent as a Bearer header.
 // The launch token is removed from the address bar straight away.
 
+import type { ViewReport } from "./view";
+
 export type Severity = "fail" | "warn" | "info";
 
 export interface Check {
@@ -85,6 +87,8 @@ export interface FeatureCollection {
   geometry_type?: string | null;
   bbox?: [number, number, number, number] | null;
   source_crs?: string;
+  /** Set by the page while the layer is being read; never sent by the server. */
+  loading?: boolean;
 }
 
 export interface Rows {
@@ -234,6 +238,20 @@ export const api = {
   rows: (handle: string, offset: number, limit: number) =>
     call<Rows>(`/api/rows?handle=${q(handle)}&offset=${offset}&limit=${limit}`),
   provenance: (id: string) => call<Record<string, unknown>>(`/api/provenance/${encodeURIComponent(id)}`),
+  /** What the map shows, for the assistant's `map_view`; the answer carries
+   * the change the assistant asked for, if one waits (checked by
+   * `parseCommand`). Given up after ten seconds, so that one report that
+   * never answers does not hold up the next. */
+  view: (report: ViewReport) => {
+    const stop = new AbortController();
+    const timer = window.setTimeout(() => stop.abort(), 10_000);
+    return call<{ command: unknown }>("/api/view", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(report),
+      signal: stop.signal,
+    }).finally(() => window.clearTimeout(timer));
+  },
   approvals: () => call<{ session: string; pending: Approval[]; recent: Approval[] }>("/api/approvals"),
   decide: (id: string, decision: "allow_once" | "always_this_session" | "decline") =>
     call<{ id: string; state: string }>(`/api/approvals/${encodeURIComponent(id)}`, {

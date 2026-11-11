@@ -13,7 +13,10 @@ only; opacity, order, zoom to extent and a web layer as the basemap work;
 R-14 message and the map keeps working; a direct request to a service
 host is blocked by the page's content policy; another window of the same
 chat keeps every setting and shows no notice, and a second chat starts
-with everything off. Screenshots go to e2e/out/.
+with everything off. With every web layer on and one as the basemap, the
+assistant's `map_view` reads and moves the map and its answers hold nothing
+of the web layers: no title, id, kind, address or setting (T-30; D-14,
+REQ-34). Screenshots go to e2e/out/.
 
     cargo build -p columbus-mcp --example fake_oauth_server
     python app/ui/e2e/weblayers.py [path/to/columbus-mcp]
@@ -331,6 +334,52 @@ def main():
                 assert origin in (gw, "https://tiles.openfreemap.org") or "direct=1" in u, f"the page reached {u}"
             # Web-layer requests carried no address and the token in a header only.
             assert not any("/api/web/" in u and ("url=" in u or "t=" in u.split("?")[-1]) for u in requests), requests
+
+            print("weblayers: the assistant reads and moves the map, and learns nothing of the web layers")
+            # Every web layer is on, one of them as the basemap, two failing.
+            assert len(web_state(page)) >= len(kinds), web_state(page)
+            secrets = ([k[0] for k in kinds] + [k[1] for k in kinds]
+                       + ["Dead tiles", "Dead map service", "dead-tiles", "dead-map", "fake.test", "/web/", f":{port}",
+                          "MapServer", "ImageServer", "FeatureServer", "arcgis", "xyz", "wmts", "wms", "opacity", "basemap", "web"])
+
+            def no_web(what, answer):
+                text = json.dumps(answer).lower()
+                for word in secrets:
+                    assert word.lower() not in text, f"{what} mentions {word!r}: {text}"
+
+            seen = mcp.tool("map_view", {})
+            assert seen["result"]["status"] == "open", seen
+            v = seen["result"]["view"]
+            # This session has made no layers: nothing is on, as far as the
+            # assistant is told. The street background is off (a web layer
+            # is the basemap), and no more than that is said.
+            assert v["layers_on"] == [] and v["active"] is None and v["selected"] is None, v
+            assert v["street_background"] is False, v
+            pw_, ps, pe, pn = in_view(page)
+            assert abs(v["extent"][2] - pe) < (pe - pw_) / 100 and abs(v["extent"][3] - pn) < (pn - ps) / 100, (v["extent"], (pw_, ps, pe, pn))
+            no_web("map_view", seen)
+            # It can move the map; the web layers go on drawing, and the
+            # answer still says nothing of them.
+            v0 = view(page)
+            moved = mcp.tool("map_view", {"zoom_to": [-97.74, 30.26, -97.66, 30.34]})
+            assert moved["result"]["status"] == "changed", moved
+            settled(page, before=v0)
+            mw, ms, me, mn = moved["result"]["view"]["extent"]
+            assert mw <= -97.74 and ms <= 30.26 and me >= -97.66 and mn >= 30.34, moved
+            no_web("map_view after a zoom", moved)
+            for sid, *_ in kinds:
+                expect(row(page, sid).locator(".error")).to_have_count(0)
+            assert {x["id"] for x in web_state(page)} >= {k[0] for k in kinds}, web_state(page)
+            # A picture of the view draws the session's own layers only:
+            # with none of them on, there is nothing to draw, and it says so.
+            snap = mcp.request("tools/call", {"name": "map_snapshot", "arguments": {"extent": "view"}})["result"]
+            assert snap.get("isError") and "none of this session's layers" in json.dumps(snap), snap
+            no_web("map_snapshot of the view", snap)
+            # It cannot name a web layer to show, hide or zoom to.
+            for args in ({"show": ["tiles"]}, {"hide": ["imagery"]}, {"active": "parcels"}, {"zoom_to": "ortho"}):
+                refused = mcp.request("tools/call", {"name": "map_view", "arguments": args})["result"]
+                assert refused.get("isError") and "not a workspace handle" in json.dumps(refused), refused
+            assert {x["id"] for x in web_state(page)} >= {k[0] for k in kinds}, "the web layers are as the person left them"
 
             print("weblayers: another window of the chat keeps every setting")
             settings_before = web_state(page)

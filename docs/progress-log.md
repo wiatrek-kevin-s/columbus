@@ -4,8 +4,8 @@ Kit version 1.1 · as of 2026-11-08, session S1 not started
 
 ## Where things stand
 
-- **Session:** part 3, the open workbench (0.15), from the owner's instruction of 2026-11-10 (`docs/build-brief-3.md`) · **Task:** T-26 (the new window), then T-27 to T-36
-- **Next step:** merge the new window (area S9), then build areas S10 (one boundary, toolboxes, the map, project files) and S11 (sync with GitHub and Gitea), then S12 (docs, version 0.15.0, review, hand-over)
+- **Session:** part 3, the open workbench (0.15), from the owner's instruction of 2026-11-10 (`docs/build-brief-3.md`) · **Task:** T-27 to T-33 (areas S10 and S11), being built; T-26 (the new window) is done and on `main`
+- **Next step:** finish and merge areas S10 (one boundary, toolboxes, the map, project files) and S11 (sync with GitHub and Gitea), then S12 (docs, version 0.15.0, review, hand-over)
 - **Waiting on the owner:** nothing. They asked not to be involved and to be told when it is done
 - **Homework received:** setup round answered ("skip" on Dependabot alerts); H-1 and H-2 are optional, after release; H-3 to H-5 are optional, after part 3
 
@@ -102,6 +102,10 @@ Kit version 1.1 · as of 2026-11-08, session S1 not started
 | 2026-11-10 | D-20: projects sync with GitHub and Gitea through their web APIs with a token, not through Git | The pure-Rust Git library cannot push; libgit2 and a bundled Git are outside the licence list (security baseline item 5); many analysts' PCs have no Git. Through the API nothing from a repository can run on the PC (no hooks, no Git configuration) | Decided |
 | 2026-11-10 | GitHub's device sign-in is left out; a token entered in the app is used for GitHub, GitHub Enterprise Server, Gitea and Forgejo | Device sign-in needs an app registered with GitHub, which only the owner can do (signing up for services is on the never-without-approval list) | Decided |
 | 2026-11-10 | Part 3's pictures are again taken without the street background | This machine still cannot reach the tile host; off is the app's default | Decided |
+| 2026-11-11 | T-30, `map_view`: the map page sends only which feature is selected (layer and row); the gateway reads its attributes itself, as `read_output` does, and leaves them out under `deny_tools: [read_output]` or `return_rows: 0`. A report with any unknown key, or naming a layer that is not this session's, is refused whole | Nothing a page sends is passed on to the assistant as data, so D-14 (web layers out of reach) holds whatever a page sends | Decided |
+| 2026-11-11 | T-30: a map counts as open while a page on show reported in the last 5 s; with several windows the person's map is the one they used last. A change the assistant asks for waits 8 s for a page to take it (20 s while the app's panel is opening) and is then dropped, so it can never move a map opened later; parts the map could not do within 3 s are named in the answer | The answer must say what the person's map really shows | Decided |
+| 2026-11-11 | T-30: `map_view` needs no approval and is audited on every call; a plain read leaves the app's panel alone, a change opens it. `map_snapshot extent: "view"` is refused where policy denies `map_view` | It changes what is shown, never data (D-18); the snapshot would otherwise say where the person looks | Decided |
+| 2026-11-11 | T-30, honest limit: while the street background or a web layer is on, moving the map makes the page fetch tiles for the new area, so those services (the tile host, or a web layer's host through the gateway) see an area the assistant chose. Written in the reference; `deny_tools: [map_view]` turns the tool off | A small channel to hosts the person or the organization already chose; no approval was added (D-18) | Decided |
 
 ## Change requests
 
@@ -227,6 +231,8 @@ Newest first, written as you go. Mark each claim verified (checked this session)
 - 2026-11-09 T-17 done: v0.14.0 released (pre-release) from e73620f; Release run 42712984935; PR #17 merged (e73620f) after CI run 42708308018 green.
 - 2026-11-09 Final review done (F-1 Fix now). R-101 done: fb20570, run 42705526192 green on 14 jobs; R-102: e393259 Pillow 13, pip-audit clean; Dependabot merges left to the owner. Re-check confirmed both.
 - 2026-11-09 T-16 done: 4d0ad47 and 641fde0..364de06; run 42685605864 green on 15 jobs; README 10-second test passed (7/10, then a polish round).
+- 2026-11-11 T-26 done: 8275cc8, 8e6a12c, 8855ec1; PR #23 merged (b967ccd) after CI run 42931738643 green on 14 jobs (verified). Ten desktop scripts pass locally (verified).
+- 2026-11-11 T-30 done: ee09a63, 15f5e22, 6e8151d, 877a66d, 2d83d48 (merged fe7e6b3); map page, gateway and desktop chat tests pass on Linux (verified by the builder; CI on PR #24 covers Windows and macOS).
 
 ### Kit → Session S1 (2026-11-08)
 

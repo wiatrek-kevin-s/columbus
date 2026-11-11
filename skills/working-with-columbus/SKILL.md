@@ -244,6 +244,12 @@ don't claim detail a picture at that size can't show. To see layers against the 
 a raster of the session's as `imagery` (aerial imagery or a DEM from a rasters connection,
 clipped or reprojected with `raster_op` first); it is drawn underneath.
 
+The person's own map (the app's panel beside the chat) is `map_view`: with no arguments it
+returns what they are looking at (extent, this session's layers that are on, the active one,
+the feature they selected), for questions about "this" or "here"; with `show`, `active` or
+`zoom_to` it shows them a result (no approval; it says when no map is open).
+`map_snapshot {"extent": "view"}` is a picture of that same view.
+
 ### 7. Approvals
 
 Most Columbus tools never ask: `vector_op` writes only to the workspace. Approval is needed

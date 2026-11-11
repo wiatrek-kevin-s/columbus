@@ -797,6 +797,44 @@ async fn web_layers_go_through_the_gateway_only() {
             call(&client, "list_outputs", json!({})).await.to_string(),
         ));
     }
+    // The assistant's view of the person's map (T-30): the page says what
+    // its map shows, and nothing of a web layer is in what `map_view`
+    // answers; a report that carries one (its id as a layer that is on, or
+    // anything this server does not list) is refused whole.
+    let say = |report: Value| {
+        let (url, origin, tok) = (format!("{base}/api/view"), base.clone(), tok.clone());
+        async move {
+            reqwest::Client::new()
+                .post(url)
+                .bearer_auth(tok)
+                .header("origin", origin)
+                .json(&report)
+                .send()
+                .await
+                .unwrap()
+                .status()
+        }
+    };
+    let view = json!({"extent": [-97.9, 30.1, -97.6, 30.4], "zoom": 11.0, "layers": [], "table": false, "streets": false});
+    let with = |change: &dyn Fn(&mut Value)| {
+        let mut r = json!({"showing": true, "view": view});
+        change(&mut r);
+        r
+    };
+    for bad in [
+        with(&|r| r["web_layers"] = json!(sources)),
+        with(&|r| r["view"]["layers"] = json!(["wl-xyz"])),
+        with(&|r| r["view"]["web"] = json!({"on": ["wl-wmts"], "base": "wl-tiled"})),
+    ] {
+        assert_eq!(say(bad.clone()).await, StatusCode::BAD_REQUEST, "{bad}");
+    }
+    assert_eq!(
+        say(json!({"showing": true, "view": view})).await,
+        StatusCode::OK
+    );
+    let mv = call(&client, "map_view", json!({})).await;
+    assert_eq!(mv["result"]["status"], "open", "{mv}");
+    outs.push(("map_view", mv.to_string()));
     for (tool, text) in &outs {
         for t in &titles {
             assert!(!text.contains(t.as_str()), "{tool} mentions {t}");

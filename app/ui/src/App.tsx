@@ -2,9 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, 
 import { api, currentScope, signIn, SignedOut, webApi, type Approval, type Check, type FeatureCollection, type OutputCard, type Overview, type WebSource, type WebSourceInfo } from "./api";
 import { ApprovalCard } from "./ApprovalCard";
 import { layout, namedOutput, NO_INSET, parseInset, type Inset } from "./layout";
-import { MapView, type MapLayer, type WebDraw, type WebState } from "./MapView";
+import { MapView, type MapLayer, type Seen, type WebDraw, type WebState } from "./MapView";
 import { Table } from "./Table";
 import { LAYER_TONES, useTheme } from "./theme";
+import { parseCommand, planCommand, viewReport, type CommandPart, type Extent, type ViewCommand } from "./view";
 import { NO_WEB_PREFS, ordered, WebLayers, type WebPrefs } from "./WebLayers";
 
 const POLL_MS = 2000;
@@ -13,6 +14,15 @@ const NAMED_READ_MS = 3000;
 // How often the list of web layers is read again (one added, edited or
 // removed in the Columbus app shows in every chat).
 const WEB_POLL_MS = 5000;
+// What the map shows, for the assistant (`map_view`): said to the server
+// this often, and this soon after it changes.
+const VIEW_POLL_MS = 1000;
+const VIEW_SOON_MS = 250;
+// A change the assistant asked for waits this long for a result it names
+// to be listed, and this long for the map to show it (the layers it turned
+// on read, its zoom ended).
+const VIEW_LIST_MS = 3000;
+const VIEW_SETTLE_MS = 3000;
 
 type Phase = "starting" | "ready" | "no-link" | "used" | "ended";
 
@@ -299,6 +309,28 @@ export function App() {
   // a few seconds in case the page has not listed that result yet.
   const [wanted, setWanted] = useState<{ output: unknown; until: number } | null>(null);
   const [measuring, setMeasuring] = useState(false);
+  // ---------- What the map shows, for the assistant (T-30) ----------
+  // Where the map looks now (filled in by the map).
+  const seenNow = useRef<(() => Seen | null) | null>(null);
+  // Framed: whether the app says its panel shows this page now.
+  const appShows = useRef(true);
+  // When the person last used this page, or it came on show.
+  const lastUsed = useRef(Date.now());
+  const wasShowing = useRef(false);
+  // The last change of the assistant's this page finished applying.
+  const [viewDone, setViewDone] = useState<{ seq: number; notDone: CommandPart[] }>({ seq: 0, notDone: [] });
+  // One taken from the server, waiting for the results it names to be
+  // listed; then, applied, until the map shows it: the layers it turned on
+  // are read (or cannot be) and its zoom has ended.
+  const [command, setCommand] = useState<{ cmd: ViewCommand; until: number } | null>(null);
+  const commandTaken = useRef(0);
+  const [settling, setSettling] = useState<{ seq: number; show: string[]; notDone: CommandPart[]; zooming: boolean; until: number } | null>(null);
+  const viewZoom = useRef<string | null>(null);
+  const [viewFit, setViewFit] = useState<{ extent: Extent; key: string } | null>(null);
+  // Say it to the server now (set on every draw, so it says what is drawn).
+  const sendView = useRef<() => void>(() => {});
+  const sending = useRef({ busy: false, again: false });
+  const sendSoon = useRef(0);
   // How much of this page the app's own panel covers (framed only).
   const [inset, setInset] = useState<Inset>(NO_INSET);
   const theme = useTheme();
@@ -313,7 +345,7 @@ export function App() {
     if (!FRAMED) return;
     const on = (e: MessageEvent) => {
       if (e.source !== window.parent || !APP_ORIGINS.includes(e.origin)) return;
-      const d = e.data as { type?: unknown; view?: unknown; output?: unknown; basemap?: unknown; theme?: unknown; inset?: unknown } | null;
+      const d = e.data as { type?: unknown; view?: unknown; output?: unknown; basemap?: unknown; theme?: unknown; inset?: unknown; shown?: unknown } | null;
       if (d && d.type === "columbus-web-layers") {
         webReload.current();
         return;
@@ -334,6 +366,13 @@ export function App() {
       // What the app's panel covers, in CSS pixels: checked numbers only.
       const covered = parseInset(d.inset);
       if (covered) setInset(covered);
+      // Whether the app has this page in front of the person (its panel
+      // open, this map in it). A page in a closed panel keeps its size in
+      // some web views, so it cannot tell by itself; it is not their map.
+      if (typeof d.shown === "boolean" && d.shown !== appShows.current) {
+        appShows.current = d.shown;
+        sendView.current();
+      }
       if (typeof d.basemap === "boolean" && !basemapSet.current) {
         basemapSet.current = true;
         setBasemapState(d.basemap);
@@ -595,11 +634,74 @@ export function App() {
     if (handle || Date.now() > wanted.until) setWanted(null);
   }, [wanted, outputs]);
 
+  // The assistant asked to change what the map shows (`map_view`): layers
+  // on and off, the active output, a zoom. Only this session's own outputs
+  // can be named; the legend's switches and the map's own zoom do the rest.
+  // Written after the effects above for the same reason: a change that
+  // arrives with a new layer is the later, and stands.
+  useEffect(() => {
+    if (!command) return;
+    const { cmd, until } = command;
+    const plan = planCommand(cmd, outputs);
+    if (!plan.ready && Date.now() <= until) {
+      // A result made a moment ago may not be listed yet: look again when
+      // the list changes, and once more when the wait is over.
+      const t = window.setTimeout(() => setCommand((c) => (c ? { ...c } : c)), Math.max(50, until - Date.now() + 20));
+      return () => window.clearTimeout(t);
+    }
+    setCommand(null);
+    if (plan.show.length || plan.hide.length) {
+      setOnMap((m) => [...new Set([...m.filter((h) => !plan.hide.includes(h)), ...plan.show])]);
+    }
+    if (plan.active) setActive(plan.active);
+    setNotice("Your assistant changed what the map shows.");
+    // Said to be done once the map shows it (below).
+    const key = plan.zoomLayer || plan.zoomExtent ? `${plan.zoomLayer ?? "extent"}#v${cmd.seq}` : null;
+    viewZoom.current = key;
+    setSettling({ seq: cmd.seq, show: plan.show, notDone: plan.notDone, zooming: !!key, until: Date.now() + VIEW_SETTLE_MS });
+    if (key && plan.zoomLayer) setFitTo(key);
+    else if (key && plan.zoomExtent) {
+      // In place of any zoom to a layer still waiting for its data.
+      setFitTo(null);
+      setViewFit({ extent: plan.zoomExtent, key });
+    }
+  }, [command, outputs]);
+  // The zoom a change asked for has ended (the map has stopped there).
+  const fitted = useCallback((key: string) => {
+    if (viewZoom.current !== key) return;
+    viewZoom.current = null;
+    setSettling((s) => (s ? { ...s, zooming: false } : s));
+  }, []);
+  // A change is done when the map shows it: the layers it turned on have
+  // been read, and its zoom has ended. What has not happened in time is
+  // said as not done: a layer that cannot be drawn, a zoom with nothing to
+  // zoom to.
+  useEffect(() => {
+    if (!settling) return;
+    const reading = settling.show.some((h) => {
+      const l = layers[h];
+      return !l || (!("error" in l) && !!l.loading);
+    });
+    if ((reading || settling.zooming) && Date.now() <= settling.until) {
+      const t = window.setTimeout(() => setSettling((s) => (s ? { ...s } : s)), Math.max(50, settling.until - Date.now() + 20));
+      return () => window.clearTimeout(t);
+    }
+    const missed: CommandPart[] = [];
+    if (settling.show.some((h) => {
+      const l = layers[h];
+      return !!l && "error" in l;
+    })) missed.push("show");
+    if (settling.zooming) missed.push("zoom_to");
+    viewZoom.current = null;
+    setSettling(null);
+    setViewDone({ seq: settling.seq, notDone: [...new Set([...settling.notDone, ...missed])] });
+  }, [settling, layers]);
+
   // Load what is on the map.
   useEffect(() => {
     for (const h of onMap) {
       if (layers[h]) continue;
-      setLayers((l) => ({ ...l, [h]: { type: "FeatureCollection", features: [], total: 0, shown: 0, truncated: false, geometry: true } }));
+      setLayers((l) => ({ ...l, [h]: { type: "FeatureCollection", features: [], total: 0, shown: 0, truncated: false, geometry: true, loading: true } }));
       api.layer(h).then(
         (fc) => setLayers((l) => ({ ...l, [h]: fc })),
         (e) => {
@@ -671,6 +773,105 @@ export function App() {
     const t = window.setTimeout(() => setNotice(null), 6000);
     return () => window.clearTimeout(t);
   }, [notice]);
+
+  // What the map shows, said to the server for the assistant's `map_view`:
+  // where it looks, the session's layers that are on, the active output,
+  // the selected feature (its layer and row), the table, the street
+  // background. Nothing about web layers (`view.ts`). The answer may carry
+  // a change the assistant asked for.
+  const streetsOn = basemap && !!overview?.basemap_allowed && !webBase;
+  sendView.current = () => {
+    if (phase !== "ready") return;
+    const s = sending.current;
+    if (s.busy) {
+      s.again = true;
+      return;
+    }
+    // On show: the window is in front, the app (when it frames this page)
+    // has its panel open, and the map has a size.
+    const inFront = document.visibilityState === "visible" && appShows.current && window.innerWidth > 0 && window.innerHeight > 0;
+    const seen = inFront ? (seenNow.current?.() ?? null) : null;
+    // Just come on show: the map the person opened last.
+    if (seen && !wasShowing.current) lastUsed.current = Date.now();
+    wasShowing.current = !!seen;
+    const report = viewReport({
+      seen,
+      idleMs: Date.now() - lastUsed.current,
+      applied: viewDone.seq,
+      notDone: viewDone.notDone,
+      outputs,
+      onMap,
+      failed: (h) => {
+        const l = layers[h];
+        return !!l && "error" in l;
+      },
+      active,
+      selected,
+      tableOpen,
+      streets: streetsOn,
+    });
+    s.busy = true;
+    api
+      .view(report)
+      .then(
+        (r) => {
+          const cmd = parseCommand(r.command);
+          if (!cmd || cmd.seq <= commandTaken.current) return;
+          commandTaken.current = cmd.seq;
+          // The results are read first, so that one made a moment ago is
+          // listed before the change names it.
+          void pollNow.current().finally(() => setCommand({ cmd, until: Date.now() + VIEW_LIST_MS }));
+        },
+        (e) => {
+          // A report the server did not take changes nothing here.
+          if (e instanceof SignedOut) signedOut(e);
+        },
+      )
+      .finally(() => {
+        s.busy = false;
+        if (s.again) {
+          s.again = false;
+          sendView.current();
+        }
+      });
+  };
+  // Every second, and at once when the page comes on show or leaves it.
+  useEffect(() => {
+    if (phase !== "ready") return;
+    const now = () => sendView.current();
+    const t = window.setInterval(now, VIEW_POLL_MS);
+    document.addEventListener("visibilitychange", now);
+    window.addEventListener("resize", now);
+    return () => {
+      window.clearInterval(t);
+      document.removeEventListener("visibilitychange", now);
+      window.removeEventListener("resize", now);
+    };
+  }, [phase]);
+  // Soon after anything it says changes (the map moving is `viewMoved`).
+  const viewMoved = useCallback(() => {
+    window.clearTimeout(sendSoon.current);
+    sendSoon.current = window.setTimeout(() => sendView.current(), VIEW_SOON_MS);
+  }, []);
+  useEffect(() => {
+    if (phase === "ready") viewMoved();
+  }, [phase, viewMoved, outputs, onMap, layers, active, selected, tableOpen, streetsOn]);
+  // At once when a change has been applied: the assistant is waiting.
+  useEffect(() => {
+    if (viewDone.seq) sendView.current();
+  }, [viewDone]);
+  // When the person last used this page: with several windows of one
+  // session open, the assistant reads the one used last.
+  useEffect(() => {
+    const used = () => {
+      lastUsed.current = Date.now();
+    };
+    const kinds = ["pointerdown", "keydown", "wheel"] as const;
+    for (const k of kinds) window.addEventListener(k, used, { capture: true, passive: true });
+    return () => {
+      for (const k of kinds) window.removeEventListener(k, used, { capture: true });
+    };
+  }, []);
 
   // Where the sheets go, and what they leave of the map. The page's own
   // panel is wider while a request can be decided in it.
@@ -921,6 +1122,10 @@ export function App() {
           webBase={webBase}
           webFit={webFit}
           onWebState={(id, st) => setWebState((all) => ({ ...all, [id]: { ...all[id], ...st } }))}
+          viewFit={viewFit}
+          onFitted={fitted}
+          onMoved={viewMoved}
+          seenNow={seenNow}
         />
         {tableOpen && (
           <section className="table" aria-label="Attribute table">

@@ -8,9 +8,11 @@ chat from the main window, sends a message, waits for the approval prompt
 the server raises for the export, allows it after its one-second guard,
 and checks the export landed and the reply was shown (its last result as
 a card, with how it was made in the panel on the right); then a script (declined,
-its code in its own box) and a stop while a prompt waits. The chat is
-saved: it is listed and found by its content, and its transcript reads
-back. A debug build of the app reads the API key and the service
+its code in its own box) and a stop while a prompt waits. With the panel
+on the right closed by the person, a scripted `map_view` that only reads
+leaves it closed (and is told no map is open), and one that changes the
+view opens it, with the map following (T-30). The chat is saved: it is
+listed and found by its content, and its transcript reads back. A debug build of the app reads the API key and the service
 address from the environment.
 
     dbus-run-session -- xvfb-run -a python app/desktop/e2e/chat.py \\
@@ -19,6 +21,7 @@ address from the environment.
 
 import json
 import os
+import re
 import sys
 import tempfile
 import threading
@@ -292,6 +295,69 @@ def main():
         assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
         d.save_screenshot(str(OUT / "chat-table.png"))
 
+        def answer_to(tool_id):
+            """What Columbus answered a tool call, as the AI service was sent it."""
+            for _, body in reversed(SEEN):
+                for m in body["messages"]:
+                    if m["role"] != "user" or not isinstance(m["content"], list):
+                        continue
+                    for b in m["content"]:
+                        if b.get("type") == "tool_result" and b.get("tool_use_id") == tool_id:
+                            c = b["content"]
+                            return json.loads(c if isinstance(c, str) else next(x["text"] for x in c if x.get("type") == "text"))
+            raise AssertionError(f"the AI service was sent no result for {tool_id}")
+
+        def ask(text, replies, done):
+            """One more turn of the scripted conversation."""
+            SCRIPT[:0] = replies
+            box.send_keys(text)
+            WebDriverWait(d, 10).until(lambda drv: drv.find_element(By.ID, "send").is_enabled())
+            d.find_element(By.ID, "send").click()
+            WebDriverWait(d, 90).until(lambda drv: done in drv.find_element(By.ID, "log").text)
+
+        step("The person closes the panel: the assistant reading the map leaves it closed, and is told no map is open")
+        d.find_element(By.ID, "out-close").click()
+        WebDriverWait(d, 10).until(lambda drv: not drv.find_element(By.ID, "outputs").is_displayed())
+        assert d.find_element(By.CSS_SELECTOR, "#main .chat-map").get_attribute("aria-pressed") == "false"
+        # (The map page says it is no longer on show within a second or two.)
+        time.sleep(2.5)
+        ask("What is my map showing?", [
+            tool_use("t7", "map_view", {}),
+            {"content": [{"type": "text", "text": "Your map is not open right now."}], "stop_reason": "end_turn"},
+        ], "Your map is not open right now.")
+        assert not d.find_element(By.ID, "outputs").is_displayed(), "a plain read of the map opened the panel the person had closed"
+        read = answer_to("t7")["result"]
+        assert read["status"] == "not_open", read
+        assert "Looking at what your map shows" in d.execute_script("return document.getElementById('log').textContent")
+
+        step("The assistant changes the map: the panel opens to show it, though the person had closed it, and the map follows")
+        seen_handles = [h for _, body in SEEN for h in re.findall(r"ws://[A-Za-z0-9_./:-]+\.gpkg", json.dumps(body["messages"]))]
+        assert seen_handles, "the chat made no layer"
+        newest = seen_handles[-1]
+        ask("Show me that tract on the map.", [
+            tool_use("t8", "map_view", {"show": [newest], "active": newest, "zoom_to": newest}),
+            {"content": [{"type": "text", "text": "It is on your map now."}], "stop_reason": "end_turn"},
+        ], "It is on your map now.")
+        try:
+            WebDriverWait(d, 10).until(lambda drv: drv.find_element(By.ID, "outputs").is_displayed())
+        except Exception:
+            d.save_screenshot(str(OUT / "chat-mapview-failed.png"))
+            raise SystemExit("a map_view change did not open the panel on the right")
+        assert d.find_element(By.CSS_SELECTOR, "#main .chat-map").get_attribute("aria-pressed") == "true"
+        changed = answer_to("t8")["result"]
+        assert changed["status"] == "changed" and changed["changed"] is True, changed
+        assert changed["view"]["active"] == newest and newest in changed["view"]["layers_on"], changed
+        assert "Changing what your map shows" in d.execute_script("return document.getElementById('log').textContent")
+        # The map in the panel is that view: the layer named is the active one.
+        d.switch_to.frame(frame)
+        try:
+            WebDriverWait(d, 20).until(lambda drv: drv.execute_script(
+                "const a = document.querySelector('li.out.active .out-name'); return !!a && arguments[0].endsWith('/' + a.textContent.trim())", newest))
+        finally:
+            d.switch_to.default_content()
+        assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
+        d.save_screenshot(str(OUT / "chat-mapview.png"))
+
         step("A new chat from this one: what was open in the panel on the right goes with the old chat")
         made = cards[1].find_element(By.CSS_SELECTOR, ".result-made")
         d.execute_script("arguments[0].scrollIntoView({block: 'center'})", made)
@@ -378,6 +444,23 @@ def main():
             "window.__TAURI__.core.invoke('chat_settings').then((s) => done(s.model), () => done(''));") == was)
         time.sleep(1.0)
         assert d.execute_script("return document.getElementById('chat-model').value") == other, "a started chat's box follows the default"
+
+        step("In a chat that has made nothing, the assistant pointing the map at a place opens the panel, and the map goes there")
+        assert not d.find_element(By.ID, "outputs").is_displayed(), "this chat has made nothing: its panel has never been open"
+        austin = [-97.9, 30.1, -97.6, 30.4]
+        asked = time.time()
+        ask("Show me Austin.", [
+            tool_use("t9", "map_view", {"zoom_to": austin}),
+            {"content": [{"type": "text", "text": "The map is on Austin."}], "stop_reason": "end_turn"},
+        ], "The map is on Austin.")
+        WebDriverWait(d, 10).until(lambda drv: drv.find_element(By.ID, "outputs").is_displayed())
+        # The map's page was not there when the assistant asked: it is
+        # opened for the change, takes it, and says where it looks now.
+        there = answer_to("t9")["result"]
+        assert there["status"] == "changed", (round(time.time() - asked, 1), there)
+        w, s, e, n = there["view"]["extent"]
+        assert w <= austin[0] and s <= austin[1] and e >= austin[2] and n >= austin[3], there
+        print(f"chat: a map that was not open followed in {time.time() - asked:.1f} s (with the reply)")
         print("desktop chat e2e: ok")
     finally:
         guard.stop(d, driver_proc)

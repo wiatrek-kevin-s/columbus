@@ -545,6 +545,8 @@ pub struct State {
     pub audit: Arc<AuditLog>,
     pub approvals: Arc<ApprovalStore>,
     pub page: crate::approvals_page::ApprovalsPage,
+    /// What the person's map shows, as its page reports it (`map_view`).
+    pub map_views: crate::map_view::MapViews,
     pub worker: Worker,
     pub secrets: Arc<crate::secrets::SecretStore>,
     pub broker: columbus_broker::registry::Broker,
@@ -798,6 +800,7 @@ impl State {
             audit,
             approvals,
             page,
+            map_views: Default::default(),
             worker,
             secrets,
             session,
@@ -1434,6 +1437,7 @@ impl Gateway {
             state,
             tool_router: Self::tool_router()
                 + Self::gis_router()
+                + Self::map_view_router()
                 + Self::registry_router()
                 + Self::context_router()
                 + Self::export_router()
