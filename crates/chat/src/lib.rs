@@ -8,9 +8,19 @@
 //! (elicitation), and the app shows those prompts in its own chat window,
 //! written by the app's code, never by the model.
 //!
+//! The chat works with any AI service that speaks one of three request
+//! formats (build brief 3, D-22): Anthropic Messages, OpenAI Responses and
+//! OpenAI Chat Completions. One loop here runs every chat: the steps, the
+//! tool calls, the caps, Stop and the events the window shows. A format
+//! ([`messages`], [`responses`], [`completions`]) owns the conversation in
+//! its own shape and turns it into requests; [`services`] lists the
+//! services Columbus knows and decides which addresses a key may go to.
+//!
 //! The API key is held by the app's Rust side only: it is read from the
 //! operating system's credential store when a chat starts and is never
-//! given to a web page or written to a file.
+//! given to a web page or written to a file. It is sent only to its own
+//! service's address, and it is taken out of every text a service sends
+//! before that text reaches the window (R-25, R-26).
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -30,6 +40,18 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use tokio::sync::{oneshot, Notify};
 
+mod http;
+mod messages;
+pub mod services;
+mod wire;
+
+pub use http::{list_models, MAX_LISTED_MODELS};
+pub use messages::read_stream;
+pub use services::{Format, KeyHeader, KeyRule, Service, EFFORTS, MODELS};
+
+use http::Net;
+use wire::{Ask, Outcome, Reply, Stop, Tool, Wire};
+
 /// Steps (model calls) one message may take before the chat stops.
 pub const MAX_STEPS: usize = 60;
 /// Tool calls the model may ask for in one step.
@@ -42,36 +64,18 @@ pub const MAX_RESULT_CHARS: usize = 40_000;
 /// When the conversation grows past this (characters of JSON), the oldest
 /// tool results are replaced by a note, so it keeps fitting.
 pub const HISTORY_CHARS: usize = 500_000;
-const API_VERSION: &str = "2023-06-01";
 /// The cap on one reply, thinking and answer together.
 pub const MAX_OUTPUT_TOKENS: u32 = 32_000;
+/// The longest a busy service may ask Columbus to wait before it asks
+/// again; a longer wait is told to the person instead.
+const MAX_WAIT: Duration = Duration::from_secs(60);
 
-/// The models the app offers, cheapest-to-run first after the default.
-pub const MODELS: &[(&str, &str)] = &[
-    ("claude-sonnet-5-5", "Claude Sonnet 5.5 (balanced)"),
-    ("claude-opus-5-5", "Claude Opus 5.5 (most capable Opus)"),
-    (
-        "claude-fable-5-1",
-        "Claude Fable 5.1 (Mythos tier, most capable)",
-    ),
-    ("claude-haiku-5-5", "Claude Haiku 5.5 (fastest)"),
-];
-
-/// How hard the model thinks (the API's `output_config.effort`); "" leaves
-/// the model's own default. Every model in `MODELS` takes all of these.
-pub const EFFORTS: &[(&str, &str)] = &[
-    ("", "Model's default"),
-    ("low", "Low (quickest, cheapest)"),
-    ("medium", "Medium"),
-    ("high", "High"),
-    ("xhigh", "Extra high"),
-    ("max", "Max (slowest, most thorough)"),
-];
-
+/// Whether Anthropic's list offers `m` (or did, and still takes it).
 pub fn model_ok(m: &str) -> bool {
-    MODELS.iter().any(|(id, _)| *id == m)
+    services::anthropic_listed().model_ok(m)
 }
 
+/// Whether `e` is one of Anthropic's thinking levels.
 pub fn effort_ok(e: &str) -> bool {
     EFFORTS.iter().any(|(id, _)| *id == e)
 }
@@ -84,9 +88,10 @@ pub struct Config {
     pub server_env: Vec<(String, String)>,
     pub api_key: String,
     pub model: String,
-    /// One of `EFFORTS`; "" for the model's default.
+    /// One of the service's thinking levels; "" for the model's default.
     pub effort: String,
-    /// `https://api.anthropic.com`, or a stand-in in tests.
+    /// The service's address (`https://api.anthropic.com`), or a stand-in
+    /// in tests. Checked by [`services::check_address`] when a chat starts.
     pub api_base: String,
 }
 
@@ -187,6 +192,90 @@ pub trait Ui: Send + Sync + 'static {
     fn approve(&self, prompt: Prompt) -> (u64, oneshot::Receiver<Answer>);
     /// The prompt is no longer waiting; forget it.
     fn withdraw(&self, id: u64);
+}
+
+/// The window behind a guard: whatever is shown or asked has the service's
+/// key, and any long piece of it, taken out first. The model never has the
+/// key, but the service does, and what a service sends is untrusted (R-26):
+/// its words, the tool calls it asks for and so the code on an approval
+/// card could all quote it. The window writes the transcript from what it
+/// is shown, so the transcript is kept clean by the same guard.
+struct Guarded {
+    inner: Arc<dyn Ui>,
+    key: String,
+}
+
+impl Guarded {
+    fn clean(&self, s: String) -> String {
+        match http::scrub(&s, &self.key) {
+            std::borrow::Cow::Borrowed(_) => s,
+            std::borrow::Cow::Owned(t) => t,
+        }
+    }
+}
+
+impl Ui for Guarded {
+    fn event(&self, e: Event) {
+        let c = |s: String| self.clean(s);
+        self.inner.event(match e {
+            Event::Text { text } => Event::Text { text: c(text) },
+            Event::ToolStarted { id, name, input } => Event::ToolStarted {
+                id: c(id),
+                name: c(name),
+                input: http::scrub_json(&input, &self.key),
+            },
+            Event::ToolFinished {
+                id,
+                name,
+                ok,
+                summary,
+                fails,
+                warns,
+                provenance,
+                handle,
+                image,
+            } => Event::ToolFinished {
+                id: c(id),
+                name: c(name),
+                ok,
+                summary: c(summary),
+                fails,
+                warns,
+                provenance: provenance.map(c),
+                handle: handle.map(c),
+                image,
+            },
+            Event::Approval {
+                id,
+                title,
+                summary,
+                code,
+                offer_always,
+            } => Event::Approval {
+                id,
+                title: c(title),
+                summary: c(summary),
+                code: code.map(c),
+                offer_always,
+            },
+            Event::Status { text } => Event::Status { text: c(text) },
+            Event::Error { text } => Event::Error { text: c(text) },
+            e @ (Event::ApprovalGone { .. } | Event::Done) => e,
+        });
+    }
+
+    fn approve(&self, p: Prompt) -> (u64, oneshot::Receiver<Answer>) {
+        self.inner.approve(Prompt {
+            title: self.clean(p.title),
+            summary: self.clean(p.summary),
+            code: p.code.map(|c| self.clean(c)),
+            offer_always: p.offer_always,
+        })
+    }
+
+    fn withdraw(&self, id: u64) {
+        self.inner.withdraw(id);
+    }
 }
 
 /// Stops a reply in progress.
@@ -323,12 +412,18 @@ fn decline() -> ElicitResult {
 pub struct Chat {
     client: RunningService<RoleClient, Handler>,
     session: Option<String>,
-    tools: Vec<Value>,
-    history: Vec<Value>,
+    tools: Vec<Tool>,
+    /// The conversation, in the service's own format.
+    wire: Box<dyn Wire>,
     system: String,
     cfg: Config,
     ui: Arc<dyn Ui>,
-    http: reqwest::Client,
+    net: Net,
+    /// Requests go without the fields the format can do without: the
+    /// service refused one that carried them, and took one that did not.
+    bare: AtomicBool,
+    /// The one second try a chat makes has been made.
+    tried_bare: AtomicBool,
 }
 
 /// What the system prompt says about the chat's project: its name and the
@@ -396,24 +491,64 @@ present a result as correct over a fail. When something needs the person's appro
 itself; do not ask them to approve in your reply. Layers you make appear on the person's map in the \
 Columbus window as you make them. Be concise and specific: dataset names, row counts, CRS codes and units.";
 
+/// Keys of AI services a person may have in their environment: none is
+/// ever handed on to the session's server or its workers.
+const KEY_VARIABLES: &[&str] = &[
+    "COLUMBUS_APP_API_KEY",
+    "COLUMBUS_APP_API_BASE",
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+    "AZURE_OPENAI_API_KEY",
+    "XAI_API_KEY",
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
+    "OPENROUTER_API_KEY",
+    "OLLAMA_API_KEY",
+    "LM_API_TOKEN",
+    "MISTRAL_API_KEY",
+    "DEEPSEEK_API_KEY",
+    "GROQ_API_KEY",
+    "TOGETHER_API_KEY",
+];
+
 impl Chat {
-    /// Start a session of `cfg.server` for this chat. `cancel` stops its
-    /// replies, and declines prompts that arrive after a stop.
+    /// Start a session of `cfg.server` for this chat, on Anthropic with
+    /// the models Columbus lists. `cancel` stops its replies, and declines
+    /// prompts that arrive after a stop.
     pub async fn start(cfg: Config, ui: Arc<dyn Ui>, cancel: Cancel) -> Result<Chat> {
-        if cfg.api_key.trim().is_empty() {
+        Chat::start_with(cfg, services::anthropic_listed(), ui, cancel).await
+    }
+
+    /// Start a session of `cfg.server` for a chat on `service`, at the
+    /// address `cfg.api_base`. The chat keeps this service to its end.
+    pub async fn start_with(
+        cfg: Config,
+        service: Service,
+        ui: Arc<dyn Ui>,
+        cancel: Cancel,
+    ) -> Result<Chat> {
+        if service.key == KeyRule::Needed && cfg.api_key.trim().is_empty() {
             bail!("no API key is set");
         }
+        if !service.model_ok(&cfg.model) {
+            bail!("unknown model");
+        }
+        if !service.effort_ok(&cfg.effort) {
+            bail!("unknown thinking level");
+        }
+        // Where the key may go is decided before anything is started.
+        let net = Net::new(&cfg.api_base, &cfg.api_key, service)?;
+        let ui: Arc<dyn Ui> = Arc::new(Guarded {
+            inner: ui,
+            key: net.key().to_string(),
+        });
         let server = cfg.server.clone();
         let env = cfg.server_env.clone();
         let cmd = tokio::process::Command::new(&server).configure(move |c| {
             c.arg("serve");
             // The key is the app's alone: never in the session's
             // environment, and so never in its workers'.
-            for k in [
-                "COLUMBUS_APP_API_KEY",
-                "ANTHROPIC_API_KEY",
-                "COLUMBUS_APP_API_BASE",
-            ] {
+            for k in KEY_VARIABLES {
                 c.env_remove(k);
             }
             for (k, v) in &env {
@@ -435,12 +570,10 @@ impl Chat {
             .await
             .map_err(|e| anyhow!("listing the Columbus tools failed: {e}"))?
             .into_iter()
-            .map(|t| {
-                json!({
-                    "name": t.name,
-                    "description": t.description.unwrap_or_default(),
-                    "input_schema": Value::Object((*t.input_schema).clone()),
-                })
+            .map(|t| Tool {
+                name: t.name.to_string(),
+                description: t.description.map(|d| d.to_string()).unwrap_or_default(),
+                schema: Value::Object((*t.input_schema).clone()),
             })
             .collect();
         // The session's id, for its map window (the app's own call, not
@@ -463,22 +596,23 @@ impl Chat {
             system.push_str("\n\nHow to work with Columbus (the working-with-columbus skill):\n\n");
             system.push_str(&skill);
         }
-        // No redirects: the key header would follow them to another host.
-        let http = reqwest::Client::builder()
-            // A streamed reply may take long in all; each read waits at
-            // most a few minutes (see read_stream).
-            .timeout(Duration::from_secs(3600))
-            .redirect(reqwest::redirect::Policy::none())
-            .build()?;
+        let wire: Box<dyn Wire> = match net.service.format {
+            Format::Messages => Box::new(messages::Messages::new(net.service.pictures)),
+            Format::Responses | Format::Chat => {
+                bail!("this build of the chat does not speak that format yet")
+            }
+        };
         Ok(Chat {
             client,
             session,
             tools,
-            history: Vec::new(),
+            wire,
             system,
             cfg,
             ui,
-            http,
+            net,
+            bare: AtomicBool::new(false),
+            tried_bare: AtomicBool::new(false),
         })
     }
 
@@ -491,17 +625,29 @@ impl Chat {
         self.session.as_deref()
     }
 
+    /// The service this chat talks to, from its first message to its last.
+    pub fn service(&self) -> &Service {
+        &self.net.service
+    }
+
+    /// The conversation as the service is sent it, in its own format.
     pub fn history(&self) -> &[Value] {
-        &self.history
+        self.wire.history()
     }
 
     /// The person's message; runs until the model has answered, a limit is
     /// reached or the reply is cancelled. Events go to the window as it goes.
     pub async fn send(&mut self, text: &str, cancel: &Cancel) -> Result<()> {
         cancel.reset();
-        self.history
-            .push(json!({"role": "user", "content": [{"type": "text", "text": text}]}));
-        let r = self.run(cancel).await;
+        self.wire.user(text);
+        // Whatever went wrong, its words reach the window without the key.
+        let r = self.run(cancel).await.map_err(|e| {
+            let said = e.to_string();
+            match http::scrub(&said, self.net.key()) {
+                std::borrow::Cow::Borrowed(_) => e,
+                std::borrow::Cow::Owned(clean) => anyhow!(clean),
+            }
+        });
         match &r {
             Ok(()) => self.ui.event(Event::Done),
             Err(e) => self.ui.event(Event::Error {
@@ -511,56 +657,74 @@ impl Chat {
         r
     }
 
+    fn ask_now(&self) -> Ask<'_> {
+        Ask {
+            model: &self.cfg.model,
+            effort: &self.cfg.effort,
+            system: &self.system,
+            tools: &self.tools,
+            bare: self.bare.load(Ordering::SeqCst),
+        }
+    }
+
     async fn run(&mut self, cancel: &Cancel) -> Result<()> {
         let mut used: u64 = 0;
+        // Whether any of `used` is Columbus's own estimate.
+        let mut estimated = false;
         for _ in 0..MAX_STEPS {
             if used > MAX_INPUT_TOKENS {
+                let how = if estimated {
+                    format!(
+                        " Columbus worked that out from the size of what it sent, because {} gave no count.",
+                        self.net.service.name
+                    )
+                } else {
+                    String::new()
+                };
                 self.ui.event(Event::Status {
                     text: format!(
-                        "Stopped: this message has used about {} thousand input tokens. Ask to continue if it should go on.",
+                        "Stopped: this message has used about {} thousand input tokens.{how} Ask to continue if it should go on.",
                         used / 1000
                     ),
                 });
                 return Ok(());
             }
-            self.trim_history();
-            let reply = tokio::select! {
+            self.wire.trim();
+            let (answer, estimate) = tokio::select! {
                 r = self.ask_model() => r?,
                 _ = cancel.cancelled() => {
-                    self.forget_unanswered();
+                    self.wire.forget_unanswered();
                     bail!("stopped")
                 }
             };
-            let u = &reply["usage"];
-            used += u["input_tokens"].as_u64().unwrap_or(0)
-                + u["cache_creation_input_tokens"].as_u64().unwrap_or(0)
-                + u["cache_read_input_tokens"].as_u64().unwrap_or(0) / 10;
-            let content = reply["content"].as_array().cloned().unwrap_or_default();
-            let mut kept = content.clone();
-            if reply["stop_reason"] == "max_tokens" {
-                // A tool call cut off by the length limit is never run, and
-                // is not kept: a call with no result breaks the conversation.
-                kept.retain(|b| b["type"] != "tool_use");
-                if kept.iter().all(|b| b["type"] != "text") {
-                    kept.push(
-                        json!({"type": "text", "text": "(The reply reached its length limit.)"}),
-                    );
+            let reply = {
+                let ask = Ask {
+                    model: &self.cfg.model,
+                    effort: &self.cfg.effort,
+                    system: &self.system,
+                    tools: &self.tools,
+                    bare: self.bare.load(Ordering::SeqCst),
+                };
+                self.wire.reply(answer, &ask)
+            };
+            let Reply {
+                texts,
+                calls,
+                stop,
+                input_tokens,
+            } = reply.map_err(|e| self.named(e))?;
+            match input_tokens {
+                Some(n) => used += n,
+                None => {
+                    used += estimate;
+                    estimated = true;
                 }
             }
-            self.history
-                .push(json!({"role": "assistant", "content": kept}));
-            for block in &content {
-                if block["type"] == "text" {
-                    if let Some(t) = block["text"].as_str().filter(|t| !t.trim().is_empty()) {
-                        self.ui.event(Event::Text {
-                            text: t.to_string(),
-                        });
-                    }
-                }
+            for t in texts {
+                self.ui.event(Event::Text { text: t });
             }
-            let calls: Vec<&Value> = content.iter().filter(|b| b["type"] == "tool_use").collect();
-            if calls.is_empty() || reply["stop_reason"] != "tool_use" {
-                if reply["stop_reason"] == "max_tokens" {
+            if calls.is_empty() || stop != Stop::Tools {
+                if stop == Stop::Length {
                     self.ui.event(Event::Status {
                         text: "The reply reached its length limit.".into(),
                     });
@@ -569,24 +733,65 @@ impl Chat {
             }
             let mut results = Vec::new();
             for (n, call) in calls.into_iter().enumerate() {
+                let wire::Call {
+                    id,
+                    name,
+                    input,
+                    fault,
+                } = call;
+                let not_run = |text: String| Outcome {
+                    id: id.clone(),
+                    name: name.clone(),
+                    text,
+                    is_error: true,
+                    images: vec![],
+                };
                 if n >= MAX_CALLS_PER_STEP {
-                    let id = call["id"].as_str().unwrap_or_default();
-                    results.push(tool_result(
-                        id,
-                        &format!("Not run: at most {MAX_CALLS_PER_STEP} tool calls per step."),
-                        true,
-                    ));
+                    results.push(not_run(format!(
+                        "Not run: at most {MAX_CALLS_PER_STEP} tool calls per step."
+                    )));
                     continue;
                 }
-                let id = call["id"].as_str().unwrap_or_default().to_string();
-                let name = call["name"].as_str().unwrap_or_default().to_string();
-                let input = call["input"].clone();
                 if cancel.is_cancelled() {
-                    results.push(tool_result(
-                        &id,
-                        "Stopped by the person before this ran.",
-                        true,
-                    ));
+                    results.push(not_run("Stopped by the person before this ran.".into()));
+                    continue;
+                }
+                // What a service sends is untrusted (R-26): a call runs
+                // only if it names one of the session's tools and its
+                // arguments arrived whole, and never if it carries the key.
+                let shown: String = name.chars().take(80).collect();
+                let refused = fault
+                    .or_else(|| {
+                        (!self.tools.iter().any(|t| t.name == name)).then(|| {
+                            format!("Columbus has no tool named \"{shown}\", so nothing was run")
+                        })
+                    })
+                    .or_else(|| {
+                        http::holds_key(&input, self.net.key()).then(|| {
+                            "this tool call carried the AI service's key, so it was not run"
+                                .to_string()
+                        })
+                    });
+                if let Some(why) = refused {
+                    self.ui.event(Event::ToolStarted {
+                        id: id.clone(),
+                        name: shown.clone(),
+                        input: json!({}),
+                    });
+                    self.ui.event(Event::ToolFinished {
+                        id: id.clone(),
+                        name: shown,
+                        ok: false,
+                        summary: why.clone(),
+                        fails: 0,
+                        warns: 0,
+                        provenance: None,
+                        handle: None,
+                        image: None,
+                    });
+                    results.push(not_run(format!(
+                        "Not run: {why}. Call one of the tools you were given, with its arguments as one whole JSON object."
+                    )));
                     continue;
                 }
                 self.ui.event(Event::ToolStarted {
@@ -601,9 +806,12 @@ impl Chat {
                         true, "stopped".to_string(), 0, 0, Made::default(),
                     ),
                 };
+                // A picture is shown to the person as what the assistant
+                // saw: only when the service's models are sent it.
+                let seen = self.net.service.pictures && !is_error;
                 self.ui.event(Event::ToolFinished {
                     id: id.clone(),
-                    name,
+                    name: name.clone(),
                     ok: !is_error,
                     summary,
                     fails,
@@ -613,12 +821,18 @@ impl Chat {
                     image: made
                         .images
                         .first()
+                        .filter(|_| seen)
                         .map(|d| format!("data:image/png;base64,{d}")),
                 });
-                results.push(tool_result_with(&id, &text, is_error, &made.images));
+                results.push(Outcome {
+                    id,
+                    name,
+                    text,
+                    is_error,
+                    images: made.images,
+                });
             }
-            self.history
-                .push(json!({"role": "user", "content": results}));
+            self.wire.results(results);
             if cancel.is_cancelled() {
                 bail!("stopped");
             }
@@ -629,86 +843,127 @@ impl Chat {
         Ok(())
     }
 
-    /// A reply cancelled mid-request leaves the person's message without an
-    /// answer; drop it so the conversation stays well-formed.
-    fn forget_unanswered(&mut self) {
-        if self.history.last().is_some_and(|m| m["role"] == "user") {
-            self.history.pop();
+    /// An error with the service's name in place of "the AI service",
+    /// where the service's own refusal was read from inside a reply.
+    fn named(&self, e: anyhow::Error) -> anyhow::Error {
+        match e.downcast_ref::<wire::Refused>() {
+            Some(r) => anyhow!(
+                "{} answered with an error: {}",
+                self.net.service.name,
+                r.said
+            ),
+            None => e,
         }
     }
 
-    async fn ask_model(&self) -> Result<Value> {
-        // The system text and tools are the same every step: cache them.
-        let mut tools = self.tools.clone();
-        if let Some(last) = tools.last_mut() {
-            last["cache_control"] = json!({"type": "ephemeral"});
+    /// Ask the model for its next reply: the service's whole answer, and
+    /// Columbus's own estimate of the tokens the request held.
+    async fn ask_model(&self) -> Result<(Value, u64)> {
+        let was_bare = self.bare.load(Ordering::SeqCst);
+        let r = self.ask_until_answered().await;
+        if !was_bare && self.bare.load(Ordering::SeqCst) {
+            // This call made the chat's one second try.
+            match &r {
+                Ok(_) => self.ui.event(Event::Status {
+                    text: format!(
+                        "{} refused a setting Columbus sends by choice (the thinking level, the limit on a reply's length or the request for token counts), and took the request without it. This chat goes on without those settings.",
+                        self.net.service.name
+                    ),
+                }),
+                // They were not what the service minded: they stay.
+                Err(_) => self.bare.store(false, Ordering::SeqCst),
+            }
         }
-        let mut body = json!({
-            "model": self.cfg.model,
-            // Thinking counts toward this too.
-            "max_tokens": MAX_OUTPUT_TOKENS,
-            "system": [{"type": "text", "text": self.system, "cache_control": {"type": "ephemeral"}}],
-            "tools": tools,
-            "messages": self.history,
-        });
-        if !self.cfg.effort.is_empty() {
-            body["output_config"] = json!({"effort": self.cfg.effort});
-        }
-        // Streamed: bytes keep arriving while the model thinks, so a long
-        // reply is not cut off by a proxy waiting for an idle connection.
-        body["stream"] = json!(true);
-        let url = format!("{}/v1/messages", self.cfg.api_base.trim_end_matches('/'));
+        r
+    }
+
+    async fn ask_until_answered(&self) -> Result<(Value, u64)> {
+        let name = &self.net.service.name;
         let mut tries = 0;
         loop {
+            let body = self.wire.body(&self.ask_now());
+            let estimate = wire::estimate_tokens(&body.json);
             tries += 1;
             let r = self
-                .http
-                .post(&url)
-                .header("x-api-key", &self.cfg.api_key)
-                .header("anthropic-version", API_VERSION)
-                .json(&body)
+                .net
+                .post(&body.json)
                 .send()
                 .await
-                .map_err(|e| anyhow!("could not reach the AI service: {}", plain(&e)))?;
+                .map_err(|e| anyhow!("could not reach {name}: {}", http::plain(e)))?;
             let code = r.status();
+            if code.is_redirection() {
+                bail!("{}", http::redirect_text(name));
+            }
             let streamed = r
                 .headers()
                 .get(reqwest::header::CONTENT_TYPE)
                 .and_then(|v| v.to_str().ok())
                 .is_some_and(|t| t.starts_with("text/event-stream"));
+            let busy_text = || Event::Status {
+                text: format!("{name} is busy; trying again…"),
+            };
             if code.is_success() && streamed {
-                match read_stream(r).await {
+                let mut s = self.wire.assembler();
+                match http::read_sse(r, s.as_mut(), self.wire.idle()).await {
                     // Busy, said inside the stream: as for a busy status, try again.
-                    Err(e) if e.to_string().contains("(overloaded_error)") && tries < 4 => {
-                        self.ui.event(Event::Status {
-                            text: "The AI service is busy; trying again…".into(),
-                        });
+                    Err(e) if self.wire.busy(&e) && tries < 4 => {
+                        self.ui.event(busy_text());
                         tokio::time::sleep(Duration::from_secs(2u64.pow(tries))).await;
                         continue;
                     }
-                    other => return other,
+                    Err(e) => return Err(self.named(e)),
+                    Ok(v) => return Ok((v, estimate)),
                 }
             }
-            let v: Value = r.json().await.unwrap_or(Value::Null);
             if code.is_success() {
-                return Ok(v);
+                let bytes = http::read_body(r, http::MAX_STREAM).await?;
+                let v: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+                return Ok((v, estimate));
             }
-            let msg = v["error"]["message"].as_str().unwrap_or("").to_string();
-            // Busy or rate-limited: wait and try again a few times.
-            if (code.as_u16() == 429 || code.as_u16() == 529 || code.is_server_error()) && tries < 4
+            let headers = r.headers().clone();
+            let bytes = http::read_error_body(r).await;
+            let v: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+            let said = http::Said::read(&v, &bytes, self.net.key());
+            let status = code.as_u16();
+            let no_credit = said.no_credit(status);
+            // Busy or rate-limited: wait and try again a few times, as long
+            // as the service asks for (within reason).
+            if (status == 429 || status == 529 || code.is_server_error())
+                && !no_credit
+                && tries < 4
+                && !http::told_not_to_retry(&headers)
             {
-                self.ui.event(Event::Status {
-                    text: "The AI service is busy; trying again…".into(),
-                });
-                tokio::time::sleep(Duration::from_secs(2u64.pow(tries))).await;
+                let asked = http::retry_after(&headers);
+                if asked.is_none_or(|w| w <= MAX_WAIT) {
+                    self.ui.event(busy_text());
+                    tokio::time::sleep(
+                        asked.unwrap_or_else(|| Duration::from_secs(2u64.pow(tries))),
+                    )
+                    .await;
+                    continue;
+                }
+            }
+            // Refused, with fields in the request the format can do
+            // without: one more try without them, once in a chat (build
+            // brief 3, A-11). The second answer is the one reported.
+            if status == 400
+                && body.optional
+                && !no_credit
+                && !self.tried_bare.swap(true, Ordering::SeqCst)
+            {
+                self.bare.store(true, Ordering::SeqCst);
                 continue;
             }
-            bail!(match code.as_u16() {
-                401 => "the API key was refused; check it in Settings".to_string(),
-                403 => format!("the API key may not use this model ({msg})"),
-                400 if msg.contains("credit") => format!("the AI service refused: {msg}"),
-                _ => format!("the AI service answered {code}: {msg}"),
-            });
+            bail!(
+                "{}",
+                http::refusal(
+                    name,
+                    &self.cfg.model,
+                    status,
+                    &said,
+                    !self.net.key().is_empty()
+                )
+            );
         }
     }
 
@@ -755,54 +1010,19 @@ impl Chat {
         }
     }
 
-    /// Keep the conversation within [`HISTORY_CHARS`]: replace the oldest
-    /// tool results with a note.
-    fn trim_history(&mut self) {
-        let size = |h: &Vec<Value>| h.iter().map(|m| m.to_string().len()).sum::<usize>();
-        let last = self.history.len().saturating_sub(2);
-        // Pictures go first: an earlier one is the biggest thing to keep,
-        // and the words of every result are worth more.
-        if size(&self.history) > HISTORY_CHARS {
-            for m in self.history.iter_mut().take(last) {
-                for b in m["content"].as_array_mut().into_iter().flatten() {
-                    if let Some(parts) = b["content"].as_array_mut() {
-                        for p in parts.iter_mut().filter(|p| p["type"] == "image") {
-                            *p = json!({"type": "text", "text": "[An earlier picture, removed to keep the conversation short.]"});
-                        }
-                    }
-                }
-            }
-        }
-        let mut total = size(&self.history);
-        for i in 0..last {
-            if total <= HISTORY_CHARS {
-                break;
-            }
-            let Some(blocks) = self.history[i]["content"].as_array_mut() else {
-                continue;
-            };
-            for b in blocks.iter_mut() {
-                if b["type"] == "tool_result" {
-                    let before = b.to_string().len();
-                    b["content"] = json!("[An older tool result, removed to keep the conversation short. Call the tool again if it is needed.]");
-                    total = total.saturating_sub(before.saturating_sub(b.to_string().len()));
-                }
-            }
-        }
-    }
-
-    /// Which model and effort the next message uses. A different model
-    /// does not get the earlier one's thinking: it is dropped from the
-    /// conversation so far (the answers and tool calls stay).
+    /// Which model and thinking level the next message uses, within the
+    /// chat's own service. A different model does not get the earlier
+    /// one's thinking: it is dropped from the conversation so far (the
+    /// answers and tool calls stay).
     pub fn set_model(&mut self, model: &str, effort: &str) -> Result<()> {
-        if !model_ok(model) {
+        if !self.net.service.model_ok(model) {
             bail!("unknown model");
         }
-        if !effort_ok(effort) {
+        if !self.net.service.effort_ok(effort) {
             bail!("unknown thinking level");
         }
         if model != self.cfg.model {
-            drop_thinking(&mut self.history);
+            self.wire.model_changed();
         }
         self.cfg.model = model.to_string();
         self.cfg.effort = effort.to_string();
@@ -816,193 +1036,6 @@ impl Chat {
     pub async fn close(self) {
         let _ = self.client.cancel().await;
     }
-}
-
-/// Most bytes of one streamed reply kept.
-const MAX_STREAM: usize = 32 * 1024 * 1024;
-
-/// A streamed reply (server-sent events) put together as the whole message
-/// the service would have answered without streaming.
-pub async fn read_stream(mut r: reqwest::Response) -> Result<Value> {
-    let mut buf: Vec<u8> = Vec::new();
-    let mut seen = 0usize;
-    let mut s = Assembly::default();
-    loop {
-        let chunk = tokio::time::timeout(Duration::from_secs(180), r.chunk())
-            .await
-            .map_err(|_| anyhow!("the AI service stopped sending in the middle of a reply"))?
-            .map_err(|e| anyhow!("the reply was cut off: {}", plain(&e)))?;
-        let Some(chunk) = chunk else { break };
-        seen += chunk.len();
-        if seen > MAX_STREAM {
-            bail!("the reply was larger than Columbus takes");
-        }
-        // Only the new bytes (and the three before them) can end an event.
-        let from = buf.len().saturating_sub(3);
-        buf.extend_from_slice(&chunk);
-        let mut start = from;
-        while let Some(end) = find_event_end(&buf[start..]).map(|e| e + start) {
-            start = 0;
-            let event: Vec<u8> = buf.drain(..end).collect();
-            for line in String::from_utf8_lossy(&event).lines() {
-                if let Some(data) = line.strip_prefix("data:") {
-                    if let Ok(v) = serde_json::from_str::<Value>(data.trim_start()) {
-                        if s.take(v)? {
-                            return Ok(s.message());
-                        }
-                    }
-                }
-            }
-        }
-    }
-    // A stream that ends before message_stop is not a whole reply: a tool
-    // call in it may be cut off.
-    bail!(if s.started {
-        "the reply was cut off before it ended"
-    } else {
-        "the AI service sent no reply"
-    })
-}
-
-/// Where the first event in `buf` ends (after its blank line).
-fn find_event_end(buf: &[u8]) -> Option<usize> {
-    let a = buf.windows(2).position(|w| w == b"\n\n").map(|i| i + 2);
-    let b = buf.windows(4).position(|w| w == b"\r\n\r\n").map(|i| i + 4);
-    match (a, b) {
-        (Some(x), Some(y)) => Some(x.min(y)),
-        (x, y) => x.or(y),
-    }
-}
-
-#[derive(Default)]
-struct Assembly {
-    started: bool,
-    message: Value,
-    blocks: Vec<Value>,
-    json: Vec<String>,
-}
-
-impl Assembly {
-    /// One event; true when the message is complete.
-    fn take(&mut self, v: Value) -> Result<bool> {
-        let at = |v: &Value| v["index"].as_u64().map(|i| i as usize);
-        match v["type"].as_str().unwrap_or("") {
-            "message_start" => {
-                self.started = true;
-                self.message = v["message"].clone();
-            }
-            "content_block_start" => {
-                let Some(i) = at(&v) else { return Ok(false) };
-                if i > 1000 {
-                    bail!("the reply had too many parts");
-                }
-                while self.blocks.len() <= i {
-                    self.blocks.push(Value::Null);
-                    self.json.push(String::new());
-                }
-                self.blocks[i] = v["content_block"].clone();
-            }
-            "content_block_delta" => {
-                let Some(i) = at(&v).filter(|i| *i < self.blocks.len()) else {
-                    return Ok(false);
-                };
-                let d = &v["delta"];
-                let b = &mut self.blocks[i];
-                let append = |b: &mut Value, k: &str, t: &str| {
-                    let now = b[k].as_str().unwrap_or("").to_string();
-                    b[k] = json!(now + t);
-                };
-                match d["type"].as_str().unwrap_or("") {
-                    "text_delta" => append(b, "text", d["text"].as_str().unwrap_or("")),
-                    "thinking_delta" => append(b, "thinking", d["thinking"].as_str().unwrap_or("")),
-                    "signature_delta" => {
-                        append(b, "signature", d["signature"].as_str().unwrap_or(""))
-                    }
-                    "input_json_delta" => {
-                        self.json[i].push_str(d["partial_json"].as_str().unwrap_or(""))
-                    }
-                    _ => {}
-                }
-            }
-            "content_block_stop" => {
-                let Some(i) = at(&v).filter(|i| *i < self.blocks.len()) else {
-                    return Ok(false);
-                };
-                if self.blocks[i]["type"] == "tool_use"
-                    || self.blocks[i]["type"] == "server_tool_use"
-                {
-                    let j = std::mem::take(&mut self.json[i]);
-                    self.blocks[i]["input"] = if j.trim().is_empty() {
-                        json!({})
-                    } else {
-                        serde_json::from_str(&j).map_err(|_| {
-                            anyhow!("a tool call arrived incomplete, so it was not run")
-                        })?
-                    };
-                }
-            }
-            "message_delta" => {
-                for (k, x) in v["delta"].as_object().into_iter().flatten() {
-                    self.message[k] = x.clone();
-                }
-                if let Some(u) = v["usage"].as_object() {
-                    for (k, x) in u {
-                        self.message["usage"][k] = x.clone();
-                    }
-                }
-            }
-            "message_stop" => return Ok(true),
-            "error" => bail!(
-                "the AI service answered ({}): {}",
-                v["error"]["type"].as_str().unwrap_or("error"),
-                v["error"]["message"].as_str().unwrap_or("an error")
-            ),
-            _ => {}
-        }
-        Ok(false)
-    }
-
-    fn message(&mut self) -> Value {
-        let mut m = std::mem::take(&mut self.message);
-        if !m.is_object() {
-            m = json!({});
-        }
-        m["content"] = Value::Array(
-            std::mem::take(&mut self.blocks)
-                .into_iter()
-                .filter(|b| !b.is_null())
-                .collect(),
-        );
-        m
-    }
-}
-
-/// Remove thinking from the assistant's earlier turns.
-fn drop_thinking(history: &mut [Value]) {
-    for m in history.iter_mut().filter(|m| m["role"] == "assistant") {
-        if let Some(blocks) = m["content"].as_array_mut() {
-            blocks.retain(|b| b["type"] != "thinking" && b["type"] != "redacted_thinking");
-            if blocks.is_empty() {
-                blocks.push(json!({"type": "text", "text": "(thinking only)"}));
-            }
-        }
-    }
-}
-
-/// A tool result with its pictures, as the AI service takes them.
-fn tool_result_with(id: &str, text: &str, is_error: bool, images: &[String]) -> Value {
-    if images.is_empty() || is_error {
-        return tool_result(id, text, is_error);
-    }
-    let mut content = vec![json!({"type": "text", "text": text})];
-    for d in images {
-        content.push(json!({"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": d}}));
-    }
-    json!({"type": "tool_result", "tool_use_id": id, "content": content, "is_error": false})
-}
-
-fn tool_result(id: &str, text: &str, is_error: bool) -> Value {
-    json!({"type": "tool_result", "tool_use_id": id, "content": text, "is_error": is_error})
 }
 
 fn cut(s: &str) -> String {
@@ -1146,16 +1179,6 @@ fn result_summary(v: Option<&Value>) -> String {
         "done".into()
     } else {
         parts.join(", ")
-    }
-}
-
-fn plain(e: &reqwest::Error) -> String {
-    if e.is_timeout() {
-        "it did not answer in time".into()
-    } else if e.is_connect() {
-        "no connection (offline, or blocked by your network)".into()
-    } else {
-        e.to_string()
     }
 }
 
@@ -1314,27 +1337,5 @@ mod tests {
                 && t.contains("# ROW widths\n\nSucceeded."),
             "{t}"
         );
-    }
-
-    #[test]
-    fn a_tool_call_cut_off_in_the_stream_is_refused() {
-        let mut s = Assembly::default();
-        s.take(json!({"type": "message_start", "message": {"role": "assistant", "content": []}}))
-            .unwrap();
-        s.take(json!({"type": "content_block_start", "index": 0, "content_block": {"type": "tool_use", "id": "t", "name": "sql_select", "input": {}}})).unwrap();
-        s.take(json!({"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": "{\"sql\": \"select"}})).unwrap();
-        let e = s
-            .take(json!({"type": "content_block_stop", "index": 0}))
-            .unwrap_err();
-        assert!(e.to_string().contains("incomplete"), "{e}");
-    }
-
-    #[test]
-    fn an_error_in_the_stream_names_its_type() {
-        let mut s = Assembly::default();
-        let e = s
-            .take(json!({"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}}))
-            .unwrap_err();
-        assert!(e.to_string().contains("(overloaded_error)"), "{e}");
     }
 }
