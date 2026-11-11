@@ -135,7 +135,7 @@ Scripts run in the engine's own Python unless you register another Python, an **
 
 ## 8. Toolboxes (optional)
 
-A toolbox is a program that brings many tools. With toolboxes turned on (`allow_toolboxes`; **Work freely on copies** sets it), you can install GeoLibre: about a thousand open-source terrain, hydrology, raster and vector tools. In the app: **Tools › Add tools**, then **Install** under **GeoLibre tools** (Touch ID or your Mac password asks first). Or in Terminal:
+New in 0.15. A toolbox is a program that brings many tools. With toolboxes turned on (`allow_toolboxes`; **Work freely on copies** sets it), you can install GeoLibre: about a thousand open-source terrain, hydrology, raster and vector tools. In the app: **Tools › Add tools**, then **Install** under **GeoLibre tools** (Touch ID or your Mac password asks first). Or in Terminal:
 
 ```sh
 ~/Columbus/columbus-mcp toolbox install geolibre
@@ -147,7 +147,7 @@ The real GeoLibre program was never run while Columbus 0.15 was built: Columbus'
 
 ## 9. Sync a project with GitHub or Gitea (optional)
 
-With sync turned on (`allow_sync`; **Work freely on copies** sets it), a project's files folder can sync with a repository on github.com, a GitHub Enterprise Server, a Gitea or a Forgejo. Columbus talks to the server's web API, so no Git is needed on the Mac, and nothing from a repository can run on it.
+New in 0.15. With sync turned on (`allow_sync`; **Work freely on copies** sets it), a project's files folder can sync with a repository on github.com, a GitHub Enterprise Server, a Gitea or a Forgejo. Columbus talks to the server's web API, so no Git is needed on the Mac, and nothing from a repository can run on it.
 
 1. **Connect the server**, once: in the app, **Settings › Git servers › Connect a server**. Choose the kind and, unless it is github.com, give its address (https only). **Open the page for a new token** opens the server's own page for making one. On GitHub, choose the repositories and give the token **Contents: Read and write** (and **Administration: Read and write** if Columbus should create repositories for you); on a GitHub Enterprise Server, a classic token with the `repo` scope; on Gitea and Forgejo (**Settings › Applications**), the scopes `read:user` and `write:repository`. Paste the token into the **Token** field (never into a chat). Columbus asks the server whose token it is, then keeps it in your Keychain, never in a file.
 2. **Link the project:** on the project's page, **Link this project**, then one of your repositories, another one written as `owner/name`, or a new private one. Linking sends none of your files.
