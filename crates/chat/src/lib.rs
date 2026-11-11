@@ -199,7 +199,8 @@ pub trait Ui: Send + Sync + 'static {
 }
 
 /// The window behind a guard: whatever is shown or asked has the service's
-/// key, and any long piece of it, taken out first. The model never has the
+/// key taken out first (and, for a key that looks random, any long piece
+/// of it: `http::scrub`). The model never has the
 /// key, but the service does, and what a service sends is untrusted (R-26):
 /// its words, the tool calls it asks for and so the code on an approval
 /// card could all quote it. The window writes the transcript from what it
@@ -777,7 +778,8 @@ impl Chat {
                 }
                 // What a service sends is untrusted (R-26): a call runs
                 // only if it names one of the session's tools and its
-                // arguments arrived whole, and never if it carries the key.
+                // arguments arrived whole, and never if one of their
+                // values carries the key.
                 let shown: String = name.chars().take(80).collect();
                 let refused = fault
                     .or_else(|| {

@@ -2202,3 +2202,81 @@ async fn a_service_on_this_computer_that_is_not_running_is_said_to_be_so() {
         assert_eq!(e, format!("{name} {said}"));
     }
 }
+
+/// A key made of words (a gateway's, a local server's) does not get in the
+/// way of ordinary work: its words are everyday words, in what the model
+/// says and in the names and values of tool calls. Only the key itself is
+/// taken out of what is shown, and only a call whose value holds it is
+/// not run.
+#[tokio::test]
+async fn a_key_made_of_words_leaves_ordinary_words_alone() {
+    let Some(py) = python() else { return };
+    let key = "gis-connection-2026";
+    for fmt in ALL {
+        let (dir, root) = setup(&py);
+        let stand = StandIn::start(
+            fmt,
+            false,
+            vec![
+                reply(call(
+                    "w1",
+                    "query_features",
+                    json!({"connection": "tiger", "dataset": "tracts"}),
+                )),
+                // The key quoted whole in a value: not run. Then in its words.
+                reply(call(
+                    "w2",
+                    "query_features",
+                    json!({"connection": "tiger", "dataset": "tracts", "where": format!("NAME = '{key}'")}),
+                )),
+                reply(say(&format!(
+                    "The tracts of the tiger connection: 2 rows (connection-2026, gis-connection). Your key is {key}."
+                ))),
+            ],
+        )
+        .await;
+        let ui = TestUi::new(Answer::AllowOnce);
+        let mut cfg = config(&root, &py, &stand.base, "deployment-1");
+        cfg.api_key = key.into();
+        let mut chat = Chat::start_with(
+            cfg,
+            own(fmt, KeyHeader::Bearer, false),
+            ui.clone(),
+            Cancel::default(),
+        )
+        .await
+        .unwrap();
+        let what = fmt.name();
+        chat.send(
+            "Read the tracts of the tiger connection.",
+            &Cancel::default(),
+        )
+        .await
+        .unwrap();
+        let finished = ui.finished();
+        assert_eq!(finished.len(), 2, "{what}: {finished:?}");
+        assert!(
+            finished[0].1,
+            "{what}: a read whose arguments hold everyday words runs: {finished:?}"
+        );
+        assert!(
+            !finished[1].1 && finished[1].2.contains("carried the AI service's key"),
+            "{what}: a call that holds the key itself is not run: {finished:?}"
+        );
+        let shown = ui.shown();
+        assert!(
+            !shown.contains(key),
+            "{what}: the key itself is never shown: {shown}"
+        );
+        assert!(
+            shown.contains("the tiger connection: 2 rows (connection-2026, gis-connection). Your key is [key removed]."),
+            "{what}: its words are everyday words, and stay: {shown}"
+        );
+        assert!(
+            shown.contains("\"connection\":\"tiger\""),
+            "{what}: the call is shown as it was made: {shown}"
+        );
+        chat.close().await;
+        drop(dir);
+    }
+}

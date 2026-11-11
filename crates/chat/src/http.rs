@@ -5,7 +5,8 @@
 //! The key goes only to the service's own address, in the one header that
 //! service takes it in; no redirect is ever followed, so it cannot be
 //! carried to another host. Every text that comes from a service is shown
-//! only after the key, and any long piece of it, has been taken out.
+//! only after the key has been taken out of it, and for a key that looks
+//! random any long piece of it too (see [`scrub`]).
 
 use std::borrow::Cow;
 use std::collections::HashSet;
@@ -444,28 +445,79 @@ fn one_line(s: &str) -> String {
 /// What stands where a key was.
 pub(crate) const REMOVED: &str = "[key removed]";
 
-/// Pieces of a key this long or longer are taken out of every text. (A
-/// page shows a saved key's last four characters, so four are no secret.)
+/// Pieces of a key this long or longer may be taken out of a text. (A page
+/// shows a saved key's last four characters, so four are no secret.)
 const PIECE: usize = 8;
 
-/// `text` without `key` and without any piece of it [`PIECE`] characters
-/// or longer. Some services quote the key they refused in their error.
+/// A key shorter than this is looked for whole only.
+const RANDOM_LENGTH: usize = 20;
+
+/// Whether these characters read like ordinary writing: a word or two
+/// (letters with `- _ . '`, and at most three changes between small and
+/// capital letters, so `RoadName` and `gis-conn` are words and `xQzRtKpW`
+/// is not), or a number or a date (digits with `. , - : /`). Such a stretch
+/// of a key is in everyday text for reasons that have nothing to do with
+/// the key.
+fn ordinary(piece: &[u8]) -> bool {
+    if piece
+        .iter()
+        .all(|b| b.is_ascii_digit() || b".,-:/".contains(b))
+    {
+        return true;
+    }
+    if !piece
+        .iter()
+        .all(|b| b.is_ascii_alphabetic() || b"-_.'".contains(b))
+    {
+        return false;
+    }
+    let capital: Vec<bool> = piece
+        .iter()
+        .filter(|b| b.is_ascii_alphabetic())
+        .map(u8::is_ascii_uppercase)
+        .collect();
+    capital.windows(2).filter(|w| w[0] != w[1]).count() <= 3
+}
+
+/// Whether a key looks random, as the keys AI services issue do: at least
+/// [`RANDOM_LENGTH`] characters, and no more than a quarter of its
+/// [`PIECE`]-character stretches read like ordinary writing. A key a
+/// person made up from words (`gis-connection-2026`, for a gateway or a
+/// local server) does not: its pieces are everyday words, and taking them
+/// out of every text would garble ordinary work.
+pub(crate) fn looks_random(key: &str) -> bool {
+    let k = key.trim().as_bytes();
+    if !key.is_ascii() || k.len() < RANDOM_LENGTH {
+        return false;
+    }
+    let all = k.len() - PIECE + 1;
+    let plain = k.windows(PIECE).filter(|w| ordinary(w)).count();
+    plain * 4 <= all
+}
+
+/// `text` without `key`. For a key that looks random ([`looks_random`]),
+/// also without any piece of it [`PIECE`] characters or longer that does
+/// not itself read like ordinary writing: some services quote the key they
+/// refused, whole or in part. This is a safeguard against a service
+/// quoting the key, not a proof that no form of it can pass (a key written
+/// in short groups, backwards or encoded is not looked for).
 pub(crate) fn scrub<'a>(text: &'a str, key: &str) -> Cow<'a, str> {
     let key = key.trim();
     if key.len() < 4 || text.len() < key.len().min(PIECE) {
         return Cow::Borrowed(text);
     }
-    if !key.is_ascii() || key.len() < PIECE {
-        // Only the whole key can be looked for.
-        return if text.contains(key) {
-            Cow::Owned(text.replace(key, REMOVED))
-        } else {
-            Cow::Borrowed(text)
-        };
+    // The key itself, always.
+    let whole: Cow<'a, str> = if text.contains(key) {
+        Cow::Owned(text.replace(key, REMOVED))
+    } else {
+        Cow::Borrowed(text)
+    };
+    if !looks_random(key) {
+        return whole;
     }
     let k = key.as_bytes();
-    let t = text.as_bytes();
-    let pieces: HashSet<&[u8]> = k.windows(PIECE).collect();
+    let t = whole.as_bytes();
+    let pieces: HashSet<&[u8]> = k.windows(PIECE).filter(|w| !ordinary(w)).collect();
     let mut out: Option<Vec<u8>> = None;
     let mut i = 0;
     let mut copied = 0;
@@ -493,7 +545,7 @@ pub(crate) fn scrub<'a>(text: &'a str, key: &str) -> Cow<'a, str> {
         copied = i;
     }
     match out {
-        None => Cow::Borrowed(text),
+        None => whole,
         Some(mut o) => {
             o.extend_from_slice(&t[copied..]);
             // The key is ASCII, so what was cut out began and ended
@@ -503,7 +555,8 @@ pub(crate) fn scrub<'a>(text: &'a str, key: &str) -> Cow<'a, str> {
     }
 }
 
-/// Every text in `v`, scrubbed (keys too: nothing of a key stays).
+/// Every text in `v`, scrubbed for showing (names too: nothing of a key
+/// is shown).
 pub(crate) fn scrub_json(v: &Value, key: &str) -> Value {
     match v {
         Value::String(s) => Value::String(scrub(s, key).into_owned()),
@@ -517,7 +570,10 @@ pub(crate) fn scrub_json(v: &Value, key: &str) -> Value {
     }
 }
 
-/// Whether `v` holds the key or a long piece of it anywhere.
+/// Whether a value in `v` holds the key (or, for a key that looks random,
+/// a long piece of it). Only values are looked at: the names of a tool's
+/// arguments are Columbus's own words (`connection`, `dataset`), and a key
+/// that happens to be made of such words must not stop every call.
 pub(crate) fn holds_key(v: &Value, key: &str) -> bool {
     if key.trim().len() < PIECE {
         return false;
@@ -525,9 +581,7 @@ pub(crate) fn holds_key(v: &Value, key: &str) -> bool {
     match v {
         Value::String(s) => matches!(scrub(s, key), Cow::Owned(_)),
         Value::Array(a) => a.iter().any(|x| holds_key(x, key)),
-        Value::Object(m) => m
-            .iter()
-            .any(|(k, x)| matches!(scrub(k, key), Cow::Owned(_)) || holds_key(x, key)),
+        Value::Object(m) => m.values().any(|x| holds_key(x, key)),
         _ => false,
     }
 }
@@ -590,6 +644,108 @@ mod tests {
         assert!(!holds_key(&clean, KEY));
         assert!(!holds_key(&json!({"a": "nothing", "b": [1, 2]}), KEY));
         assert!(!holds_key(&json!({"a": KEY}), ""));
+        // Only values can hold the key: a name is not looked at (what is
+        // shown has it taken out all the same).
+        let named = json!({KEY: 1, "deep": [{format!("x{KEY}"): "plain"}]});
+        assert!(!holds_key(&named, KEY));
+        assert!(!scrub_json(&named, KEY).to_string().contains("51Hq8ZpL"));
+        assert!(holds_key(
+            &json!({"deep": [{"a": {"b": format!("x {KEY}")}}]}),
+            KEY
+        ));
+    }
+
+    // A key a person made up, as for a gateway or a local server.
+    const WORDS: &str = "gis-connection-2026";
+
+    #[test]
+    fn a_key_made_of_words_is_looked_for_whole_only() {
+        assert!(!looks_random(WORDS));
+        let text = "The tracts of the tiger connection: connection-2026 is ready (gis-connection).";
+        assert!(
+            matches!(scrub(text, WORDS), Cow::Borrowed(_)),
+            "{}",
+            scrub(text, WORDS)
+        );
+        assert_eq!(
+            scrub(&format!("key {WORDS}, twice {WORDS}."), WORDS),
+            format!("key {REMOVED}, twice {REMOVED}.")
+        );
+        // Tool calls: Columbus's own argument names and everyday values.
+        let call = json!({"connection": "tiger", "dataset": "tracts", "where": "NAME = 'connection-2026'"});
+        assert!(!holds_key(&call, WORDS));
+        assert_eq!(scrub_json(&call, WORDS), call);
+        assert!(holds_key(
+            &json!({"where": format!("NAME = '{WORDS}'")}),
+            WORDS
+        ));
+        assert!(!holds_key(&json!({WORDS: "a name is not a value"}), WORDS));
+    }
+
+    #[test]
+    fn which_keys_look_random() {
+        // As services issue them (all made up here).
+        for key in [
+            KEY,
+            "sk-proj-Tn4BcY81rvoa3Hc8Vb1NxK6mQw72RtLp9Zs4YdGfJe0A",
+            "AIzaSyD4q7Lp2Qs9xTn4BcY81-rv_3Hc8Vb1NxK6",
+            "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+            "3f2b8c1e-9d4a-4f6b-a1c7-5e8d2b9f0a3c",
+            "rvgw-7Lp2Qs9xTn4BcY81",
+        ] {
+            assert!(looks_random(key), "{key}");
+        }
+        // Made up by a person, short, or a number.
+        for key in [
+            WORDS,
+            "MyCompanyGateway2026",
+            "abc-team-llm-2026-prod",
+            "Tr0ub4dor-horse-battery-staple",
+            "open-sesame-open-sesame-123",
+            "RoadNameService-2026-11-11",
+            "20261111123456789012",
+            // (Half of it is one long number: numbers are in everyday text.)
+            "123e4567-e89b-12d3-a456-426614174000",
+            "tk-gw-9Lp2Qs7x",
+            "ключ-ключ-ключ-ключ-ключ",
+        ] {
+            assert!(!looks_random(key), "{key}");
+        }
+        // What reads like ordinary writing, and what does not.
+        for piece in [
+            "connecti", "gis-conn", "RoadName", "COLUMBUS", "yGateway", "2026-11-", "34567890",
+            "12:30:00",
+        ] {
+            assert!(ordinary(piece.as_bytes()), "{piece}");
+        }
+        for piece in ["ion-2026", "tk51Hq8Z", "aBcDeFgH", "abc_123x", "pL0vXn3T"] {
+            assert!(!ordinary(piece.as_bytes()), "{piece}");
+        }
+    }
+
+    #[test]
+    fn a_word_inside_a_random_key_stays_readable() {
+        // A key with a company's name in front, and the public start of a
+        // service's keys: those words are in everyday text.
+        let key = "AcmeRoads-sk-live-7Lp2Qs9xTn4BcY81rv3Hc8Vb1NxK6mQw72";
+        assert!(looks_random(key));
+        let text = "AcmeRoads keeps its roads here; the key starts with sk-live-.";
+        assert!(
+            matches!(scrub(text, key), Cow::Borrowed(_)),
+            "{}",
+            scrub(text, key)
+        );
+        // Quoted whole, and in part: the random part goes.
+        assert_eq!(
+            scrub(&format!("key: {key}."), key),
+            format!("key: {REMOVED}.")
+        );
+        let t = scrub("Incorrect key: AcmeRoads-sk-live-7Lp2Qs9x*****mQw72", key).into_owned();
+        assert!(!t.contains("7Lp2Qs9x") && t.contains(REMOVED), "{t}");
+        // A date and a number that are also in the key are not the key.
+        let key = "x9Kq2026-11-11Zp4LmW8vTn3BcY7rQe5d";
+        assert!(looks_random(key));
+        assert_eq!(scrub("Read on 2026-11-11.", key), "Read on 2026-11-11.");
     }
 
     #[test]
