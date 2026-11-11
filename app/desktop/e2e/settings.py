@@ -408,7 +408,7 @@ gpd.GeoDataFrame({"RTE": ["IH0035", "US0183"], "district": [14, 12]}, geometry=[
         wait.until(lambda drv: "Python scripts are off" in drv.find_element(By.ID, "work-state").text)
         on_mac = d.find_element(By.ID, "work").text
         assert ("On a Mac there is one limit: a script or a tool can read what your other running programs were started with. "
-                "Columbus's own passwords are never there; a token another program was started with can be.") in on_mac, on_mac
+                "Columbus's own passwords are not exposed this way; a token another program was started with can be.") in on_mac, on_mac
         d.execute_script("delete navigator.platform;")
         click(d, By.ID, "settings-close")
         nav(d, wait, "#/settings", "work-free")

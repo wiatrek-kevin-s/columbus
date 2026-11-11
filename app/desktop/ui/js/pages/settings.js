@@ -133,7 +133,7 @@ export function workMode(st, after, id = "work", inSheet = true) {
   // On a Mac the sandbox has one limit that touches the card's promise
   // ("cannot reach … your passwords"): said here, where the promise is.
   const macLimit = navigator.platform.startsWith("Mac")
-    ? " On a Mac there is one limit: a script or a tool can read what your other running programs were started with. Columbus's own passwords are never there; a token another program was started with can be."
+    ? " On a Mac there is one limit: a script or a tool can read what your other running programs were started with. Columbus's own passwords are not exposed this way; a token another program was started with can be."
     : "";
   const how = st.confirm_with === "not available on this system"
     ? "On this system the app cannot confirm it is you (there is no Touch ID or Windows Hello), so set it in the policy file instead."
