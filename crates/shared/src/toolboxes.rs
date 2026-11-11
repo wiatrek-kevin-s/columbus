@@ -494,7 +494,8 @@ pub fn program_inside(dir: &Path, tb: &Toolbox) -> bool {
 /// The places whose files are not a toolbox's to read. A toolbox's tools
 /// can read every file in the program's own folder (the sandbox opens that
 /// folder to them), so a program the person adds must sit in a folder of
-/// its own, not in one of these.
+/// its own, not in one of these, and not in one of the home folder's
+/// folders of keys and sign-ins ([`KEYS_AND_SIGN_INS`]).
 #[derive(Debug, Clone, Default)]
 pub struct WidePlaces {
     /// The person's home folder, by each path it is known by (as the
@@ -520,6 +521,12 @@ const PERSONAL: &[&str] = &[
     "videos",
     "movies",
 ];
+
+/// Folders directly in the home folder where programs keep keys and
+/// sign-ins: SSH's and GnuPG's keys, and the sign-ins of AWS, Azure,
+/// Kubernetes and Docker. A program added from one would have its tools
+/// read them.
+const KEYS_AND_SIGN_INS: &[&str] = &[".ssh", ".gnupg", ".aws", ".azure", ".kube", ".docker"];
 
 impl WidePlaces {
     /// As they are on this computer.
@@ -650,11 +657,17 @@ fn in_home(key: &[String], home: &Path) -> Option<String> {
         let first = c.next().map(|f| f.to_uppercase().to_string());
         format!("your {}{} folder", first.unwrap_or_default(), c.as_str())
     };
-    // Directly in the home folder: Desktop, Documents, Downloads…, or a
-    // OneDrive folder (where Windows often keeps the first two).
+    // Directly in the home folder: Desktop, Documents, Downloads…, a
+    // folder of keys and sign-ins, or a OneDrive folder (where Windows
+    // often keeps the first two).
     if key.len() == home_key.len() + 1 && within(key, &home_key) {
         if personal(name) {
             return Some(said(name));
+        }
+        if KEYS_AND_SIGN_INS.contains(&name) {
+            return Some(format!(
+                "your {name} folder, where keys and sign-ins are kept"
+            ));
         }
         if name.starts_with("onedrive") {
             return Some("your OneDrive folder".into());
@@ -2435,6 +2448,35 @@ mod program_folder_tests {
                 "one of Columbus's own folders",
             ),
             (home.join("AppData"), "one of Columbus's own folders"),
+            // The home folder's own folders of keys and sign-ins (R-105).
+            (
+                home.join(".ssh"),
+                "your .ssh folder, where keys and sign-ins are kept",
+            ),
+            (
+                home.join(".SSH"),
+                "your .ssh folder, where keys and sign-ins are kept",
+            ),
+            (
+                home.join(".gnupg"),
+                "your .gnupg folder, where keys and sign-ins are kept",
+            ),
+            (
+                home.join(".aws"),
+                "your .aws folder, where keys and sign-ins are kept",
+            ),
+            (
+                home.join(".azure"),
+                "your .azure folder, where keys and sign-ins are kept",
+            ),
+            (
+                home.join(".kube"),
+                "your .kube folder, where keys and sign-ins are kept",
+            ),
+            (
+                home.join(".docker"),
+                "your .docker folder, where keys and sign-ins are kept",
+            ),
         ] {
             let program = exe(folder.clone());
             let why = program_folder_problem_in(&program, &p)
@@ -2458,6 +2500,16 @@ mod program_folder_tests {
             root.join("Program Files").join("LineTool"),
             root.join("tmp").join("run-1"),
             root.join("Tools"),
+            // Only those folders themselves, directly in the home folder:
+            // a folder of the program's own inside one, a folder of
+            // another name, and a folder of that name somewhere else are
+            // as before.
+            home.join(".ssh").join("linetool"),
+            home.join(".sshx"),
+            home.join("ssh"),
+            home.join(".tools"),
+            home.join("Tools").join(".ssh"),
+            root.join("data").join(".aws"),
         ] {
             assert_eq!(
                 program_folder_problem_in(&exe(folder.clone()), &p),
@@ -2489,6 +2541,11 @@ mod program_folder_tests {
         for home in &here.homes {
             assert!(program_folder_problem(&home.join("linetool")).is_some());
             assert!(program_folder_problem(&home.join("Downloads").join("linetool")).is_some());
+            for keys in [".ssh", ".gnupg", ".aws", ".azure", ".kube", ".docker"] {
+                let why = program_folder_problem(&home.join(keys).join("linetool"))
+                    .unwrap_or_else(|| panic!("{keys}"));
+                assert!(why.contains("where keys and sign-ins are kept"), "{why}");
+            }
         }
         // A place is known by its real path too: the folder for temporary
         // files with links followed (on a Mac it is behind /private), and
@@ -2532,7 +2589,14 @@ mod program_folder_tests {
         let d = tempfile::tempdir().unwrap();
         let real_home = d.path().canonicalize().unwrap().join("disk2").join("ana");
         std::fs::create_dir_all(real_home.join("Downloads")).unwrap();
+        std::fs::create_dir_all(real_home.join(".ssh")).unwrap();
         std::fs::create_dir_all(real_home.join("Tools").join("linetool")).unwrap();
+        // A folder of the program's own that is really the folder of keys.
+        std::os::unix::fs::symlink(
+            real_home.join(".ssh"),
+            real_home.join("Tools").join("keys-link"),
+        )
+        .unwrap();
         let link = d.path().join("home-ana");
         std::os::unix::fs::symlink(&real_home, &link).unwrap();
         // The system names the home folder by the link.
@@ -2545,6 +2609,9 @@ mod program_folder_tests {
             real_home.join("Downloads").join("linetool"),
             link.join("linetool"),
             real_home.join("linetool"),
+            link.join(".ssh").join("linetool"),
+            real_home.join(".ssh").join("linetool"),
+            real_home.join("Tools").join("keys-link").join("linetool"),
         ] {
             assert!(
                 program_folder_problem_in(&program, &places).is_some(),
