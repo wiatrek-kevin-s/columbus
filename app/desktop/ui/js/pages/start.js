@@ -15,7 +15,7 @@ export async function setupState() {
     invoke("engine_check").catch(() => null),
   ]);
   const done = {
-    ai: !!(chat && chat.has_key && chat.server_found),
+    ai: !!(chat && chat.ready && chat.server_found),
     engine: !!(engine && engine.server_found),
     connection: !!(st && st.connections.some((c) => c.id)),
   };
@@ -57,20 +57,42 @@ export function firstSteps(s, again) {
   }
 
   const checks = h("ul", { class: "checks" });
-  // An AI for the chat (run by the app itself: no AI is connected yet).
-  const err1 = h("p", { class: "error-text small", role: "alert", hidden: true });
-  const key = h("input", { type: "password", id: "fr-key", autocomplete: "off", spellcheck: "false", placeholder: "sk-ant-…", "aria-label": "Anthropic API key", class: "grow" });
+  // An AI for the chat (run by the app itself: no AI is connected yet):
+  // which service, and its key where it takes one. The same choice, in
+  // full, is in Settings › Assistant.
+  const err1 = h("p", { id: "fr-ai-error", class: "error-text small", role: "alert", hidden: true });
   const ai = h("div", { class: "text" });
-  if (done.ai) ai.append(h("b", {}, "An AI is connected for the chat."), h("span", { class: "where" }, "Change it in ", h("a", { href: "#/settings/ai" }, "Settings › Assistant"), "."));
-  else if (chat && chat.has_key && !chat.server_found) ai.append(h("b", {}, "A key is saved, but Columbus's server was not found."), h("span", { class: "where" }, "See the check below."));
+  const svc = chat ? chat.services.find((v) => v.id === chat.service) : null;
+  if (done.ai) ai.append(h("b", {}, `${chat.service_name} is connected for the chat.`), h("span", { class: "where" }, "Change it in ", h("a", { href: "#/settings/ai" }, "Settings › Assistant"), "."));
+  else if (chat && chat.ready && !chat.server_found) ai.append(h("b", {}, "An AI is set up, but Columbus's server was not found."), h("span", { class: "where" }, "See the check below."));
+  else if (!chat) ai.append(h("b", {}, "Connect an AI for the chat"), h("span", { class: "where" }, "Set it up in ", h("a", { href: "#/settings/ai" }, "Settings › Assistant"), "."));
   else {
-    ai.append(h("b", {}, "Connect an AI for the chat"),
-      h("form", { class: "row", onsubmit: async (e) => {
-        e.preventDefault();
-        showError(err1, null);
-        try { await invoke("chat_set_key", { key: key.value }); key.value = ""; again(); } catch (x) { showError(err1, x); }
-      } }, key, h("button", { type: "submit", class: "btn" }, "Save key"), skipped.has("ai") ? null : skip("ai")), err1,
-      h("span", { class: "where" }, "An Anthropic API key, billed by Anthropic per use (separately from a Claude subscription). It is kept in your computer's credential store, never in a file, and this app can never read it back. You can also keep using Columbus from Claude desktop without it."));
+    const pick = h("select", { id: "fr-service", "aria-label": "AI service" }, ...chat.services.map((v) => {
+      const o = h("option", { value: v.id }, `${v.name}${v.allowed ? "" : " (not allowed by your organization)"}`);
+      o.selected = v.id === chat.service;
+      return o;
+    }));
+    pick.addEventListener("change", async () => {
+      showError(err1, null);
+      try { await invoke("chat_use_service", { service: pick.value }); again(); } catch (x) { showError(err1, x); pick.value = chat.service; }
+    });
+    const takesKey = svc && svc.key !== "none" && !chat.no_store;
+    const key = h("input", { type: "password", id: "fr-key", autocomplete: "off", spellcheck: "false", placeholder: "Paste the key here", "aria-label": `API key for ${chat.service_name}`, class: "grow" });
+    const form = h("form", { class: "row wrap", id: "fr-ai-form", onsubmit: async (e) => {
+      e.preventDefault();
+      showError(err1, null);
+      try { await invoke("chat_set_key", { key: key.value, service: chat.service }); key.value = ""; again(); } catch (x) { showError(err1, x); }
+    } }, pick, takesKey ? key : null, takesKey ? h("button", { type: "submit", class: "btn" }, "Save key") : null, skipped.has("ai") ? null : skip("ai"));
+    // What is still missing, in a line: a key, a model, or the organization's leave.
+    const need = svc && !svc.allowed ? svc.why_not
+      : chat.key_needed && !chat.has_key ? (chat.no_store || "")
+        : !chat.model ? `${chat.service_name} is chosen. Choose its model in Settings › Assistant: Columbus has no list of what is on your computer.`
+          : "";
+    ai.append(h("b", {}, "Connect an AI for the chat"), form, err1,
+      need ? h("span", { class: "where", id: "fr-ai-need" }, need, !chat.model && svc && svc.allowed ? [" ", h("a", { href: "#/settings/ai" }, "Open Settings › Assistant")] : null) : null,
+      h("span", { class: "where", id: "fr-ai-about" }, svc ? svc.about : "", " ",
+        takesKey ? "The key is kept in your computer's credential store, never in a file, and this app can never read it back. " : "",
+        "You can also use Columbus from Claude desktop and other AI apps without any of this."));
   }
   checks.append(h("li", {}, mark("ai"), ai));
 

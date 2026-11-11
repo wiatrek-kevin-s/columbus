@@ -9,7 +9,8 @@ import { setupState, notices, firstSteps } from "./start.js";
 // Model and thinking names, once the chat settings are read.
 const NAMES = new Map();
 const nameOf = (id) => NAMES.get(id) || id;
-const MODEL_NOTE = "The chat sends your messages and the results it reads to the AI service you chose (Settings › Assistant).";
+// What a chat's model box says when it is pointed at: where the chat's words go.
+const modelNote = (name) => `This chat sends your messages and the results it reads to ${name || "the AI service you chose"} (Settings › Assistant).`;
 
 // ---------- The live chat (one at a time, as before) ----------
 const live = {
@@ -945,6 +946,8 @@ function buildLive() {
   const sub = h("span", { class: "sub", id: "chat-sub" });
   // This chat's model and thinking level: from Settings for a new chat,
   // changeable between messages.
+  // The service the chat talks to (a chat keeps it to its end), then its model.
+  const serviceName = h("span", { id: "chat-service", class: "muted small" });
   const modelSel = h("select", { id: "chat-model", class: "pick", "aria-label": "Model for this chat" });
   const effortSel = h("select", { id: "chat-effort", class: "pick", "aria-label": "Thinking level for this chat" });
   const onPick = async () => {
@@ -966,7 +969,7 @@ function buildLive() {
   const composer = h("form", { id: "composer" },
     h("label", { for: "text", class: "visually-hidden" }, "Message"),
     h("div", { class: "box" }, text, stop, send),
-    h("div", { class: "under", id: "chat-foot" }, sub, status, h("span", { class: "spacer" }), modelSel, effortSel));
+    h("div", { class: "under", id: "chat-foot" }, sub, status, h("span", { class: "spacer" }), serviceName, modelSel, effortSel));
   const projectBox = h("details", { class: "project-note", id: "chat-project", hidden: true });
   const col = h("section", { class: "chatcol", "aria-label": "Chat" }, head, greeting, projectBox, tray, log, composer);
   view.append(col);
@@ -1064,6 +1067,7 @@ async function start() {
     live.started = true;
     live.session = s.session || null;
     live.chatId = s.chat || null;
+    live.service = s.service || null;
     live.map.setSession(live.session);
     if (live.chatId) history.replaceState(null, "", `#/chats/c/${encodeURIComponent(live.chatId)}`);
     $("status").textContent = "";
@@ -1075,7 +1079,7 @@ async function start() {
   } catch (err) {
     $("status").textContent = "";
     live.log.append(el("div", "error", String(err)));
-    if (/API key|server was not found/i.test(String(err))) {
+    if (/Settings › Assistant|assistant\.hosts|server was not found/i.test(String(err))) {
       live.log.append(h("p", { class: "small" }, h("a", { href: "#/settings/ai" }, "Set up the AI in Settings › Assistant")));
     }
     store.set("chatstate", "failed");
@@ -1138,6 +1142,7 @@ async function newChat(project = null, run = null) {
   live.busy = false;
   live.chatId = null;
   live.session = null;
+  live.service = null;
   live.pick = null;
   live.cards.clear();
   live.log.replaceChildren();
@@ -1176,7 +1181,7 @@ async function emptyChat() {
   if (seq !== emptySeq || !box.isConnected) return;
   box.append(...notices(s.st));
   const c = s.chat;
-  if (c && c.has_key && c.server_found && (c.server_older || !c.engine)) {
+  if (c && c.ready && c.server_found && (c.server_older || !c.engine)) {
     box.append(h("div", { class: "notice warn" }, h("div", {},
       c.server_older ? `The Columbus server this chat uses is version ${c.server_version}, older than this app (${c.app_version}), so the map and newer tools may not work. ` : "The GIS engine was not found, so tools that read data will fail. ",
       h("a", { href: "#/settings/ai" }, "See Settings › Assistant"), ".")));
@@ -1186,12 +1191,20 @@ async function emptyChat() {
   // under it.
   document.body.classList.toggle("setup", !!s.needsSetup && !s.done.ai);
   if (s.needsSetup) {
-    box.append(firstSteps(s, () => emptyChat()));
+    // (A step may have changed the AI service: the chat's boxes follow.)
+    box.append(firstSteps(s, () => { updateChip(); emptyChat(); }));
     return;
   }
-  if (c && (!c.has_key || !c.server_found)) {
-    box.append(h("div", { class: "notice warn" }, h("div", {},
-      !c.has_key ? "No AI is connected yet. " : "Columbus's server was not found. ",
+  if (c && (!c.ready || !c.server_found)) {
+    // What is missing, said once: the organization's leave, a key, a model, the server.
+    const v = c.services.find((x) => x.id === c.service);
+    const why = c.ready ? "Columbus's server was not found. "
+      : v && !v.allowed ? `${v.why_not} `
+        : v && v.problem ? `${v.problem} `
+          : c.key_needed && !c.has_key ? "No AI is connected yet. "
+            : !c.model ? `No model is chosen for ${c.service_name} yet. `
+              : "No AI is connected yet. ";
+    box.append(h("div", { class: "notice warn", id: "chat-not-ready" }, h("div", {}, why,
       h("a", { href: "#/settings/ai" }, "Set it up in Settings › Assistant"), ".")));
   }
   if (document.activeElement === document.body) $("text")?.focus();
@@ -1227,21 +1240,41 @@ async function emptyChat() {
 async function updateChip() {
   try {
     const s = await invoke("chat_settings");
-    const pick = live.pick || { model: s.model, effort: s.effort };
-    for (const [id, l] of s.models) NAMES.set(id, l.replace(/ \(.*\)$/, ""));
-    for (const [id, l] of s.efforts) if (id) NAMES.set(`effort:${id}`, l.replace(/ \(.*\)$/, ""));
+    // A chat that has started keeps its service; a new one shows the one
+    // chosen in Settings.
+    const id = (live.started && (live.service || s.chat_service)) || s.service;
+    // A choice made for another service does not carry over to this one.
+    if (!live.started && live.pick && live.shownService && live.shownService !== id) live.pick = null;
+    live.shownService = id;
+    const v = s.services.find((x) => x.id === id) || s.services.find((x) => x.id === s.service);
+    const mine = id === s.service;
+    const pick = live.pick || { model: mine ? s.model : (v && v.model) || "", effort: mine ? s.effort : "" };
+    for (const x of s.services) for (const [m, l] of x.models) NAMES.set(m, l.replace(/ \(.*\)$/, ""));
+    for (const x of s.services) for (const [e, l] of x.efforts) if (e) NAMES.set(`effort:${e}`, l.replace(/ \(.*\)$/, ""));
+    // The service's own models, the ones it listed, the one in use.
+    const models = v ? [...v.models] : [];
+    for (const m of [pick.model, ...(mine ? s.models.map(([m2]) => m2) : []), ...((v && v.listed) || [])]) {
+      if (m && !models.some(([m2]) => m2 === m)) models.push([m, m]);
+    }
+    const efforts = v ? v.efforts : s.efforts;
     const fill = (sel, items, cur, label) => {
-      sel.replaceChildren(...items.map(([id, l]) => {
-        const o = el("option", null, label(id, l));
-        o.value = id;
-        o.selected = id === cur;
+      sel.replaceChildren(...items.map(([m, l]) => {
+        const o = el("option", null, label(m, l));
+        o.value = m;
+        o.selected = m === cur;
         return o;
       }));
     };
-    fill($("chat-model"), s.models, pick.model, (_, l) => l.replace(/ \(.*\)$/, ""));
-    fill($("chat-effort"), s.efforts, pick.effort, (id, l) => id ? `Thinking: ${l.replace(/ \(.*\)$/, "").toLowerCase()}` : "Thinking: default");
+    if (!models.length) models.push(["", "No model chosen"]);
+    fill($("chat-model"), models, pick.model, (_, l) => l.replace(/ \(.*\)$/, ""));
+    fill($("chat-effort"), efforts, pick.effort, (e, l) => e ? `Thinking: ${l.replace(/ \(.*\)$/, "").toLowerCase()}` : "Thinking: default");
+    // A service with one level has nothing to choose.
+    $("chat-effort").hidden = efforts.length < 2;
     const rows = store.info?.policy?.in_force?.return_rows;
-    $("chat-model").title = `${MODEL_NOTE} ${(s.models.find(([id]) => id === pick.model) || [0, ""])[1]}${rows ? ` It sees at most ${Number(rows).toLocaleString()} rows per call (your organization's policy).` : ""}`;
+    const name = v ? v.name : s.service_name;
+    $("chat-service").textContent = name || "";
+    $("chat-service").title = modelNote(name);
+    $("chat-model").title = `${modelNote(name)} ${(models.find(([m]) => m === pick.model) || [0, ""])[1]}${rows ? ` It sees at most ${Number(rows).toLocaleString()} rows per call (your organization's policy).` : ""}`;
     $("chat-effort").title = "How much the model thinks before it answers. Higher is slower, costs more and is more thorough.";
     fitSelect($("chat-model"));
     fitSelect($("chat-effort"));
@@ -1401,7 +1434,10 @@ async function showSaved(main, id) {
     const s = store.chats.find((c) => c.id === id);
     title.textContent = s ? s.title : "Chat";
     title.title = title.textContent;
-    sub.replaceChildren(...(meta.project ? [h("a", { href: `#/projects/${encodeURIComponent(meta.project)}` }, projectName(meta.project)), " · "] : []), when(lines[0]?.ts));
+    // Where it ran: its project, the AI service and model it started on, and when.
+    const ran = [meta.service_name || (meta.model ? "Anthropic" : null), meta.model ? nameOf(meta.model) : null].filter(Boolean).join(", ");
+    sub.replaceChildren(...(meta.project ? [h("a", { href: `#/projects/${encodeURIComponent(meta.project)}` }, projectName(meta.project)), " · "] : []),
+      ran ? h("span", { id: "saved-service" }, ran) : null, ran ? " · " : null, when(lines[0]?.ts));
     const r = new Renderer(logEl, false, (pid) => map.files(pid), (handle) => map.table(handle));
     for (const l of lines) r.event(l);
     r.finish();

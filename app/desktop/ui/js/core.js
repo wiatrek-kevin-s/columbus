@@ -594,7 +594,11 @@ export function clientName(c) {
   const known = {
     "claude-ai": "Claude desktop",
     "claude-code": "Claude Code",
-    "columbus-chat": "Columbus chat",
+    // The app's own chat (the name its session gives itself), and the
+    // app's own settings pages.
+    "Columbus app": "Columbus's own chat",
+    "columbus-chat": "Columbus's own chat",
+    "columbus-app (settings)": "Columbus's Settings",
     "Visual Studio Code": "VS Code",
     "github-copilot": "GitHub Copilot",
     cursor: "Cursor",

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-chat-use-service"
+description = "Enables the chat_use_service command without any pre-configured scope."
+commands.allow = ["chat_use_service"]
+
+[[permission]]
+identifier = "deny-chat-use-service"
+description = "Denies the chat_use_service command without any pre-configured scope."
+commands.deny = ["chat_use_service"]

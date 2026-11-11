@@ -5,13 +5,13 @@
 // (read only, with today's switches, each turned on only after the person
 // confirms at the keyboard in the app's own code).
 import * as gitServers from "./git_servers.js";
-import { $, h, el, icon, invoke as call, store, showError, savePrefs, applyTheme, toast, button, iconButton, sec, openDialog } from "../core.js";
+import { $, h, el, icon, invoke as call, store, showError, savePrefs, applyTheme, toast, button, iconButton, sec, openDialog, askConfirm, CANNOT_CONFIRM } from "../core.js";
 
 // Whether anything was saved since the sheet opened: the page under it is
 // brought up to date when the sheet closes (main.js). Every command here
 // but these reads saves something.
 let changed = false;
-const READS = new Set(["chat_settings", "settings_state", "settings_environments", "settings_pick", "open_classic"]);
+const READS = new Set(["chat_settings", "settings_state", "settings_environments", "settings_pick", "open_classic", "chat_other_apps", "chat_models"]);
 const pending = new Set();
 const invoke = (cmd, args) => {
   if (READS.has(cmd)) return call(cmd, args);
@@ -147,9 +147,9 @@ export function workMode(st, after, id = "work", inSheet = true) {
 }
 
 /** The parts that open inside the sheet (also offered by the search). */
-export const SECTIONS = [["ai", "Assistant: key, model and engine"], ["environments", "Python environments"], ["privacy", "Privacy and files"], ["keyboard", "Keyboard shortcuts"], ["org", "Organization rules"]];
+export const SECTIONS = [["ai", "Assistant: AI service, key, model and engine"], ["environments", "Python environments"], ["privacy", "Privacy and files"], ["keyboard", "Keyboard shortcuts"], ["org", "Organization rules"]];
 const LEDES = {
-  ai: "The AI the app's chat uses. Columbus's rules are the same whichever AI you use.",
+  ai: "The AI the app's chat uses, and how to use Columbus from another AI app. Columbus's rules are the same whichever AI you use.",
   privacy: "What stays on this computer, and where files live.",
   keyboard: "Shortcuts in the main window.",
   environments: "Python interpreters your assistant's scripts may run in, besides the GIS engine's own, such as an ArcGIS Pro clone. You register and confirm each one; your assistant cannot.",
@@ -236,64 +236,314 @@ export function serverLines(s) {
   return out;
 }
 
-// ---------- Assistant: the key, the model, the engine ----------
+// ---------- Assistant: the service, its key, its model, the engine ----------
+// What a service's row in a list says: where it is and how it is spoken to.
+function serviceWhere(v) {
+  if (!v.host) return "";
+  return `${v.local ? "On this computer" : v.host} · ${v.format}`;
+}
+
+/** Put `text` on the clipboard; whether it got there. */
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    // Where the page may not use the clipboard directly: through a
+    // selection, as a person would.
+    const t = h("textarea", { "aria-hidden": "true", tabindex: "-1", readonly: true });
+    t.value = text;
+    t.style.position = "fixed";
+    t.style.opacity = "0";
+    document.body.append(t);
+    t.select();
+    let ok = false;
+    try { ok = document.execCommand("copy"); } catch { ok = false; }
+    t.remove();
+    return ok;
+  }
+}
+
+// Add a service by its address, or change one the person added. Saving a
+// new one, or one whose address, format or key header changed, is
+// confirmed at the keyboard in the app's Rust code.
+function serviceDialog(st, old, done) {
+  const cannot = st.confirm_with === "not available on this system";
+  const name = h("input", { id: "svc-name", name: "name", type: "text", autocomplete: "off", maxlength: "60", required: true, placeholder: "e.g. Azure OpenAI, or My company's gateway" });
+  const address = h("input", { id: "svc-address", name: "address", type: "text", autocomplete: "off", spellcheck: "false", required: true, placeholder: "https://…/v1" });
+  const format = h("select", { id: "svc-format", name: "format" },
+    h("option", { value: "chat" }, "OpenAI Chat Completions (most services)"),
+    h("option", { value: "responses" }, "OpenAI Responses"),
+    h("option", { value: "messages" }, "Anthropic Messages"));
+  const header = h("select", { id: "svc-key-header", name: "key_header" },
+    h("option", { value: "bearer" }, "Authorization: Bearer (most services)"),
+    h("option", { value: "api-key" }, "api-key (Azure OpenAI)"),
+    h("option", { value: "x-api-key" }, "x-api-key (Anthropic's way)"));
+  const pictures = h("input", { id: "svc-pictures", name: "pictures", type: "checkbox" });
+  if (old) {
+    name.value = old.name;
+    address.value = old.address || "";
+    format.value = old.format_id || "chat";
+    header.value = old.key_header || "bearer";
+    pictures.checked = !!old.pictures;
+  }
+  const err = h("p", { id: "svc-error", class: "error-text", role: "alert", hidden: true });
+  const form = h("form", { id: "svc-form", class: "stack" },
+    h("div", { class: "grid2" },
+      h("label", { class: "field wide", for: "svc-name" }, "Name", name, h("small", {}, "What you want to call it. Errors and notices use this name.")),
+      h("label", { class: "field wide", for: "svc-address" }, "Address", address,
+        h("small", {}, "The address the service gives for its API, up to and including its version part (often ending in /v1). It must start with https://. Plain http:// is taken only for a service on this computer (localhost).")),
+      h("label", { class: "field wide", for: "svc-format" }, "Format", format, h("small", {}, "How the service is spoken to. Most take OpenAI Chat Completions: Azure OpenAI, Mistral, DeepSeek, Groq, Together, Amazon Bedrock and servers on your own computer. The service's documentation says which it takes; if a chat fails, try another.")),
+      h("label", { class: "field wide", for: "svc-key-header" }, "How the key is sent", header, h("small", {}, "You save the key itself afterwards, under Assistant, once this service is chosen. A service that needs no key gets none."))),
+    h("label", { class: "switch-row" }, pictures, h("span", {}, h("b", {}, "Send pictures."), " Turn this on only if the model you will use can look at pictures: a map picture your assistant asks for is then sent to it. Off, it is told in words that a picture was made.")),
+    h("p", { class: "small muted", id: "svc-note" }, cannot
+      ? `${CANNOT_CONFIRM}, so a service cannot be added here.`
+      : `Saving asks for ${st.confirm_with} first when the address, the format or the way the key is sent is new: from then on, this chat's messages and what your assistant reads from your data are sent to that address.`),
+    err);
+  const save = h("button", { type: "submit", id: "svc-save", class: "btn primary", form: "svc-form" }, old ? "Save" : "Add");
+  const cancel = h("button", { type: "button", class: "btn" }, "Cancel");
+  const d = openDialog(old ? `Change ${old.name}` : "Add another service", form, [h("span", { class: "spacer" }), cancel, save], old ? `Change ${old.name}` : "Add another service");
+  d.id = "svc-dialog";
+  cancel.addEventListener("click", () => d.close());
+  form.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    save.disabled = true;
+    showError(err, null);
+    try {
+      await invoke("chat_service_save", { service: { id: old ? old.id : null, name: name.value, address: address.value, format: format.value, key_header: header.value, pictures: pictures.checked } });
+      d.close();
+      done(name.value.trim());
+    } catch (e) {
+      showError(err, e);
+    } finally {
+      save.disabled = false;
+    }
+  });
+  name.focus();
+}
+
+// How to connect other AI apps to Columbus (REQ-50): the file to change
+// and the exact entry, with this computer's own path to the server.
+function otherApps() {
+  const pick = h("select", { id: "apps-pick", "aria-label": "AI app" });
+  const file = h("p", { id: "apps-file", class: "small wrap-any" });
+  const entry = el("pre", "box", "");
+  entry.id = "apps-entry";
+  entry.tabIndex = 0;
+  entry.setAttribute("aria-label", "The entry to add");
+  const copied = h("span", { id: "apps-copied", class: "small muted", role: "status" });
+  const copy = button("Copy the entry", "sm", null, { id: "apps-copy" });
+  const command = el("pre", "box", "");
+  command.id = "apps-command";
+  command.tabIndex = 0;
+  command.setAttribute("aria-label", "The command that adds it");
+  const copyCommand = button("Copy the command", "sm", null, { id: "apps-copy-command" });
+  const commandBox = h("div", { class: "stack", id: "apps-command-box", hidden: true }, h("p", { class: "small" }, "Or run this in a terminal, which adds the same entry:"), command, h("div", { class: "row" }, copyCommand));
+  const notes = h("ul", { id: "apps-notes", class: "small" });
+  const approvals = h("p", { id: "apps-approvals", class: "small muted" });
+  const missing = h("p", { id: "apps-missing", class: "error-text small", hidden: true }, "Columbus's server was not found on this computer, so the entries show columbus-mcp where its full path belongs. Unpack the Columbus folder as the install guide shows.");
+  const box = h("div", { class: "bd stack" },
+    h("p", { class: "small muted" }, "Any AI app that speaks MCP can use Columbus directly, with its own model and its own subscription: no key is needed here. Add this entry to the app's own settings file. The same rules, approvals and audit log apply, and its sessions show under Chats."),
+    h("label", { class: "field", for: "apps-pick" }, "AI app", pick),
+    missing, file, entry, h("div", { class: "row" }, copy, copied), commandBox, notes, approvals);
+  let apps = [];
+  const say = async (text) => {
+    const ok = await copyText(text);
+    copied.textContent = ok ? "Copied." : "Could not copy: select the text and copy it yourself.";
+    setTimeout(() => { copied.textContent = ""; }, 4000);
+  };
+  const draw = () => {
+    const a = apps.find((x) => x.id === pick.value);
+    if (!a) return;
+    file.replaceChildren(h("b", {}, "File: "), a.file);
+    entry.textContent = a.entry;
+    commandBox.hidden = !a.command;
+    command.textContent = a.command || "";
+    notes.replaceChildren(...a.notes.map((n) => el("li", null, n)));
+    notes.hidden = !a.notes.length;
+    copied.textContent = "";
+  };
+  pick.addEventListener("change", draw);
+  copy.addEventListener("click", () => say(entry.textContent));
+  copyCommand.addEventListener("click", () => say(command.textContent));
+  call("chat_other_apps").then((r) => {
+    apps = r.apps;
+    missing.hidden = !!r.server;
+    approvals.textContent = r.approvals;
+    pick.replaceChildren(...apps.map((a) => h("option", { value: a.id }, a.name)));
+    draw();
+  }).catch((e) => { file.textContent = String(e); });
+  return h("section", { class: "card", id: "other-apps" }, sec("Use Columbus from another AI app"), box);
+}
+
 async function ai(body) {
+  const error = h("p", { id: "service-error", class: "error-text", role: "alert", hidden: true });
+  const service = h("select", { id: "service" });
+  const about = h("p", { id: "service-about", class: "small muted" });
+  const running = h("p", { id: "service-running", class: "small muted", hidden: true });
   const keyState = h("p", { id: "key-state", class: "small muted" });
-  const key = h("input", { id: "key", type: "password", autocomplete: "off", spellcheck: "false", placeholder: "sk-ant-…", class: "grow" });
+  const key = h("input", { id: "key", type: "password", autocomplete: "off", spellcheck: "false", class: "grow" });
+  const keyLabel = h("label", { class: "field", for: "key" }, "API key");
+  const keySave = h("button", { type: "submit", class: "btn primary" }, "Save key");
+  const keyRow = h("div", { class: "row wrap" }, key, keySave, h("button", { type: "button", id: "key-clear", class: "btn" }, "Remove key"));
   const model = h("select", { id: "model" });
+  const other = h("input", { id: "model-other", type: "text", autocomplete: "off", spellcheck: "false", maxlength: "200", placeholder: "Empty: the model chosen above" });
+  const load = h("button", { type: "button", id: "models-load", class: "btn sm" }, "Load the list from the service");
+  const loaded = h("span", { id: "models-loaded", class: "small muted", role: "status" });
   const effort = h("select", { id: "effort" });
+  const effortField = h("label", { class: "field", id: "effort-field" }, "Thinking level for new chats", effort);
   const engine = h("input", { id: "engine", type: "text", spellcheck: "false", placeholder: "Empty: the engine in your Columbus folder", class: "grow" });
   const suggest = h("div", { class: "row wrap", id: "engine-suggest" });
   const serverState = h("p", { id: "server-state", class: "small muted" });
-  const keyForm = h("form", { id: "key-form", class: "stack" },
-    h("label", { class: "field", for: "key" }, "API key"),
-    h("div", { class: "row wrap" }, key, h("button", { type: "submit", class: "btn primary" }, "Save key"), h("button", { type: "button", id: "key-clear", class: "btn" }, "Remove key")),
-    keyState);
+  const keyForm = h("form", { id: "key-form", class: "stack" }, keyLabel, keyRow, keyState);
   const prefs = h("form", { id: "prefs-form", class: "stack" },
     h("label", { class: "field" }, "Model for new chats", model),
-    h("label", { class: "field" }, "Thinking level for new chats", effort),
-    h("p", { class: "small muted" }, "Each chat can change both below its message box. Higher thinking is slower, costs more and is more thorough."),
+    h("div", { class: "row wrap" }, load, loaded),
+    h("label", { class: "field", for: "model-other" }, "Another model's id", other,
+      h("small", {}, "Model names change faster than Columbus's releases. If the one you want is not in the list, type its id as the service writes it, then Save settings.")),
+    effortField,
+    h("p", { class: "small muted" }, "Each chat can change its model below its message box, within its own service. Higher thinking is slower, costs more and is more thorough."),
     h("label", { class: "field" }, "GIS engine (Python)", h("div", { class: "row" }, engine)),
     suggest,
     serverState,
     h("div", { class: "row" }, h("button", { type: "submit", class: "btn primary" }, "Save settings")));
-  body.append(
-    h("section", { class: "card" }, sec("API key"),
+  const added = h("ul", { id: "services-added", class: "list", "aria-live": "polite" });
+  const noneAdded = h("p", { id: "services-none", class: "muted small quiet pad" }, "None added. Azure OpenAI, Mistral, DeepSeek, Groq, Together, Amazon Bedrock or your organization's own gateway can be added by address.");
+  const add = button("Add another service", "sm", null, { id: "service-add" });
+  const noStore = h("p", { id: "services-nostore", class: "small muted pad", hidden: true });
+  const orgLine = h("p", { id: "service-org", class: "small muted", hidden: true });
+  body.append(error,
+    h("section", { class: "card" }, sec("AI service"),
       h("div", { class: "bd stack" },
-        h("p", { class: "small muted" }, "The chat uses an Anthropic API key, billed by Anthropic per use, separately from a Claude subscription. Create one at console.anthropic.com. It is kept in your computer's credential store, never in a file, and this window can set or remove it but never read it back."),
-        keyForm, prefs)),
-    h("p", { class: "small muted" }, "You can also use Columbus from Claude desktop and other AI apps directly, without a key here; their sessions show under Chats."));
+        h("p", { class: "small muted" }, "The AI the app's chat talks to. Whichever you choose, your messages and what your assistant reads from your data are sent to it; with one on this computer, they stay here. A key is kept in your computer's credential store, never in a file, and this window can set or remove it but never read it back."),
+        h("label", { class: "field", for: "service" }, "Service for new chats", service),
+        about, running, orgLine, keyForm, prefs)),
+    h("section", { class: "card", id: "services-card" }, sec("Other services", null, h("span", { class: "more" }, add)), h("div", { class: "bd flush" }, added, noneAdded, noStore)),
+    otherApps());
 
-  const load = async () => {
-    const s = await invoke("chat_settings");
-    keyState.replaceChildren(...(s.has_key
-      ? [h("span", { class: "badge pass" }, "✓ Key saved"), ` A key ending in ${s.key_hint || "…"} is saved in your computer's credential store. Chats use it; paste a new one to replace it.`]
-      : ["No key saved yet: chats can't use the AI until you save one."]));
-    keyState.className = s.has_key ? "small" : "small error-text";
-    key.placeholder = s.has_key ? `Saved (ends in ${s.key_hint || "…"}); paste a new key to replace it` : "sk-ant-…";
+  let s = null;
+  let st = null;
+  const current = () => (s ? s.services.find((v) => v.id === s.service) : null);
+  const draw = () => {
+    const v = current();
+    service.replaceChildren(...s.services.map((x) => {
+      const o = h("option", { value: x.id }, `${x.name}${x.allowed ? "" : " (not allowed by your organization)"}`);
+      o.selected = x.id === s.service;
+      return o;
+    }));
+    about.replaceChildren(...(v ? [h("b", {}, `${serviceWhere(v)}.`), v.about ? ` ${v.about}` : ""] : []));
+    running.hidden = !(s.chat_service && s.chat_service !== s.service);
+    running.textContent = running.hidden ? "" : `The chat that is open keeps the service it started with (${s.chat_service_name}). A new chat uses this one.`;
+    orgLine.hidden = !s.hosts.length;
+    orgLine.textContent = s.hosts.length ? `Your organization allows the app's chat these services only: ${s.hosts.join(", ")} (assistant.hosts).` : "";
+    // The key, where the service takes one.
+    const takesKey = !!v && v.key !== "none";
+    keyRow.hidden = !takesKey || !!s.no_store;
+    keyLabel.hidden = !takesKey;
+    keyLabel.firstChild.textContent = v ? (v.key === "optional" ? `API key for ${v.name} (only if it asks for one)` : `API key for ${v.name}`) : "API key";
+    key.placeholder = s.has_key ? `Saved (ends in ${s.key_hint || "…"}); paste a new key to replace it` : "Paste the key here";
     $("key-clear").hidden = !s.has_key;
-    model.replaceChildren(...s.models.map(([id, label]) => { const o = el("option", null, label); o.value = id; o.selected = id === s.model; return o; }));
+    if (!takesKey) {
+      keyState.replaceChildren(v ? `${v.name} needs no key.` : "");
+      keyState.className = "small muted";
+    } else if (s.has_key) {
+      keyState.replaceChildren(h("span", { class: "badge pass" }, "✓ Key saved"), ` A key ending in ${s.key_hint || "…"} is saved for ${v.name} in your computer's credential store. Chats use it; paste a new one to replace it.`);
+      keyState.className = "small";
+    } else if (s.no_store) {
+      keyState.replaceChildren(s.no_store);
+      keyState.className = "small error-text";
+    } else {
+      keyState.replaceChildren(v.key === "optional" ? `No key saved for ${v.name}. It is needed only if the service asks for one.` : `No key saved for ${v.name} yet: chats can't use it until you save one.`);
+      keyState.className = v.key === "optional" ? "small muted" : "small error-text";
+    }
+    // The model: Columbus's own list, what the service listed, what was typed.
+    const options = s.models.map(([id, label]) => { const o = el("option", null, label); o.value = id; o.selected = id === s.model; return o; });
+    if (!options.length) options.push(h("option", { value: "" }, "No model chosen yet: load the list, or type an id below"));
+    model.replaceChildren(...options);
+    load.hidden = !v;
     effort.replaceChildren(...s.efforts.map(([id, label]) => { const o = el("option", null, label); o.value = id; o.selected = id === s.effort; return o; }));
+    effortField.hidden = s.efforts.length < 2;
     engine.value = s.engine_chosen || "";
     suggest.replaceChildren(...(s.engine_suggestions || []).map((p) => button(`Use ${p}`, "sm", () => { engine.value = p; })));
     serverState.replaceChildren(...serverLines(s).map((t) => el("span", "block", t)));
     serverState.className = !s.server_found || s.server_older || !s.engine ? "small error-text" : "small muted";
-    return s;
+    // The services the person added.
+    const mine = s.services.filter((x) => !x.builtin);
+    noneAdded.hidden = mine.length > 0;
+    added.replaceChildren(...mine.map((x) => {
+      const text = el("div", "text");
+      text.append(h("div", { class: "row wrap" }, el("b", null, x.name), el("span", "where wrap-any", x.address || "")));
+      text.append(el("span", "where", `${x.format || x.format_id}${x.pictures ? " · pictures are sent" : ""}`));
+      if (x.problem) text.append(el("span", "where error-text", x.problem));
+      if (!x.allowed && x.why_not) text.append(el("span", "where error-text", x.why_not));
+      const change = button("Change", "sm", () => serviceDialog(st, x, async (n) => { await refresh(); toast(`Saved ${n}.`); }), { "aria-label": `Change ${x.name}` });
+      const remove = button("Remove", "sm danger", async () => {
+        if (!(await askConfirm(`Remove ${x.name}?`, "Its address and its key are deleted from this computer. Chats that ran on it stay saved.", "Remove service", true))) return;
+        showError(error, null);
+        try { await invoke("chat_service_remove", { id: x.id }); toast(`Removed ${x.name}. Its key was deleted from this computer.`); } catch (e) { showError(error, e); }
+        await refresh();
+      }, { "aria-label": `Remove ${x.name}` });
+      const li = h("li", { class: x.problem ? "conn bad" : "conn", "data-id": x.id }, text, h("div", { class: "acts" }, change, remove));
+      return li;
+    }));
+    add.disabled = !!s.no_store;
+    noStore.hidden = !s.no_store;
+    noStore.textContent = s.no_store ? "A service you add is confirmed and recorded in the computer's credential store, which this system does not have, so none can be added here." : "";
   };
+  // Only the read begun last is drawn.
+  let reads = 0;
+  const refresh = async () => {
+    const mine = ++reads;
+    try {
+      const [now, state] = await Promise.all([invoke("chat_settings"), st ? Promise.resolve(st) : invoke("settings_state")]);
+      if (mine !== reads) return null;
+      s = now;
+      st = state;
+      draw();
+      return s;
+    } catch (e) { if (mine === reads) showError(error, e); return null; }
+  };
+  service.addEventListener("change", async () => {
+    const want = service.value;
+    showError(error, null);
+    loaded.textContent = "";
+    other.value = "";
+    try {
+      await invoke("chat_use_service", { service: want });
+      const v = s.services.find((x) => x.id === want);
+      toast(`Saved. A new chat uses ${v ? v.name : "it"}.`);
+    } catch (e) { showError(error, e); }
+    await refresh();
+  });
   keyForm.addEventListener("submit", async (ev) => {
     ev.preventDefault();
-    try { await invoke("chat_set_key", { key: key.value }); key.value = ""; await load(); toast("Key saved. New chats will use it."); } catch (err) { keyState.textContent = String(err); keyState.className = "small error-text"; }
+    try { await invoke("chat_set_key", { key: key.value, service: s.service }); key.value = ""; await refresh(); toast("Key saved. New chats will use it."); } catch (err) { keyState.textContent = String(err); keyState.className = "small error-text"; }
   });
-  $("key-clear").addEventListener("click", async () => { await invoke("chat_clear_key"); await load(); toast("Key removed."); });
+  $("key-clear").addEventListener("click", async () => { await invoke("chat_clear_key", { service: s.service }); await refresh(); toast("Key removed."); });
+  load.addEventListener("click", async () => {
+    load.disabled = true;
+    loaded.textContent = "Asking the service…";
+    loaded.className = "small muted";
+    try {
+      const ids = await call("chat_models", { service: s.service });
+      await refresh();
+      loaded.textContent = `${ids.length.toLocaleString()} ${ids.length === 1 ? "model" : "models"} listed by the service. Choose one above.`;
+    } catch (e) {
+      loaded.textContent = String(e);
+      loaded.className = "small error-text";
+    } finally { load.disabled = false; }
+  });
   prefs.addEventListener("submit", async (ev) => {
     ev.preventDefault();
     try {
-      await invoke("chat_save_settings", { model: model.value, effort: effort.value, engine: engine.value });
-      await load();
+      await invoke("chat_save_settings", { model: other.value.trim() || model.value || null, effort: s.efforts.length > 1 ? effort.value : null, engine: engine.value });
+      other.value = "";
+      await refresh();
       toast("Saved. A new chat uses the new settings.");
     } catch (err) { serverState.textContent = String(err); serverState.className = "small error-text"; }
   });
-  await load();
+  add.addEventListener("click", () => serviceDialog(st, null, async (n) => { await refresh(); toast(`Added ${n}. Choose it above to use it for new chats.`); }));
+  await refresh();
 }
 
 // ---------- The first view: what a person changes ----------
@@ -306,15 +556,15 @@ async function overview(body, foot) {
   const info = store.info;
   const go = (label, href, id) => h("a", { class: "btn sm", href, id: id || null }, label);
 
-  // The assistant: its key, and what new chats start with.
-  const keyLine = h("span", {}, "…");
+  // The assistant: its service and key, and what new chats start with.
+  const keyLine = h("span", { id: "set-service-line" }, "…");
   const model = h("select", { id: "set-model", "aria-label": "Model for new chats" });
   const effort = h("select", { id: "set-effort", "aria-label": "Thinking for new chats" });
   const engineLine = h("span", {}, "…");
   let chat = null;
   const saveChat = async () => {
     try {
-      await invoke("chat_save_settings", { model: model.value, effort: effort.value, engine: (chat && chat.engine_chosen) || "" });
+      await invoke("chat_save_settings", { model: model.value || null, effort: chat && chat.efforts.length > 1 ? effort.value : null, engine: (chat && chat.engine_chosen) || "" });
       toast("Saved. A new chat uses it.");
     } catch (e) { toast(String(e)); }
   };
@@ -360,7 +610,7 @@ async function overview(body, foot) {
   body.append(
     h("section", { class: "card" }, sec("How your assistant works"), modeBox),
     h("section", { class: "card" }, sec("Assistant"),
-      setRow("API key", keyLine, go("Change", "#/settings/ai", "set-key")),
+      setRow("AI service", keyLine, go("Change", "#/settings/ai", "set-key")),
       setRow("Model for new chats", "You can change it in any chat.", model),
       setRow("Thinking for new chats", "Higher is slower, costs more and is more thorough.", effort)),
     h("section", { class: "card" }, sec("Python"),
@@ -381,9 +631,18 @@ async function overview(body, foot) {
 
   invoke("chat_settings").then((s) => {
     chat = s;
-    keyLine.textContent = s.has_key ? `A key ending in ${s.key_hint || "…"} is saved in your computer's credential store.` : "No key yet: chats can't use the AI until you save one.";
-    keyLine.className = s.has_key ? "" : "error-text";
-    model.replaceChildren(...s.models.map(([id, label]) => { const o = el("option", null, label.replace(/ \(.*\)$/, "")); o.value = id; o.selected = id === s.model; return o; }));
+    const v = s.services.find((x) => x.id === s.service);
+    const allowed = !v || v.allowed;
+    keyLine.textContent = !allowed ? `${s.service_name}. ${v.why_not}`
+      : !s.key_needed && !s.has_key ? `${s.service_name}${v && v.local ? ", on this computer" : ""}. It needs no key.`
+        : s.has_key ? `${s.service_name}. A key ending in ${s.key_hint || "…"} is saved in your computer's credential store.`
+          : `${s.service_name}. No key yet: chats can't use it until you save one.`;
+    keyLine.className = allowed && (s.has_key || !s.key_needed) ? "" : "error-text";
+    const models = s.models.map(([id, label]) => { const o = el("option", null, label.replace(/ \(.*\)$/, "")); o.value = id; o.selected = id === s.model; return o; });
+    if (!models.length) models.push(h("option", { value: "" }, "None chosen yet: see Change, above"));
+    model.replaceChildren(...models);
+    model.disabled = !s.models.length;
+    effort.disabled = s.efforts.length < 2;
     effort.replaceChildren(...s.efforts.map(([id, label]) => { const o = el("option", null, label.replace(/ \(.*\)$/, "")); o.value = id; o.selected = id === s.effort; return o; }));
     engineLine.replaceChildren(...(s.engine ? [h("span", { class: "mono" }, s.engine)] : ["The GIS engine was not found. Set where its Python is."]));
     engineLine.className = s.engine && s.server_found && !s.server_older ? "" : "error-text";
@@ -586,6 +845,8 @@ function sentences(f, rule) {
   out.push(["Toolboxes", f.allow_toolboxes ? "Toolboxes you install may be used; their tools run in the sandbox." : "Toolboxes are off."]);
   out.push(["Project files", f.allow_project_files ? "Your assistant may read and write text files in a project's own folder, and run scripts kept there." : "Project files are off."]);
   out.push(["Sync", f.allow_sync ? `A project's files may sync with a Git server when you press Sync${f.sync && f.sync.hosts && f.sync.hosts.length ? ` (only ${f.sync.hosts.join(", ")})` : ""}.` : "Sync with Git servers is off."]);
+  const ai = f.assistant && f.assistant.hosts ? f.assistant.hosts : [];
+  out.push(["AI services", ai.length ? `The app's own chat may use only AI services at these addresses: ${ai.join(", ")}. What it reads is sent to the service it uses.` : "You choose which AI service the app's own chat uses. What it reads is sent to that service."]);
   if (f.return_rows != null) out.push(["Rows to the AI", `Your assistant sees at most ${Number(f.return_rows).toLocaleString()} rows per call.`]);
   if (f.hide_fields && f.hide_fields.length) out.push(["Hidden fields", `Never shown or sent to the AI: ${f.hide_fields.join(", ")}.`]);
   if (Array.isArray(f.exports)) out.push(["Exports", f.exports.length ? `Export folders: ${f.exports.map((e) => e.id || e.path).join(", ")}.` : "No export folders are set up."]);

@@ -391,6 +391,9 @@ pub struct OrgPolicy {
     /// Sync options (F-15).
     #[serde(default)]
     pub sync: SyncPolicy,
+    /// The AI services the Columbus app's own chat may use (F-19).
+    #[serde(default)]
+    pub assistant: AssistantPolicy,
 }
 
 /// Registered Python environments that scripts may run in (F-7). Every
@@ -498,6 +501,31 @@ pub struct SyncPolicy {
     /// `gitea.example.org`). Empty means any server the person connects.
     #[serde(default)]
     pub hosts: Vec<String>,
+}
+
+/// The app's own chat (F-19; build brief 3, D-22); unknown keys are refused.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct AssistantPolicy {
+    /// The only hosts the app's chat may talk to, by host name
+    /// (`api.anthropic.com`, `*.openai.azure.com`, `localhost`). Empty
+    /// means any AI service the person sets up. What the chat reads is
+    /// sent to the service it uses, so this names who may see those rows.
+    #[serde(default)]
+    pub hosts: Vec<String>,
+}
+
+impl AssistantPolicy {
+    /// Whether the app's chat may use a service at `host`.
+    pub fn allows(&self, host: &str) -> bool {
+        self.hosts.is_empty()
+            || DatasetRules {
+                allow: self.hosts.clone(),
+                deny: vec![],
+            }
+            .permits(host)
+            .unwrap_or(false)
+    }
 }
 
 /// Project databases: local DuckDB files the assistant builds from governed
@@ -763,6 +791,7 @@ impl Default for OrgPolicy {
             allow_project_files: false,
             allow_sync: false,
             sync: SyncPolicy::default(),
+            assistant: AssistantPolicy::default(),
         }
     }
 }
@@ -1752,6 +1781,58 @@ expires: 2027-06-30
         );
         // And the key: where in the file to look.
         assert!(e.contains("scripts.approval"), "{e}");
+    }
+
+    #[test]
+    fn the_assistants_hosts_limit_the_apps_chat_only_when_listed() {
+        // F-19: absent or empty, the person chooses.
+        let p = OrgPolicy::parse("connection_types: [gpkg]\n", Path::new("p.yaml")).unwrap();
+        assert!(p.assistant.hosts.is_empty());
+        assert_eq!(p.assistant, OrgPolicy::default().assistant);
+        for host in [
+            "api.anthropic.com",
+            "api.openai.com",
+            "localhost",
+            "anything.example",
+        ] {
+            assert!(p.assistant.allows(host), "{host}");
+        }
+        let p = OrgPolicy::parse("assistant: { hosts: [] }\n", Path::new("p.yaml")).unwrap();
+        assert!(p.assistant.allows("api.x.ai"));
+        // Listed: only those, by name, with * for a part, whatever the case.
+        let p = OrgPolicy::parse(
+            "assistant:\n  hosts: [api.anthropic.com, \"*.openai.azure.com\", localhost]\n",
+            Path::new("p.yaml"),
+        )
+        .unwrap();
+        assert_eq!(p.assistant.hosts.len(), 3);
+        for host in [
+            "api.anthropic.com",
+            "API.Anthropic.com",
+            "mine.openai.azure.com",
+            "localhost",
+        ] {
+            assert!(p.assistant.allows(host), "{host}");
+        }
+        for host in [
+            "api.openai.com",
+            "openai.azure.com",
+            "api.anthropic.com.example.org",
+            "evil-api.anthropic.com",
+            "127.0.0.1",
+            "",
+        ] {
+            assert!(!p.assistant.allows(host), "{host}");
+        }
+        // Unknown keys and wrong shapes are refused, as in the other newer sections.
+        for bad in [
+            "assistant: { host: [api.openai.com] }\n",
+            "assistant: { hosts: [api.openai.com], services: [openai] }\n",
+            "assistant: { hosts: api.openai.com }\n",
+            "assistant: [api.openai.com]\n",
+        ] {
+            assert!(OrgPolicy::parse(bad, Path::new("p.yaml")).is_err(), "{bad}");
+        }
     }
 
     #[test]
