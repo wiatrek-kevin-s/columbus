@@ -179,7 +179,7 @@ Sync was built and tested against stand-in servers written from GitHub's and Git
 1. Turn sync on. In the app, **Settings**, choose **Work freely on copies** and confirm. (Or set `allow_sync: true` in `policy.yaml` yourself.)
 2. **Settings › Git servers › Connect a server.** Choose the kind and, unless it is github.com, give the address. Press **Open the page for a new token**, make the token there with the permissions the dialog names (on GitHub, **Contents: Read and write** and **Administration: Read and write**, so that Columbus can create the test repository), and paste it into the **Token** field (never into a chat).
 
-   **Record (H-4.2):** the message ("Connected to … as …"), or the error, word for word. Leave the token out.
+   **Record (H-4.2):** the message ("Connected to … as …"), or the error, word for word. Leave the token out. A GitHub Enterprise Server is first asked what it is, without your token: if the app answers that the address "did not answer as a GitHub Enterprise Server does" although it is one, record that too, with the server's version; the maintainers need it.
 3. Open **Projects**, make a project named `Sync test`, and on its page press **Open the folder**. Put a small text file in it, for example `notes.md` with one line.
 4. On the project's page press **Link this project**, choose **A new private repository**, and press **Link**. If the server refuses to create it, make an empty private repository there yourself and link to it with **One of my repositories**.
 
