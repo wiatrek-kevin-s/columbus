@@ -383,7 +383,7 @@ async fn check(state: &State, request: &str, seen: &mut Seen) -> Result<Plan, St
         }
         if waiting_tools.contains(&t.id) {
             return Err(format!(
-                "{label} is already waiting for your review under Workflows › Tools: install or decline it first, then open this file again"
+                "{label} is already waiting for your review under Tools: install or decline it first, then open this file again"
             ));
         }
         let (args, built) = crate::propose_tool::rebuild(&t.id, &t.manifest, &t.code)
@@ -457,7 +457,7 @@ async fn check(state: &State, request: &str, seen: &mut Seen) -> Result<Plan, St
     }
     if waiting_tools.len() + tools.len() > store::MAX_PROPOSALS {
         return Err(format!(
-            "it would put more than {} tools waiting for your review; install or decline some under Workflows › Tools first",
+            "it would put more than {} tools waiting for your review; install or decline some under Tools first",
             store::MAX_PROPOSALS
         ));
     }

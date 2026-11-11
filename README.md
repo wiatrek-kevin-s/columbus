@@ -24,7 +24,7 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/hero-dark.png">
-    <img src="docs/images/hero-light.png" width="900" alt="The Columbus app. The map fills the window: the fatal crashes of central Austin as points, with the IH 35 corridor and the 36 counted crashes highlighted, and a legend of the layers the assistant made, the active one marked Checks passed. A panel on the left holds the chat about which fatal crashes from 2020 to 2023 happened within 150 feet of IH 35 in central Austin. The answer reads: 36 of the 122 fatal crashes were within 150 feet of IH 35, taking 39 lives, with a table of crashes and deaths by year.">
+    <img src="docs/images/hero-light.png" width="900" alt="The Columbus app, in three parts. On the left, a sidebar: New chat, Search, the places (Chats, Projects, Data, Documentation, Workflows, Tools, Activity), the recent chats and Settings. In the middle, the chat about which fatal crashes from 2020 to 2023 happened within 150 feet of IH 35 in central Austin. The answer reads: 36 of the 122 fatal crashes were within 150 feet of IH 35, taking 39 lives, with a table of crashes and deaths by year. On the right, a panel named Map and table: the fatal crashes of central Austin as points, with the IH 35 corridor and the 36 counted crashes highlighted, and a legend of the layers the assistant made, the active one marked Checks passed.">
   </picture>
   <br><sub>A real question about public Austin crash data, answered in the app. Each layer is checked, and the map shows what was counted.</sub>
 </p>
@@ -74,12 +74,12 @@ Step by step: [Windows](docs/install.md) · [Mac](docs/install-macos.md). The ap
 
 <table>
   <tr>
-    <td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/tour-connections-dark.png"><img src="docs/images/tour-connections-light.png" alt="The Data place, in the panel on the left: what the assistant can reach, one row each for an Oracle enterprise geodatabase, a file geodatabase, a folder of crash records, a GeoPackage of streets and an ArcGIS Online layer, each read only with the rule that matters; under them, where results can go."></picture><br><b>Data.</b> What the AI may reach, in plain words.</td>
+    <td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/tour-connections-dark.png"><img src="docs/images/tour-connections-light.png" alt="The Data page, with Data chosen in the sidebar on the left: what the assistant can reach, one row each for an Oracle enterprise geodatabase, a file geodatabase, a folder of crash records, a GeoPackage of streets and an ArcGIS Online layer, each read only with the rule that matters; under them, where results can go."></picture><br><b>Data.</b> What the AI may reach, in plain words.</td>
     <td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/tour-approval-dark.png"><img src="docs/images/tour-approval-light.png" alt="A request in the chat that says Columbus needs your OK: an export, with the layer, the folder and the file it will write, and Allow once and Decline buttons."></picture><br><b>Approvals.</b> What an export will write, and where.</td>
   </tr>
   <tr>
     <td><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/tour-workflow-run-dark.png"><img src="docs/images/tour-workflow-run-light.png" alt="Under Workflows, the report of a weekly crash check's last run, on its own page: steps, row counts, checks and the exported files."></picture><br><b>Workflows.</b> Repeated jobs, with a report each run.</td>
-    <td><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/tour-checks-dark.png"><img src="docs/images/tour-checks-light.png" alt="The chat with a result's How it was made open in a sheet beside the panel: its checks, the datasets it was made from and its full record."></picture><br><b>How it was made.</b> Each result's checks, and what it was made from.</td>
+    <td><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/tour-checks-dark.png"><img src="docs/images/tour-checks-light.png" alt="The chat with a result's How it was made open in the panel on the right: its checks, the datasets it was made from and its full record."></picture><br><b>How it was made.</b> Each result's checks, and what it was made from.</td>
   </tr>
 </table>
 

@@ -355,8 +355,20 @@ def main():
         assert wide[0] <= side[0] + side[2] + 1 and wide[0] + wide[2] >= d.execute_script("return innerWidth") - 1, f"the map has the window beside the sidebar: {wide}"
         named(d)
         d.save_screenshot(str(OUT / "shell-map-only.png"))
+        fill = lambda: [d.find_element(By.ID, "out-full").get_attribute(k) for k in ("aria-label", "aria-pressed")]
+        assert fill() == ["Show the chat again", "true"], f"the button says what it does now: {fill()}"
+        # In a narrow window too, where the panel lies over the chat.
+        size = d.get_window_size()
+        d.set_window_size(1000, 760)
+        time.sleep(0.6)
+        wide = d.execute_script(box, "#outputs")
+        side = d.execute_script(box, "#sidebar")
+        assert wide[0] <= side[0] + side[2] + 1 and wide[0] + wide[2] >= d.execute_script("return innerWidth") - 1, f"in a narrow window the map has the window beside the sidebar: {wide}, sidebar {side}"
+        d.set_window_size(size["width"], size["height"])
+        time.sleep(0.6)
         click(d, By.ID, "out-full")
         wait.until(lambda drv: drv.find_element(By.ID, "main").is_displayed())
+        assert fill() == ["Fill the window", "false"], f"and again when the chat is back: {fill()}"
         click(d, By.ID, "out-close")
         wait.until(lambda drv: not drv.find_element(By.ID, "outputs").is_displayed())
         assert d.find_element(By.CSS_SELECTOR, "#main .chat-map").get_attribute("aria-pressed") == "false"

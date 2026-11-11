@@ -665,7 +665,7 @@
         },
         {
           "how": "Claude extends the app e2e: turn Work freely on copies on through the test confirmation path, then off",
-          "expected": "the policy file gains then loses exactly the keys F-15 lists; the page shows the mode in force; with an organization policy that forbids it the choice is shown as not available"
+          "expected": "turning it on writes the seven settings F-15 lists; turning it off sets scripts.approval back to each and changes nothing else; the page shows the mode in force; where the policy file is not the person's to change, the mode is shown as set by the organization"
         },
         {
           "how": "Claude updates docs/reference.md (Scripts, Python environments, policy keys), SECURITY.md, README and examples/policy.yaml",
@@ -689,7 +689,7 @@
           "expected": "search_tools finds its tools by words; describe_tool shows each parameter with its role and kind; run_tool runs one with a workspace layer as input and the output is a workspace layer with provenance and the input's labels"
         },
         {
-          "how": "Claude adds e2e cases: a tool that tries the network, one that reads outside its inputs, one that writes outside its run folder, a program changed after install, output text longer than the cap, toolboxes.allow false",
+          "how": "Claude adds e2e cases: a tool that tries the network, one that reads outside its inputs, one that writes outside its run folder, a program changed after install, output text longer than the cap, allow_toolboxes false",
           "expected": "the three attempts fail under level A; the changed program is refused until installed again; long text is cut and marked untrusted; with the policy off no toolbox tool is offered"
         },
         {
@@ -752,7 +752,7 @@
     },
     {
       "id": "T-31",
-      "title": "A project has files: projects/<id>/files/ (F-17); the assistant lists, reads and writes text files there and runs a script from there (run_python with a script path), under policy projects.files; the project's page shows the files and opens the folder (REQ-41, D-19)",
+      "title": "A project has files: projects/<id>/files/ (F-17); the assistant lists, reads and writes text files there and runs a script from there (run_python with a script path), under policy allow_project_files; the project's page shows the files and opens the folder (REQ-41, D-19)",
       "session": "S10",
       "depends_on": [
         "T-27"
@@ -761,7 +761,7 @@
       "acceptance": [
         {
           "how": "Claude adds gateway e2e: write a script into the project's files, list it, read it, run it by path, change it, remove it; the same in a chat with no project",
-          "expected": "each works in a project and is audited; with no project the answer says to start the chat in a project; with projects.files false none is offered"
+          "expected": "each works in a project and is audited; with no project the answer says to start the chat in a project; with allow_project_files false none is offered"
         },
         {
           "how": "Claude adds path tests: absolute paths, .., .git, .columbus, Windows reserved names, names that differ only by case, a link, a file over the size cap, a binary file",
@@ -806,7 +806,7 @@
     },
     {
       "id": "T-33",
-      "title": "Sync in the app: Settings › Git servers (connect GitHub, GitHub Enterprise Server, Gitea or Forgejo with a token entered in the app and kept in the credential store); on a project's page: link to a repository (pick one or create a private one), Check for changes, Sync with an optional note, What changed, Needs a look, History, Disconnect; an arriving change to the project's shared settings is shown before it is used; policy sync.allow and sync.hosts (REQ-42, REQ-43, D-20)",
+      "title": "Sync in the app: Settings › Git servers (connect GitHub, GitHub Enterprise Server, Gitea or Forgejo with a token entered in the app and kept in the credential store); on a project's page: link to a repository (pick one or create a private one), Check for changes, Sync with an optional note, What changed, Needs a look, History, Disconnect; an arriving change to the project's shared settings is shown before it is used; policy allow_sync and sync.hosts (REQ-42, REQ-43, D-20)",
       "session": "S11",
       "depends_on": [
         "T-32",
@@ -819,7 +819,7 @@
           "expected": "each step works and the repository on the fake server holds what the page says; the token never appears in a file, a log or the page"
         },
         {
-          "how": "Claude tests the policy: sync.allow false, and sync.hosts naming another host",
+          "how": "Claude tests the policy: allow_sync false, and sync.hosts naming another host",
           "expected": "sync is not offered; connecting a host not on the list is refused with a message naming the key"
         },
         {

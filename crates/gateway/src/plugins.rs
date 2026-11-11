@@ -1503,7 +1503,7 @@ pub fn check_describe(m: &PluginManifest, d: &Value) -> Result<(), String> {
 pub fn describe_status(id: &str, s: &PluginStatus) -> String {
     if id.starts_with(columbus_shared::tools::ID_PREFIX) {
         match s {
-            PluginStatus::Unapproved { .. } => return format!("{id} is not installed; the person installs it from Workflows › Tools in the Columbus app"),
+            PluginStatus::Unapproved { .. } => return format!("{id} is not installed; the person installs it from Tools in the Columbus app"),
             PluginStatus::Changed { .. } => return format!("{id} changed since the person installed it, so it is off; propose it again with propose_tool and the person installs it again"),
             _ => {}
         }

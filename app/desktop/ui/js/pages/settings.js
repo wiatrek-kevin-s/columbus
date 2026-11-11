@@ -323,7 +323,7 @@ async function keyboard(body) {
   const rows = [
     [mac ? "⌘ K" : "Ctrl K", "Search chats, data, workflows and pages"],
     ["Enter", "Send a message (Shift Enter for a new line)"],
-    ["Esc", "Close a dialog, a menu, the search, this sheet, or the sheet beside the panel"],
+    ["Esc", "Close a dialog, a menu, the search, this sheet, or what is open in the panel on the right"],
     ["Tab / Shift Tab", "Move between controls; every control can be reached"],
   ];
   const tbody = h("tbody", {}, ...rows.map(([k, t]) => h("tr", {}, h("td", { class: "nowrap" }, h("span", { class: "kbd" }, k)), h("td", {}, t))));

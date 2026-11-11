@@ -7,7 +7,7 @@ query, then an export of the layer the query made. The test opens a new
 chat from the main window, sends a message, waits for the approval prompt
 the server raises for the export, allows it after its one-second guard,
 and checks the export landed and the reply was shown (its last result as
-a card, with how it was made beside the panel); then a script (declined,
+a card, with how it was made in the panel on the right); then a script (declined,
 its code in its own box) and a stop while a prompt waits. The chat is
 saved: it is listed and found by its content, and its transcript reads
 back. A debug build of the app reads the API key and the service
@@ -156,7 +156,7 @@ def main():
         d.save_screenshot(str(OUT / "chat-done.png"))
         logtext = d.find_element(By.ID, "log").text
         assert "Allowed once." in logtext, logtext
-        step("The turn's last result is a card: how it was made opens beside the panel")
+        step("The turn's last result is a card: how it was made opens in the panel on the right")
         made = d.find_element(By.CSS_SELECTOR, "#log .result")
         # textContent: WebKit's driver leaves clipped text out of an element's text.
         assert "tracts" in made.get_attribute("textContent"), made.get_attribute("textContent")
@@ -202,7 +202,7 @@ def main():
         summary = card.find_element(By.CSS_SELECTOR, "p.body").text
         assert "already approved" not in summary, summary
         assert [b.text for b in card.find_elements(By.CSS_SELECTOR, ".row button")] == ["Allow once", "Decline"], "scripts: once only"
-        step("The code can be read beside the panel, as text")
+        step("The code can be read in the panel on the right, as text")
         card.find_element(By.CSS_SELECTOR, ".read-beside").click()
         WebDriverWait(d, 10).until(lambda drv: len(drv.find_elements(By.CSS_SELECTOR, "#side pre .ln")) == 3)
         assert "# Columbus already approved this." in d.find_element(By.ID, "side").text
@@ -245,7 +245,7 @@ def main():
         assert "Code written by the AI (1 line)" in card.text, card.text
         d.find_element(By.ID, "stop").click()
         WebDriverWait(d, 20).until(lambda drv: "No longer waiting" in card.text)
-        # (Reading the code beside the panel stays; nothing that decides does.)
+        # (Reading the code in the panel on the right stays; nothing that decides does.)
         assert not [b for b in card.find_elements(By.TAG_NAME, "button") if "read-beside" not in (b.get_attribute("class") or "")], "no live buttons after Stop"
         step("The map in the panel on the right is the chat's own session's page")
         # (The panel opened by itself when the chat first made something.)
@@ -292,7 +292,7 @@ def main():
         assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
         d.save_screenshot(str(OUT / "chat-table.png"))
 
-        step("A new chat from this one: what was open beside the panel goes with the old chat")
+        step("A new chat from this one: what was open in the panel on the right goes with the old chat")
         made = cards[1].find_element(By.CSS_SELECTOR, ".result-made")
         d.execute_script("arguments[0].scrollIntoView({block: 'center'})", made)
         made.click()

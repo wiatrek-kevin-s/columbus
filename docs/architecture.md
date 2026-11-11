@@ -29,7 +29,7 @@ The parts of Columbus 0.14.0 and where they live. The [technical reference](refe
 | **Chat** | [`crates/chat`](../crates/chat) | The app's own chat with the Anthropic API |
 | **GIS engine** | [`workers/python`](../workers/python) | geopandas, pyogrio, shapely, pyproj, rasterio and DuckDB, as a worker the gateway drives |
 | **Desktop app** | [`app/desktop`](../app/desktop) | Tauri 2 (Rust) with a plain HTML/JS interface |
-| **Map page** | [`app/ui`](../app/ui) | MapLibre map and table, served by the gateway, shown behind each chat's panel in the app, or on its own in the browser |
+| **Map page** | [`app/ui`](../app/ui) | MapLibre map and table, served by the gateway, shown in the panel on the right of each chat in the app, or on its own in the browser |
 | **Skills** | [`skills`](../skills) | GIS skills for assistants, checked against the server's tool names |
 
 The rules live in the gateway; the app adds no rules of its own. The [technical reference](reference.md) has the details: what is enforced and how, confinement levels, connected servers, the context pack, tests and honest limits.

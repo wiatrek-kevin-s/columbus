@@ -1,6 +1,6 @@
 // Notes: your notes about your data (drafted from your databases) to
 // review, and the organization's context pack, read only. A note opens in
-// the sheet beside the panel. Notes are your own files: "Mark reviewed" is
+// the panel on the right. Notes are your own files: "Mark reviewed" is
 // your decision, and once reviewed your assistant can no longer change the
 // note.
 import { h, el, invoke, button, pageHead, tabs, showError, when, plural, emptyState, toast, openSide, closeSide } from "../core.js";
@@ -58,7 +58,7 @@ async function notes(body) {
     }
     left.append(h("div", { class: "bd flush" }, ul), h("div", { class: "bd" }, h("p", { class: "small muted wrap-any" }, `In ${data.dir}`)));
   };
-  // A note opens in the sheet beside the panel, where there is room to read.
+  // A note opens in the panel on the right, where there is room to read.
   const show = async (n) => {
     const bd = h("div", { class: "stack", id: "note-open" });
     // (Opening closes the sheet that was open first: this note is the open
@@ -129,7 +129,7 @@ async function pack(body) {
   const ul = h("ul", { class: "list", id: "pack-list" });
   for (const e of r.entries) {
     const li = h("li", { class: "clickable", tabindex: "0" }, h("div", { class: "text" }, h("b", {}, e.title || e.path), h("span", { class: "where mono" }, e.path)), e.kind ? h("span", { class: "chip" }, String(e.kind)) : null);
-    // An entry opens in the sheet beside the panel.
+    // An entry opens in the panel on the right.
     const go = async () => {
       const bd = h("div", { class: "stack", id: "pack-open" });
       for (const x of ul.children) x.classList.toggle("sel", x === li);
@@ -407,7 +407,7 @@ function proposals(body) {
             const plain = read.text.replace(/[\t\n\r]/g, " ");
             const unseen = shown(plain, Infinity) !== plain;
             shownText.replaceChildren(
-              ...(unseen ? [h("p", { class: "notice warn small" }, "This note has characters you can't see (control, zero-width or hidden characters). Open it in Notes or an editor and check it before you confirm it.")] : []),
+              ...(unseen ? [h("p", { class: "notice warn small" }, "This note has characters you can't see (control, zero-width or hidden characters). Open it in an editor and check it before you confirm it.")] : []),
               h("pre", { class: "box" }, read.text), h("div", { class: "row" }, yes));
             shownText.hidden = false;
           }, { title: "Read the note; if it's still right, confirm it as of today" });

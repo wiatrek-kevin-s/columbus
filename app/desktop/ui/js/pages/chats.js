@@ -1103,7 +1103,7 @@ function drawSub() {
 
 async function newChat(project = null, run = null) {
   const was = live.chatId;
-  // What the old chat had open beside the panel goes with it.
+  // What the old chat had open in the panel on the right goes with it.
   closeSide();
   live.project = project || null;
   live.run = run || null;

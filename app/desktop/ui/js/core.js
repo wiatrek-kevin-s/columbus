@@ -437,8 +437,9 @@ export function closeOutputs() {
   if (!o || o.hidden) return;
   sideOpened = false;
   closeSide();
+  setOutputsFull(false);
   o.hidden = true;
-  document.body.classList.remove("out-open", "out-full");
+  document.body.classList.remove("out-open");
   layoutChanged();
 }
 
@@ -447,7 +448,20 @@ export function setOutputsFull(full) {
   if (full) openOutputs();
   if (document.body.classList.contains("out-full") === !!full) return;
   document.body.classList.toggle("out-full", !!full);
+  // The button in the panel's head says what it does now.
+  const old = $("out-full");
+  if (old) {
+    const held = document.activeElement === old;
+    const fresh = fullButton();
+    old.replaceWith(fresh);
+    if (held) fresh.focus({ preventScroll: true });
+  }
   layoutChanged();
+}
+
+function fullButton() {
+  const full = document.body.classList.contains("out-full");
+  return iconButton(full ? "panel" : "expand", full ? "Show the chat again" : "Fill the window", () => { setOutputsFull(!document.body.classList.contains("out-full")); }, { id: "out-full", "aria-pressed": full ? "true" : "false" });
 }
 
 /** The panel's head: a title and the actions that go with what it shows.
@@ -461,9 +475,7 @@ export function setOutputsHead(title, actions = [], onClose = null) {
   head.hidden = !title;
   $("outputs").classList.toggle("detail-only", !title);
   if (!title) { head.replaceChildren(); return; }
-  const full = document.body.classList.contains("out-full");
-  head.replaceChildren(h("h2", { id: "out-title" }, title), ...actions.filter(Boolean),
-    iconButton(full ? "panel" : "expand", full ? "Show the chat again" : "Fill the window", () => { setOutputsFull(!document.body.classList.contains("out-full")); }, { id: "out-full", "aria-pressed": full ? "true" : "false" }),
+  head.replaceChildren(h("h2", { id: "out-title" }, title), ...actions.filter(Boolean), fullButton(),
     iconButton("close", "Close the panel", () => (onClose ? onClose() : closeOutputs()), { id: "out-close" }));
 }
 

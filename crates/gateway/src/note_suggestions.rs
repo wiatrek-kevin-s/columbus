@@ -1,6 +1,6 @@
 //! Suggested changes to the person's notes: what an assistant thinks a note
 //! should say, kept for the person to accept or dismiss whenever they get to
-//! it (Data › Notes › Proposals), without holding the assistant up.
+//! it (Documentation › Proposals), without holding the assistant up.
 //!
 //! - The assistant suggests with `suggest_note_changes`: the same changes
 //!   `update_notes` makes (title, summary, field aliases and notes, code
@@ -87,7 +87,7 @@ pub fn waiting(root: &Path) -> Vec<Suggestion> {
 pub fn keep(root: &Path, s: &Suggestion) -> Result<(), String> {
     if waiting(root).len() >= MAX_WAITING {
         return Err(format!(
-            "{MAX_WAITING} suggestions are already waiting for the person; ask them to look at Data › Notes › Proposals first"
+            "{MAX_WAITING} suggestions are already waiting for the person; ask them to look at Documentation › Proposals first"
         ));
     }
     let text = serde_json::to_vec_pretty(s).map_err(|e| e.to_string())?;
