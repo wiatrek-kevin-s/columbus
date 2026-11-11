@@ -593,21 +593,31 @@ def main():
         # R-104: the program's whole folder becomes readable by its tools.
         # The dialog says so, names the folder as soon as a program is
         # chosen, and a program that sits in a folder that is not its own
-        # (here a system folder) is refused before anything is asked.
+        # (here a folder the system keeps) is refused before anything is
+        # asked. The program is the tests' own, put straight into the folder
+        # for temporary files, which every program shares. (Not a system
+        # program such as /usr/bin/env: Columbus looks at where a program
+        # really is, and on some systems that one is a link to a file kept
+        # in a folder of its own.)
         assert "They can read every file in the program's folder, so the program must sit in a folder of its own" in text(d, "#tbx-own"), text(d, "#tbx-own")
         save = d.find_element(By.ID, "tbx-save")
-        fill("tbx_program", "/usr/bin/env")
-        chosen("tbx_program")
-        wait.until(lambda drv: "a folder of its own" in text(drv, "#tbx-reads"))
-        said = text(d, "#tbx-reads")
-        assert "/usr/bin/env is directly in a folder the system keeps" in said and "can read every file in the program's folder" in said, said
-        fill("tbx_tools", str(own / "tools.json"))
-        fill("tbx_id", "county-lines")
-        d.execute_script("arguments[0].scrollIntoView({block: 'center'})", save)
-        save.click()
-        wait.until(lambda drv: "a folder of its own" in text(drv, "#tbx-form-error"))
-        assert "is directly in a folder the system keeps" in text(d, "#tbx-form-error"), text(d, "#tbx-form-error")
-        assert not (root / "toolboxes" / "county-lines").exists(), "a program in a system folder was added"
+        loose = Path(os.path.realpath(tempfile.gettempdir())) / f"linetool-{os.getpid()}"
+        shutil.copy2(STANDIN, loose)
+        try:
+            fill("tbx_program", str(loose))
+            chosen("tbx_program")
+            wait.until(lambda drv: "a folder of its own" in text(drv, "#tbx-reads"))
+            said = text(d, "#tbx-reads")
+            assert f"{loose} is directly in a folder the system keeps" in said and "can read every file in the program's folder" in said, said
+            fill("tbx_tools", str(own / "tools.json"))
+            fill("tbx_id", "county-lines")
+            d.execute_script("arguments[0].scrollIntoView({block: 'center'})", save)
+            save.click()
+            wait.until(lambda drv: "a folder of its own" in text(drv, "#tbx-form-error"))
+            assert "is directly in a folder the system keeps" in text(d, "#tbx-form-error"), text(d, "#tbx-form-error")
+            assert not (root / "toolboxes" / "county-lines").exists(), "a program in a system folder was added"
+        finally:
+            loose.unlink(missing_ok=True)
         # In a folder of its own: the dialog names the folder its tools will read.
         fill("tbx_program", str(own / "linetool"))
         chosen("tbx_program")
