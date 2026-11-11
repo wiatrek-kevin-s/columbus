@@ -769,6 +769,208 @@ async fn paths_and_files_the_rules_refuse_stay_refused() {
     assert!(audit.contains("\"decision\":\"denied\""));
 }
 
+// Made up for these tests, and put together here so that no line of this
+// file looks like a credential: none is real.
+const PASSWORD: &str = "Wint3r2026";
+fn made_up_token() -> String {
+    format!("gh{}_{}", "p", "0123456789abcdefghijABCDEFGHIJ012345")
+}
+
+/// No secrets to the assistant (R-104): a file that looks like it holds a
+/// password, a key or a token is not read to it, and is not written by it.
+/// The answer names the file and the lines, never what is on them.
+#[tokio::test]
+async fn a_file_that_holds_a_secret_is_not_read_to_the_assistant_or_written_by_it() {
+    let env = setup(None, "allow_project_files: true\n");
+    let files_dir = env.files("review");
+    std::fs::create_dir_all(files_dir.join("notes")).unwrap();
+    let token = made_up_token();
+    // What the person (or a colleague, through sync) put there.
+    std::fs::write(
+        files_dir.join("notes").join("connect.md"),
+        format!("# How I connect\n\nuser: gis_reader\npassword: {PASSWORD}\n\ntoken {token}\n"),
+    )
+    .unwrap();
+    std::fs::write(
+        files_dir.join("notes").join("plain.md"),
+        "# Plain notes\nThe password is kept in the credential store.\n",
+    )
+    .unwrap();
+    let before = snapshot(&files_dir);
+    let c = start(&env, Some("review")).await;
+
+    let e = err(&files(&c, json!({"action": "read", "path": "notes/connect.md"})).await);
+    assert!(
+        e.contains("notes/connect.md is not read to you")
+            && e.contains("line 4 (a password written into the file)")
+            && e.contains("line 6 (a GitHub token)"),
+        "{e}"
+    );
+    assert!(
+        e.contains("take the secret out of the file") && e.contains("connection"),
+        "what to do: {e}"
+    );
+    assert!(
+        !e.contains(PASSWORD) && !e.contains(&token) && !e.contains("gis_reader"),
+        "nothing of the file's text: {e}"
+    );
+    // A file that only talks about passwords reads as before.
+    let r = ok(&files(&c, json!({"action": "read", "path": "notes/plain.md"})).await);
+    assert!(r["result"]["text"]
+        .as_str()
+        .unwrap()
+        .contains("credential store"));
+    // It is still listed (by name and size), and cannot be replaced or
+    // removed by the assistant: it has no hash of it to give.
+    let l = ok(&files(&c, json!({"action": "list"})).await);
+    assert!(l["result"]["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|f| f["path"] == "notes/connect.md"));
+    for args in [
+        json!({"action": "write", "path": "notes/connect.md", "text": "x\n"}),
+        json!({"action": "delete", "path": "notes/connect.md"}),
+    ] {
+        let e = err(&files(&c, args).await);
+        assert!(e.contains("read it first"), "{e}");
+    }
+
+    // The assistant writes no secret either: the text is refused, and the
+    // answer says which line, so it can leave it out.
+    for (path, text, line, what) in [
+        (
+            "scripts/load.py",
+            format!("import psycopg2\n\nconn = psycopg2.connect(host=\"db\", user=\"gis\", password=\"{PASSWORD}\")\n"),
+            "line 3",
+            "a password or key written into the file",
+        ),
+        (
+            "conf/db.yaml",
+            format!("host: db\nuser: gis\npassword: {PASSWORD}\n"),
+            "line 3",
+            "a password written into the file",
+        ),
+        (
+            "notes/api.md",
+            format!("call it with\n\n    curl -H 'Authorization: Bearer {token}' https://api.example.org\n"),
+            "line 3",
+            "a GitHub token",
+        ),
+    ] {
+        let e = err(&files(
+            &c,
+            json!({"action": "write", "path": path, "text": text}),
+        )
+        .await);
+        assert!(
+            e.contains("was not written") && e.contains(line) && e.contains(what),
+            "{path}: {e}"
+        );
+        assert!(!e.contains(PASSWORD) && !e.contains(&token), "{e}");
+    }
+    assert!(!files_dir.join("scripts").exists() && !files_dir.join("conf").exists());
+    // The way to keep a password out of a script is fine.
+    let fine = "import os\n\npassword = os.environ[\"PGPASSWORD\"]\n";
+    assert_eq!(
+        written(&c, "scripts/env.py", fine).await["result"]["status"],
+        "written"
+    );
+    std::fs::remove_dir_all(files_dir.join("scripts")).unwrap();
+    assert_eq!(snapshot(&files_dir), before, "nothing else changed");
+
+    c.cancel().await.unwrap();
+    let audit = env.audit();
+    assert!(
+        !audit.contains(PASSWORD) && !audit.contains(&token),
+        "the audit log holds no secret"
+    );
+    assert!(
+        audit.lines().any(|l| l.contains("\"decision\":\"denied\"")
+            && l.contains("project:review/notes/connect.md")
+            && l.contains("line 4")),
+        "{audit}"
+    );
+}
+
+/// The same for a script run by its path, and for the helper files copied
+/// beside it (R-104): a script with a secret in it is not run, and a helper
+/// with one is not copied.
+#[tokio::test]
+async fn a_script_that_holds_a_secret_is_not_run_and_such_a_helper_is_not_copied() {
+    let Some(py) = engine() else { return };
+    let env = setup(
+        Some(&py),
+        "allow_scripts: true\nscripts: { approval: none }\nallow_project_files: true\n",
+    );
+    let files_dir = env.files("review");
+    std::fs::create_dir_all(files_dir.join("scripts")).unwrap();
+    std::fs::create_dir_all(files_dir.join("jobs")).unwrap();
+    let token = made_up_token();
+    std::fs::write(
+        files_dir.join("scripts").join("load.py"),
+        format!("import os\n# sign in\nPASSWORD = \"{PASSWORD}\"\nprint(\"ran with\", PASSWORD)\n"),
+    )
+    .unwrap();
+    // A clean script, beside a helper that holds a token and one that does not.
+    std::fs::write(
+        files_dir.join("jobs").join("count.py"),
+        "import geom\ntry:\n    import keys\n    print(\"keys came along:\", keys.TOKEN)\nexcept ImportError:\n    print(\"no keys module here\")\nprint(geom.describe(2))\n",
+    )
+    .unwrap();
+    std::fs::write(files_dir.join("jobs").join("geom.py"), HELPER).unwrap();
+    std::fs::write(
+        files_dir.join("jobs").join("keys.py"),
+        format!("# not for anyone\nTOKEN = \"{token}\"\n"),
+    )
+    .unwrap();
+    let c = start(&env, Some("review")).await;
+
+    let e = err(&call(&c, "run_python", json!({"script": "scripts/load.py"})).await);
+    assert!(
+        e.contains("scripts/load.py is not run")
+            && e.contains("line 3 (a password or key written into the file")
+            && e.contains("take the secret out of the file"),
+        "{e}"
+    );
+    assert!(!e.contains(PASSWORD) && !e.contains("ran with"), "{e}");
+
+    let ran = call(&c, "run_python", json!({"script": "jobs/count.py"})).await;
+    if !can_confine() {
+        assert!(err(&ran).contains("confined"));
+    } else {
+        let ran = ok(&ran);
+        assert_eq!(ran["result"]["status"], "done", "{ran}");
+        let out = ran["result"]["stdout"].as_str().unwrap();
+        assert!(
+            out.contains("no keys module here") && out.contains("helper says 2 parcels"),
+            "{ran}"
+        );
+        let skipped = ran["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|k| k["id"] == "script.helper_skipped")
+            .unwrap_or_else(|| panic!("the skipped helper is named: {ran}"));
+        let said = skipped["message"].as_str().unwrap();
+        assert!(
+            said.contains("keys.py") && said.contains("line 2 (a GitHub token)"),
+            "{said}"
+        );
+        assert!(!ran.to_string().contains(&token), "{ran}");
+    }
+    c.cancel().await.unwrap();
+    let audit = env.audit();
+    assert!(!audit.contains(PASSWORD) && !audit.contains(&token));
+    assert!(
+        audit.lines().any(|l| l.contains("\"tool\":\"run_python\"")
+            && l.contains("\"decision\":\"denied\"")
+            && l.contains("scripts/load.py is not run")
+            && l.contains("line 3")),
+        "{audit}"
+    );
+}
+
 /// `columbus-project.yaml` at the top of the folder holds the project's
 /// shared settings (its name and its instructions for the assistant), and
 /// travels with the files when the project syncs (F-17). Instructions steer
