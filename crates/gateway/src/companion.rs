@@ -142,6 +142,15 @@ impl Companion {
             .report(&s.session, page, body, std::time::Instant::now())
     }
 
+    /// A window of this session is being opened (the app took a link for
+    /// its panel, or a page has just signed in): an assistant's change to
+    /// the map that finds none yet waits a little longer for it.
+    pub fn page_opening(&self) {
+        if let Ok(s) = self.st() {
+            s.map_views.opening(std::time::Instant::now());
+        }
+    }
+
     /// Whether organization policy lets the person turn on the basemap.
     pub fn basemap_allowed(&self) -> bool {
         self.st().is_ok_and(|s| s.policy().companion.basemap)

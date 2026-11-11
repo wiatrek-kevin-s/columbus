@@ -134,6 +134,10 @@ export interface Seen {
 }
 function partInView(m: maplibregl.Map): Seen | null {
   const c = m.getContainer();
+  // A map whose box has just changed (a panel shown again) has not drawn
+  // to its new size yet: where it looks is not known until it has.
+  const drawn = m.getCanvas();
+  if (Math.abs(drawn.clientWidth - c.clientWidth) > 1 || Math.abs(drawn.clientHeight - c.clientHeight) > 1) return null;
   const p = m.getPadding();
   const x0 = p.left || 0;
   const y0 = p.top || 0;

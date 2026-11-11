@@ -444,6 +444,23 @@ def main():
             "window.__TAURI__.core.invoke('chat_settings').then((s) => done(s.model), () => done(''));") == was)
         time.sleep(1.0)
         assert d.execute_script("return document.getElementById('chat-model').value") == other, "a started chat's box follows the default"
+
+        step("In a chat that has made nothing, the assistant pointing the map at a place opens the panel, and the map goes there")
+        assert not d.find_element(By.ID, "outputs").is_displayed(), "this chat has made nothing: its panel has never been open"
+        austin = [-97.9, 30.1, -97.6, 30.4]
+        asked = time.time()
+        ask("Show me Austin.", [
+            tool_use("t9", "map_view", {"zoom_to": austin}),
+            {"content": [{"type": "text", "text": "The map is on Austin."}], "stop_reason": "end_turn"},
+        ], "The map is on Austin.")
+        WebDriverWait(d, 10).until(lambda drv: drv.find_element(By.ID, "outputs").is_displayed())
+        # The map's page was not there when the assistant asked: it is
+        # opened for the change, takes it, and says where it looks now.
+        there = answer_to("t9")["result"]
+        assert there["status"] == "changed", (round(time.time() - asked, 1), there)
+        w, s, e, n = there["view"]["extent"]
+        assert w <= austin[0] and s <= austin[1] and e >= austin[2] and n >= austin[3], there
+        print(f"chat: a map that was not open followed in {time.time() - asked:.1f} s (with the reply)")
         print("desktop chat e2e: ok")
     finally:
         guard.stop(d, driver_proc)

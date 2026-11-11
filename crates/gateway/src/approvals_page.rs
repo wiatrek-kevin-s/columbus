@@ -801,6 +801,10 @@ async fn exchange(
         .lock()
         .expect("sessions")
         .insert(sid.clone(), (now, scope));
+    // A page has signed in: its map will be on show in a moment (`map_view`).
+    if let Some(c) = &s.companion {
+        c.page_opening();
+    }
     json_response(
         StatusCode::OK,
         json!({"token": sid, "idle_minutes": SESSION_IDLE.as_secs() / 60, "scope": scope.as_str()}),
@@ -1234,10 +1238,16 @@ async fn app_view(
         );
     }
     match s.view_token() {
-        Ok(t) => json_response(
-            StatusCode::OK,
-            json!({"url": format!("{}/embed#t={t}", s.origin())}),
-        ),
+        Ok(t) => {
+            // The app is opening its panel on this session's map (`map_view`).
+            if let Some(c) = &s.companion {
+                c.page_opening();
+            }
+            json_response(
+                StatusCode::OK,
+                json!({"url": format!("{}/embed#t={t}", s.origin())}),
+            )
+        }
         Err(e) => status(StatusCode::TOO_MANY_REQUESTS, &e),
     }
 }

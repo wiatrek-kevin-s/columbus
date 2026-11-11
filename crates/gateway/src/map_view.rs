@@ -14,7 +14,9 @@
 //! tool: the change waits here, the page takes it with the answer to its
 //! next report, applies it with its own switches and zoom, and reports the
 //! new view, which the tool returns. With no map open the tool says so and
-//! nothing is changed (a change no page took in time is dropped).
+//! nothing is changed (a change no page took in time is dropped). A window
+//! that is being opened while the change waits (the app opens its panel for
+//! one) gets a little longer to load and take it.
 //!
 //! Only what [`Report`] lists is taken from a page, and every part is
 //! checked: numbers in range, handles that name this session's own
@@ -45,6 +47,12 @@ use crate::server::{Gateway, Output};
 pub(crate) const FRESH: Duration = Duration::from_secs(5);
 /// How long a change waits for the page to take it and report the new view.
 const CHANGE_WAIT: Duration = Duration::from_secs(8);
+/// How long it waits in all while a window of the session is being opened
+/// and no page has taken it yet: a page needs a moment to load.
+const CHANGE_WAIT_OPENING: Duration = Duration::from_secs(20);
+/// A window counts as being opened for this long after its page was asked
+/// for, or until a new page reports.
+const OPENING: Duration = Duration::from_secs(15);
 /// A page not heard from for this long is forgotten.
 const FORGET: Duration = Duration::from_secs(120);
 /// Largest report taken, in bytes.
@@ -235,6 +243,9 @@ struct Inner {
     pages: HashMap<String, Page>,
     seq: u64,
     queued: Option<Queued>,
+    /// When a window of the session was last asked for (the app took a
+    /// link for its panel, or a page signed in) and has not reported yet.
+    opening: Option<Instant>,
 }
 
 impl Inner {
@@ -363,8 +374,13 @@ impl MapViews {
             let mut g = self.inner.lock().expect("map views");
             g.pages
                 .retain(|_, p| now.saturating_duration_since(p.last_seen) < FORGET);
-            if g.pages.len() >= MAX_PAGES && !g.pages.contains_key(page) {
+            let known = g.pages.contains_key(page);
+            if g.pages.len() >= MAX_PAGES && !known {
                 return Err("too many windows of this session are open".into());
+            }
+            if !known {
+                // The window that was being opened is here.
+                g.opening = None;
             }
             let p = g.pages.entry(page.to_string()).or_insert(Page {
                 first_seen: now,
@@ -397,6 +413,12 @@ impl MapViews {
         Ok(json!({ "command": command }))
     }
 
+    /// A window of the session is being opened (its page was asked for at
+    /// `at`): a change that finds no map yet waits a little longer for it.
+    pub fn opening(&self, at: Instant) {
+        self.inner.lock().expect("map views").opening = Some(at);
+    }
+
     /// What the person's map shows now; None when no map is open.
     pub fn current(&self, now: Instant) -> Option<Seen> {
         let g = self.inner.lock().expect("map views");
@@ -406,8 +428,9 @@ impl MapViews {
     }
 
     /// Hand a change to the person's map and wait, at most `wait`, for the
-    /// page to report the view it made.
-    pub async fn change(&self, change: Change, wait: Duration) -> Outcome {
+    /// page to report the view it made; at most `wait_opening` in all when
+    /// no page has taken it by then and a window is being opened.
+    pub async fn change(&self, change: Change, wait: Duration, wait_opening: Duration) -> Outcome {
         let _one = self.one.lock().await;
         let seq = {
             let mut g = self.inner.lock().expect("map views");
@@ -420,7 +443,9 @@ impl MapViews {
             });
             seq
         };
-        let deadline = tokio::time::Instant::now() + wait;
+        let start = tokio::time::Instant::now();
+        let mut deadline = start + wait;
+        let last = start + wait.max(wait_opening);
         loop {
             // Listening before looking: a report that comes between the
             // look and the wait still wakes this.
@@ -441,6 +466,18 @@ impl MapViews {
                 }
             }
             if tokio::time::timeout_at(deadline, news).await.is_err() {
+                // Out of time. A window being opened right now (the app
+                // opens its panel when the assistant changes the view) has
+                // had no chance to take the change yet: wait for it.
+                let opening = {
+                    let g = self.inner.lock().expect("map views");
+                    g.queued.as_ref().is_some_and(|q| q.taken_by.is_none())
+                        && g.opening.is_some_and(|t| t.elapsed() < OPENING)
+                };
+                if opening && deadline < last {
+                    deadline = last;
+                    continue;
+                }
                 break;
             }
         }
@@ -718,7 +755,7 @@ impl Gateway {
             Some(change) => {
                 let asked = change.to_json(0);
                 let asked = json!({"show": asked["show"], "hide": asked["hide"], "active": asked["active"], "zoom_to": asked["zoom_to"]});
-                match views.change(change, CHANGE_WAIT).await {
+                match views.change(change, CHANGE_WAIT, CHANGE_WAIT_OPENING).await {
                     Outcome::Changed { seen, not_done } => {
                         rec.reason = Some(if not_done.is_empty() {
                             "changed the person's map view".into()
@@ -756,7 +793,7 @@ impl Gateway {
                         let mut r = json!({
                             "status": "not_confirmed",
                             "asked": asked,
-                            "message": format!("The person's map took the change, but did not report the new view within {} seconds. Call map_view with no arguments to read what it shows now.", CHANGE_WAIT.as_secs()),
+                            "message": "The person's map took the change, but did not report the new view in time. Call map_view with no arguments to read what it shows now.",
                         });
                         if let Some(seen) = seen {
                             r["view"] = self.map_view_json(&seen, &mut rec).await;
@@ -984,7 +1021,10 @@ mod tests {
         let asking = {
             let v = v.clone();
             let change = change.clone();
-            tokio::spawn(async move { v.change(change, Duration::from_secs(5)).await })
+            tokio::spawn(async move {
+                v.change(change, Duration::from_secs(5), Duration::from_secs(5))
+                    .await
+            })
         };
         tokio::time::sleep(Duration::from_millis(50)).await;
         // The page the person used last gets it; another window does not.
@@ -1049,6 +1089,7 @@ mod tests {
                         ..Default::default()
                     },
                     Duration::from_secs(5),
+                    Duration::from_secs(5),
                 )
                 .await
             })
@@ -1083,6 +1124,7 @@ mod tests {
                         ..Default::default()
                     },
                     Duration::from_millis(300),
+                    Duration::from_millis(300),
                 )
                 .await
             })
@@ -1112,6 +1154,7 @@ mod tests {
                         ..Default::default()
                     },
                     Duration::from_millis(400),
+                    Duration::from_millis(400),
                 )
                 .await
             })
@@ -1135,6 +1178,7 @@ mod tests {
                         ..Default::default()
                     },
                     Duration::from_millis(400),
+                    Duration::from_millis(400),
                 )
                 .await
             })
@@ -1145,6 +1189,77 @@ mod tests {
             .unwrap();
         assert_eq!(got["command"]["seq"], 2);
         asking.abort();
+    }
+
+    #[tokio::test]
+    async fn a_window_being_opened_gets_longer_to_take_a_change() {
+        let change = || Change {
+            zoom_to: Some(Zoom::Extent([-98.0, 30.0, -97.0, 31.0])),
+            ..Default::default()
+        };
+        let v = std::sync::Arc::new(MapViews::default());
+        // The app asked for its panel's page just now (it opens the panel
+        // when the assistant changes the view): no page has reported yet.
+        v.opening(Instant::now());
+        let asking = {
+            let v = v.clone();
+            tokio::spawn(async move {
+                v.change(change(), Duration::from_millis(300), Duration::from_secs(4))
+                    .await
+            })
+        };
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        assert!(
+            !asking.is_finished(),
+            "past the usual wait, it waits for the window being opened"
+        );
+        // The page has loaded: its first report gets the change.
+        let got = v
+            .report(S, "p", &report(true, 0, 0, &[]), Instant::now())
+            .unwrap();
+        assert_eq!(got["command"]["seq"], 1);
+        v.report(S, "p", &report(true, 0, 1, &[]), Instant::now())
+            .unwrap();
+        assert!(matches!(asking.await.unwrap(), Outcome::Changed { .. }));
+
+        // A window that never loads: the change is dropped at the longer wait.
+        let v = MapViews::default();
+        v.opening(Instant::now());
+        let t = Instant::now();
+        let out = v
+            .change(
+                change(),
+                Duration::from_millis(200),
+                Duration::from_millis(700),
+            )
+            .await;
+        assert_eq!(out, Outcome::NotOpen);
+        assert!(
+            t.elapsed() >= Duration::from_millis(650) && t.elapsed() < Duration::from_secs(3),
+            "{:?}",
+            t.elapsed()
+        );
+        // A window asked for long ago is not being opened any more, and
+        // one whose page has reported (here: not on show) is not either.
+        let v = MapViews::default();
+        if let Some(long_ago) = Instant::now().checked_sub(OPENING + Duration::from_secs(1)) {
+            v.opening(long_ago);
+            let t = Instant::now();
+            let out = v
+                .change(change(), Duration::from_millis(200), Duration::from_secs(4))
+                .await;
+            assert_eq!(out, Outcome::NotOpen);
+            assert!(t.elapsed() < Duration::from_secs(2), "{:?}", t.elapsed());
+        }
+        v.opening(Instant::now());
+        let hidden = json!({"showing": false}).to_string();
+        v.report(S, "p", hidden.as_bytes(), Instant::now()).unwrap();
+        let t = Instant::now();
+        let out = v
+            .change(change(), Duration::from_millis(200), Duration::from_secs(4))
+            .await;
+        assert_eq!(out, Outcome::NotOpen);
+        assert!(t.elapsed() < Duration::from_secs(2), "{:?}", t.elapsed());
     }
 
     #[test]

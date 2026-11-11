@@ -820,6 +820,52 @@ async fn the_assistant_reads_and_steers_the_persons_map() {
         "none of those was taken"
     );
 
+    // ---- A window that is being opened while a change waits (the app
+    // opens its panel when the assistant changes the view, and the page
+    // takes a moment to load): the change waits for it, past the usual wait.
+    let t = Instant::now();
+    let (v, _page2) = tokio::join!(
+        call(&client, "map_view", json!({"show": [all], "zoom_to": all})),
+        async {
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            // The window is asked for and its page signs in...
+            let page2 = Page::open(&env, &session).await;
+            // ...and is slow to draw its map.
+            tokio::time::sleep(Duration::from_millis(4500)).await;
+            let fresh = showing(
+                [-98.5, 29.5, -97.0, 31.0],
+                8.0,
+                &[],
+                None,
+                None,
+                false,
+                false,
+                0,
+            );
+            let command = page2.until_command(&fresh).await;
+            assert_eq!(command["zoom_to"], all.as_str());
+            let after = showing(
+                [-97.82, 30.24, -97.7, 30.28],
+                13.0,
+                &[&all],
+                Some(&all),
+                None,
+                false,
+                false,
+                command["seq"].as_u64().unwrap(),
+            );
+            page2.report(&after).await;
+            page2
+        }
+    );
+    assert_eq!(v["result"]["status"], "changed", "{v}");
+    assert_eq!(v["result"]["view"]["layers_on"], json!([all]), "{v}");
+    assert!(
+        t.elapsed() > Duration::from_secs(9) && t.elapsed() < Duration::from_secs(19),
+        "{:?}",
+        t.elapsed()
+    );
+
     // ---- Every call is in the audit log; the page's reports are not.
     let lines = audit_lines(&env, "map_view");
     let allowed = lines.iter().filter(|l| l["decision"] == "allowed").count();
