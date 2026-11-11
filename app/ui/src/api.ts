@@ -5,6 +5,8 @@
 // memory (never a cookie or browser storage) and sent as a Bearer header.
 // The launch token is removed from the address bar straight away.
 
+import type { ViewReport } from "./view";
+
 export type Severity = "fail" | "warn" | "info";
 
 export interface Check {
@@ -234,6 +236,15 @@ export const api = {
   rows: (handle: string, offset: number, limit: number) =>
     call<Rows>(`/api/rows?handle=${q(handle)}&offset=${offset}&limit=${limit}`),
   provenance: (id: string) => call<Record<string, unknown>>(`/api/provenance/${encodeURIComponent(id)}`),
+  /** What the map shows, for the assistant's `map_view`; the answer carries
+   * the change the assistant asked for, if one waits (checked by
+   * `parseCommand`). */
+  view: (report: ViewReport) =>
+    call<{ command: unknown }>("/api/view", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(report),
+    }),
   approvals: () => call<{ session: string; pending: Approval[]; recent: Approval[] }>("/api/approvals"),
   decide: (id: string, decision: "allow_once" | "always_this_session" | "decline") =>
     call<{ id: string; state: string }>(`/api/approvals/${encodeURIComponent(id)}`, {

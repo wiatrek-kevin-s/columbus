@@ -7,6 +7,10 @@
 // - `parseInset`, `namedOutput` and `layout` (src/layout.ts): the app's
 //   inset, the result it names with a request for the table, and where the
 //   sheets go.
+// - `normalExtent`, `viewReport`, `parseCommand` and `planCommand`
+//   (src/view.ts): what the page tells the server its map shows (for the
+//   assistant's `map_view`), with nothing about web layers in it, and the
+//   changes it takes back.
 // - The colours the map is given in code agree with the page's tokens in
 //   src/styles.css.
 //
@@ -28,6 +32,7 @@ if (!process.features.typescript) {
 const { BASEMAP_URL, MAP_TONES, blankStyle, isStyle, restyle } = await import("../src/basemap.ts");
 const { GAP, NO_INSET, layout, namedOutput, parseInset } = await import("../src/layout.ts");
 const { LAYER_TONES } = await import("../src/theme.ts");
+const { MAX_LAYERS, normalExtent, parseCommand, planCommand, viewReport } = await import("../src/view.ts");
 
 const OFM = "https://tiles.openfreemap.org";
 const stops = (a, b) => ({ base: 1.4, stops: [[8, a], [20, b]] });
@@ -370,6 +375,168 @@ test("layout, on its own: the page's panel beside the map, wider while deciding,
   assert.deepEqual(narrow.inset, { left: 0, top: GAP + 368 + GAP, right: 0, bottom: 0 });
   // Not connected yet: no panel, nothing covered.
   assert.deepEqual(layout({ width: 1360, height: 860, covered: NO_INSET, tableOpen: false }), { inset: NO_INSET, panel: null, table: 0, pad: NO_INSET });
+});
+
+test("normalExtent: west within -180 to 180, east past 180 across the meridian, null for no box", () => {
+  assert.deepEqual(normalExtent(-97.9, 30.1, -97.6, 30.4), [-97.9, 30.1, -97.6, 30.4]);
+  // As the map gives a view that crosses the 180th meridian, either way round.
+  assert.deepEqual(normalExtent(170, 50, 190, 54), [170, 50, 190, 54]);
+  assert.deepEqual(normalExtent(-190, 50, -170, 54), [170, 50, 190, 54]);
+  assert.deepEqual(normalExtent(530, 50, 550, 54), [170, 50, 190, 54]);
+  assert.deepEqual(normalExtent(180, 0, 185, 1), [-180, 0, -175, 1]);
+  // More than a whole world in view: all of it, once.
+  assert.deepEqual(normalExtent(-400, -80, 400, 80), [-180, -80, 180, 80]);
+  // Latitudes within the poles; numbers short enough to send.
+  assert.deepEqual(normalExtent(-10, -95, 10, 95), [-10, -90, 10, 90]);
+  assert.deepEqual(normalExtent(-97.123456789123, 30, -97, 31), [-97.1234568, 30, -97, 31]);
+  // No box: a map without a size, or numbers that are not.
+  for (const bad of [[0, 0, 0, 1], [0, 1, 1, 1], [1, 0, 0, 1], [0, 1, 1, 0], [NaN, 0, 1, 1], [0, 0, Infinity, 1]]) {
+    assert.equal(normalExtent(...bad), null, JSON.stringify(bad));
+  }
+});
+
+const SESSION_OUTPUTS = [
+  { handle: "ws://s/results/buffer.gpkg", kind: "layer", viewable: true },
+  { handle: "ws://s/results/roads.gpkg", kind: "layer", viewable: true },
+  { handle: "ws://s/results/counts.csv", kind: "table", viewable: true },
+  { handle: "ws://s/results/elevation.tif", kind: "raster", viewable: false },
+  { handle: "ws://s/external/theirs.gpkg", kind: "layer", viewable: false },
+];
+
+test("viewReport: the session's own layers that are on, the active output, the selection; nothing else", () => {
+  const seen = { extent: [-97.9, 30.1, -97.6, 30.4], zoom: 11.4567 };
+  const base = {
+    seen,
+    idleMs: 1200.4,
+    applied: 3,
+    notDone: [],
+    outputs: SESSION_OUTPUTS,
+    onMap: ["ws://s/results/roads.gpkg", "ws://s/results/buffer.gpkg"],
+    failed: () => false,
+    active: "ws://s/results/roads.gpkg",
+    selected: { handle: "ws://s/results/roads.gpkg", feature: 2 },
+    tableOpen: true,
+    streets: false,
+  };
+  assert.deepEqual(viewReport(base), {
+    showing: true,
+    idle_ms: 1200,
+    applied: 3,
+    not_done: [],
+    view: {
+      extent: [-97.9, 30.1, -97.6, 30.4],
+      zoom: 11.46,
+      // The list's order (its top row first), not the order they were turned on.
+      layers: ["ws://s/results/buffer.gpkg", "ws://s/results/roads.gpkg"],
+      active: "ws://s/results/roads.gpkg",
+      selected: { layer: "ws://s/results/roads.gpkg", feature: 2 },
+      table: true,
+      streets: false,
+    },
+  });
+  // Exactly these keys: the server refuses a report with any other, so
+  // nothing about web layers (or anything else) can be added by mistake.
+  const r = viewReport(base);
+  assert.deepEqual(Object.keys(r).sort(), ["applied", "idle_ms", "not_done", "showing", "view"]);
+  assert.deepEqual(Object.keys(r.view).sort(), ["active", "extent", "layers", "selected", "streets", "table", "zoom"]);
+  assert.deepEqual(Object.keys(r.view.selected).sort(), ["feature", "layer"]);
+  // On the map means drawn: not one whose data did not load, a table, a
+  // file the page does not open, or a name that is not one of the outputs
+  // (a web layer's id, say).
+  const odd = viewReport({
+    ...base,
+    onMap: [...SESSION_OUTPUTS.map((o) => o.handle), "county-imagery", "https://imagery.example.gov/wmts"],
+    failed: (h) => h.endsWith("buffer.gpkg"),
+    active: "county-imagery",
+    selected: { handle: "https://imagery.example.gov/wmts", feature: 1 },
+  });
+  assert.deepEqual(odd.view.layers, ["ws://s/results/roads.gpkg"]);
+  assert.equal(odd.view.active, null);
+  assert.equal(odd.view.selected, null);
+  assert.ok(!JSON.stringify(odd).includes("imagery"), JSON.stringify(odd));
+  // A table can be the active output, and a row of it the selection.
+  const table = viewReport({ ...base, active: "ws://s/results/counts.csv", selected: { handle: "ws://s/results/counts.csv", feature: 0 } });
+  assert.equal(table.view.active, "ws://s/results/counts.csv");
+  assert.deepEqual(table.view.selected, { layer: "ws://s/results/counts.csv", feature: 0 });
+  for (const feature of [-1, 1.5, NaN, "2"]) {
+    assert.equal(viewReport({ ...base, selected: { handle: "ws://s/results/roads.gpkg", feature } }).view.selected, null, String(feature));
+  }
+  // Not on show (the window hidden, the map without a size): no view at all.
+  assert.deepEqual(viewReport({ ...base, seen: null, notDone: ["zoom_to"] }), { showing: false, idle_ms: 1200, applied: 3, not_done: ["zoom_to"] });
+  // No more layers than the server takes.
+  const many = Array.from({ length: MAX_LAYERS + 20 }, (_, i) => ({ handle: `ws://s/results/l${i}.gpkg`, kind: "layer", viewable: true }));
+  assert.equal(viewReport({ ...base, outputs: many, onMap: many.map((o) => o.handle) }).view.layers.length, MAX_LAYERS);
+});
+
+test("parseCommand: a number, handles, a handle or an extent; anything else is no change", () => {
+  assert.deepEqual(
+    parseCommand({ seq: 4, show: ["ws://s/results/roads.gpkg"], hide: [], active: null, zoom_to: "ws://s/results/roads.gpkg" }),
+    { seq: 4, show: ["ws://s/results/roads.gpkg"], hide: [], active: null, zoom_to: "ws://s/results/roads.gpkg" },
+  );
+  assert.deepEqual(parseCommand({ seq: 1, zoom_to: [-98, 30, -97, 31] }), { seq: 1, show: [], hide: [], active: null, zoom_to: [-98, 30, -97, 31] });
+  assert.deepEqual(parseCommand({ seq: 2, active: "ws://s/results/counts.csv" }), { seq: 2, show: [], hide: [], active: "ws://s/results/counts.csv", zoom_to: null });
+  assert.deepEqual(parseCommand({ seq: 3, zoom_to: [170, 50, 190, 54] }).zoom_to, [170, 50, 190, 54]);
+  for (const bad of [
+    null,
+    undefined,
+    "zoom",
+    [],
+    {},
+    { seq: 0 },
+    { seq: 1.5 },
+    { seq: "1" },
+    { seq: 1, show: "ws://s/results/roads.gpkg" },
+    { seq: 1, show: [7] },
+    { seq: 1, hide: [""] },
+    { seq: 1, show: Array.from({ length: 51 }, (_, i) => `ws://s/results/${i}.gpkg`) },
+    { seq: 1, active: 7 },
+    { seq: 1, active: "x".repeat(201) },
+    { seq: 1, zoom_to: [-98, 30, -97] },
+    { seq: 1, zoom_to: [-97, 30, -98, 31] },
+    { seq: 1, zoom_to: [-98, 31, -97, 30] },
+    { seq: 1, zoom_to: [-98, 30, -97, 91] },
+    { seq: 1, zoom_to: [-98, 30, 300, 31] },
+    { seq: 1, zoom_to: [-98, 30, -97, "31"] },
+    { seq: 1, zoom_to: { west: -98 } },
+    { seq: 1, zoom_to: 7 },
+  ]) {
+    assert.equal(parseCommand(bad), null, JSON.stringify(bad));
+  }
+});
+
+test("planCommand: only the session's own outputs the page lists are changed", () => {
+  const roads = "ws://s/results/roads.gpkg";
+  const buffer = "ws://s/results/buffer.gpkg";
+  const cmd = (c) => parseCommand({ seq: 1, ...c });
+  assert.deepEqual(planCommand(cmd({ show: [roads], hide: [buffer], active: "ws://s/results/counts.csv", zoom_to: [-98, 30, -97, 31] }), SESSION_OUTPUTS), {
+    ready: true,
+    show: [roads],
+    hide: [buffer],
+    active: "ws://s/results/counts.csv",
+    zoomLayer: null,
+    zoomExtent: [-98, 30, -97, 31],
+    notDone: [],
+  });
+  // Zooming to a layer turns it on.
+  const z = planCommand(cmd({ zoom_to: roads }), SESSION_OUTPUTS);
+  assert.deepEqual([z.show, z.zoomLayer, z.ready], [[roads], roads, true]);
+  // Shown and hidden at once (the server refuses that): it stays on.
+  assert.deepEqual(planCommand(cmd({ hide: [roads], zoom_to: roads }), SESSION_OUTPUTS).hide, []);
+  // A result not listed yet: not ready; applied late, that part is left out
+  // and said. A table, a raster, a file the page does not open and a name
+  // that is no output at all are no layers to show.
+  for (const name of ["ws://s/results/new.gpkg", "ws://s/results/counts.csv", "ws://s/results/elevation.tif", "ws://s/external/theirs.gpkg", "county-imagery"]) {
+    const p = planCommand(cmd({ show: [roads, name], hide: [name], active: name === "ws://s/results/counts.csv" ? null : name, zoom_to: name }), SESSION_OUTPUTS);
+    assert.equal(p.ready, false, name);
+    assert.deepEqual(p.show, [roads], name);
+    assert.deepEqual(p.hide, [], name);
+    assert.equal(p.active, null, name);
+    assert.equal(p.zoomLayer, null, name);
+    assert.deepEqual(p.notDone, name === "ws://s/results/counts.csv" ? ["show", "hide", "zoom_to"] : ["show", "hide", "active", "zoom_to"], name);
+  }
+  // Listed a moment later: ready.
+  const later = [...SESSION_OUTPUTS, { handle: "ws://s/results/new.gpkg", kind: "layer", viewable: true }];
+  assert.equal(planCommand(cmd({ zoom_to: "ws://s/results/new.gpkg" }), later).ready, true);
 });
 
 test("the map's colours in code are the page's tokens in styles.css", () => {

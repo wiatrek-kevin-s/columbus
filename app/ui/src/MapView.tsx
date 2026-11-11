@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type MutableRefObject, type ReactNode } from "react";
 import * as maplibregl from "maplibre-gl";
 import type {
   CircleLayerSpecification,
@@ -18,6 +18,7 @@ import { BASEMAP_URL, blankStyle, isStyle, restyle } from "./basemap";
 import type { Inset } from "./layout";
 import { formatLength, lineMetres } from "./measure";
 import { LAYER_TONES, type Theme } from "./theme";
+import { normalExtent, type Extent } from "./view";
 
 export interface MapLayer {
   handle: string;
@@ -124,6 +125,30 @@ function eachPosition(g: GeoJSON.Geometry | null | undefined, out: LngLat[]): Ln
   return out;
 }
 
+/** Where the map looks: the part of it nothing covers (its padding left
+ * out), as west, south, east, north, and its zoom. Null while the map has
+ * no size (its window or panel is not on show). */
+export interface Seen {
+  extent: Extent;
+  zoom: number;
+}
+function partInView(m: maplibregl.Map): Seen | null {
+  const c = m.getContainer();
+  const p = m.getPadding();
+  const x0 = p.left || 0;
+  const y0 = p.top || 0;
+  const x1 = c.clientWidth - (p.right || 0);
+  const y1 = c.clientHeight - (p.bottom || 0);
+  if (!(x1 - x0 >= 8 && y1 - y0 >= 8)) return null;
+  // All four corners: a turned map's view is not a box of its own.
+  const at = ([x, y]: [number, number]) => m.unproject([x, y]);
+  const corners = [at([x0, y0]), at([x1, y0]), at([x1, y1]), at([x0, y1])];
+  const lngs = corners.map((q) => q.lng);
+  const lats = corners.map((q) => q.lat);
+  const extent = normalExtent(Math.min(...lngs), Math.min(...lats), Math.max(...lngs), Math.max(...lats));
+  return extent ? { extent, zoom: m.getZoom() } : null;
+}
+
 const MEASURE = "measure";
 const EMPTY: GeoJSON.FeatureCollection = { type: "FeatureCollection", features: [] };
 
@@ -182,6 +207,15 @@ export function MapView(props: {
   /** A web layer to zoom to; `n` changes for each click. */
   webFit?: { id: string; n: number } | null;
   onWebState?: (id: string, s: WebState) => void;
+  /** An extent to zoom to (west, south, east, north), once per `key`. */
+  viewFit?: { extent: Extent; key: string } | null;
+  /** A zoom asked for with `fitTo` or `viewFit` has ended (the map has
+   * stopped): its `fitTo`, or its `key`. */
+  onFitted?: (key: string) => void;
+  /** The map moved (it has stopped). */
+  onMoved?: () => void;
+  /** Filled in by the map: where it looks now (see `Seen`). */
+  seenNow?: MutableRefObject<(() => Seen | null) | null>;
 }) {
   const box = useRef<HTMLDivElement>(null);
   const map = useRef<maplibregl.Map | null>(null);
@@ -207,6 +241,10 @@ export function MapView(props: {
   onWebState.current = props.onWebState;
   const onMeasuring = useRef(props.onMeasuring);
   onMeasuring.current = props.onMeasuring;
+  const onFitted = useRef(props.onFitted);
+  onFitted.current = props.onFitted;
+  const onMoved = useRef(props.onMoved);
+  onMoved.current = props.onMoved;
   const padding = useRef(props.padding);
   padding.current = props.padding;
   const layersNow = useRef(props.layers);
@@ -218,6 +256,16 @@ export function MapView(props: {
   const fit = (m: maplibregl.Map, bounds: [[number, number], [number, number]], options: maplibregl.FitBoundsOptions) => {
     again.current = () => m.fitBounds(bounds, options);
     again.current();
+  };
+  // The same, and word when the map has stopped there. Asked after the
+  // zoom starts, not before: starting one ends the move under way, and
+  // that end is not this zoom's. A zoom that is a jump (reduced motion) has
+  // ended by the time it returns.
+  const fitThen = (m: maplibregl.Map, bounds: [[number, number], [number, number]], options: maplibregl.FitBoundsOptions, key: string) => {
+    fit(m, bounds, options);
+    const done = () => onFitted.current?.(key);
+    if (m.isMoving()) m.once("moveend", done);
+    else done();
   };
   // The padding the map is to take, and whether it has had one yet.
   const padWanted = useRef<Inset | null>(null);
@@ -290,7 +338,9 @@ export function MapView(props: {
       const b = m.getBounds();
       if (box.current) box.current.dataset.view = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()].join(",");
       scheduleFeatures();
+      onMoved.current?.();
     });
+    if (props.seenNow) props.seenNow.current = () => partInView(m);
     // A web layer's first tile: it draws.
     m.on("sourcedata", (e: maplibregl.MapSourceDataEvent) => {
       if (!isWeb(e.sourceId) || !e.tile || drawnOnce.current.has(e.sourceId)) return;
@@ -357,6 +407,7 @@ export function MapView(props: {
       window.clearTimeout(refreshTimer.current);
       m.remove();
       map.current = null;
+      if (props.seenNow) props.seenNow.current = null;
       // Nothing of this map is left for another (React makes two in
       // development).
       again.current = null;
@@ -727,17 +778,45 @@ export function MapView(props: {
     const b = l?.data.bbox;
     if (m && b) {
       fitted.current = props.fitTo;
-      fit(
+      fitThen(
         m,
         [
           [b[0], b[1]],
           [b[2], b[3]],
         ],
         { padding: 40, maxZoom: 16, duration: 600 },
+        props.fitTo,
       );
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [props.fitTo, props.layers]);
+
+  // Zoom to an extent when asked (the assistant's `map_view`), once per
+  // key. Written after the zoom to a layer on purpose: when both are asked
+  // for together, this one is the later and stands.
+  const viewFitted = useRef<string | null>(null);
+  useEffect(() => {
+    const m = map.current;
+    const f = props.viewFit;
+    if (!m || !f || viewFitted.current === f.key) return;
+    viewFitted.current = f.key;
+    const [w, s, e, n] = f.extent;
+    // Within the map's own world; an extent wholly past its edge is
+    // nothing to zoom to.
+    const south = Math.min(85, Math.max(-85, s));
+    const north = Math.min(85, Math.max(-85, n));
+    if (!(south < north)) return;
+    fitThen(
+      m,
+      [
+        [w, south],
+        [e, north],
+      ],
+      { padding: 24, maxZoom: 19, duration: 500 },
+      f.key,
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [props.viewFit]);
 
   // Highlight the selected feature.
   const last = useRef<{ source: string; id: number } | null>(null);

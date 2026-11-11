@@ -13,6 +13,16 @@ within 1%, at the foot of the part in view; Escape clears it. Once the
 person has moved the map, closing the table keeps the middle of their view
 in the middle and does not zoom. Screenshots go to e2e/out/.
 
+Then the assistant and the map (T-30, REQ-40), with the same session: after
+the person pans and picks a feature on the map, `map_view` returns the view
+the page shows (the part of the map no sheet covers), the layers that are
+on, the active one and the picked feature with its attributes; asked to
+hide a layer, then to show it, make another active and zoom to it, the page
+follows within a few seconds and the tool returns the new view; a zoom to
+an extent fits it; `map_snapshot` with `extent: "view"` draws that same
+view; with two windows open the one used last is read; and with no window
+open the tool says so and changes nothing.
+
 First it runs `unit.mjs` with Node: the checks of the map's pure parts,
 which need no browser (the street background's colours, the app's inset,
 where the sheets go).
@@ -126,6 +136,243 @@ def in_view(page):
     return lon(left), lat(bottom), lon(right), lat(top)
 
 
+def assistant_and_the_map(mcp, ctx, page, port, root, routes, problems):
+    """The assistant reads and steers the person's map (T-30, REQ-40)."""
+
+    def read():
+        return mcp.tool("map_view", {})["result"]
+
+    def until(what, ok, t=8):
+        """`map_view`'s answer once it is as expected (the page reports
+        within a second of a change)."""
+        end = time.time() + t
+        while True:
+            r = read()
+            if ok(r):
+                return r
+            assert time.time() < end, f"{what}: {json.dumps(r)[:1500]}"
+            page.wait_for_timeout(250)
+
+    def shown(where):
+        """What the page shows, worked out here from the sheets: the part
+        of the map no sheet covers, less the 16 px the page keeps clear
+        beside its own panel (west, south, east, north)."""
+        w, s, e, n = view(where)
+        r = where.locator(".map canvas").bounding_box()
+        left, top, right, bottom = clear(where)
+        left += 16
+
+        def lon(x):
+            return w + (x - r["x"]) / r["width"] * (e - w)
+
+        def lat(y):
+            return unmerc(merc(n) - (y - r["y"]) / r["height"] * (merc(n) - merc(s)))
+
+        return lon(left), lat(bottom), lon(right), lat(top)
+
+    def same_view(got, where, what):
+        """The extent the tool returned is the one the page shows, to
+        within three pixels."""
+        want = shown(where)
+        r = where.locator(".map canvas").bounding_box()
+        full = view(where)
+        px = max((full[2] - full[0]) / r["width"], (full[3] - full[1]) / r["height"])
+        for a, b in zip(got, want):
+            assert abs(a - b) < 3 * px, f"{what}: the tool says {got}, the page shows {want} (a pixel is {px})"
+
+    def name_of(handle):
+        return handle.rsplit("/", 1)[1]
+
+    # ---- Reading. The view, as the earlier steps left it: the person's
+    # own zoom on route 2, row 3 selected in the table (now closed).
+    r = read()
+    assert r["status"] == "open", r
+    v = r["view"]
+    same_view(v["extent"], page, "the view read")
+    assert v["crs"] == "EPSG:4326" and v["layers_on"] == [routes] and v["active"] == routes, v
+    assert v["table_open"] is False and v["street_background"] is False, v
+    assert v["selected"]["layer"] == routes and v["selected"]["feature"] == 2, v
+    assert v["selected"]["attributes"] == {"ROUTE": "Route 3"}, v
+    print("map: the assistant reads the view", v["extent"], "zoom", v["zoom"])
+
+    # The person pans the map...
+    left, top, right, bottom = clear(page)
+    cx, cy = (left + right) / 2, (top + bottom) / 2
+    before = view(page)
+    page.mouse.move(cx, cy)
+    page.mouse.down()
+    page.mouse.move(cx - 90, cy + 50, steps=8)
+    page.mouse.up()
+    panned = settled(page, before=before)
+    r = until("the view after a pan", lambda r: abs(r["view"]["extent"][0] - shown(page)[0]) < (panned[2] - panned[0]) / 400)
+    same_view(r["view"]["extent"], page, "the view after the person panned")
+    assert r["view"]["extent"] != v["extent"], "the view read follows the pan"
+    # ... and picks route 2 on the map (a click on the line; a pixel either
+    # side is tried, since the line is two pixels wide).
+    lon, lat = ROUTES[1][1]
+    x, y = to_px(page, lon, lat)
+    assert left + 20 < x < right - 20 and top + 20 < y < bottom - 20, f"route 2 ({x:.0f}, {y:.0f}) is not in view {(left, top, right, bottom)}"
+    picked = None
+    for dx, dy in [(0, 0), (0, 1), (0, -1), (1, 0), (-1, 0)]:
+        page.mouse.click(x + dx, y + dy)
+        try:
+            picked = until("the picked feature", lambda r: (r["view"]["selected"] or {}).get("feature") == 1, t=2.5)
+            break
+        except AssertionError:
+            continue
+    assert picked, "clicking route 2 on the map did not select it"
+    sel = picked["view"]["selected"]
+    assert sel["layer"] == routes and sel["attributes"] == {"ROUTE": "Route 2"}, sel
+    assert sel["geometry"]["type"] == "LineString", sel
+    same_view(picked["view"]["extent"], page, "the view after the pick")
+    assert view(page) == panned, "picking a feature does not move the map"
+    print("map: after a pan and a pick, the assistant reads", picked["view"]["extent"], sel)
+
+    # The table open is said too.
+    page.get_by_role("button", name="Table", exact=True).click()
+    expect(page.locator("section.table")).to_be_visible()
+    settled(page)
+    r = until("the table open", lambda r: r["view"]["table_open"] is True)
+    same_view(r["view"]["extent"], page, "the view above the open table")
+    page.get_by_role("button", name="Close the table").click()
+    expect(page.locator("section.table")).to_have_count(0)
+    settled(page)
+    until("the table closed", lambda r: r["view"]["table_open"] is False)
+
+    # ---- Steering. A second result: the page lists it, turns it on and
+    # makes it the active one, as it does for every new layer.
+    q = mcp.tool("query_features", {"connection": "roads", "dataset": "routes", "where": "ROUTE = 'Route 1'"})
+    one = q["result"]["layer"]["handle"]
+    expect(page.locator(".map[data-layers='2']")).to_have_count(1, timeout=15000)
+    settled(page)
+    r = until("the new layer on", lambda r: r["view"]["layers_on"] == [one, routes] and r["view"]["active"] == one)
+
+    # Hide it: the page follows, and the answer is the new view.
+    t0 = time.time()
+    r = mcp.tool("map_view", {"hide": [one]})["result"]
+    took = time.time() - t0
+    assert r["status"] == "changed" and r["changed"] is True, r
+    assert took < 6, f"the page took {took:.1f} s to follow"
+    assert r["view"]["layers_on"] == [routes], r
+    expect(page.locator(".map[data-layers='1']")).to_have_count(1)
+    expect(page.get_by_role("checkbox", name=f"Show {name_of(one)} on the map")).not_to_be_checked()
+    expect(page.get_by_role("status")).to_contain_text("Your assistant changed what the map shows.")
+    print(f"map: hide followed in {took:.1f} s")
+
+    # Layers on, another active, and a zoom to it: the page follows within
+    # a few seconds, and the view returned is the one it shows.
+    before = view(page)
+    t0 = time.time()
+    r = mcp.tool("map_view", {"show": [one], "active": routes, "zoom_to": routes})["result"]
+    took = time.time() - t0
+    assert r["status"] == "changed", r
+    assert took < 6, f"the page took {took:.1f} s to follow"
+    assert r["view"]["layers_on"] == [one, routes] and r["view"]["active"] == routes, r
+    expect(page.locator(".map[data-layers='2']")).to_have_count(1)
+    expect(page.get_by_role("checkbox", name=f"Show {name_of(one)} on the map")).to_be_checked()
+    expect(page.locator("li.out.active .out-name")).to_have_text(name_of(routes))
+    assert view(page) != before, "the map moved"
+    assert not page.evaluate("document.querySelector('.map canvas') === null")
+    # The zoom has ended by the time the tool answers: the map is still.
+    page.wait_for_timeout(700)
+    w, s, e, n = in_view(page)
+    same_view(r["view"]["extent"], page, "the view after show, active and zoom")
+    for route in ROUTES:
+        rw, rs, re_, rn = bbox(route)
+        assert w <= rw and s <= rs and e >= re_ and n >= rn, f"route {bbox(route)} is not all in view {(w, s, e, n)}"
+    aw, as_, ae, an = bbox([c for route in ROUTES for c in route])
+    assert abs((w + e) / 2 - (aw + ae) / 2) < (e - w) * 0.05, f"the layer {(aw, as_, ae, an)} is not centred in view {(w, s, e, n)}"
+    assert (ae - aw) / (e - w) > 0.6, f"the view {(w, s, e, n)} is not fitted to the layer"
+    assert not a11y.unnamed(page), a11y.unnamed(page)  # every control has a name, and Tab reaches it
+    page.screenshot(path=str(OUT / "map-3-assistant.png"))
+    print(f"map: show, active and zoom followed in {took:.1f} s", r["view"]["extent"])
+
+    # A zoom to an extent: all of it in view, fitted.
+    target = [-97.775, 30.2495, -97.765, 30.2535]
+    t0 = time.time()
+    r = mcp.tool("map_view", {"zoom_to": target})["result"]
+    took = time.time() - t0
+    assert r["status"] == "changed" and took < 6, (took, r)
+    page.wait_for_timeout(700)
+    w, s, e, n = r["view"]["extent"]
+    assert w <= target[0] and s <= target[1] and e >= target[2] and n >= target[3], f"{target} is not all in view {(w, s, e, n)}"
+    assert max((target[2] - target[0]) / (e - w), (target[3] - target[1]) / (n - s)) > 0.8, f"the view {(w, s, e, n)} is not fitted to {target}"
+    same_view(r["view"]["extent"], page, "the view after a zoom to an extent")
+    # Across the 180th meridian: east passes 180, as the view is read.
+    across = [170.0, 50.0, 190.0, 54.0]
+    r = mcp.tool("map_view", {"zoom_to": across})["result"]
+    assert r["status"] == "changed", r
+    w, s, e, n = r["view"]["extent"]
+    assert w <= 170 and e >= 190 and e > 180 and s <= 50 and n >= 54, f"{across} is not in view {(w, s, e, n)}"
+    assert e - w < 40, f"not fitted: {(w, s, e, n)}"
+    print(f"map: zoom to an extent followed in {took:.1f} s; across the 180th meridian the view is", (w, s, e, n))
+
+    # ---- A picture of the same view.
+    r = mcp.tool("map_view", {"zoom_to": target})["result"]
+    page.wait_for_timeout(700)
+    reply = mcp.request("tools/call", {"name": "map_snapshot", "arguments": {"extent": "view"}})["result"]
+    assert not reply.get("isError"), reply
+    assert any(c.get("type") == "image" and c.get("mimeType") == "image/png" for c in reply["content"]), "a picture for the assistant"
+    snap = reply["structuredContent"]["result"]
+    now = read()["view"]
+    assert snap["view"]["extent"] == now["extent"], f"the snapshot's extent {snap['view']['extent']} is the view's {now['extent']}"
+    same_view(snap["view"]["extent"], page, "the snapshot's extent")
+    radius = 6378137.0
+    want = [radius * math.radians(now["extent"][0]), radius * merc(now["extent"][1]),
+            radius * math.radians(now["extent"][2]), radius * merc(now["extent"][3])]
+    assert snap["crs"] == "EPSG:3857" and all(abs(a - b) < 0.01 for a, b in zip(snap["extent"], want)), (snap["extent"], want)
+    # The layers that are on, the lower one first; route 2 is the only
+    # route in this view.
+    assert [x["handle"] for x in snap["layers"]] == [routes, one], snap["layers"]
+    assert [x["in_view"] for x in snap["layers"]] == [1, 0], snap["layers"]
+    # The picture has the shape of the part of the map in view.
+    left, top, right, bottom = clear(page)
+    assert abs(snap["width"] / snap["height"] - (right - left) / (bottom - top)) < 0.03, (snap["width"], snap["height"], right - left, bottom - top)
+    print("map: the snapshot of the view", snap["view"], snap["width"], "x", snap["height"])
+
+    # ---- Two windows of the session: the one the person used last is
+    # their map. A new window comes on show with only the newest layer on.
+    page2 = ctx.new_page()
+    page2.on("pageerror", lambda e: problems.append(str(e)))
+    page2.goto(open_link(port, root))
+    expect(page2.locator(".map[data-layers='1']")).to_have_count(1, timeout=20000)
+    until("the new window", lambda r: r["status"] == "open" and r["view"]["layers_on"] == [one])
+    # A change goes to that window only.
+    r = mcp.tool("map_view", {"show": [routes]})["result"]
+    assert r["status"] == "changed" and r["view"]["layers_on"] == [one, routes], r
+    expect(page2.locator(".map[data-layers='2']")).to_have_count(1)
+    # The person goes back to the first window and uses it.
+    left, top, right, bottom = clear(page)
+    page.mouse.click(left + 40, bottom - 40)
+    r = until("the first window again", lambda r: r["view"]["extent"] == now["extent"])
+    same_view(r["view"]["extent"], page, "the view of the window used last")
+    page2.close()
+    print("map: with two windows, the one used last is read and steered")
+
+    # ---- No map open: it says so, and changes nothing.
+    before = view(page)
+    page.close()
+    r = until("no map open", lambda r: r["status"] == "not_open", t=10)
+    assert "No map is open" in r["message"], r
+    t0 = time.time()
+    r = mcp.tool("map_view", {"show": [routes], "zoom_to": routes})["result"]
+    assert r["status"] == "not_open" and r["changed"] is False and r["message"].startswith("Nothing was changed."), r
+    assert time.time() - t0 < 12
+    reply = mcp.request("tools/call", {"name": "map_snapshot", "arguments": {"extent": "view"}})["result"]
+    assert reply.get("isError") and "map is not open" in json.dumps(reply), reply
+    # A window opened afterwards is as the person left the first one: the
+    # change that found no map was dropped, not kept for later.
+    page3 = ctx.new_page()
+    page3.on("pageerror", lambda e: problems.append(str(e)))
+    page3.goto(open_link(port, root))
+    expect(page3.locator(".map[data-layers='1']")).to_have_count(1, timeout=20000)
+    r = until("a window opened later", lambda r: r["status"] == "open")
+    page3.wait_for_timeout(2500)
+    assert read()["view"]["layers_on"] == [one], "the dropped change was not applied later"
+    page3.close()
+    print("map: with no map open the assistant is told so, and nothing changes")
+
+
 def open_link(port, root):
     launch = root / "launch.txt"
     if launch.exists():
@@ -174,7 +421,7 @@ def main():
     try:
         session = mcp.tool("whoami", {})["result"]["session"]
         port = json.loads(wait_file(root / "live" / f"{session}.json"))["port"]
-        mcp.tool("query_features", {"connection": "roads", "dataset": "routes"})
+        routes = mcp.tool("query_features", {"connection": "roads", "dataset": "routes"})["result"]["layer"]["handle"]
         link = open_link(port, root)
 
         with sync_playwright() as pw:
@@ -316,6 +563,8 @@ def main():
             assert abs((e - w) - (me - mw)) < (me - mw) * 0.001, f"closing the table changed the scale: {(mw, me)} -> {(w, e)}"
             assert n - s > (mn - ms) * 1.3, "more of the map is in view with the table closed"
             print("map: closing the table keeps the middle of the view")
+
+            assistant_and_the_map(mcp, ctx, page, port, root, routes, problems)
 
             assert not problems, problems
             browser.close()
