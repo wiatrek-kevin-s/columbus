@@ -1105,11 +1105,13 @@ impl Gateway {
         } else {
             "no network; can write only its own run folder".to_string()
         };
-        // REQ-17, R-15: under policy scripts.session_approval, the engine
+        // REQ-17, R-15: under policy scripts.approval: session (or the older
+        // scripts.session_approval), the engine
         // and governed level-A environments may be allowed for the session,
         // bound to this exact code and environment (as confirmed) in this
         // Columbus session; never a trusted or level-B one.
-        let session_ok = policy.scripts.session_approval
+        let session_ok = policy.scripts.approval_rule()
+            == columbus_shared::policy::ScriptApproval::Session
             && senv.as_ref().is_none_or(ScriptEnv::session_allow_possible);
         let session_scope = [json!({"session_script": code_sha256,
             "environment": senv.as_ref().map(|e| json!({"id": e.env.id, "confirmed": e.env.confirmation_hash()}))})];

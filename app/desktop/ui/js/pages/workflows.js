@@ -131,7 +131,7 @@ export async function render(main, rest) {
       return li;
     };
     const toolsSub = h("span", {}, "steps your assistant can reuse");
-    more.append(moreRow("#/tools", "Tools", toolsSub), moreRow("#/skills", "Skills", "advice your assistant reads"));
+    more.append(moreRow("#/tools", "Tools", toolsSub));
     const moreCard = h("section", { class: "card" }, sec("More"), h("div", { class: "bd flush" }, more));
     const about = h("details", { class: "card", id: "wf-about" }, h("summary", { class: "hd" }, h("h2", {}, "How workflows work, and your organization's switch")),
       h("div", { class: "bd stack" },

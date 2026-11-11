@@ -371,6 +371,26 @@ pub struct OrgPolicy {
     /// they may reach, and sources the organization supplies.
     #[serde(default)]
     pub map: crate::map_sources::MapPolicy,
+    /// Toolboxes (F-15; build brief 3, D-17): programs that describe their
+    /// own tools, installed by the person and run confined at level A. Off
+    /// by default; off hides every installed one at once.
+    #[serde(default)]
+    pub allow_toolboxes: bool,
+    /// Toolbox options (F-15).
+    #[serde(default)]
+    pub toolboxes: ToolboxesPolicy,
+    /// A project's files (F-15, D-19): the assistant may list, read and
+    /// write text files in its project's own folder, and run scripts kept
+    /// there. Off by default.
+    #[serde(default)]
+    pub allow_project_files: bool,
+    /// Sync of a project's files with a Git server (F-15, D-20). Off by
+    /// default; off, no server can be connected and nothing syncs.
+    #[serde(default)]
+    pub allow_sync: bool,
+    /// Sync options (F-15).
+    #[serde(default)]
+    pub sync: SyncPolicy,
 }
 
 /// Registered Python environments that scripts may run in (F-7). Every
@@ -409,14 +429,75 @@ impl Default for EnvironmentsPolicy {
     }
 }
 
-/// Script approval options (F-7); unknown keys are refused.
+/// Script approval options (F-7, F-15); unknown keys are refused.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ScriptsPolicy {
     /// "Allow this script for the session" on the approval card (governed
-    /// level-A environments and the engine only). Off by default.
+    /// level-A environments and the engine only). Off by default. The
+    /// older spelling of `approval: session`.
     #[serde(default)]
     pub session_approval: bool,
+    /// When a script needs the person's approval (F-15). Absent: `session`
+    /// when `session_approval` is on, else `each`. Read it with
+    /// [`ScriptsPolicy::approval_rule`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval: Option<ScriptApproval>,
+}
+
+impl ScriptsPolicy {
+    /// The approval rule in force (F-15): `approval` when the policy
+    /// states it, else what `session_approval` says.
+    pub fn approval_rule(&self) -> ScriptApproval {
+        self.approval.unwrap_or(if self.session_approval {
+            ScriptApproval::Session
+        } else {
+            ScriptApproval::Each
+        })
+    }
+}
+
+/// When a script that runs confined at level A (the engine's Python, or a
+/// governed level-A environment) needs the person's approval (F-15; build
+/// brief 3, D-16). A level B run and a trusted run ask every time, whatever
+/// this says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ScriptApproval {
+    /// Every run (the default).
+    Each,
+    /// Once for the same code, until the chat or the AI app's connection
+    /// ends (REQ-17).
+    Session,
+    /// Never: the sandbox is the boundary (D-16).
+    None,
+}
+
+/// Toolbox options (F-15); unknown keys are refused.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ToolboxesPolicy {
+    /// Columbus's built-in catalogue may download a toolbox the person
+    /// chooses to install (checked against a hash pinned in Columbus). Off,
+    /// toolboxes are added only from files already on the computer.
+    #[serde(default = "yes")]
+    pub catalogue: bool,
+}
+
+impl Default for ToolboxesPolicy {
+    fn default() -> Self {
+        ToolboxesPolicy { catalogue: true }
+    }
+}
+
+/// Sync options (F-15); unknown keys are refused.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct SyncPolicy {
+    /// Git servers a project may sync with, by host name (`github.com`,
+    /// `gitea.example.org`). Empty means any server the person connects.
+    #[serde(default)]
+    pub hosts: Vec<String>,
 }
 
 /// Project databases: local DuckDB files the assistant builds from governed
@@ -675,6 +756,11 @@ impl Default for OrgPolicy {
             environments: EnvironmentsPolicy::default(),
             scripts: ScriptsPolicy::default(),
             map: crate::map_sources::MapPolicy::default(),
+            allow_toolboxes: false,
+            toolboxes: ToolboxesPolicy::default(),
+            allow_project_files: false,
+            allow_sync: false,
+            sync: SyncPolicy::default(),
         }
     }
 }
@@ -1600,6 +1686,68 @@ expires: 2027-06-30
         ] {
             assert!(OrgPolicy::parse(bad, Path::new("p.yaml")).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn the_keys_of_build_brief_3_default_off_and_refuse_unknown_values() {
+        // F-15: scripts.approval, toolboxes, project files and sync.
+        let p = OrgPolicy::parse("connection_types: [gpkg]\n", Path::new("p.yaml")).unwrap();
+        assert_eq!(p.scripts.approval, None);
+        assert_eq!(p.scripts.approval_rule(), ScriptApproval::Each);
+        assert!(!p.allow_toolboxes && !p.allow_project_files && !p.allow_sync);
+        assert!(p.toolboxes.catalogue && p.sync.hosts.is_empty());
+        let d = OrgPolicy::default();
+        assert!(!d.allow_toolboxes && !d.allow_project_files && !d.allow_sync);
+        assert_eq!(
+            (d.toolboxes, d.sync, d.scripts),
+            (p.toolboxes.clone(), p.sync.clone(), p.scripts.clone())
+        );
+        // The older key still means "session"; the new key wins when both are there.
+        let rule = |text: &str| {
+            OrgPolicy::parse(text, Path::new("p.yaml"))
+                .unwrap()
+                .scripts
+                .approval_rule()
+        };
+        assert_eq!(
+            rule("scripts: { session_approval: true }\n"),
+            ScriptApproval::Session
+        );
+        assert_eq!(
+            rule("scripts: { approval: session }\n"),
+            ScriptApproval::Session
+        );
+        assert_eq!(
+            rule("scripts: { approval: each, session_approval: true }\n"),
+            ScriptApproval::Each
+        );
+        assert_eq!(rule("scripts: { approval: none }\n"), ScriptApproval::None);
+        let p = OrgPolicy::parse(
+            "allow_toolboxes: true\ntoolboxes: { catalogue: false }\nallow_project_files: true\nallow_sync: true\nsync: { hosts: [gitea.example.org] }\n",
+            Path::new("p.yaml"),
+        )
+        .unwrap();
+        assert!(p.allow_toolboxes && p.allow_project_files && p.allow_sync);
+        assert!(!p.toolboxes.catalogue);
+        assert_eq!(p.sync.hosts, vec!["gitea.example.org"]);
+        for bad in [
+            "scripts: { approval: sometimes }\n",
+            "scripts: { approval: true }\n",
+            "toolboxes: { catalog: false }\n",
+            "sync: { host: [github.com] }\n",
+            "allow_sync: maybe\n",
+        ] {
+            let e = OrgPolicy::parse(bad, Path::new("p.yaml"));
+            assert!(e.is_err(), "{bad}");
+        }
+        // The message names the key and the choices.
+        let e = OrgPolicy::parse("scripts: { approval: sometimes }\n", Path::new("p.yaml"))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            e.contains("sometimes") && e.contains("each") && e.contains("none"),
+            "{e}"
+        );
     }
 
     #[test]

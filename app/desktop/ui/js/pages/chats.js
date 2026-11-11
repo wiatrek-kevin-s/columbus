@@ -2,7 +2,7 @@
 // apps. A chat is the panel; its session's map fills the window behind it,
 // and its files open in the side sheet. Everything the model, the server
 // or a file says is shown as text, never as markup.
-import { $, el, h, icon, iconButton, menuButton, fitSelect, invoke, listen, store, button, redraw, placeHead, sec, when, ago, shortWhen, era, size, plural, timeLeft, clientName, toast, emptyState, askConfirm, askText, openSide, closeSide, insets, onLayout, savePrefs, numbered } from "../core.js";
+import { $, el, h, icon, iconButton, menuButton, fitSelect, invoke, listen, store, button, redraw, placeHead, sec, when, ago, shortWhen, era, size, plural, timeLeft, clientName, toast, emptyState, askConfirm, askText, openSide, closeSide, openOutputs, closeOutputs, outputsOpen, setOutputsFull, setOutputsHead, insets, onLayout, savePrefs, numbered } from "../core.js";
 import { openWebLayerEditor, onChange as onWebLayersChange } from "./maplayers.js";
 import { setupState, notices, firstSteps } from "./start.js";
 
@@ -68,18 +68,25 @@ export function questionFirst(first) {
   const head = col && col.querySelector(".chathead");
   const composer = $("composer");
   if (!head || !composer || composer.parentElement !== col) return;
-  if ((head.nextElementSibling === composer) === first) return;
+  // (The greeting stays right under the head; it shows on the start only.)
+  const top = col.querySelector(":scope > .greeting") || head;
+  if ((top.nextElementSibling === composer) === first) return;
   const held = composer.contains(document.activeElement) ? document.activeElement : null;
   const note = col.querySelector(":scope > .project-note");
   if (first) {
-    head.after(composer);
+    top.after(composer);
     if (note) col.append(note);
   } else {
     col.append(composer);
-    if (note) head.after(note);
+    if (note) top.after(note);
   }
   // Moving it took the focus away: give it back.
   if (held) held.focus({ preventScroll: true });
+}
+
+/** Whether the app's own chat is the page on show. */
+export function liveShown() {
+  return !!live.shown;
 }
 
 /** Whether the page shown is a chat with nothing asked yet: the start. */
@@ -87,23 +94,17 @@ export function isStart() {
   return live.shown && !live.started && !live.run && !!live.log && !live.log.querySelector(".msg, .ask, .error, .status");
 }
 
-/** The title of the chat being looked at, for the pill that stands in for
- * the panel. */
-let shownTitle = null; // a saved chat's or another session's title element
-export function liveTitle() {
-  if (shownTitle && shownTitle.isConnected) return shownTitle.textContent;
-  const t = $("chat-title");
-  return live.shown && live.started && t ? t.textContent : "";
-}
 
 /** Recent chats and sessions, for the start and Ctrl+K. */
 export function recent(n) {
   const out = [];
   for (const c of store.chats) {
-    out.push({ kind: c.live ? "Chat (open)" : "Chat", title: c.title, sub: ago(c.updated), href: c.live ? "#/chats/new" : `#/chats/c/${encodeURIComponent(c.id)}`, t: c.updated || "" });
+    out.push({ kind: c.live ? "Chat (open)" : "Chat", title: c.title, sub: ago(c.updated), href: c.live ? "#/chats/new" : `#/chats/c/${encodeURIComponent(c.id)}`, t: c.updated || "",
+      live: !!c.live, waiting: !!c.live && waitingCount() > 0 });
   }
   for (const s of otherSessions()) {
-    out.push({ kind: clientName(s.client), title: `${clientName(s.client)} session`, sub: s.last_used ? `used ${ago(s.last_used)}` : "not used yet", href: `#/chats/s/${encodeURIComponent(s.session)}`, t: s.last_used || s.started || "" });
+    out.push({ kind: clientName(s.client), title: `${clientName(s.client)} session`, sub: s.last_used ? `used ${ago(s.last_used)}` : "not used yet", href: `#/chats/s/${encodeURIComponent(s.session)}`, t: s.last_used || s.started || "" ,
+      who: clientName(s.client), waiting: ((store.inbox.find((x) => x.session === s.session) || {}).pending || []).length > 0 });
   }
   out.sort((a, b) => String(b.t).localeCompare(String(a.t)));
   return out.slice(0, n);
@@ -386,6 +387,7 @@ class Renderer {
           // which makes files) the layer it was given.
           const given = s.input && typeof s.input.handle === "string" ? s.input.handle : null;
           this.made = { title: resultName(e, s.input), summary: e.summary, provenance: e.provenance, handle: e.handle || given, fails: e.fails || 0, warns: e.warns || 0 };
+          if (this.onResult) this.onResult(this.made);
           if (!e.fails && !e.warns) li.insertBefore(el("span", "badge pass", "Checks passed"), s.raw || null);
           const b = h("button", { type: "button", class: "linkbtn", title: "Inputs, steps and checks of this result" }, "Provenance");
           b.addEventListener("click", () => this.onProvenance && this.onProvenance(e.provenance));
@@ -542,10 +544,11 @@ function liveCard(r, e) {
   drawTray();
   // In front of the person: the panel comes back if it was put away, and a
   // word is said when this chat is not what they are looking at.
-  if (document.body.classList.contains("panel-away") && store.setAway) {
-    store.setAway(false);
-    // The focus was on the map: it goes to the request, so Tab reaches its
-    // buttons (after the panel itself has taken it, main.js).
+  if (document.body.classList.contains("out-full")) {
+    // The chat was put away so the map had the window: it comes back, and
+    // the focus goes to the request, so Tab reaches its buttons.
+    setOutputsFull(false);
+    if (live.map) live.map.head();
     card.tabIndex = -1;
     setTimeout(() => { if (card.isConnected && live.shown && !document.querySelector("dialog[open]")) card.focus({ preventScroll: true }); }, 0);
   }
@@ -570,11 +573,16 @@ const APP_FRAME = "allow-scripts allow-same-origin";
 let onStage = null; // the map shown now (one at a time)
 
 /** One session's own page (its map, results and table) in a sandboxed
- * frame that fills the window behind the panel; and the files the session
- * made, in the side sheet. */
+ * frame in the panel on the right; and the files the session made, to read
+ * there too. */
 class SessionMap {
   constructor() {
     this.session = null;
+    // Whether the panel on the right is open for this map (the person, or
+    // a first result, opened it), and whether the person closed it.
+    this.open = false;
+    this.dismissed = false;
+    this.onOpenChange = null;
     this.frame = null;
     this.origin = null;
     this.loading = false;
@@ -619,8 +627,58 @@ class SessionMap {
     if (onStage && onStage !== this) onStage.host.hidden = true;
     onStage = this;
     this.host.hidden = false;
+    this.head();
+    // The panel is as this chat left it: open with its map, or closed.
+    if (this.open) this.unfold();
+    else closeOutputs();
+    if (this.onOpenChange) this.onOpenChange();
+  }
+
+  /** The panel's head while this map has the stage. */
+  head() {
+    setOutputsHead("Map and table", [
+      iconButton("files", "Files this chat made", () => this.files(), { id: "out-files" }),
+      iconButton("popout", "Open the map in its own window", () => this.popOut(), { id: "out-popout" }),
+    ], () => this.setOpen(false));
+  }
+
+  // Open the panel with this map in it (the frame is made only now: a map
+  // drawn out of sight would have no size to draw to).
+  unfold() {
+    this.head();
+    openOutputs();
     this.ensureFrame();
     this.post();
+  }
+
+  /** Open or close the panel for this map: the person asked. */
+  setOpen(open) {
+    this.open = !!open;
+    this.dismissed = !open;
+    if (onStage === this) {
+      if (this.open) this.unfold();
+      else closeOutputs();
+    }
+    if (this.onOpenChange) this.onOpenChange();
+  }
+
+  /** Something was made: the panel opens to show it, unless the person
+   * closed it in this chat. */
+  reveal() {
+    if (this.open || this.dismissed) return;
+    this.open = true;
+    if (onStage === this) this.unfold();
+    if (this.onOpenChange) this.onOpenChange();
+  }
+
+  /** As new: for a new chat. */
+  reset() {
+    this.open = false;
+    this.dismissed = false;
+    this.view = null;
+    this.output = null;
+    if (onStage === this) closeOutputs();
+    if (this.onOpenChange) this.onOpenChange();
   }
 
   // Plain values only: how the page should look, and which part of it the
@@ -641,12 +699,15 @@ class SessionMap {
 
   /** Open the table sheet on the map: of the result named (a plain
    * workspace handle the page checks against its own list), else of the
-   * result the page has active. */
+   * result the page has active. The panel opens for it. */
   table(handle) {
     if (!this.session) return toast("The map is not open yet.");
     this.view = "table";
     this.output = typeof handle === "string" && /^[A-Za-z0-9_\-./:]{1,200}$/.test(handle) ? handle : null;
-    this.post();
+    this.open = true;
+    this.dismissed = false;
+    if (onStage === this) this.unfold();
+    if (this.onOpenChange) this.onOpenChange();
   }
 
   setSession(session) {
@@ -656,7 +717,7 @@ class SessionMap {
     this.origin = null;
     this.ready = false;
     this.host.replaceChildren();
-    if (!this.host.hidden) this.ensureFrame();
+    if (!this.host.hidden && outputsOpen()) this.ensureFrame();
   }
 
   /** A few words on the stage in place of a map. */
@@ -769,15 +830,22 @@ function provenanceView(p) {
   return box;
 }
 
-// What every chat's head offers for its map, behind one button: the
-// session's files, the panel put away, and the map in its own window.
+// What every chat's head offers for its map: a button that opens or closes
+// the panel on the right, and behind "more" the session's files, the map
+// filling the window, and the map in its own window.
 function mapMenu(map, more = []) {
   return menuButton("More", () => [
     { label: "Files this chat made", cls: "chat-files", onclick: () => map.files() },
-    { label: "Show only the map", cls: "chat-away", onclick: () => store.setAway && store.setAway(true) },
+    { label: "Fill the window with the map", cls: "chat-away", onclick: () => { map.setOpen(true); setOutputsFull(true); map.head(); } },
     { label: "Open the map in its own window", cls: "chat-popout", onclick: () => map.popOut() },
-    ...more,
+    ...(typeof more === "function" ? more() : more),
   ], { class: "iconbtn chat-more" });
+}
+function mapButton(map) {
+  const b = h("button", { type: "button", class: "btn sm chat-map", "aria-pressed": "false", title: "This chat's map and table, on the right" }, icon("map"), "Map");
+  b.addEventListener("click", () => map.setOpen(!map.open));
+  map.onOpenChange = () => b.setAttribute("aria-pressed", map.open ? "true" : "false");
+  return b;
 }
 
 // ---------- The waiting tray ----------
@@ -821,19 +889,29 @@ export async function openBrowser(session) {
   }
 }
 
+// The live chat's renderer: a result's "How it was made" and Table open in
+// the panel on the right, and the first thing a chat makes opens the panel.
+function liveRenderer(log) {
+  const r = new Renderer(log, true, (id) => live.map.files(id), (handle) => live.map.table(handle));
+  r.onResult = () => live.map.reveal();
+  return r;
+}
+
 // ---------- The live chat view (built once, kept while the app runs) ----------
 function buildLive() {
   const view = h("div", { class: "chatview", id: "chatview" });
   const title = h("h1", { id: "chat-title" }, "New chat");
   live.map = new SessionMap();
-  // A new chat in the same project as this one.
-  const newBtn = iconButton("plus", "New chat", () => newChat(live.project), { id: "new" });
   const head = h("header", { class: "chathead" },
-    h("a", { class: "iconbtn back", href: "#/chats", "aria-label": "All chats", title: "All chats" }, icon("back")),
-    h("div", { class: "titlebox" }, title), h("div", { class: "actions" }, newBtn, mapMenu(live.map)));
+    h("div", { class: "titlebox" }, title),
+    h("div", { class: "actions" }, mapButton(live.map),
+      // (A new chat in the same project as this one is under "more".)
+      mapMenu(live.map, () => [{ label: live.project ? "New chat in this project" : "New chat", id: "new", onclick: () => newChat(live.project) }])));
+  // The start's greeting (shown only while nothing is said yet).
+  const greeting = h("p", { class: "greeting", id: "greeting" }, "What do you want to know?");
   const tray = h("section", { class: "tray", "aria-label": "Waiting for you", hidden: true });
   const log = h("div", { id: "log", role: "log", "aria-live": "polite", "aria-label": "Conversation" });
-  const text = h("textarea", { id: "text", rows: "1", placeholder: "What do you want to know?" });
+  const text = h("textarea", { id: "text", rows: "1", placeholder: "Ask about your data" });
   const status = h("span", { id: "status", role: "status" });
   const stop = h("button", { type: "button", id: "stop", class: "btn sm", hidden: true }, "Stop");
   const send = h("button", { type: "submit", id: "send", class: "sendbtn", "aria-label": "Send", title: "Send (Enter)" }, icon("send"));
@@ -864,11 +942,11 @@ function buildLive() {
     h("div", { class: "box" }, text, stop, send),
     h("div", { class: "under", id: "chat-foot" }, sub, status, h("span", { class: "spacer" }), modelSel, effortSel));
   const projectBox = h("details", { class: "project-note", id: "chat-project", hidden: true });
-  const col = h("section", { class: "chatcol", "aria-label": "Chat" }, head, projectBox, tray, log, composer);
+  const col = h("section", { class: "chatcol", "aria-label": "Chat" }, head, greeting, projectBox, tray, log, composer);
   view.append(col);
   live.view = view;
   live.log = log;
-  live.renderer = new Renderer(log, true, (id) => live.map.files(id), (handle) => live.map.table(handle));
+  live.renderer = liveRenderer(log);
 
   composer.addEventListener("submit", async (ev) => {
     ev.preventDefault();
@@ -1025,7 +1103,7 @@ function drawSub() {
 
 async function newChat(project = null, run = null) {
   const was = live.chatId;
-  // What the old chat had open beside the panel goes with it.
+  // What the old chat had open in the panel on the right goes with it.
   closeSide();
   live.project = project || null;
   live.run = run || null;
@@ -1037,15 +1115,15 @@ async function newChat(project = null, run = null) {
   live.pick = null;
   live.cards.clear();
   live.log.replaceChildren();
-  live.renderer = new Renderer(live.log, true, (id) => live.map.files(id), (handle) => live.map.table(handle));
+  live.renderer = liveRenderer(live.log);
   $("chat-title").textContent = "New chat";
   $("chat-title").removeAttribute("title");
   delete $("chat-title").dataset.set;
-  $("text").placeholder = "What do you want to know?";
+  $("text").placeholder = "Ask about your data";
   $("text").value = "";
   fitText();
   drawSub();
-  live.map.view = null;
+  live.map.reset();
   live.map.setSession(null);
   setBusy(false);
   await updateChip();
@@ -1100,12 +1178,6 @@ async function emptyChat() {
   const starters = h("div", { class: "starters" });
   for (const p of prompts) starters.append(h("button", { type: "button", onclick: () => setText(p) }, h("span", {}, p), icon("out")));
   box.append(sec("Try"), starters);
-  const items = recent(4);
-  if (items.length) {
-    const list = h("div", { class: "starters", id: "start-recent" });
-    for (const it of items) list.append(h("a", { href: it.href }, h("span", {}, it.title), h("span", { class: "when" }, shortWhen(it.t))));
-    box.append(sec("Recent"), list);
-  }
   if (!s.needsSetup && s.anyLeft) {
     box.append(h("p", { class: "small muted" }, "Setup steps you skipped are in Settings. ",
       h("button", { type: "button", class: "linkbtn", onclick: async () => { await savePrefs({ skipped: [], setup_done: false }); emptyChat(); } }, "Show the first steps again")));
@@ -1212,8 +1284,10 @@ export async function render(main, rest) {
       "They are copies: the run itself, its files and its exports stay as they are. Ask, for example: ",
       h("i", {}, "check these three areas"), " or ", h("i", {}, "remove route X, then export the rest"), ".")));
     store.set("chatstate", "run");
-    // Its layers on the map and in the table, as soon as the map opens.
+    // Its layers on the map and in the table, in the panel on the right, as
+    // soon as the session's page opens.
     live.map.view = "table";
+    live.map.setOpen(true);
     if (await start()) {
       $("chat-title").textContent = `Review: ${run.name}`;
       $("chat-title").dataset.set = "1";
@@ -1230,6 +1304,7 @@ export async function render(main, rest) {
  * asked for while the live chat's own page was still being drawn, before
  * its clean-up was handed back.) */
 export function leaveLive() {
+  if (live.map) live.map.show(false);
   if (!host || host.hidden) return;
   host.hidden = true;
   live.shown = false;
@@ -1257,6 +1332,7 @@ function showLive(main) {
     // Shown again since (a page drawn late is cleaned up late): it is not
     // this showing's to hide.
     if (mine !== liveShows) return;
+    live.map.show(false);
     hostEl.hidden = true;
     main.hidden = false;
     live.shown = false;
@@ -1265,21 +1341,15 @@ function showLive(main) {
   };
 }
 
-// Leaving a saved chat or another app's session: the live chat's map, if it
-// has one, takes the stage again.
+// Leaving a saved chat or another app's session: its map goes with it.
 function backToLiveMap(map) {
-  // Only if this page's map still has the stage: the page the person went
-  // on to may have put its own there already.
-  const mine = onStage === map || onStage === null;
   map.destroy();
-  if (mine && live.map && live.session) live.map.show();
 }
 
 async function showSaved(main, id) {
   const view = h("div", { class: "chatview" });
   const map = new SessionMap();
   const title = h("h1", {}, "Chat");
-  shownTitle = title;
   const sub = h("p", { class: "sub" }, "");
   const del = async () => {
     if (!(await askConfirm("Delete this chat?", "Its saved conversation is deleted from this computer. Files its session made stay where they are.", "Delete", true))) return;
@@ -1291,9 +1361,8 @@ async function showSaved(main, id) {
     try { await invoke("chat_rename", { id, title: t }); title.textContent = t; refreshFns.chats(); } catch (e) { toast(String(e)); }
   };
   const head = h("header", { class: "chathead" },
-    h("a", { class: "iconbtn back", href: "#/chats", "aria-label": "All chats", title: "All chats" }, icon("back")),
     h("div", { class: "titlebox" }, title, sub),
-    h("div", { class: "actions" }, mapMenu(map, [{ label: "Rename", id: "chat-rename", onclick: rename }, { label: "Delete this chat", id: "chat-delete", danger: true, onclick: del }])));
+    h("div", { class: "actions" }, mapButton(map), mapMenu(map, [{ label: "Rename", id: "chat-rename", onclick: rename }, { label: "Delete this chat", id: "chat-delete", danger: true, onclick: del }])));
   const ended = h("div", { class: "ended" }, h("span", {}, "This chat has ended. Its conversation is kept here; Columbus cannot continue it."), button("New chat", "sm primary", () => { location.hash = "#/chats/fresh"; }));
   const logEl = h("div", { id: "saved-log", class: "log", role: "log", "aria-label": "Saved conversation" });
   const col = h("section", { class: "chatcol", "aria-label": "Saved chat" }, head, logEl);
@@ -1326,11 +1395,11 @@ async function showSession(main, session) {
   const s = store.sessions.find((x) => x.session === session);
   const who = clientName(s?.client);
   const title = h("h1", {}, s ? `${who} session` : "Session");
-  shownTitle = title;
   const sub = h("p", { class: "sub" }, s ? `Started ${when(s.started)} · ${s.last_used ? `used ${ago(s.last_used)}` : "not used yet"} · the conversation lives in ${who}` : "This session is not running.");
   const head = h("header", { class: "chathead" },
-    h("a", { class: "iconbtn back", href: "#/chats", "aria-label": "All chats", title: "All chats" }, icon("back")),
-    h("div", { class: "titlebox" }, title, sub), h("div", { class: "actions" }, mapMenu(map)));
+    h("div", { class: "titlebox" }, title, sub), h("div", { class: "actions" }, mapButton(map), mapMenu(map)));
+  // What the session makes is the thing to watch here: its map is open.
+  map.open = !!s;
   const tray = h("section", { class: "tray", "aria-label": "Waiting for you", hidden: true });
   const acts = h("ol", { class: "activity", "aria-label": "Tool calls in this session" });
   const body = h("div", { class: "scroll pad stack" }, h("p", { class: "muted small" }, `What ${who}'s assistant did through Columbus in this session, from the audit log. The conversation itself is in ${who}.`), acts);
@@ -1378,7 +1447,7 @@ function showIndex(main) {
   // Which chats show: all of them, one project's, or those in no project.
   const filter = h("select", { id: "chats-project", class: "pick", "aria-label": "Show the chats of" });
   const count = h("span", { id: "chats-count" });
-  const foot = h("div", { class: "footline" }, filter, count, h("span", { class: "spacer" }), h("a", { href: "#/projects", id: "to-projects" }, "Projects"));
+  const foot = h("div", { class: "footline" }, filter, count);
   main.append(h("div", { class: "page" }, head, h("div", { class: "scroll" }, h("div", { class: "pad" }, list)), foot));
   let project = "*";
   let seq = 0;

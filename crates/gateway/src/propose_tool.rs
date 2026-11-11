@@ -1477,7 +1477,7 @@ impl Gateway {
         // The person approves the test run, reading the code, as for a script.
         let lines = built.entry.lines().count();
         let summary = format!(
-            "Test-run a tool your assistant wants to save, \"{}\" ({}.{}, {lines} lines, {}){where_runs}, on {}; no network; it can write only its own folder.{} If it runs, it waits for you in the Columbus app (Workflows › Tools): it is added only if you install it there.",
+            "Test-run a tool your assistant wants to save, \"{}\" ({}.{}, {lines} lines, {}){where_runs}, on {}; no network; it can write only its own folder.{} If it runs, it waits for you in the Columbus app (Tools): it is added only if you install it there.",
             built.manifest.display_name(),
             built.id,
             store::TOOL,
@@ -1684,7 +1684,7 @@ impl Gateway {
                 "warnings": warnings,
                 "manifest": built.manifest_text,
                 "next": format!(
-                    "Tell the person the tool \"{}\" is waiting for them in the Columbus app: Workflows › Tools. They read the code and the manifest there and install it (with Touch ID or Windows Hello); you cannot. Once installed it is available from the next call as {}.{} (search_tools finds it), with no restart and no approval per run.{}",
+                    "Tell the person the tool \"{}\" is waiting for them in the Columbus app: Tools. They read the code and the manifest there and install it (with Touch ID or Windows Hello); you cannot. Once installed it is available from the next call as {}.{} (search_tools finds it), with no restart and no approval per run.{}",
                     built.manifest.display_name(),
                     built.id,
                     store::TOOL,

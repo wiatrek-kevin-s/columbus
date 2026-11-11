@@ -3,7 +3,7 @@
 // browser page the session opens; and tools and workflows to read before
 // they can run), then the history (the audit log, read only, with the chain
 // check) and the exports it records.
-import { h, el, icon, iconButton, invoke, store, button, redraw, sec, timeLeft, ago, clock, dayName, plural, clientName, monthName, toast, size } from "../core.js";
+import { h, el, icon, iconButton, invoke, store, button, redraw, sec, pageHead, timeLeft, ago, clock, dayName, plural, clientName, monthName, toast, size } from "../core.js";
 import { openBrowser, waitingTitles, describe, otherInbox } from "./chats.js";
 
 const KIND = { edit: "Edits", script: "Scripts", export: "Exports and sending", download: "Downloads", fetch: "Downloads", notes: "Notes", tool: "Tools", send: "Exports and sending" };
@@ -22,11 +22,11 @@ export async function render(main, rest) {
   const page = h("div", { class: "page" });
   main.append(page);
   const body = h("div", { class: "pad stack" });
-  const scroll = h("div", { class: "scroll" }, h("h1", { id: "page-title", class: "visually-hidden", tabindex: "-1" }, "Activity"), body);
+  const scroll = h("div", { class: "scroll" }, body);
   const waiting = h("div", { class: "stack", id: "approvals" });
   body.append(waiting);
   const foot = h("div", { class: "footline" });
-  page.append(scroll, foot);
+  page.append(pageHead("Activity", "What waits for you, then everything your assistants did, as it was written down."), scroll, foot);
   const stopWaiting = approvals(waiting);
   const hist = history(body, foot, sub === "exports" ? "exports" : "all");
   if (sub === "audit" || sub === "exports") setTimeout(() => hist.head.scrollIntoView({ block: "start" }), 0);

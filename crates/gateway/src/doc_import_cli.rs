@@ -1,6 +1,6 @@
 //! `columbus-mcp notes import '<json>'`: a document the person chose (Word,
 //! Excel, PDF, CSV, Markdown or text) becomes a draft entry in their notes,
-//! for the Columbus app's Data › Notes › Import.
+//! for the Columbus app's Documentation › Import.
 //!
 //! The JSON is `{"file": "<path>", "preview": true}` to see what it would
 //! become (nothing is written), or `{"file", "sha256", "kind", "title",

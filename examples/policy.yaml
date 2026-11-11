@@ -19,7 +19,7 @@ hosts: ["*.corp.example", "oraprod.corp.example", "services.arcgis.com", "www.ar
 tools: []
 deny_tools: []
 
-allow_scripts: false   # run_python (always approved per call when allowed)
+allow_scripts: false   # run_python; when and whether a run is approved: scripts.approval, below
 allow_edits: false     # read-write connections are treated as read-only while false
 allow_personal_tools: false   # tools the assistant proposes and the person installs
 allow_workflows: false        # workflows the person approves, run on a schedule
@@ -110,12 +110,41 @@ environments:
   index_hosts: [pypi.org, files.pythonhosted.org]   # where Columbus's uv may download
                               # wheels for environments the person approves (propose_environment)
 
-# Script approvals. session_approval adds "Allow this script for the
-# session" (the same code, any inputs, until the chat or AI app connection
-# ends) for the engine's Python and governed level-A environments only;
-# never for trusted ones. Off by default; unknown keys here are refused.
+# Script approvals, for scripts that run confined at level A (the engine's
+# Python and governed level-A environments): no network, their inputs to
+# read, their own run folder to write.
+#   approval: each      the person approves every run (the default)
+#   approval: session   the card also offers "Allow this script for the
+#                       session" (the same code, any inputs, until the chat
+#                       or AI app connection ends)
+#   approval: none      no approval: the sandbox is the boundary. The app's
+#                       "Work freely on copies" writes this
+# A run with network (level B) and a trusted run ask every time, whatever
+# this says. session_approval: true is the older spelling of
+# approval: session. Unknown keys and values here are refused.
 scripts:
+  approval: each
   session_approval: false
+
+# Toolboxes: programs that describe their own tools (the GeoLibre runner,
+# QGIS, or a program with a description file), installed by the person and
+# run confined at level A like scripts. Off by default.
+allow_toolboxes: false
+toolboxes:
+  catalogue: true             # false: Columbus's built-in catalogue downloads nothing;
+                              # toolboxes are added only from files already on the computer
+
+# A project's files: the assistant may list, read and write text files in
+# its project's own folder, and run scripts kept there. Off by default.
+allow_project_files: false
+
+# Sync of a project's files with a Git server (GitHub, GitHub Enterprise
+# Server, Gitea, Forgejo) through the server's web API, on the person's
+# click. Off by default.
+allow_sync: false
+sync:
+  hosts: []                   # empty: any server the person connects; listed: only these,
+                              # e.g. [gitea.example.org]
 
 # Web map layers (imagery, WMS/WMTS, ArcGIS map, image and feature
 # services): display only, drawn through Columbus, never seen by the

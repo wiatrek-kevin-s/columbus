@@ -105,7 +105,7 @@ export async function render(main, rest) {
   // ---- The list --------------------------------------------------------
   function listView() {
     page.append(pageHead("Projects", "A project is a piece of work: instructions your assistant follows in every chat of it, the connections those chats may use, and where its results go. Yours alone.",
-      [button("New project", "primary sm", () => go("#/projects/new"), { id: "pj-new" })], { href: "#/chats", label: "Chats" }));
+      [button("New project", "primary sm", () => go("#/projects/new"), { id: "pj-new" })]));
     page.append(h("div", { class: "scroll" }, body));
     body.append(err);
     const ul = h("ul", { class: "list", id: "pj-list" });

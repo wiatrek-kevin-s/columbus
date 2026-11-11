@@ -1,7 +1,9 @@
-// The main window: the four places, the router, Ctrl+K search, the
-// settings sheet, and the polling that keeps counts fresh. Pages live in
-// pages/*.js and draw inside the panel; a session's map shows behind it.
-import { $, h, icon, logo, iconButton, invoke, store, applyTheme, closeSide, layoutChanged } from "./core.js";
+// The main window: the sidebar (a new chat, the search, the places, recent
+// chats), the router, Ctrl+K search, the settings sheet, and the polling
+// that keeps counts fresh. Pages live in pages/*.js and draw in the middle;
+// what the assistant made (a session's map and table, files, a script, a
+// note) shows in the panel on the right.
+import { $, h, icon, logo, iconButton, invoke, store, applyTheme, closeSide, closeOutputs, setOutputsHead, layoutChanged, outputsOpen, setOutputsFull } from "./core.js";
 import * as chats from "./pages/chats.js";
 import * as documents from "./pages/documents.js";
 import * as connections from "./pages/connections.js";
@@ -13,30 +15,31 @@ import * as projects from "./pages/projects.js";
 import * as datagroups from "./pages/datagroups.js";
 import * as registry from "./pages/registry.js";
 
-// The four places a person goes to.
-const PLACES = [["chats", "Chats"], ["data", "Data"], ["workflows", "Workflows"], ["activity", "Activity"]];
+// The places a person goes to, in the sidebar: [page, name, icon].
+const PLACES = [["chats", "Chats", "chat"], ["projects", "Projects", "project"], ["data", "Data", "connections"], ["documents", "Documentation", "doc"],
+  ["workflows", "Workflows", "play"], ["tools", "Tools", "wrench"], ["activity", "Activity", "pulse"]];
 // Every page: what draws it, the place it belongs to, and its name.
 const PAGES = {
   chats: [chats.render, "chats", "Chats"],
-  projects: [projects.render, "chats", "Projects"],
+  projects: [projects.render, "projects", "Projects"],
   data: [connections.render, "data", "Data"],
   connections: [connections.render, "data", "Data"],
-  documents: [documents.render, "data", "Notes"],
+  documents: [documents.render, "documents", "Documentation"],
   datagroups: [datagroups.render, "data", "Data groups"],
   registry: [registry.render, "data", "Registry"],
   workflows: [workflows.render, "workflows", "Workflows"],
-  tools: [tools.render, "workflows", "Tools"],
-  skills: [tools.renderSkills, "workflows", "Skills"],
+  tools: [tools.render, "tools", "Tools"],
+  skills: [tools.renderSkills, "tools", "Skills"],
   activity: [activity.render, "activity", "Activity"],
 };
 // What Ctrl+K offers besides chats (name, where, what kind).
 const GOTO = [
-  ["New chat", "#/chats/fresh", "Chats"], ["Chats", "#/chats", "Place"], ["Projects", "#/projects", "Chats"],
-  ["Data", "#/data", "Place"], ["Datasets", "#/data/datasets", "Data"], ["Notes", "#/documents", "Data"],
-  ["Organization's pack", "#/documents/pack", "Data"], ["Note proposals", "#/documents/proposals", "Data"], ["Import a document", "#/documents/import", "Data"],
+  ["New chat", "#/chats/fresh", "Chats"], ["Chats", "#/chats", "Place"], ["Projects", "#/projects", "Place"],
+  ["Data", "#/data", "Place"], ["Datasets", "#/data/datasets", "Data"], ["Documentation", "#/documents", "Place"],
+  ["Organization's pack", "#/documents/pack", "Documentation"], ["Note proposals", "#/documents/proposals", "Documentation"], ["Import a document", "#/documents/import", "Documentation"],
   ["Data groups", "#/datagroups", "Data"], ["Map layers", "#/data/maplayers", "Data"], ["Project databases", "#/data/projectdbs", "Data"],
   ["Registry: open data and GIS tools", "#/registry", "Data"],
-  ["Workflows", "#/workflows", "Place"], ["Tools", "#/tools", "Workflows"], ["Skills", "#/skills", "Workflows"],
+  ["Workflows", "#/workflows", "Place"], ["Tools", "#/tools", "Place"], ["Skills", "#/skills", "Tools"],
   ["Activity", "#/activity", "Place"], ["History (the audit log)", "#/activity/audit", "Activity"], ["Exports", "#/activity/exports", "Activity"],
   ["Settings", "#/settings", "Settings"], ...settings.SECTIONS.map(([k, t]) => [t, `#/settings/${k}`, "Settings"]),
 ];
@@ -136,7 +139,10 @@ async function showPage(r, { keepFocus = false } = {}) {
   // The live chat leaves the panel now, even if the page before this one
   // was still being drawn and has handed back no clean-up yet.
   chats.leaveLive();
-  closeSide();
+  // The panel on the right belonged to the page that is left; the next one
+  // opens it again if it has something for it.
+  closeOutputs();
+  setOutputsHead(null);
   touched = false;
   // A fresh sheet for each page. One that is still being drawn when the
   // person goes on keeps drawing on the sheet that was taken away, not on
@@ -147,9 +153,7 @@ async function showPage(r, { keepFocus = false } = {}) {
   shown = r;
   drawNav(r);
   document.title = `${PAGES[r.page][2]} · Columbus`;
-  // A page that cannot be the start takes its place at the side at once,
-  // not when its data has come: the panel does not wait in the middle and
-  // then move while the person is reaching for something on it.
+  // A page that cannot be the start says so at once, not when its data has come.
   if (!(r.page === "chats" && ["new", "fresh", "run"].includes(r.rest[0]))) posture();
   try {
     const off = (await PAGES[r.page][0](main, r.rest)) || null;
@@ -160,7 +164,7 @@ async function showPage(r, { keepFocus = false } = {}) {
         try { off(); } catch (e) { console.error(e); }
       }
       // What it changed while it was drawn (the chat shown, say) no longer
-      // decides where the panel stands.
+      // decides whether this is the start.
       posture();
       return;
     }
@@ -178,18 +182,13 @@ async function showPage(r, { keepFocus = false } = {}) {
   posture();
 }
 
-// Nothing on the map and nothing said yet: the panel stands in the middle
-// with the question first. Anything else: it sits at the left, over the map.
+// A new chat with nothing said yet is the start: a greeting, and the
+// question in the middle of the window.
 function posture() {
   const start = !!shown && shown.page === "chats" && chats.isStart();
   // The question is drawn first on the start: first in the document too.
   chats.questionFirst(start);
-  if (document.body.classList.contains("start") !== start) {
-    document.body.classList.toggle("start", start);
-    layoutChanged();
-    // Once more when the panel has finished moving.
-    setTimeout(layoutChanged, 320);
-  }
+  document.body.classList.toggle("start", start);
 }
 
 /** What waits for the person: requests, and things to read before they run. */
@@ -199,57 +198,143 @@ function waiting() {
   return { requests, reviews };
 }
 
-let navKey = "";
-function drawNav(r = route()) {
+// ---------- The sidebar ----------
+// Built once and then changed in place: a link that is drawn again while
+// the pointer is down on it loses the click.
+const navLinks = new Map(); // place -> { a, count, label }
+let navBuilt = false;
+
+function buildNav() {
+  const mac = navigator.platform.startsWith("Mac");
+  $("sb-top").replaceChildren(logo(), h("span", { class: "name" }, "Columbus"),
+    iconButton("sidebar", "Close the sidebar", () => setSidebar(document.body.classList.contains("sb-closed")), { id: "sb-toggle" }));
+  const item = (attrs, ic, label, ...more) => h(attrs.href ? "a" : "button",
+    { class: "sb-item", ...(attrs.href ? {} : { type: "button" }), ...attrs }, icon(ic), h("span", { class: "label" }, label), ...more);
+  const search = item({ id: "nav-search", title: `Search chats, data, workflows and pages (${mac ? "⌘K" : "Ctrl+K"})` }, "search", "Search",
+    h("span", { class: "kbd", "aria-hidden": "true" }, mac ? "⌘K" : "Ctrl K"));
+  search.addEventListener("click", openPalette);
   const nav = $("nav");
-  const place = r.page === "settings" ? (shown ? PAGES[shown.page][1] : "chats") : PAGES[r.page][1];
+  nav.replaceChildren(item({ href: "#/chats/fresh", id: "nav-new", title: "New chat" }, "compose", "New chat"), search,
+    h("span", { class: "gap", "aria-hidden": "true" }));
+  for (const [k, label, ic] of PLACES) {
+    const count = h("span", { class: "count", "aria-hidden": "true", hidden: true });
+    const a = item({ href: `#/${k}`, class: "sb-item tab", "data-place": k, title: label }, ic, label, count);
+    navLinks.set(k, { a, count, label });
+    nav.append(a);
+  }
+  $("sb-foot").replaceChildren(item({ href: "#/settings", id: "nav-settings", title: "Settings" }, "settings", "Settings"));
+  navBuilt = true;
+}
+
+// The place that is lit. None while a chat itself is open: its row under
+// Recents is.
+function placeOf(r) {
+  if (!r) return null;
+  if (r.page === "chats") return r.rest.length ? null : "chats";
+  return PAGES[r.page][1];
+}
+
+function drawNav(r = route()) {
+  if (!navBuilt) buildNav();
+  const under = r.page === "settings" ? shown : r;
+  const place = placeOf(under);
   const w = waiting();
   const n = w.requests + w.reviews;
-  // Redrawn only when something it shows changed, keeping the focus.
-  const key = JSON.stringify([place, n, r.page === "settings"]);
-  if (key === navKey) return;
-  navKey = key;
-  const focused = nav.contains(document.activeElement) ? document.activeElement.getAttribute("href") || document.activeElement.id : null;
-  const tabs = PLACES.map(([k, label]) => {
-    const count = k === "activity" ? n : 0;
-    const a = h("a", { class: "tab", href: `#/${k}`, "aria-label": count ? `${label}, ${count} waiting` : label },
-      h("span", {}, label), count ? h("span", { class: "count", "aria-hidden": "true" }, String(count)) : null);
-    if (place === k && r.page !== "settings") a.setAttribute("aria-current", "page");
-    return a;
-  });
-  const set = h("a", { class: "iconbtn", href: "#/settings", id: "nav-settings", "aria-label": "Settings", title: "Settings" }, icon("settings"));
+  for (const [k, { a, count, label }] of navLinks) {
+    if (place === k) a.setAttribute("aria-current", "page");
+    else a.removeAttribute("aria-current");
+    const c = k === "activity" ? n : 0;
+    count.hidden = !c;
+    count.textContent = c ? String(c) : "";
+    a.setAttribute("aria-label", c ? `${label}, ${c} waiting` : label);
+  }
+  const set = $("nav-settings");
   if (r.page === "settings") set.setAttribute("aria-current", "page");
-  nav.replaceChildren(logo(), ...tabs, h("span", { class: "spacer" }),
-    h("a", { class: "iconbtn", href: "#/chats/fresh", id: "nav-new", "aria-label": "New chat", title: "New chat" }, icon("plus")),
-    iconButton("search", `Search chats, data, workflows and pages (${navigator.platform.startsWith("Mac") ? "⌘K" : "Ctrl+K"})`, openPalette, { id: "nav-search" }),
-    set);
-  if (focused) {
-    const again = [...nav.querySelectorAll("a, button")].find((x) => x.getAttribute("href") === focused || x.id === focused);
-    if (again) again.focus();
+  else set.removeAttribute("aria-current");
+  drawRecents(under);
+}
+
+// Recent chats, and the sessions other AI apps run, newest first.
+let recentsKey = "";
+function drawRecents(r) {
+  const rows = chats.recent(16);
+  const open = r && r.page === "chats" && r.rest.length ? `#/chats/${r.rest.map(encodeURIComponent).join("/")}` : "";
+  const isOpen = (x) => (x.live ? chats.liveShown() : x.href === open);
+  const key = JSON.stringify(rows.map((x) => [x.href, x.title, x.who || "", !!x.waiting, isOpen(x)]));
+  if (key === recentsKey) return;
+  recentsKey = key;
+  const box = $("recents");
+  const held = box.contains(document.activeElement) ? document.activeElement.getAttribute("href") : null;
+  const ul = h("ul", { id: "recent-list" });
+  for (const x of rows) {
+    const a = h("a", { class: "sb-item", href: x.href, title: x.title },
+      x.waiting ? h("span", { class: "dot warn", role: "img", "aria-label": "Waiting for you" }) : null,
+      h("span", { class: "label" }, x.title), x.who ? h("span", { class: "who" }, x.who) : null);
+    if (isOpen(x)) a.setAttribute("aria-current", "page");
+    ul.append(h("li", {}, a));
+  }
+  box.replaceChildren(...(rows.length ? [h("h2", { id: "recents-title" }, "Recents"), ul,
+    h("a", { class: "sb-item all", href: "#/chats", id: "recents-all" }, h("span", { class: "label" }, "All chats"))] : []));
+  if (held) {
+    const again = [...box.querySelectorAll("a")].find((x) => x.getAttribute("href") === held);
+    if (again) again.focus({ preventScroll: true });
   }
 }
 
-// ---------- The panel put away: the map alone ----------
-function drawPill() {
-  const pill = $("pill");
-  // A request the app's own chat made, put away with the panel: the pill
-  // says so (a new one brings the panel back by itself, chats.js).
-  const waits = chats.waitingCount() > 0;
-  const held = document.activeElement && document.activeElement.id === "pill-show";
-  pill.replaceChildren(...[logo(), waits ? h("span", { class: "dot warn", "aria-hidden": "true" }) : null,
-    h("span", { class: "t" }, waits ? "Columbus needs your OK" : chats.liveTitle() || "Columbus"),
-    iconButton("panel", "Show the panel", () => setAway(false), { id: "pill-show" })].filter(Boolean));
-  if (held) $("pill-show").focus({ preventScroll: true });
-}
-function setAway(away) {
-  if (document.body.classList.contains("panel-away") === away) return;
-  document.body.classList.toggle("panel-away", away);
-  if (away) drawPill();
+/** Put the sidebar away (a rail of icons) or bring it back. */
+function setSidebar(open, remember = true) {
+  document.body.classList.toggle("sb-closed", !open);
+  const t = $("sb-toggle");
+  if (t) {
+    const label = open ? "Close the sidebar" : "Open the sidebar";
+    t.setAttribute("aria-label", label);
+    t.title = label;
+    t.setAttribute("aria-expanded", open ? "true" : "false");
+  }
+  if (remember) { try { localStorage.setItem("columbus.sidebar", open ? "open" : "closed"); } catch { /* not kept */ } }
   layoutChanged();
-  // The focus follows: to the pill's button, or back into the panel.
-  setTimeout(() => { const to = away ? $("pill-show") : $("main"); if (to) to.focus({ preventScroll: true }); }, 0);
 }
-store.setAway = setAway;
+
+// ---------- The panel on the right: its width ----------
+const OUT_MIN = 380;
+// The width the person asked for; the stylesheet keeps the middle column
+// wide enough whatever the window's size, so a window made smaller and then
+// larger gets its panel back as it was.
+function setOutWidth(px, remember = true) {
+  const w = Math.round(Math.max(px, OUT_MIN));
+  document.documentElement.style.setProperty("--out-w", `${w}px`);
+  outWidthSaid();
+  if (remember) { try { localStorage.setItem("columbus.outputs", String(w)); } catch { /* not kept */ } }
+  layoutChanged();
+}
+function outWidthSaid() {
+  const w = outputsOpen() ? Math.round($("outputs").getBoundingClientRect().width) : 0;
+  if (w) $("splitter").setAttribute("aria-valuenow", String(w));
+}
+{
+  const sp = $("splitter");
+  sp.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    sp.setPointerCapture(e.pointerId);
+    document.body.classList.add("resizing");
+    const move = (m) => setOutWidth(window.innerWidth - m.clientX, false);
+    const up = () => {
+      sp.removeEventListener("pointermove", move);
+      document.body.classList.remove("resizing");
+      setOutWidth($("outputs").getBoundingClientRect().width);
+    };
+    sp.addEventListener("pointermove", move);
+    sp.addEventListener("pointerup", up, { once: true });
+    sp.addEventListener("pointercancel", up, { once: true });
+  });
+  // By keyboard: the arrows move the edge.
+  sp.addEventListener("keydown", (e) => {
+    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+    e.preventDefault();
+    setOutWidth($("outputs").getBoundingClientRect().width + (e.key === "ArrowLeft" ? 32 : -32));
+  });
+}
 
 // ---------- Ctrl+K ----------
 let paletteItems = [];
@@ -351,10 +436,16 @@ document.addEventListener("keydown", (e) => {
     e.preventDefault();
     openPalette();
   }
-  // Esc closes the sheet beside the panel (dialogs and menus close themselves).
-  if (e.key === "Escape" && !e.defaultPrevented && !document.querySelector("dialog[open]") && $("side") && !$("side").hidden) {
-    e.preventDefault();
-    closeSide();
+  // Esc closes what is being read in the panel on the right, then gives
+  // the chat its place back (dialogs and menus close themselves).
+  if (e.key === "Escape" && !e.defaultPrevented && !document.querySelector("dialog[open]")) {
+    if ($("side") && !$("side").hidden) {
+      e.preventDefault();
+      closeSide();
+    } else if (document.body.classList.contains("out-full")) {
+      e.preventDefault();
+      setOutputsFull(false);
+    }
   }
 });
 
@@ -396,15 +487,17 @@ chats.setRefresh(refresh);
 
 let navQueued = false;
 store.on((k) => {
-  if (["inbox", "tools", "info", "chats", "sessions", "waiting", "workflows"].includes(k) && !navQueued) {
+  if (["inbox", "tools", "info", "chats", "sessions", "waiting", "workflows", "chatstate"].includes(k) && !navQueued) {
     navQueued = true;
     requestAnimationFrame(() => { navQueued = false; drawNav(); });
   }
-  // The live chat started, or was cleared: the panel takes its place.
+  // The live chat started, or was cleared: the start comes or goes.
   if (k === "chatstate") posture();
-  if ((k === "chatstate" || k === "waiting") && document.body.classList.contains("panel-away")) drawPill();
 });
-window.addEventListener("resize", layoutChanged);
+window.addEventListener("resize", () => {
+  outWidthSaid();
+  layoutChanged();
+});
 
 // Tests only: a debug build may open the window with a test page to show
 // in the same sandboxed frame as a session's page (e2e/frame_ipc.py). The
@@ -427,6 +520,14 @@ async function boot() {
   await Promise.all([refreshInfo(), refreshChats(), refreshSessions(), refreshTools(), refreshWorkflows(), refreshProjects(),
     invoke("chat_settings").then((s) => { store.ownSession = s.session || null; }).catch(() => {})]);
   testFrame();
+  // The sidebar and the panel's width as the person left them. A small
+  // window starts with the sidebar put away.
+  let side = null;
+  let width = 0;
+  try { side = localStorage.getItem("columbus.sidebar"); width = Number(localStorage.getItem("columbus.outputs")) || 0; } catch { /* as new */ }
+  drawNav();
+  setSidebar(side ? side === "open" : window.innerWidth >= 1100, false);
+  if (width) setOutWidth(width, false);
   window.addEventListener("hashchange", show);
   await show();
   booted = true;

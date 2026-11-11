@@ -39,7 +39,7 @@ function signerBlock(info, onTrusted) {
     }, { id: "share-trust" });
     wrap.append(
       h("p", {}, `Signed with a key you don't trust yet: ${sg.fingerprint}.`),
-      h("p", { class: "small" }, "Trust it only if the sender read you this same fingerprint themselves (by phone or in person; Workflows › Tools › Show my sharing key). Then files they sign show as theirs."),
+      h("p", { class: "small" }, "Trust it only if the sender read you this same fingerprint themselves (by phone or in person; Tools › Show my sharing key). Then files they sign show as theirs."),
       h("div", { class: "row" }, name, trust), err);
     return wrap;
   }
@@ -62,7 +62,7 @@ export async function shareIn(err, done, from = null) {
     signerBlock(info, () => { d.close(); shareIn(err, done, from); }),
     h("p", { class: "notice" }, "Opening it files it for you to review, as your own assistant's proposals are: nothing is installed or run until you read it and approve it. A shared tool was not test-run on your computer, so read its code before you install it."));
   if (!info.allowed) {
-    body.append(h("p", { class: "notice warn" }, "Opening shared tools and workflows is off in your organization's settings (Workflows › Tools, under How tools run)."));
+    body.append(h("p", { class: "notice warn" }, "Opening shared tools and workflows is off in your organization's settings (Tools, under How tools run)."));
   }
   if (info.workflow) {
     const w = info.workflow;

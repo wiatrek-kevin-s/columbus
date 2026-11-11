@@ -57,7 +57,7 @@ APP = Path(ARGS.app).resolve()
 ROOT = Path(ARGS.root)
 
 W, H = 1600, 1000
-# The hero's window: the chat's panel over its map, at about the size the
+# The hero's window: the chat with its map beside it, at about the size the
 # README shows it (900 pixels wide), so the words are readable.
 HERO = (1240, 760)
 QUESTION = "Which fatal crashes from 2020 to 2023 happened within 150 feet of IH 35 in central Austin? Count them by year."
@@ -383,7 +383,7 @@ def run(theme, facts, frames):
         guard.ready(d, wait)
 
         step(f"{theme}: the start, then the chat")
-        # The app opens on a question: a new chat, its panel in the middle.
+        # The app opens on a question in the middle of the window.
         box = wait.until(EC.visibility_of_element_located((By.ID, "text")))
         wait.until(lambda drv: drv.execute_script("return !!document.querySelector('.chat-empty .starters')"))
         time.sleep(2)
@@ -448,7 +448,7 @@ def run(theme, facts, frames):
         # reader who sees only its first frame still sees the answer.
         s.poster()
 
-        step(f"{theme}: how the result was made, beside the chat")
+        step(f"{theme}: how the result was made, in the panel on the right")
         d.find_element(By.CSS_SELECTOR, "#log .result .result-made").click()
         WebDriverWait(d, 20).until(lambda drv: "Provenance" in drv.find_element(By.ID, "side").text)
         s.shot(f"tour-checks{sfx}", 250, size=(1280, 800), settle=1.5)
@@ -467,7 +467,7 @@ def run(theme, facts, frames):
         d.set_window_size(W, H)
         time.sleep(1.5)
         if theme == "light":
-            # The panel put away: only the map, and a pill to bring it back.
+            # The map fills the window; one button brings the chat back.
             d.find_element(By.CSS_SELECTOR, "#main .chat-more").click()
             d.find_element(By.CSS_SELECTOR, "#main .chat-away").click()
             time.sleep(1.5)
@@ -475,7 +475,7 @@ def run(theme, facts, frames):
             in_map(lambda: show("clip-", False))
             time.sleep(3)
             s.shot("map-only", 250, size=(1280, 800), settle=2)
-            d.find_element(By.ID, "pill-show").click()
+            d.find_element(By.ID, "out-full").click()
             time.sleep(1.5)
 
         step(f"{theme}: an export waits for the person")

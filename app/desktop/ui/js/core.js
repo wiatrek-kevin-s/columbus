@@ -90,6 +90,14 @@ const ICONS = {
   out: '<path d="M4.5 11.5l7-7M5.5 4.5h6v6"/>',
   check: '<path d="M3.5 8.5l3 3 6-7"/>',
   panel: '<rect x="2.5" y="3" width="11" height="10" rx="2"/><path d="M6.5 3v10"/>',
+  expand: '<path d="M9.5 2.75h3.75V6.500M6.500 13.250H2.750V9.500M13.250 2.750 9 7M2.750 13.250 7 9"/>',
+  chat: '<path d="M3.5 3h9A1.5 1.5 0 0 1 14 4.500v5a1.500 1.500 0 0 1-1.500 1.500H7.500L4.500 13.500V11h-1A1.500 1.500 0 0 1 2 9.500v-5A1.500 1.500 0 0 1 3.500 3z"/>',
+  compose: '<path d="M7.5 3H4a1.500 1.500 0 0 0-1.500 1.500V12A1.500 1.500 0 0 0 4 13.500h7.500A1.500 1.500 0 0 0 13 12V8.500"/><path d="M11.500 2.500 13.500 4.500 8.250 9.750l-2.500.5.5-2.500L11.500 2.500z"/>',
+  project: '<rect x="2.500" y="2.500" width="4.500" height="4.500" rx="1"/><rect x="9" y="2.500" width="4.500" height="4.500" rx="1"/><rect x="2.500" y="9" width="4.500" height="4.500" rx="1"/><rect x="9" y="9" width="4.500" height="4.500" rx="1"/>',
+  wrench: '<path d="M10.2 2.300a3.250 3.250 0 0 0-3.900 4.200L2.500 10.300a1.500 1.500 0 0 0 2.100 2.100l3.800-3.800a3.250 3.250 0 0 0 4.200-3.900L10.700 6.600 9.300 5.200l1.900-1.900a3.200 3.200 0 0 0-1-1z"/>',
+  pulse: '<path d="M1.750 8.500h2.750L6.250 4l2.500 8.500 1.750-4h3.750"/>',
+  branch: '<circle cx="4.500" cy="3.750" r="1.500"/><circle cx="4.500" cy="12.250" r="1.500"/><circle cx="11.500" cy="5.750" r="1.500"/><path d="M4.500 5.250v5.500M11.500 7.250c0 2-2 2.500-4 2.750-1.500.2-3 .5-3 1.250"/>',
+  sidebar: '<rect x="2.500" y="3" width="11" height="10" rx="2"/><path d="M6.500 3v10"/>',
   map: '<path d="M2 4.5 6 3l4 1.5L14 3v8.5L10 13l-4-1.5L2 13z"/><path d="M6 3v8.5M10 4.5V13"/>',
   files: '<path d="M2.5 5A1.5 1.5 0 0 1 4 3.5h2.3l1.4 1.5H12A1.5 1.5 0 0 1 13.5 6.5V11a1.5 1.5 0 0 1-1.5 1.5H4A1.5 1.5 0 0 1 2.5 11V5z"/>',
   popout: '<path d="M6.5 3.5H4A1.5 1.5 0 0 0 2.5 5v7A1.5 1.5 0 0 0 4 13.500h7a1.500 1.500 0 0 0 1.500-1.500V9.500M9 2.500h4.500V7M13.500 2.500 7.500 8.500"/>',
@@ -263,13 +271,12 @@ export function pageHead(title, lede, actions = [], back = null) {
   return h("header", { class: back ? "pagehead has-back" : "pagehead" }, bar, lede ? h("p", { class: "lede" }, lede) : null);
 }
 
-/** The head of one of the four places: its name (for screen readers and
- * tests; the tab above already says it), a search box and its actions. */
+/** The head of one of the places in the sidebar: its name, then a search
+ * box and its actions. */
 export function placeHead(title, search, actions = []) {
   return h("header", { class: "placehead" },
-    h("h1", { id: "page-title", class: "visually-hidden", tabindex: "-1" }, title),
-    search ? h("label", { class: "searchbox" }, icon("search"), search) : h("span", { class: "grow" }),
-    ...actions);
+    h("h1", { id: "page-title", tabindex: "-1" }, title),
+    h("div", { class: "row" }, search ? h("label", { class: "searchbox" }, icon("search"), search) : h("span", { class: "grow" }), ...actions));
 }
 
 /** A quiet label over a group of rows, with how many there are. */
@@ -405,14 +412,88 @@ export function monthName(m) {
   return new Date(y, mo - 1, 1).toLocaleString([], { month: "long", year: "numeric" });
 }
 
-// ---------- The side sheet: something long to read, beside the panel ----------
-let sideClose = null;
+// ---------- The panel on the right: what the assistant made ----------
+// It holds a session's map and table (the stage), and over them anything
+// long to read: files, how a result was made, a script, a note (the side).
 
-/** Show `body` in the sheet beside the panel. `extra` nodes go in its head,
- * before the close button. Returns a function that closes it. */
+/** Whether the panel on the right is on show. */
+export function outputsOpen() {
+  const o = $("outputs");
+  return !!o && !o.hidden;
+}
+
+/** Open the panel on the right. */
+export function openOutputs() {
+  const o = $("outputs");
+  if (!o || !o.hidden) return;
+  o.hidden = false;
+  document.body.classList.add("out-open");
+  layoutChanged();
+}
+
+/** Close it (and whatever is being read in it). */
+export function closeOutputs() {
+  const o = $("outputs");
+  if (!o || o.hidden) return;
+  sideOpened = false;
+  closeSide();
+  setOutputsFull(false);
+  o.hidden = true;
+  document.body.classList.remove("out-open");
+  layoutChanged();
+}
+
+/** The middle put away, so the panel on the right has the window (or back). */
+export function setOutputsFull(full) {
+  if (full) openOutputs();
+  if (document.body.classList.contains("out-full") === !!full) return;
+  document.body.classList.toggle("out-full", !!full);
+  // The button in the panel's head says what it does now.
+  const old = $("out-full");
+  if (old) {
+    const held = document.activeElement === old;
+    const fresh = fullButton();
+    old.replaceWith(fresh);
+    if (held) fresh.focus({ preventScroll: true });
+  }
+  layoutChanged();
+}
+
+function fullButton() {
+  const full = document.body.classList.contains("out-full");
+  return iconButton(full ? "panel" : "expand", full ? "Show the chat again" : "Fill the window", () => { setOutputsFull(!document.body.classList.contains("out-full")); }, { id: "out-full", "aria-pressed": full ? "true" : "false" });
+}
+
+/** The panel's head: a title and the actions that go with what it shows.
+ * `actions` are nodes; the two that are always there (fill the window,
+ * close) are added here. `onClose` is what the close button does when
+ * closing is more than hiding the panel. With no title the head is not
+ * shown. */
+export function setOutputsHead(title, actions = [], onClose = null) {
+  const head = $("out-head");
+  if (!head) return;
+  head.hidden = !title;
+  $("outputs").classList.toggle("detail-only", !title);
+  if (!title) { head.replaceChildren(); return; }
+  head.replaceChildren(h("h2", { id: "out-title" }, title), ...actions.filter(Boolean), fullButton(),
+    iconButton("close", "Close the panel", () => (onClose ? onClose() : closeOutputs()), { id: "out-close" }));
+}
+
+let sideClose = null;
+// Whether the panel was opened only to read this (closing the reading then
+// closes the panel too).
+let sideOpened = false;
+
+/** Show `body` to read in the panel on the right, over the map if one is
+ * there. `extra` nodes go in its head, before the close button. Returns a
+ * function that closes it. */
 export function openSide(title, body, extra = [], onClose = null) {
   const side = $("side");
-  closeSide();
+  const wasOpen = outputsOpen();
+  const keep = sideOpened && !side.hidden;
+  closeSide({ keepPanel: true });
+  sideOpened = keep || !wasOpen;
+  openOutputs();
   const close = () => { if (sideClose === close) closeSide(); };
   side.replaceChildren(
     h("div", { class: "hd" }, h("h2", { id: "side-title" }, title),
@@ -420,37 +501,38 @@ export function openSide(title, body, extra = [], onClose = null) {
     h("div", { class: "bd", id: "side-body" }, body));
   side.setAttribute("aria-labelledby", "side-title");
   side.hidden = false;
+  // One head at a time: the reading's own, while it is open.
+  $("outputs").classList.add("reading");
   sideClose = close;
   side.onClose = onClose;
   layoutChanged();
   return close;
 }
 
-export function closeSide() {
+export function closeSide({ keepPanel = false } = {}) {
   const side = $("side");
   if (!side || side.hidden) return;
   side.hidden = true;
   side.replaceChildren();
+  $("outputs").classList.remove("reading");
   sideClose = null;
   const fn = side.onClose;
   side.onClose = null;
   if (fn) { try { fn(); } catch (e) { console.error(e); } }
+  if (sideOpened && !keepPanel) {
+    sideOpened = false;
+    closeOutputs();
+  }
   layoutChanged();
 }
 
-// ---------- The stage: where a session's map shows, behind the panel ----------
+// ---------- The stage: where a session's map shows, in the panel on the right ----------
 
-/** How much of the window the panel and the side sheet cover, in CSS
- * pixels from each edge: a map shown on the stage keeps clear of it. */
+/** How much of the map's frame something covers, in CSS pixels from each
+ * edge. Nothing does: the map has the panel's body to itself. (The map
+ * page still takes the numbers, for a host that does cover part of it.) */
 export function insets() {
-  const b = document.body.classList;
-  if (b.contains("start") || b.contains("panel-away")) return { left: 0, top: 0, right: 0, bottom: 0 };
-  let left = 0;
-  for (const id of ["panel", "side"]) {
-    const e = $(id);
-    if (e && !e.hidden) left = Math.max(left, Math.round(e.getBoundingClientRect().right));
-  }
-  return { left: Math.min(left, 4000), top: 0, right: 0, bottom: 0 };
+  return { left: 0, top: 0, right: 0, bottom: 0 };
 }
 
 const layoutListeners = new Set();
@@ -458,7 +540,7 @@ export function onLayout(fn) {
   layoutListeners.add(fn);
   return () => layoutListeners.delete(fn);
 }
-/** The panel moved, opened or closed: maps on the stage are told. */
+/** The panel opened, closed or changed its size: maps on the stage are told. */
 export function layoutChanged() {
   for (const fn of layoutListeners) {
     try { fn(); } catch (e) { console.error(e); }

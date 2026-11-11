@@ -22,7 +22,7 @@ and call it with `run_tool` knowing only what you write in its manifest. Write f
 5. **The person approves the test run**, reading the code, as for a script. If it fails, fix
    the code; nothing was filed.
 6. **The result says `waiting_for_person`.** Tell the person, in plain words, that the tool
-   is waiting in the Columbus app under **Workflows › Tools**, that they read its code and
+   is waiting in the Columbus app under **Tools**, that they read its code and
    install it there (Touch ID or Windows Hello), and what it does. You cannot install it.
    Report the test run's checks, especially any `fail`.
 7. **After they install it**, it is `personal.<name>.run` from the next call, with no restart.
@@ -316,7 +316,7 @@ say so in `not_for`, or read the M values instead; check the context pack's `lrs
 
 ## What the person sees
 
-The test-run approval shows the whole `tool.py` and the inputs. Under Workflows › Tools, they
+The test-run approval shows the whole `tool.py` and the inputs. Under Tools, they
 see the title, description, `not_for`, the test run's outputs and check ids, your warnings,
 and the full manifest and code, and install with Touch ID or Windows Hello, or decline.
 Installed tools are listed with when they were installed, and can be removed at once.

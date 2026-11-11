@@ -27,6 +27,13 @@ fn example_policy_has_every_new_key() {
         "index_hosts:",
         "scripts:",
         "session_approval:",
+        "approval:",
+        "allow_toolboxes:",
+        "toolboxes:",
+        "catalogue:",
+        "allow_project_files:",
+        "allow_sync:",
+        "sync:",
         "map:",
         "allow_web_layers:",
         "sources:",
@@ -35,6 +42,13 @@ fn example_policy_has_every_new_key() {
     }
     assert!(!p.environments.allow && !p.environments.allow_trusted);
     assert!(!p.environments.allow_network && !p.scripts.session_approval);
+    // F-15: written out at their defaults too.
+    assert_eq!(
+        p.scripts.approval,
+        Some(columbus_shared::policy::ScriptApproval::Each)
+    );
+    assert!(!p.allow_toolboxes && p.toolboxes.catalogue);
+    assert!(!p.allow_project_files && !p.allow_sync && p.sync.hosts.is_empty());
     assert_eq!(
         p.environments.index_hosts,
         ["pypi.org", "files.pythonhosted.org"]
