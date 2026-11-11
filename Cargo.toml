@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/shared", "crates/broker", "crates/flow", "crates/confine", "crates/gateway", "crates/chat", "workers/sdk-rust"]
+members = ["crates/shared", "crates/broker", "crates/flow", "crates/confine", "crates/gateway", "crates/chat", "crates/sync", "workers/sdk-rust"]
 # The desktop app builds on its own (Tauri needs a web view toolkit).
 exclude = ["app/desktop/src-tauri"]
 
