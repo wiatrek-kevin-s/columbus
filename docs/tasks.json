@@ -858,8 +858,8 @@
           "expected": "every place that states the version agrees; the build and all tests pass"
         }
       ],
-      "status": "todo",
-      "evidence": ""
+      "status": "done",
+      "evidence": "Commits cd9d934 (version), fe0913f, 309f1d7, 61262db (docs), 3a27e87 (README, pictures, animation), df15694, ff109df, 5825e9f (wording), merged as 1f18f24. Check 1: every picture and the animation retaken by app/desktop/e2e/screenshots.py from the app built from the merged tree, light and dark (screenshots: ok; demo.webp 158 KB, demo.gif 302 KB; all within the script's budgets); new pictures of the first-run choice, Settings, the Add tools dialog with Columbus's own catalogue entry, and a project's page with Sync and Files; each picture was looked at. The README (114 lines) was rendered with a GitHub-flavoured renderer at two widths in light and dark and read; GitHub's own rendering could not be reached from the build session, and the ten-second read was the builder's own, not a fresh reader's. Pictures have no street background (the build machine cannot reach the tile host; it is off by default). Check 2: check_links.py 592 links, none broken (six external hosts cannot be fetched from the build machine; CI's Docs links job checks them); skills ok; a search of the docs for the old window and the old rule (an approval for each script) finds only the name of the choice. Check 3: columbus-mcp --version says 0.15.0; cargo metadata --locked agrees for all crates and the desktop app; whole Rust suite 529 passed, 0 failed, 3 ignored; 12 desktop scripts, 4 map page scripts, 22 map page unit tests and 270 Python worker tests pass; fmt and both clippy runs clean. Verified on Linux; Windows and macOS by CI on pull request 26."
     },
     {
       "id": "T-35",
