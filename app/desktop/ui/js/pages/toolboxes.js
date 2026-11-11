@@ -171,9 +171,13 @@ export function toolboxSection() {
     const close = button("Close", "", () => d.close(), { id: "tbx-add-close" });
     const d = openDialog("Add tools", body, [h("span", { class: "spacer" }), close], "Add tools");
     d.id = "tbx-dialog";
-    const terminal = (command) => [
-      h("p", { class: "small" }, "Adding tools is confirmed at the keyboard, and this system has no Touch ID or Windows Hello for that. Use a terminal instead:"),
-      h("pre", { class: "box tbx-terminal", tabindex: "0", "aria-label": "The command to type in a terminal" }, command)];
+    // Said in full once; the second command only says where to type it.
+    let said = false;
+    const terminal = (command) => {
+      const words = said ? "In a terminal:" : "Adding tools is confirmed at the keyboard, and this system has no Touch ID or Windows Hello for that. Use a terminal instead:";
+      said = true;
+      return [h("p", { class: "small" }, words), h("pre", { class: "box tbx-terminal", tabindex: "0", "aria-label": "The command to type in a terminal" }, command)];
+    };
 
     for (const e of st.catalogue) {
       const facts = h("dl", { class: "kv" });

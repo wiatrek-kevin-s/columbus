@@ -21,7 +21,9 @@ Two sessions of the app:
    the tools are found by words and one opens in the panel on the right;
    the assistant finds one and runs it without being asked to approve, and
    its result is a layer on the chat's map; Remove takes the toolbox away,
-   and the same chat's assistant is no longer offered its tools.
+   and the same chat's assistant is no longer offered its tools. Last, a
+   program on this computer is added with its description file, listed,
+   found and removed (the program itself stays where it is).
 
     cargo build -p columbus-mcp --example toolbox_standin
     dbus-run-session -- xvfb-run -a python app/desktop/e2e/toolboxes.py \\
@@ -34,6 +36,7 @@ import json
 import os
 import platform
 import re
+import shutil
 import sys
 import tarfile
 import tempfile
@@ -425,9 +428,55 @@ def main():
         assert failed or '"status":"done"' not in ran.replace(" ", ""), f"a removed toolbox's tool still ran: {ran[:600]}"
         assert "geolibre-vector_copy" not in ran, ran[:600]
 
-        step("Installing and removing are in the audit log")
+        step("A program on this computer: a name Columbus cannot use is refused before anything is asked")
+        own = root / "own"
+        own.mkdir()
+        shutil.copy2(STANDIN, own / "linetool")
+        (own / "tools.json").write_text(json.dumps({"tools": [{
+            "id": "copy", "name": "Copy lines", "summary": "Copies a layer of lines.", "category": "Lines",
+            "args": ["vector_copy", "--input={input}", "--output={output}"],
+            "params": [{"name": "input", "role": "input", "kind": "vector", "required": True, "description": "The lines."},
+                       {"name": "output", "role": "output", "kind": "vector", "required": True, "description": "The copy."}]}]}))
+        nav(d, wait, "#/tools", "toolbox-card")
+        wait.until(lambda drv: shown(drv, "#tbx-add"))
+        d.find_element(By.ID, "tbx-add").click()
+        wait.until(lambda drv: drv.find_elements(By.ID, "tbx-form"))
+
+        def fill(name, value):
+            # (Set, not typed: the driver takes a typed path of a real file for an upload.)
+            d.execute_script("document.querySelector(`#tbx-form input[name='${arguments[0]}']`).value = arguments[1];", name, value)
+
+        fill("tbx_program", str(own / "linetool"))
+        fill("tbx_tools", str(own / "tools.json"))
+        fill("tbx_id", "County Lines")
+        fill("tbx_name", "County line tools")
+        save = d.find_element(By.ID, "tbx-save")
+        d.execute_script("arguments[0].scrollIntoView({block: 'center'})", save)
+        save.click()
+        wait.until(lambda drv: "short name" in text(drv, "#tbx-form-error"))
+        assert not (root / "toolboxes" / "county-lines").exists()
+        step("Added with its description file: listed, found by words, and removed; the program stays where it is")
+        fill("tbx_id", "county-lines")
+        d.execute_script("arguments[0].scrollIntoView({block: 'center'})", save)
+        save.click()
+        WebDriverWait(d, 120).until(lambda drv: drv.find_elements(By.CSS_SELECTOR, "#toolboxes li[data-id='county-lines']")
+                                    or text(drv, "#tbx-form-error").strip())
+        assert d.find_elements(By.CSS_SELECTOR, "#toolboxes li[data-id='county-lines']"), text(d, "#tbx-form-error")
+        row = text(d, "#toolboxes li[data-id='county-lines']")
+        for part in ["County line tools", "1 tool", "From a program on this computer", "In use"]:
+            assert part in row, f"{part!r} is not in the row: {row}"
+        assert "1 tool ready" in text(d, "#tbx-notice"), text(d, "#tbx-notice")
+        wait.until(lambda drv: drv.find_elements(By.CSS_SELECTOR, "#tbx-tools li[data-tool='county-lines.copy']"))
+        assert "Copies a layer of lines." in text(d, "#tbx-tools li[data-tool='county-lines.copy']")
+        named(d)
+        d.find_element(By.XPATH, "//ul[@id='toolboxes']/li[@data-id='county-lines']//button[normalize-space()='Remove']").click()
+        wait.until(lambda drv: not drv.find_elements(By.CSS_SELECTOR, "#toolboxes li"))
+        assert "its program stays where it is" in text(d, "#tbx-notice"), text(d, "#tbx-notice")
+        assert (own / "linetool").exists() and not (root / "toolboxes" / "county-lines").exists()
+
+        step("Installing, adding and removing are in the audit log")
         audit = "".join(p.read_text() for p in (root / "audit").rglob("*") if p.is_file())
-        for part in ['"toolbox_install"', '"toolbox_remove"', '"run_tool"']:
+        for part in ['"toolbox_install"', '"toolbox_add"', '"toolbox_remove"', '"run_tool"']:
             assert part in audit, f"{part} is not in the audit log"
         print("desktop toolboxes e2e: ok")
     finally:
