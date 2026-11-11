@@ -4,8 +4,8 @@ Kit version 1.1 · as of 2026-11-08, session S1 not started
 
 ## Where things stand
 
-- **Session:** part 3, the open workbench (0.15), from the owner's instruction of 2026-11-10 (`docs/build-brief-3.md`) · **Task:** T-27 to T-33 (areas S10 and S11), being built; T-26 (the new window) is done and on `main`
-- **Next step:** finish and merge areas S10 (one boundary, toolboxes, the map, project files) and S11 (sync with GitHub and Gitea), then S12 (docs, version 0.15.0, review, hand-over)
+- **Session:** part 3, the open workbench (0.15), from the owner's instruction of 2026-11-10 (`docs/build-brief-3.md`) · **Task:** T-34 to T-36 (area S12: docs, pictures, version 0.15.0, review, hand-over); T-26 to T-33 are done and on `main`
+- **Next step:** area S12: a few small follow-ups from the builders, the docs, README and pictures, version 0.15.0, the final review and its fixes, then the hand-over message
 - **Waiting on the owner:** nothing. They asked not to be involved and to be told when it is done
 - **Homework received:** setup round answered ("skip" on Dependabot alerts); H-1 and H-2 are optional, after release; H-3 to H-5 are optional, after part 3
 
@@ -119,6 +119,8 @@ Kit version 1.1 · as of 2026-11-08, session S1 not started
 | 2026-11-11 | T-32: the secret scan (private key headers, GitHub token shapes, JWTs, 40 hex beside a word like token, quoted password assignments, URLs with a password, the server's own token) has no override: the way out is to move the file to `outputs/` or change it. More names are refused than F-17 lists (characters Windows cannot hold, names ending in a dot or space, invisible characters, paths over 200 characters) | Stricter only; a colleague on Windows must be able to hold every synced file | Decided |
 | 2026-11-11 | T-33: `columbus-project.yaml` is written when a project is first linked and when the person changes its name or instructions, not before every compare; an arriving change is never overwritten by the project's own, and "Keep mine" is remembered | Writing it before every compare, as the brief's words said, would send the person's settings back over a colleague's unasked | Decided |
 | 2026-11-11 | T-33: `git-servers.yaml` holds exactly id, kind, url and user (F-18 unchanged); a company certificate's path is kept in the app's data. One account for each server. Connecting a server needs no keyboard confirmation (it is not something the assistant can do: only the main window's own pages can). On Linux no server can be connected (no credential store), as with the AI key | F-18 is a one-way door; the token is the person's own and is asked for by the app's own page | Decided |
+| 2026-11-11 | T-27, the sandbox proof on Windows: inside AppContainer the send call of a UDP socket does not fail (the packet is dropped on its way), so a check of the call alone said "ok". The check now measures the effect: the script asks a public name server a real question and waits; no answer may come back inside the sandbox, and where tests must have the network the same question asked outside it must be answered. Linux still requires the socket itself to be refused | A check wrong on one system, fixed without changing its intent (no network for a script). CI run 42970266183 shows it holding on Windows, macOS and Linux | Decided |
+| 2026-11-11 | Four faults found by CI on the combined tree, each fixed with a test or a reproduction: a wait in the desktop scripts read an element as the page redrew it (a wait now asks again); the newer linter in CI flagged an oversized error type in the sync test support (boxed; the build machine's Rust toolchain now matches CI's, 1.99.1); a toolbox test compared two spellings of one folder on Windows (the long-path prefix is taken off first); and the Tools page could draw an older read of the toolbox list after a newer one, so a toolbox just removed was listed again (the page now draws only the read begun last; the desktop script reproduces it with a large program) | Found on CI, not locally: the build machine runs as root, with small debug builds | Decided |
 
 ## Change requests
 
@@ -252,6 +254,8 @@ Newest first, written as you go. Mark each claim verified (checked this session)
 - 2026-11-11 PR #25 first CI run: 13 of 14 jobs passed; Desktop app on Linux failed in settings.py on a wait that read an element as the page redrew it (StaleElementReferenceException). Fixed in d5448cf (a wait asks again in that case).
 - 2026-11-11 T-28 and T-29 done: 33d1b47, 27ca89d, c71a89c; c93a881 to f189450; tests/toolboxes.rs 6 passed and toolboxes.py pass on Linux (verified by the builder).
 - 2026-11-11 T-32 and T-33 done: e97a71f, a89dc12, 441995d, f53de6c; 051d0dd, 98ff52b, 1462200, c1077ba; crates/sync tests and sync.py pass on Linux (verified by the builder).
+- 2026-11-11 Combined tree (T-27 to T-33 merged together) on Linux here: 527 Rust tests, 12 desktop scripts and 4 map page scripts pass (verified).
+- 2026-11-11 PR #25 merged (3ecacfd) after CI run 42970266183 green on 14 jobs (verified): T-27, T-28, T-29, T-31, T-32, T-33 are on main. Earlier runs on this pull request failed four times in all (see Decisions, 2026-11-11).
 
 ### Kit → Session S1 (2026-11-08)
 
