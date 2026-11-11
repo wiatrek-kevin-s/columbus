@@ -14,8 +14,9 @@
 //!   absolute paths, `..`, `.git`, `.columbus`, Windows' reserved names),
 //!   then walked from the folder one name at a time through the gateway's
 //!   safe-path helpers, never following a link, and each name must be there
-//!   exactly as given: one that differs only by case is refused. Nothing
-//!   outside the folder is read or written.
+//!   exactly as given: one that differs only by case, or that the system
+//!   treats as a name already there, is refused. Nothing outside the
+//!   folder is read or written.
 //! * **Text only**, UTF-8, at most 1 MB a file; the folder holds at most
 //!   1,000 files and 50 MB once the assistant has written to it. It is for
 //!   text the assistant writes, never for workspace layers: data still
@@ -115,7 +116,8 @@ fn shown(parts: &[String]) -> String {
 /// folder of that name is in it. Walked from the files folder one name at a
 /// time, never through a link. Each name must be there exactly as given: a
 /// name that differs only by case from one that is there is refused (F-17:
-/// they are one file on Windows and macOS). With `create`, the files folder
+/// they are one file on Windows and macOS), and so is one the system finds
+/// though no entry is spelled so. With `create`, the files folder
 /// and missing folders on the way are made; without it, a missing folder
 /// means there is no such file.
 fn parent(root: &Path, parts: &[String], create: bool) -> Result<(Dir, String, bool), String> {
@@ -170,6 +172,16 @@ fn walk(
             {
                 return Err(format!(
                     "{} is refused: {other:?} is already there, and names that differ only by upper and lower case are the same file on Windows and macOS. Use {other:?}",
+                    shown(parts)
+                ));
+            }
+            // No name in the folder is spelled so, yet the system finds
+            // one: it treats the name as one already there (the same
+            // letters written another way on macOS, a short name on
+            // Windows). Only the spelling the folder lists is used.
+            if std::fs::symlink_metadata(dir.path().join(part)).is_ok() {
+                return Err(format!(
+                    "{} is refused: this computer treats {part:?} as a name that is already there, written another way. Use the name as project_files with action list shows it",
                     shown(parts)
                 ));
             }
@@ -299,13 +311,24 @@ struct LabelsLock(PathBuf);
 impl LabelsLock {
     fn take(folder: &Path) -> Result<LabelsLock, String> {
         let path = folder.join(LABELS_LOCK);
-        for _ in 0..200 {
+        for tries in 0..200 {
             match std::fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
                 .open(&path)
             {
                 Ok(_) => return Ok(LabelsLock(path)),
+                // Windows: the lock another chat is just removing refuses a
+                // new one for a moment.
+                Err(e)
+                    if cfg!(windows)
+                        && tries < 20
+                        && e.kind() == std::io::ErrorKind::PermissionDenied =>
+                {
+                    tokio::task::block_in_place(|| {
+                        std::thread::sleep(std::time::Duration::from_millis(25))
+                    });
+                }
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                     // Left by a session that was stopped part way: taken over.
                     let stale = std::fs::metadata(&path)
@@ -1124,13 +1147,60 @@ mod tests {
                 "{path}: {e}"
             );
         }
-        assert!(!root.join("Scripts").exists() && !root.join("SCRIPTS").exists());
+        // Nothing was made under another spelling (the names as the folder
+        // lists them: a system blind to case finds "Scripts" in "scripts").
+        let names = |d: &Path| {
+            let mut n: Vec<String> = std::fs::read_dir(d)
+                .unwrap()
+                .flatten()
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect();
+            n.sort();
+            n
+        };
+        assert_eq!(names(&root), ["scripts"]);
+        assert_eq!(names(&root.join("scripts")), ["widths.py"]);
         // The exact names are fine, and so is a new one.
         assert!(parent(&root, &p("scripts/widths.py"), false).unwrap().2);
         assert!(!parent(&root, &p("scripts/other.py"), true).unwrap().2);
         // A missing folder is made only for a write.
         assert!(parent(&root, &p("notes/a.md"), false).is_err());
         assert!(!root.join("notes").exists());
+    }
+
+    /// A name the system itself treats as one already there (the same
+    /// letters written another way on macOS) is refused; where the system
+    /// keeps the two apart (Linux, Windows) the second is a new file.
+    #[test]
+    fn a_name_the_system_treats_as_one_already_there_is_refused() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().canonicalize().unwrap().join("files");
+        std::fs::create_dir_all(&root).unwrap();
+        // "cafe" with a combining accent; asked for with the single letter.
+        let stored = "cafe\u{301}.txt";
+        let asked = "caf\u{e9}.txt";
+        std::fs::write(root.join(stored), "x").unwrap();
+        let listed = Dir::open_beneath(&root, &[], false)
+            .unwrap()
+            .entries()
+            .unwrap();
+        assert_eq!(listed.len(), 1, "{listed:?}");
+        let same_to_the_system = std::fs::symlink_metadata(root.join(asked)).is_ok();
+        for create in [false, true] {
+            let got = parent(&root, &p(asked), create);
+            if listed[0] == asked {
+                // This system keeps names in one form: it is the file itself.
+                assert!(got.unwrap().2);
+            } else if same_to_the_system {
+                let e = got.err().unwrap();
+                assert!(e.contains("written another way"), "{e}");
+            } else {
+                assert!(!got.unwrap().2, "a new file");
+            }
+        }
+        // The spelling the folder lists is the one that works.
+        assert!(parent(&root, &p(&listed[0]), false).unwrap().2);
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
     }
 
     #[test]
