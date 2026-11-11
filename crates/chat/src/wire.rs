@@ -48,6 +48,8 @@ pub(crate) enum Stop {
     Tools,
     /// It reached its length limit: any tool call in it is cut off.
     Length,
+    /// The service's content filter cut it short.
+    Filtered,
 }
 
 /// A tool call the model asked for.
@@ -79,8 +81,6 @@ pub(crate) struct Reply {
 #[derive(Debug, Clone)]
 pub(crate) struct Outcome {
     pub id: String,
-    // (Read by the formats that name the tool beside its result.)
-    #[allow(dead_code)]
     pub name: String,
     pub text: String,
     pub is_error: bool,
@@ -140,7 +140,6 @@ pub(crate) trait Wire: Send + Sync {
 #[derive(Debug)]
 pub(crate) struct Refused {
     /// Whether it says the service is busy, so asking again may help.
-    #[allow(dead_code)]
     pub busy: bool,
     /// Its words.
     pub said: String,
@@ -159,6 +158,12 @@ pub(crate) const NO_PICTURE: &str =
     "[This tool also made a picture. This AI service is not set up to be sent pictures, so it was left out.]";
 
 pub(crate) const INCOMPLETE: &str = "a tool call arrived incomplete, so it was not run";
+
+/// A failed or refused call's words, for a format whose tool results have
+/// no mark for failure: the words say it.
+pub(crate) fn error_text(text: &str) -> String {
+    format!("The tool call failed or was refused:\n{text}")
+}
 
 /// Call ids the conversation has used. An id that is empty, was used
 /// before, or is not a plain short word is replaced by one of Columbus's
@@ -189,7 +194,6 @@ impl Ids {
     }
 }
 
-#[allow(dead_code)]
 /// A call's arguments from the JSON text a service sent: an object, or the
 /// reason the call must not run. Nothing sent means no arguments.
 pub(crate) fn arguments(text: &str) -> (Value, Option<String>) {

@@ -40,8 +40,12 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use tokio::sync::{oneshot, Notify};
 
+mod completions;
 mod http;
 mod messages;
+mod responses;
+#[doc(hidden)]
+pub mod schema;
 pub mod services;
 mod wire;
 
@@ -596,11 +600,11 @@ impl Chat {
             system.push_str("\n\nHow to work with Columbus (the working-with-columbus skill):\n\n");
             system.push_str(&skill);
         }
+        let pictures = net.service.pictures;
         let wire: Box<dyn Wire> = match net.service.format {
-            Format::Messages => Box::new(messages::Messages::new(net.service.pictures)),
-            Format::Responses | Format::Chat => {
-                bail!("this build of the chat does not speak that format yet")
-            }
+            Format::Messages => Box::new(messages::Messages::new(pictures)),
+            Format::Responses => Box::new(responses::Responses::new(pictures)),
+            Format::Chat => Box::new(completions::Completions::new(pictures)),
         };
         Ok(Chat {
             client,
@@ -724,10 +728,17 @@ impl Chat {
                 self.ui.event(Event::Text { text: t });
             }
             if calls.is_empty() || stop != Stop::Tools {
-                if stop == Stop::Length {
-                    self.ui.event(Event::Status {
+                match stop {
+                    Stop::Length => self.ui.event(Event::Status {
                         text: "The reply reached its length limit.".into(),
-                    });
+                    }),
+                    Stop::Filtered => self.ui.event(Event::Status {
+                        text: format!(
+                            "{}'s content filter cut the reply short.",
+                            self.net.service.name
+                        ),
+                    }),
+                    Stop::End | Stop::Tools => {}
                 }
                 return Ok(());
             }
