@@ -179,6 +179,20 @@ fn make_plan(
     entries: &[crate::host::TreeEntry],
 ) -> Result<(Plan, crate::scan::Scan), Error> {
     let local = scan(root, &state.held())?;
+    // A repository with no commit at all, where files were synced before:
+    // it was made anew (emptying one by deleting files leaves commits).
+    // What was synced then says nothing about it, so nothing here is
+    // taken for "deleted on the server": every file is new to it.
+    let fresh;
+    let state = if *tip == Tip::Empty && !state.files.is_empty() {
+        fresh = State {
+            files: BTreeMap::new(),
+            ..state.clone()
+        };
+        &fresh
+    } else {
+        state
+    };
     let format = server_format(tip);
     let local_blob = |path: &str| -> Option<String> {
         let format = format?;
@@ -649,6 +663,10 @@ pub async fn sync<H: Host>(
     let mut report = Report::default();
     loop {
         let (tip, entries) = read_server(host).await?;
+        if tip == Tip::Empty {
+            // See `make_plan`: an empty repository has no synced files.
+            state.files.clear();
+        }
         let (p, _) = make_plan(root, state, &tip, &entries)?;
         let mut round = Round {
             root,

@@ -46,6 +46,8 @@ pub(crate) struct Http {
     pub(crate) kind: Kind,
     auth: HeaderValue,
     token: Arc<str>,
+    /// How long one request may take.
+    timeout: Duration,
 }
 
 /// An answer, whatever its status (redirects to elsewhere excepted).
@@ -114,7 +116,12 @@ impl Http {
             kind: address.kind,
             auth,
             token: token.into(),
+            timeout: TIMEOUT,
         })
+    }
+
+    pub(crate) fn set_timeout(&mut self, timeout: Duration) {
+        self.timeout = timeout;
     }
 
     /// Take the token out of text that came from elsewhere.
@@ -145,7 +152,11 @@ impl Http {
         auth: bool,
     ) -> Result<Reply, Error> {
         let url = self.url(segments, query)?;
-        let mut req = self.client.request(method, url).header(USER_AGENT, AGENT);
+        let mut req = self
+            .client
+            .request(method, url)
+            .timeout(self.timeout)
+            .header(USER_AGENT, AGENT);
         req = match self.kind {
             Kind::GitHub => req
                 .header(ACCEPT, "application/vnd.github+json")
@@ -292,7 +303,7 @@ impl Http {
         if e.is_timeout() {
             return Error::Network(format!(
                 "{host} did not answer within {} seconds. Check your network, then try again.",
-                TIMEOUT.as_secs()
+                self.timeout.as_secs().max(1)
             ));
         }
         if lower.contains("certificate")

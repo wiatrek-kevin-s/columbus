@@ -25,7 +25,7 @@
 //! the commit list of an empty repository; 409 when a repository's name is
 //! taken; and no files call at all on a server older than 1.20.
 
-use axum::extract::{Request, State};
+use axum::extract::Request;
 use axum::response::Response;
 use axum::routing::any;
 use axum::Router;
@@ -48,12 +48,14 @@ fn not_found() -> Response {
     )
 }
 
-/// The router: everything under `/api/v1`.
+/// The router: the API under `/api/v1`.
 pub fn router(world: Shared) -> Router {
-    Router::new().nest(
-        "/api/v1",
-        Router::new().fallback(any(handle)).with_state(world),
-    )
+    at(world, "/api/v1")
+}
+
+/// The router with the API under `prefix`.
+pub fn at(world: Shared, prefix: &'static str) -> Router {
+    Router::new().fallback(any(move |req: Request| respond(world.clone(), prefix, req)))
 }
 
 /// What `/version` says, as (major, minor), read the way Gitea's own
@@ -91,15 +93,15 @@ fn commit_json(id: &str, repo: &Repo) -> Value {
     })
 }
 
-async fn handle(State(world): State<Shared>, req: Request) -> Response {
+/// Answer one request to the API under `prefix`.
+pub async fn respond(world: Shared, prefix: &str, req: Request) -> Response {
     let method = req.method().to_string();
-    let (headers, path, query, body) = match arrive(&world, req).await {
+    let (headers, path, query, body) = match arrive(&world, prefix, req).await {
         Ok(x) => x,
         Err(r) => return r,
     };
     let body: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
     let mut w = world.lock().unwrap();
-    let path = path.strip_prefix("/api/v1").unwrap_or(&path).to_string();
     let parts: Vec<String> = path
         .trim_matches('/')
         .split('/')

@@ -25,7 +25,7 @@
 //! (`truncated`) beyond a limit; lists 100 to a page at most, with a
 //! `Link` header.
 
-use axum::extract::{Request, State};
+use axum::extract::Request;
 use axum::response::Response;
 use axum::routing::any;
 use axum::Router;
@@ -52,15 +52,14 @@ fn empty() -> Response {
     error(409, "Git Repository is empty.")
 }
 
-/// The router, to be served under `/api/v3` (as a GitHub Enterprise Server
-/// does) or at the top (as api.github.com does).
-pub fn router(world: Shared) -> Router {
-    Router::new().fallback(any(handle)).with_state(world)
+/// The router of a GitHub Enterprise Server: the API under `/api/v3`.
+pub fn enterprise(world: Shared) -> Router {
+    at(world, "/api/v3")
 }
 
-/// The same, under `/api/v3`.
-pub fn enterprise(world: Shared) -> Router {
-    Router::new().nest("/api/v3", router(world))
+/// The router with the API under `prefix`.
+pub fn at(world: Shared, prefix: &'static str) -> Router {
+    Router::new().fallback(any(move |req: Request| respond(world.clone(), prefix, req)))
 }
 
 fn repo_json(owner: &str, name: &str, repo: &Repo, can_push: bool) -> Value {
@@ -90,9 +89,10 @@ fn commit_json(id: &str, repo: &Repo) -> Value {
     })
 }
 
-async fn handle(State(world): State<Shared>, req: Request) -> Response {
+/// Answer one request to the API under `prefix`.
+pub async fn respond(world: Shared, prefix: &str, req: Request) -> Response {
     let method = req.method().to_string();
-    let (headers, path, query, body) = match arrive(&world, req).await {
+    let (headers, path, query, body) = match arrive(&world, prefix, req).await {
         Ok(x) => x,
         Err(r) => return r,
     };

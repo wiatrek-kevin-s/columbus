@@ -777,6 +777,87 @@ async fn a_server_that_asks_to_wait_is_said_plainly() {
 }
 
 #[tokio::test]
+async fn a_server_that_does_not_answer_is_given_up_on_in_plain_words() {
+    for kind in KINDS {
+        let lab = Lab::new(kind).await;
+        lab.repo("roads", |r| {
+            r.commit("main", &[put("a.md", b"a\n")], "start", "Cy")
+        });
+        // It answers, but far too slowly.
+        lab.world.lock().unwrap().knobs.delay_ms = 3_000;
+        let server = lab
+            .server()
+            .with_timeout(std::time::Duration::from_millis(300));
+        let started = std::time::Instant::now();
+        let err = server.whoami().await.unwrap_err();
+        assert!(matches!(err, Error::Network(_)), "{kind:?}: {err:?}");
+        assert!(err.to_string().contains("did not answer within"), "{err}");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "it did not wait for the answer"
+        );
+        let mut ana = Person::new("ana");
+        ana.write("mine.md", "mine\n");
+        let remote = server.remote("ana", "roads", "main").unwrap();
+        let err = ana.try_sync(&remote, None).await.unwrap_err();
+        assert!(matches!(err, Error::Network(_)), "{kind:?}: {err:?}");
+        assert!(ana.state.files.is_empty());
+
+        // Nothing listens at the address at all.
+        let gone = format!("http://127.0.0.1:{}", free_port());
+        let address = Address::parse(kind, &gone).unwrap();
+        let err = Server::new(&address, TOKEN, None)
+            .unwrap()
+            .whoami()
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::Network(_)), "{kind:?}: {err:?}");
+        assert!(
+            err.to_string().contains("could not reach 127.0.0.1"),
+            "{err}"
+        );
+        assert!(!err.to_string().contains("zq7k"));
+    }
+}
+
+/// A port nothing listens on (one that was free a moment ago).
+fn free_port() -> u16 {
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    l.local_addr().unwrap().port()
+}
+
+#[tokio::test]
+async fn a_repository_made_anew_takes_nothing_away_from_the_folder() {
+    for kind in KINDS {
+        let lab = Lab::new(kind).await;
+        lab.server().create_repo("roads", "").await.unwrap();
+        let remote = lab.remote("roads");
+        let mut ana = Person::new("ana");
+        ana.write("a.md", "a\n");
+        ana.write("b.md", "b\n");
+        ana.sync(&remote).await;
+        assert_eq!(ana.state.files.len(), 2);
+        // The repository is deleted on the server and made again, empty,
+        // under the same name.
+        {
+            let mut w = lab.world.lock().unwrap();
+            w.repos.remove(&("ana".to_string(), "roads".to_string()));
+        }
+        lab.server().create_repo("roads", "").await.unwrap();
+        // Nothing here is taken for "deleted on the server".
+        let c = ana.check(&remote).await;
+        assert!(c.server.is_empty() && c.both.is_empty(), "{kind:?}: {c:?}");
+        assert_eq!(c.here.len(), 2);
+        assert!(c.here.iter().all(|i| i.what == What::New));
+        let rep = ana.sync(&remote).await;
+        assert!(rep.removed.is_empty());
+        assert_eq!(rep.sent.len(), 2);
+        assert_eq!(ana.files().len(), 2);
+        lab.repo("roads", |r| assert_eq!(r.files("main"), ana.files()));
+    }
+}
+
+#[tokio::test]
 async fn a_token_that_may_not_send_is_said_plainly_and_changes_nothing() {
     for kind in KINDS {
         let lab = Lab::new(kind).await;

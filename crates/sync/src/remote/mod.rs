@@ -221,6 +221,13 @@ impl Server {
         self.http.kind
     }
 
+    /// The same server, with another time limit for each request (90
+    /// seconds unless said).
+    pub fn with_timeout(mut self, timeout: std::time::Duration) -> Server {
+        self.http.set_timeout(timeout);
+        self
+    }
+
     /// Whether the server is one Columbus can sync with. For Gitea and
     /// Forgejo this asks the server its version, without the token, and
     /// refuses one older than 1.20 with a message naming it (A-9). So a

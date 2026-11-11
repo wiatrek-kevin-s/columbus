@@ -127,6 +127,7 @@ pub fn answer(status: u16, body: Value) -> Response {
 /// `Err`: the answer to give instead of the route's own.
 pub async fn arrive(
     world: &Shared,
+    prefix: &str,
     req: Request,
 ) -> Result<(HeaderMap, String, String, Bytes), Response> {
     let (parts, body) = req.into_parts();
@@ -140,7 +141,11 @@ pub async fn arrive(
             .and_then(|v| v.to_str().ok())
             .map(str::to_string)
     };
-    let path = parts.uri.path().to_string();
+    // The API lives under a prefix (`/api/v3`, `/api/v1`); what follows
+    // it is what the server is asked.
+    let Some(path) = parts.uri.path().strip_prefix(prefix).map(str::to_string) else {
+        return Err(StatusCode::NOT_FOUND.into_response());
+    };
     let query = parts.uri.query().unwrap_or_default().to_string();
     let (delay, redirect, limited) = {
         let mut w = world.lock().unwrap();
