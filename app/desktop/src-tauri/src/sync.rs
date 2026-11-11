@@ -579,8 +579,7 @@ pub async fn sync_send_anyway(
     let p = pj::load(&project)?;
     let mut record = load_record(&app, &p)?.ok_or("This project is not linked to a repository.")?;
     if send {
-        let Some(hash) = shown(|s| s.get(&project).and_then(|x| x.held.get(&path).cloned()))
-        else {
+        let Some(hash) = shown(|s| s.get(&project).and_then(|x| x.held.get(&path).cloned())) else {
             return Err("That file is not among the held files the last check showed, or your organization's rules do not allow it to be sent. Check for changes again.".into());
         };
         record.state.send_anyway(&path, &hash);

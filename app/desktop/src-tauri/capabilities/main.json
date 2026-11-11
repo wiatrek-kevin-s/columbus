@@ -85,6 +85,7 @@
     "allow-toolbox-search",
     "allow-toolbox-tool",
     "allow-toolbox-pick",
+    "allow-toolbox-program-check",
     "allow-settings-arcgis-signin",
     "allow-map-layers-list",
     "allow-map-layer-inspect",

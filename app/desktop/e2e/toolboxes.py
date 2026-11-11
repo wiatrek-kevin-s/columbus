@@ -586,11 +586,38 @@ def main():
             # (Set, not typed: the driver takes a typed path of a real file for an upload.)
             d.execute_script("document.querySelector(`#tbx-form input[name='${arguments[0]}']`).value = arguments[1];", name, value)
 
+        def chosen(name):
+            """What the page does once a file is chosen or typed in a box."""
+            d.execute_script("document.querySelector(`#tbx-form input[name='${arguments[0]}']`).dispatchEvent(new Event('change', {bubbles: true}));", name)
+
+        # R-104: the program's whole folder becomes readable by its tools.
+        # The dialog says so, names the folder as soon as a program is
+        # chosen, and a program that sits in a folder that is not its own
+        # (here a system folder) is refused before anything is asked.
+        assert "They can read every file in the program's folder, so the program must sit in a folder of its own" in text(d, "#tbx-own"), text(d, "#tbx-own")
+        save = d.find_element(By.ID, "tbx-save")
+        fill("tbx_program", "/usr/bin/env")
+        chosen("tbx_program")
+        wait.until(lambda drv: "a folder of its own" in text(drv, "#tbx-reads"))
+        said = text(d, "#tbx-reads")
+        assert "/usr/bin/env is directly in a folder the system keeps" in said and "can read every file in the program's folder" in said, said
+        fill("tbx_tools", str(own / "tools.json"))
+        fill("tbx_id", "county-lines")
+        d.execute_script("arguments[0].scrollIntoView({block: 'center'})", save)
+        save.click()
+        wait.until(lambda drv: "a folder of its own" in text(drv, "#tbx-form-error"))
+        assert "is directly in a folder the system keeps" in text(d, "#tbx-form-error"), text(d, "#tbx-form-error")
+        assert not (root / "toolboxes" / "county-lines").exists(), "a program in a system folder was added"
+        # In a folder of its own: the dialog names the folder its tools will read.
         fill("tbx_program", str(own / "linetool"))
+        chosen("tbx_program")
+        wait.until(lambda drv: "Its tools will be able to read every file in the program's folder" in text(drv, "#tbx-reads"))
+        assert f"the program's folder, {own}." in text(d, "#tbx-reads"), text(d, "#tbx-reads")
+        named(d)
+        d.save_screenshot(str(OUT / "toolboxes-own-program.png"))
         fill("tbx_tools", str(own / "tools.json"))
         fill("tbx_id", "County Lines")
         fill("tbx_name", "County line tools")
-        save = d.find_element(By.ID, "tbx-save")
         d.execute_script("arguments[0].scrollIntoView({block: 'center'})", save)
         save.click()
         wait.until(lambda drv: "short name" in text(drv, "#tbx-form-error"))

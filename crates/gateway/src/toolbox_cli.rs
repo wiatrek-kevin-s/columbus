@@ -1071,6 +1071,12 @@ async fn add_inner(
             ));
         }
     }
+    // Its folder becomes readable by its tools: it must be a folder of
+    // its own, not the person's home, Desktop, Documents or Downloads, the
+    // top of a drive or a system folder.
+    if let Some(why) = tbx::program_folder_problem(&program) {
+        return Err(format!("{why}. Nothing was added"));
+    }
     let mut reads = Vec::new();
     for r in &a.reads {
         let r = real_path(r)?;
@@ -1104,10 +1110,6 @@ async fn add_inner(
     };
     let (sha256, bytes) =
         sha256_file(&program).map_err(|e| format!("{}: {e}", program.display()))?;
-    let folder = program
-        .parent()
-        .map(|p| p.display().to_string())
-        .unwrap_or_default();
     let mut tb = Toolbox {
         id: id.to_string(),
         name: a.name.clone().unwrap_or_else(|| id.to_string()),
@@ -1136,10 +1138,8 @@ async fn add_inner(
     if let Some((_, n)) = &description {
         say.line(format!("  Tools:    {n}, from the description file"));
     }
-    say.line(format!(
-        "  Its tools will run in the sandbox: no network; they write only their own run folder, and can read the copies they are given and everything in the program's own folder ({folder}){}.",
-        if tb.reads.is_empty() { String::new() } else { format!(" and in {}", tb.reads.join(", ")) }
-    ));
+    say.line("  Its tools will run in the sandbox: no network; they write only their own run folder, and read the copies they are given.");
+    say.line(format!("  {}.", tbx::reads_words(&program, &tb.reads)));
     say.line("  Your assistant may then run them without asking. Columbus checks that the program is the one you added, not what it does: add only programs you trust.");
     if !a.yes {
         let typed = crate::review_cli::confirm_typed(&format!(

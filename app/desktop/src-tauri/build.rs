@@ -83,6 +83,7 @@ fn main() {
             "toolbox_search",
             "toolbox_tool",
             "toolbox_pick",
+            "toolbox_program_check",
             "settings_arcgis_signin",
             "map_layers_list",
             "map_layer_inspect",

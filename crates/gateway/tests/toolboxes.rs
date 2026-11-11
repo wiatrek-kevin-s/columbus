@@ -198,12 +198,21 @@ struct Out {
 /// Run `columbus-mcp toolbox …` as the person would, with no terminal: a
 /// question it asks has nobody to answer it.
 fn toolbox(env: &Env, args: &[&str]) -> Out {
+    toolbox_at_home(env, args, None)
+}
+
+/// The same, as a person whose home folder is `home`.
+fn toolbox_at_home(env: &Env, args: &[&str], home: Option<&Path>) -> Out {
     let mut cmd = StdCommand::new(env!("CARGO_BIN_EXE_columbus-mcp"));
     cmd.arg("toolbox")
         .args(args)
         .envs(env.vars())
         .env("COLUMBUS_LOG", "warn")
         .stdin(std::process::Stdio::null());
+    if let Some(home) = home {
+        // HOME on a Mac and Linux, the profile folder on Windows.
+        cmd.env("HOME", home).env("USERPROFILE", home);
+    }
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -369,6 +378,131 @@ fn audit_text(env: &Env) -> String {
         }
     }
     all
+}
+
+/// A program added from this computer (R-104): its whole folder becomes
+/// readable by its tools, so the command says which folder that is before
+/// it asks, and refuses a program that sits directly in the person's home
+/// folder, Desktop, Documents or Downloads, or in a system folder.
+#[test]
+fn a_program_is_added_only_from_a_folder_of_its_own_and_the_person_is_told_what_it_reads() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = if cfg!(unix) {
+        dir.path().canonicalize().unwrap()
+    } else {
+        dir.path().to_path_buf()
+    };
+    let env = Env {
+        _dir: dir,
+        root: root.clone(),
+        py: "python3".into(),
+        catalogue: None,
+    };
+    env.policy("allow_toolboxes: true\n");
+    let home = root.join("home");
+    let add = |folder: &Path| {
+        std::fs::create_dir_all(folder).unwrap();
+        let program = folder.join(exe_name("runner"));
+        std::fs::write(&program, standin()).unwrap();
+        make_executable(&program);
+        // Beside it, something that is nobody's business.
+        std::fs::write(folder.join("taxes-2026.txt"), "private").unwrap();
+        let o = toolbox_at_home(
+            &env,
+            &[
+                "add",
+                program.to_str().unwrap(),
+                "--id",
+                "mine",
+                "--kind",
+                "geolibre",
+                "--yes",
+            ],
+            Some(&home),
+        );
+        (program, o)
+    };
+    for (folder, what) in [
+        (home.clone(), "your home folder"),
+        (home.join("Desktop"), "your Desktop folder"),
+        (home.join("Documents"), "your Documents folder"),
+        (home.join("Downloads"), "your Downloads folder"),
+    ] {
+        let (program, o) = add(&folder);
+        assert!(!o.ok, "{} was added: {}", program.display(), o.stdout);
+        assert!(
+            o.stderr.contains(&format!("is directly in {what}"))
+                && o.stderr.contains(&folder.display().to_string())
+                && o.stderr
+                    .contains("can read every file in the program's folder")
+                && o.stderr.contains("a folder of its own"),
+            "{}: {}",
+            folder.display(),
+            o.stderr
+        );
+        assert!(!env.toolboxes().join("mine").exists());
+    }
+    // A system folder.
+    let system = if cfg!(windows) {
+        PathBuf::from(std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into()))
+            .join("System32")
+            .join("cmd.exe")
+    } else {
+        PathBuf::from("/usr/bin/env")
+    };
+    let o = toolbox_at_home(
+        &env,
+        &[
+            "add",
+            system.to_str().unwrap(),
+            "--id",
+            "mine",
+            "--kind",
+            "geolibre",
+            "--yes",
+        ],
+        Some(&home),
+    );
+    assert!(
+        !o.ok && o.stderr.contains("the system keeps") && o.stderr.contains("a folder of its own"),
+        "{}",
+        o.stderr
+    );
+    assert!(!env.toolboxes().join("mine").exists());
+    // Each refusal is in the audit log.
+    let audit = audit_text(&env);
+    assert_eq!(
+        audit
+            .lines()
+            .filter(|l| l.contains("\"toolbox_add\"")
+                && l.contains("\"denied\"")
+                && l.contains("a folder of its own"))
+            .count(),
+        5,
+        "{audit}"
+    );
+
+    // From a folder of its own: before it asks, the command says which
+    // folder its tools will be able to read.
+    let own = home.join("Downloads").join("linetool-1.2");
+    let (_, o) = add(&own);
+    assert!(
+        o.stdout.contains(&format!(
+            "Its tools will be able to read every file in the program's folder, {}",
+            own.display()
+        )) && o
+            .stdout
+            .contains("Keep nothing there that they should not read"),
+        "{} {}",
+        o.stdout,
+        o.stderr
+    );
+    if can_confine() {
+        assert!(o.ok, "{} {}", o.stdout, o.stderr);
+        assert!(env.toolboxes().join("mine").join("toolbox.yaml").exists());
+    } else {
+        assert!(!o.ok && o.stderr.contains("sandbox"), "{}", o.stderr);
+    }
 }
 
 #[tokio::test]
@@ -1910,8 +2044,11 @@ async fn a_described_toolbox_runs_like_the_others() {
     );
     assert!(o.ok, "{} {}", o.stdout, o.stderr);
     assert!(
-        o.stdout.contains("everything in the program's own folder"),
-        "what it can read is said: {}",
+        o.stdout.contains(&format!(
+            "Its tools will be able to read every file in the program's folder, {}",
+            program.parent().unwrap().display()
+        )),
+        "what it can read is said, with the folder: {}",
         o.stdout
     );
     let tb = tbx::load(&env.toolboxes(), "lines").unwrap();

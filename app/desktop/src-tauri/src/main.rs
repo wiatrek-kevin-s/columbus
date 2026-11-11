@@ -537,6 +537,7 @@ fn main() {
             toolboxes::toolbox_search,
             toolboxes::toolbox_tool,
             toolboxes::toolbox_pick,
+            toolboxes::toolbox_program_check,
             settings::settings_arcgis_signin,
             maplayers::map_layers_list,
             maplayers::map_layer_inspect,
