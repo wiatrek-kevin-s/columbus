@@ -1,0 +1,493 @@
+//! What a file's name says it is: one table for the two places that must
+//! agree (final review of part 3, R-103).
+//!
+//! * The assistant's project files ([`crate::project_files`]): names it
+//!   neither reads nor writes (passwords, keys, connection files), and
+//!   kinds it never writes (data, archives, files the system runs when they
+//!   are opened).
+//! * Sync (`columbus-sync`): what never goes to a Git server and is never
+//!   fetched from one.
+//!
+//! A kind added here is kept out of both, so the two cannot drift. Letter
+//! case never matters. A name is one part of a path: `roads.csv`, not
+//! `data/roads.csv`.
+
+/// The kind of a file that is kept out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    /// `.env`, `.env.local` …: settings that usually hold secrets.
+    EnvFile,
+    /// A key or a store of keys: `*.pem`, `*.key`, `*.pfx`, `id_rsa` …
+    Key,
+    /// A file that holds passwords by its name: `.pgpass`, `.netrc`,
+    /// `credentials` …
+    Passwords,
+    /// A connection file, which can hold a password: `*.sde`, `*.dsn` …
+    Connection,
+    /// A file the system runs or follows when the person opens it:
+    /// `*.bat`, `*.lnk`, `*.url` …
+    Runs,
+    /// Geodata: `*.gpkg`, the parts of a shapefile, rasters, point clouds …
+    Geodata,
+    /// A table or a database: `*.csv`, `*.xlsx`, `*.parquet`, `*.sqlite` …
+    Table,
+    /// An archive or a disk image: `*.zip`, `*.7z`, `*.iso` …
+    Archive,
+    /// A file the system itself leaves in folders: `.DS_Store` …
+    System,
+}
+
+impl Kind {
+    /// A password, a key or a connection file: the assistant never gets
+    /// one (D-16, B1), whoever put it in the folder.
+    pub fn is_secret(self) -> bool {
+        matches!(
+            self,
+            Kind::EnvFile | Kind::Key | Kind::Passwords | Kind::Connection
+        )
+    }
+
+    /// Data: it leaves Columbus only through an export (D-19).
+    pub fn is_data(self) -> bool {
+        matches!(self, Kind::Geodata | Kind::Table)
+    }
+}
+
+/// A folder whose contents never sync, wherever it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FolderKind {
+    /// `outputs/`: results, by convention.
+    Outputs,
+    /// `.venv/`: a Python environment.
+    Venv,
+    /// `__pycache__/`: Python's compiled files.
+    PyCache,
+    /// `*.gdb/`: a file geodatabase.
+    Geodatabase,
+}
+
+/// Files that hold passwords, by their whole name.
+const PASSWORD_NAMES: &[&str] = &[
+    ".git-credentials",
+    ".netrc",
+    ".pgpass",
+    "_netrc",
+    "credentials",
+    "pgpass.conf",
+];
+
+/// Private keys, by their whole name (SSH's).
+const KEY_NAMES: &[&str] = &["id_dsa", "id_ecdsa", "id_ed25519", "id_rsa"];
+
+/// Keys, certificates with their keys, and stores of keys or passwords.
+const KEY_ENDINGS: &[&str] = &["jks", "kdbx", "key", "keystore", "p12", "pem", "pfx", "ppk"];
+
+/// Connection files: ArcGIS (`sde`, `ags`, `acs`), Office and ODBC (`odc`,
+/// `dsn`, `udl`). They name a server and can hold its password.
+const CONNECTION_ENDINGS: &[&str] = &["acs", "ags", "dsn", "odc", "sde", "udl"];
+
+/// File types an operating system runs or follows when the person opens
+/// them (a double-click in Explorer or Finder): programs and installers,
+/// scripts the system's own script hosts run, shortcuts and files that
+/// point somewhere, macOS bundles. `.py`, `.sh`, `.ps1`, `.sql`, `.md` and
+/// `.json` are not here: they open in an editor, or are what a project's
+/// files are for.
+const RUNS_WHEN_OPENED: &[&str] = &[
+    "bat",
+    "cmd",
+    "com",
+    "exe",
+    "pif",
+    "scr",
+    "msi",
+    "msp",
+    "mst",
+    "cpl",
+    "msc",
+    "hta",
+    "vbs",
+    "vbe",
+    "js",
+    "jse",
+    "wsf",
+    "wsh",
+    "wsc",
+    "sct",
+    "ps1xml",
+    "reg",
+    "lnk",
+    "url",
+    "scf",
+    "inf",
+    "jar",
+    "jnlp",
+    "chm",
+    "hlp",
+    "application",
+    "appref-ms",
+    "library-ms",
+    "search-ms",
+    "website",
+    "desktop",
+    "command",
+    "app",
+    "action",
+    "workflow",
+    "terminal",
+    "inetloc",
+    "webloc",
+    "fileloc",
+    "dll",
+    "sys",
+];
+
+/// Geodata: GeoPackage, the parts of a shapefile, GeoJSON and its line
+/// forms, FlatGeobuf, KML, GPX, GML, MapInfo and CAD drawings, rasters and
+/// grids, point clouds, Esri's packages and mobile geodatabases.
+const GEODATA_ENDINGS: &[&str] = &[
+    "aih",
+    "ain",
+    "atx",
+    "cpg",
+    "dbf",
+    "dgn",
+    "dwg",
+    "dxf",
+    "e57",
+    "ecw",
+    "fbn",
+    "fbx",
+    "fgb",
+    "geodatabase",
+    "geojson",
+    "geojsonl",
+    "geojsons",
+    "gml",
+    "gpk",
+    "gpkg",
+    "gpkx",
+    "gpx",
+    "grb",
+    "grib",
+    "grib2",
+    "h5",
+    "hdf",
+    "hdf5",
+    "img",
+    "ixs",
+    "jp2",
+    "kml",
+    "kmz",
+    "las",
+    "laz",
+    "lpk",
+    "lpkx",
+    "mif",
+    "mmpk",
+    "mpk",
+    "mpkx",
+    "mxs",
+    "nc",
+    "ovr",
+    "ppkx",
+    "prj",
+    "qix",
+    "qpj",
+    "sbn",
+    "sbx",
+    "sd",
+    "shp",
+    "shx",
+    "sid",
+    "slpk",
+    "tif",
+    "tiff",
+    "topojson",
+    "tpk",
+    "tpkx",
+    "vrt",
+    "vtpk",
+];
+
+/// Tables and databases: delimited text, spreadsheets, column files,
+/// records one per line, tables as Python, R and statistics programs save
+/// them, and database files with the files they keep beside them.
+const TABLE_ENDINGS: &[&str] = &[
+    "accdb",
+    "arrow",
+    "csv",
+    "db",
+    "db3",
+    "dta",
+    "duckdb",
+    "feather",
+    "geoparquet",
+    "jsonl",
+    "mdb",
+    "ndjson",
+    "npy",
+    "npz",
+    "ods",
+    "parquet",
+    "pickle",
+    "pkl",
+    "rdata",
+    "rds",
+    "sas7bdat",
+    "sav",
+    "sqlite",
+    "sqlite3",
+    "tab",
+    "tsv",
+    "wal",
+    "xls",
+    "xlsb",
+    "xlsm",
+    "xlsx",
+];
+
+/// What a database keeps beside its file while it is open: `roads.gpkg-wal`.
+const DATABASE_SIDE_FILES: &[&str] = &["-journal", "-shm", "-wal"];
+
+/// Archives and disk images: whatever they hold travels unseen.
+const ARCHIVE_ENDINGS: &[&str] = &[
+    "7z", "bz2", "cab", "dmg", "gz", "iso", "rar", "tar", "tbz2", "tgz", "txz", "vhd", "vhdx",
+    "xz", "zip", "zst",
+];
+
+/// Files the system itself leaves in folders.
+const SYSTEM_NAMES: &[&str] = &[".ds_store", "desktop.ini", "thumbs.db"];
+
+/// Folders that never sync, wherever they are.
+const FOLDERS: &[(&str, FolderKind)] = &[
+    ("__pycache__", FolderKind::PyCache),
+    (".venv", FolderKind::Venv),
+    ("outputs", FolderKind::Outputs),
+];
+
+/// What follows a name's last dot, in lower case; empty when it has no dot.
+pub fn extension(name: &str) -> String {
+    name.rsplit_once('.')
+        .map(|(_, e)| e.to_lowercase())
+        .unwrap_or_default()
+}
+
+/// The extension that makes a name one the system runs or follows when it
+/// is opened, if it is one.
+pub fn runs_when_opened(name: &str) -> Option<String> {
+    let ext = extension(name);
+    RUNS_WHEN_OPENED.contains(&ext.as_str()).then_some(ext)
+}
+
+/// The kind of a file by its name, if it is one that is kept out.
+pub fn kind_of(name: &str) -> Option<Kind> {
+    let lower = name.to_lowercase();
+    if SYSTEM_NAMES.contains(&lower.as_str()) {
+        return Some(Kind::System);
+    }
+    if lower.starts_with(".env") {
+        return Some(Kind::EnvFile);
+    }
+    if PASSWORD_NAMES.contains(&lower.as_str()) {
+        return Some(Kind::Passwords);
+    }
+    if KEY_NAMES.contains(&lower.as_str()) {
+        return Some(Kind::Key);
+    }
+    let ext = extension(&lower);
+    let ext = ext.as_str();
+    if KEY_ENDINGS.contains(&ext) {
+        return Some(Kind::Key);
+    }
+    if CONNECTION_ENDINGS.contains(&ext) {
+        return Some(Kind::Connection);
+    }
+    if runs_when_opened(&lower).is_some() {
+        return Some(Kind::Runs);
+    }
+    if GEODATA_ENDINGS.contains(&ext) {
+        return Some(Kind::Geodata);
+    }
+    if TABLE_ENDINGS.contains(&ext) || DATABASE_SIDE_FILES.iter().any(|s| ext.ends_with(s)) {
+        return Some(Kind::Table);
+    }
+    if ARCHIVE_ENDINGS.contains(&ext) {
+        return Some(Kind::Archive);
+    }
+    None
+}
+
+/// The kind of a folder by its name, if its contents never sync.
+pub fn folder_kind(name: &str) -> Option<FolderKind> {
+    let lower = name.to_lowercase();
+    if let Some((_, kind)) = FOLDERS.iter().find(|(n, _)| *n == lower) {
+        return Some(*kind);
+    }
+    lower.ends_with(".gdb").then_some(FolderKind::Geodatabase)
+}
+
+/// Every ending and name in the table, with its kind: for the tests of
+/// the two crates that use it, so that each proves it keeps out all of
+/// them.
+pub fn examples() -> Vec<(String, Kind)> {
+    let mut out: Vec<(String, Kind)> = Vec::new();
+    let lists: [(&[&str], Kind); 6] = [
+        (KEY_ENDINGS, Kind::Key),
+        (CONNECTION_ENDINGS, Kind::Connection),
+        (RUNS_WHEN_OPENED, Kind::Runs),
+        (GEODATA_ENDINGS, Kind::Geodata),
+        (TABLE_ENDINGS, Kind::Table),
+        (ARCHIVE_ENDINGS, Kind::Archive),
+    ];
+    for (endings, kind) in lists {
+        out.extend(endings.iter().map(|e| (format!("thing.{e}"), kind)));
+    }
+    out.extend(
+        DATABASE_SIDE_FILES
+            .iter()
+            .map(|s| (format!("thing.gpkg{s}"), Kind::Table)),
+    );
+    out.extend(
+        PASSWORD_NAMES
+            .iter()
+            .map(|n| (n.to_string(), Kind::Passwords)),
+    );
+    out.extend(KEY_NAMES.iter().map(|n| (n.to_string(), Kind::Key)));
+    out.extend(SYSTEM_NAMES.iter().map(|n| (n.to_string(), Kind::System)));
+    out.push((".env".into(), Kind::EnvFile));
+    out.push((".env.local".into(), Kind::EnvFile));
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_entry_of_the_table_is_found_in_any_letter_case() {
+        let all = examples();
+        assert!(all.len() > 150, "{}", all.len());
+        for (name, kind) in &all {
+            assert_eq!(kind_of(name), Some(*kind), "{name}");
+            assert_eq!(kind_of(&name.to_uppercase()), Some(*kind), "{name}");
+        }
+        // No ending is in two lists: each name has one kind.
+        let mut seen = std::collections::BTreeSet::new();
+        for (name, _) in &all {
+            assert!(seen.insert(name.clone()), "{name} is listed twice");
+        }
+    }
+
+    #[test]
+    fn the_kinds_the_review_named() {
+        // Data formats Columbus reads as layers or tables.
+        for name in [
+            "a.csv",
+            "a.tsv",
+            "a.geojson",
+            "a.parquet",
+            "a.fgb",
+            "a.kml",
+            "a.kmz",
+            "a.xlsx",
+            "a.xls",
+            "a.sqlite",
+            "a.duckdb",
+            "a.mdb",
+            "a.gpx",
+            "a.gml",
+            "a.gpkg",
+            "a.shp",
+            "a.tif",
+            "roads.gpkg-wal",
+            "roads.sqlite-journal",
+        ] {
+            assert!(kind_of(name).is_some_and(Kind::is_data), "{name}");
+        }
+        // Names that look like passwords, keys or connection files.
+        for name in [
+            ".pgpass",
+            ".netrc",
+            "_netrc",
+            "pgpass.conf",
+            "credentials",
+            "id_rsa",
+            "id_ed25519",
+            ".env",
+            ".env.production",
+            "x.dsn",
+            "x.udl",
+            "x.odc",
+            "x.kdbx",
+            "x.ppk",
+            "x.jks",
+            "x.keystore",
+            "x.sde",
+            "x.ags",
+            "x.pem",
+            "x.key",
+            "x.pfx",
+            "x.p12",
+        ] {
+            assert!(kind_of(name).is_some_and(Kind::is_secret), "{name}");
+        }
+        // Files that run when opened.
+        for name in [
+            "a.bat",
+            "a.lnk",
+            "a.url",
+            "a.app",
+            "a.workflow",
+            "a.command",
+        ] {
+            assert_eq!(kind_of(name), Some(Kind::Runs), "{name}");
+            assert!(runs_when_opened(name).is_some(), "{name}");
+        }
+    }
+
+    #[test]
+    fn what_is_not_in_the_table() {
+        // Scripts, notes and settings: what a project's files are for.
+        for name in [
+            "widths.py",
+            "notes.md",
+            "query.sql",
+            "settings.json",
+            "environment.yml",
+            "style.qml",
+            "run.sh",
+            "tool.ps1",
+            "readme.txt",
+            "report.pdf",
+            "map.png",
+            "notebook.ipynb",
+            "columbus-project.yaml",
+            "keys.md",
+            "csv",
+            "my.env.txt",
+            "data.csv.md",
+            "zip.py",
+            "Makefile",
+        ] {
+            assert_eq!(kind_of(name), None, "{name}");
+            assert_eq!(runs_when_opened(name), None, "{name}");
+        }
+    }
+
+    #[test]
+    fn folders_that_never_sync() {
+        for (name, kind) in [
+            ("outputs", FolderKind::Outputs),
+            ("Outputs", FolderKind::Outputs),
+            (".venv", FolderKind::Venv),
+            ("__pycache__", FolderKind::PyCache),
+            ("roads.gdb", FolderKind::Geodatabase),
+            ("Roads.GDB", FolderKind::Geodatabase),
+        ] {
+            assert_eq!(folder_kind(name), Some(kind), "{name}");
+        }
+        for name in ["scripts", "output", "venv", "gdb", "a.gdb.txt"] {
+            assert_eq!(folder_kind(name), None, "{name}");
+        }
+    }
+}

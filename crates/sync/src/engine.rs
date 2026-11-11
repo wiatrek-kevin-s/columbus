@@ -16,6 +16,7 @@ use serde::Serialize;
 use crate::fsx::{self, Kind};
 use crate::hash::{blob_id, content_hash, is_lfs_pointer, is_text, ObjectFormat};
 use crate::host::{Change, Host, SendError, Tip};
+use crate::labels::{DataLabels, Held};
 use crate::paths::{self, MAX_FILE};
 use crate::plan::{plan, Plan, ServerFile};
 use crate::scan::scan;
@@ -56,6 +57,10 @@ pub struct Item {
     /// for a deleted one.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub blob: String,
+    /// For a change here that goes because the person chose Send it anyway:
+    /// the sources the file may hold data from ([`crate::labels`]).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub may_hold: Vec<String>,
 }
 
 /// A path that differs on both sides.
@@ -84,6 +89,10 @@ pub struct Changes {
     /// Changed on both sides: a sync keeps both versions of each, unless
     /// they turn out to hold the same.
     pub both: Vec<BothItem>,
+    /// Changed here and not sent: they may hold data read from a source
+    /// ([`crate::labels`]). A sync sends one only after the person chose
+    /// Send it anyway for it.
+    pub held: Vec<Held>,
     /// What does not sync, and why.
     pub skipped: Vec<Skipped>,
     /// Files that already need a look.
@@ -120,6 +129,9 @@ pub struct Report {
     pub conflicts: Vec<Conflict>,
     /// Changes here that were not sent this time.
     pub not_sent: Vec<NotSent>,
+    /// Changes here that were not sent because the file may hold data read
+    /// from a source ([`crate::labels`]).
+    pub held: Vec<Held>,
     /// What does not sync, and why.
     pub skipped: Vec<Skipped>,
     /// Set when the sync stopped before sending: outgoing files look like
@@ -145,6 +157,9 @@ pub struct Options<'a> {
     pub today: &'a str,
     /// Strings that must never be sent inside a file (the server's token).
     pub never_send: &'a [String],
+    /// The data labels of the folder's files: a file that carries one is
+    /// held, not sent ([`crate::labels`]).
+    pub labels: &'a DataLabels,
 }
 
 /// The person's choice for a file that needs a look.
@@ -204,8 +219,15 @@ fn make_plan(
 }
 
 /// Check for changes: compare the last synced state, the folder and the
-/// server. Reads only.
-pub async fn check<H: Host>(root: &Path, host: &H, state: &State) -> Result<Changes, Error> {
+/// server. Reads only. `labels` are the data labels of the folder's files:
+/// a new or changed file that carries one is listed as held, not as a
+/// change a sync would send.
+pub async fn check<H: Host>(
+    root: &Path,
+    host: &H,
+    state: &State,
+    labels: &DataLabels,
+) -> Result<Changes, Error> {
     let (tip, entries) = read_server(host).await?;
     let (p, local) = make_plan(root, state, &tip, &entries)?;
     let hash_of = |path: &str| {
@@ -222,24 +244,29 @@ pub async fn check<H: Host>(root: &Path, host: &H, state: &State) -> Result<Chan
         needs_look: state.conflicts.clone(),
         ..Changes::default()
     };
-    let here = |path: &str, what: What| Item {
-        path: path.to_string(),
-        what,
-        hash: if what == What::Deleted {
-            String::new()
-        } else {
-            hash_of(path)
-        },
-        blob: String::new(),
+    // A new or changed file: a change to send, or one that is held
+    // because it may hold data.
+    let mut here = |path: &str, what: What| {
+        let hash = hash_of(path);
+        match labels.hold(state, path, &hash, what) {
+            Some(held) => c.held.push(held),
+            None => c.here.push(Item {
+                path: path.to_string(),
+                what,
+                hash,
+                blob: String::new(),
+                may_hold: labels.sources(state, path),
+            }),
+        }
     };
     for path in &p.create {
-        c.here.push(here(path, What::New));
+        here(path, What::New);
     }
     for (path, _) in &p.update {
-        c.here.push(here(path, What::Changed));
+        here(path, What::Changed);
     }
     for (path, _) in &p.delete {
-        c.here.push(here(path, What::Deleted));
+        c.here.push(item(path, What::Deleted));
     }
     for (path, s) in &p.write {
         c.server.push(Item {
@@ -251,15 +278,11 @@ pub async fn check<H: Host>(root: &Path, host: &H, state: &State) -> Result<Chan
             },
             hash: String::new(),
             blob: s.blob.clone(),
+            may_hold: Vec::new(),
         });
     }
     for path in &p.remove {
-        c.server.push(Item {
-            path: path.clone(),
-            what: What::Deleted,
-            hash: String::new(),
-            blob: String::new(),
-        });
+        c.server.push(item(path, What::Deleted));
     }
     for (path, s) in &p.both {
         c.both.push(BothItem {
@@ -288,6 +311,7 @@ pub async fn check<H: Host>(root: &Path, host: &H, state: &State) -> Result<Chan
     c.here.sort_by(|a, b| a.path.cmp(&b.path));
     c.server.sort_by(|a, b| a.path.cmp(&b.path));
     c.both.sort_by(|a, b| a.path.cmp(&b.path));
+    c.held.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(c)
 }
 
@@ -435,6 +459,11 @@ impl<H: Host> Round<'_, H> {
         }
         let copy = copy_place(self.root, path, self.opts.today)?;
         fsx::rename_to_new(self.root, path, &copy)?;
+        // What the file may hold, the copy may hold: its labels go with it.
+        let labels = self.opts.labels.of(self.state, path);
+        if !labels.is_empty() {
+            self.state.carried.insert(copy.clone(), labels);
+        }
         Ok(Some(copy))
     }
 
@@ -683,7 +712,8 @@ pub async fn sync<H: Host>(
         skipped.dedup();
         report.skipped = skipped;
         report.not_sent.clear();
-        let (changes, hashes) = outgoing(root, out, opts, &mut report)?;
+        report.held.clear();
+        let (changes, hashes) = outgoing(root, out, opts, state, &mut report)?;
         if changes.is_empty() {
             state.commit = tip.commit().map(str::to_string);
             break;
@@ -732,6 +762,7 @@ fn finish(mut report: Report) -> Report {
     report.got.dedup();
     report.sent.sort_by(|a, b| a.path.cmp(&b.path));
     report.not_sent.sort_by(|a, b| a.path.cmp(&b.path));
+    report.held.sort_by(|a, b| a.path.cmp(&b.path));
     report.removed.sort_by(|a, b| a.path.cmp(&b.path));
     report
 }
@@ -742,21 +773,26 @@ fn item(path: &str, what: What) -> Item {
         what,
         hash: String::new(),
         blob: String::new(),
+        may_hold: Vec::new(),
     }
 }
 
-/// Read what is to be sent, as it is now. A change the person was not
-/// shown (when `seen` is given), or beyond what one sync sends, waits.
+/// Read what is to be sent, as it is now. A file that may hold data is
+/// held unless the person chose to send exactly what it holds now; a
+/// change the person was not shown (when `seen` is given), or beyond what
+/// one sync sends, waits.
 #[allow(clippy::type_complexity)]
 fn outgoing(
     root: &Path,
     out: Vec<Out>,
     opts: &Options<'_>,
+    state: &State,
     report: &mut Report,
 ) -> Result<(Vec<Change>, BTreeMap<String, (String, fsx::Stat)>), Error> {
     const LATER: &str = "it changed after you looked; check for changes again";
     let mut changes = Vec::new();
     let mut hashes = BTreeMap::new();
+    let mut held_now = Vec::new();
     let mut total = 0u64;
     let shown = |path: &str, hash: &str| {
         opts.seen
@@ -791,6 +827,15 @@ fn outgoing(
             Err(e) => return Err(e),
         };
         let hash = content_hash(&bytes);
+        let what = if old.is_some() {
+            What::Changed
+        } else {
+            What::New
+        };
+        if let Some(held) = opts.labels.hold(state, &path, &hash, what) {
+            held_now.push(held);
+            continue;
+        }
         if !shown(&path, &hash) {
             wait(&path, LATER);
             continue;
@@ -816,6 +861,7 @@ fn outgoing(
             },
         });
     }
+    report.held.extend(held_now);
     Ok((changes, hashes))
 }
 
@@ -900,11 +946,15 @@ pub fn resolve(
                     }
                 }
                 fsx::rename_to_new(root, copy, path)?;
+                // The file has its own name back, and with it its own
+                // labels (they are kept by path).
+                state.carried.remove(copy);
             }
         }
         // The server's version stays; my copy is taken away, and kept.
         (ConflictKind::BothChanged | ConflictKind::DeletedOnServer, Choice::Theirs, Some(copy)) => {
-            kept = take_away(root, copy, keep)?
+            kept = take_away(root, copy, keep)?;
+            state.carried.remove(copy);
         }
         // I deleted it and still mean to: the server's new version is taken
         // away (kept), and the next sync sends the deletion.

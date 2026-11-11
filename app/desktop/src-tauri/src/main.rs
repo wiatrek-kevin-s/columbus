@@ -563,6 +563,7 @@ fn main() {
             sync::sync_preview,
             sync::sync_preview_kept,
             sync::sync_resolve,
+            sync::sync_send_anyway,
             sync::sync_history,
             sync::sync_disconnect,
             sync::sync_settings,

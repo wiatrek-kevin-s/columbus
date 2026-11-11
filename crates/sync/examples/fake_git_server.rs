@@ -20,6 +20,8 @@
 //! * `GET state`: every repository (its branches, the files and commits of
 //!   each branch) and every request the server was sent (method, path, and
 //!   whether it carried the token: never the token itself);
+//! * `POST received` `{text}`: whether the server was ever given `text`:
+//!   inside any version of any file, or as part of any file's path;
 //! * `POST commit` `{repo, branch?, who?, message?, put: {path: text},
 //!   delete: [path]}`: a colleague's commit, as if made with Git;
 //! * `POST land` (the same body): that commit lands while the next send is
@@ -113,6 +115,26 @@ async fn state(State(both): State<Both>, Path(kind): Path<String>) -> Json<Value
     Json(json!({"repos": repos, "seen": seen}))
 }
 
+/// Whether anything the server was ever given holds `text`: a version of a
+/// file (every version ever stored is kept), or a file's path.
+async fn received(
+    State(both): State<Both>,
+    Path(kind): Path<String>,
+    Json(body): Json<Value>,
+) -> Json<Value> {
+    let Some(world) = both.world(&kind) else {
+        return Json(json!({"error": "no such server"}));
+    };
+    let text = body["text"].as_str().unwrap_or_default();
+    let w = world.lock().unwrap();
+    let in_a_file = w.repos.values().any(|r| r.ever_held(text.as_bytes()));
+    let in_a_path = w
+        .repos
+        .values()
+        .any(|r| r.trees.values().any(|t| t.keys().any(|p| p.contains(text))));
+    Json(json!({"in_a_file": in_a_file, "in_a_path": in_a_path}))
+}
+
 async fn commit(
     State(both): State<Both>,
     Path(kind): Path<String>,
@@ -181,6 +203,7 @@ async fn main() {
     }
     let for_the_script = Router::new()
         .route("/test/{kind}/state", get(state))
+        .route("/test/{kind}/received", post(received))
         .route("/test/{kind}/commit", post(commit))
         .route("/test/{kind}/land", post(land))
         .with_state(both.clone());

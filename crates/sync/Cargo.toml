@@ -8,6 +8,10 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+# What never syncs is one table, shared with the assistant's project files;
+# the secret scan and the data labels kept beside a project's files.
+columbus-shared = { path = "../shared" }
+columbus-flow = { path = "../flow" }
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true

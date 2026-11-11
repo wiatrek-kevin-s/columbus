@@ -111,6 +111,7 @@
     "allow-sync-preview",
     "allow-sync-preview-kept",
     "allow-sync-resolve",
+    "allow-sync-send-anyway",
     "allow-sync-history",
     "allow-sync-disconnect",
     "allow-sync-settings",

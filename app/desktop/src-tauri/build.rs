@@ -109,6 +109,7 @@ fn main() {
             "sync_preview",
             "sync_preview_kept",
             "sync_resolve",
+            "sync_send_anyway",
             "sync_history",
             "sync_disconnect",
             "sync_settings",

@@ -87,6 +87,34 @@ const IGNORED: &[(&str, &str)] = &[
     ("cloud.laz", "geodata"),
     ("bundle.zip", "archives"),
     ("outputs/report.csv", "outputs"),
+    // R-103: data formats Columbus reads as layers or tables.
+    ("codes.csv", "tables"),
+    ("codes.tsv", "tables"),
+    ("book.xlsx", "tables"),
+    ("old.xls", "tables"),
+    ("big.parquet", "tables"),
+    ("cache.sqlite", "tables"),
+    ("cache.duckdb", "tables"),
+    ("access.mdb", "tables"),
+    ("roads.geojson", "geodata"),
+    ("roads.fgb", "geodata"),
+    ("places.kml", "geodata"),
+    ("places.kmz", "geodata"),
+    ("track.gpx", "geodata"),
+    ("parcels.gml", "geodata"),
+    // R-103: the names the assistant is kept from.
+    (".pgpass", "password"),
+    (".netrc", "password"),
+    ("aws/credentials", "password"),
+    ("id_rsa", "keys"),
+    ("store.jks", "keys"),
+    ("vault.kdbx", "keys"),
+    ("putty.ppk", "keys"),
+    ("prod.dsn", "connection"),
+    ("prod.udl", "connection"),
+    ("cube.odc", "connection"),
+    // The kinds the assistant never writes because they run when opened.
+    ("open me.bat", "runs or follows"),
 ];
 
 #[tokio::test]
@@ -130,20 +158,20 @@ async fn files_over_5_mb_are_skipped_and_named_on_both_sides() {
     );
     let (mut ana, mut ben) = (Person::new("ana"), Person::new("ben"));
     let big = vec![b'x'; MAX_FILE as usize + 1];
-    ana.write("big.csv", &big);
-    ana.write("edge.csv", vec![b'y'; MAX_FILE as usize]);
-    ana.write("small.csv", "a,b\n");
+    ana.write("big.txt", &big);
+    ana.write("edge.txt", vec![b'y'; MAX_FILE as usize]);
+    ana.write("small.txt", "a,b\n");
     let c = ana.check(&host_a).await;
     assert_eq!(c.here.len(), 2);
-    assert!(why(&c.skipped, "big.csv").contains("5 MB"));
+    assert!(why(&c.skipped, "big.txt").contains("5 MB"));
     let rep = ana.sync(&host_a).await;
-    assert!(why(&rep.skipped, "big.csv").contains("5 MB"));
+    assert!(why(&rep.skipped, "big.txt").contains("5 MB"));
     {
         let r = r.lock().unwrap();
         let files = r.files("main");
-        assert_eq!(files.keys().collect::<Vec<_>>(), ["edge.csv", "small.csv"]);
+        assert_eq!(files.keys().collect::<Vec<_>>(), ["edge.txt", "small.txt"]);
         assert_eq!(
-            files["edge.csv"].len() as u64,
+            files["edge.txt"].len() as u64,
             MAX_FILE,
             "5 MB exactly still syncs"
         );
@@ -156,22 +184,22 @@ async fn files_over_5_mb_are_skipped_and_named_on_both_sides() {
     let rep = ben.sync(&host_b).await;
     assert!(why(&rep.skipped, "huge.bin").contains("5 MB"));
     assert!(ben.read("huge.bin").is_none());
-    assert_eq!(rep.got, ["edge.csv", "small.csv"]);
+    assert_eq!(rep.got, ["edge.txt", "small.txt"]);
 
     // A synced file that grows past 5 MB here is no longer sent; if the
     // server's then changes, both versions are kept like any conflict.
-    ben.write("small.csv", &big);
+    ben.write("small.txt", &big);
     let rep = ben.sync(&host_b).await;
     assert!(rep.sent.is_empty());
-    assert!(why(&rep.skipped, "small.csv").contains("5 MB"));
+    assert!(why(&rep.skipped, "small.txt").contains("5 MB"));
     ana.sync(&host_a).await;
-    ana.write("small.csv", "a,b\n1,2\n");
+    ana.write("small.txt", "a,b\n1,2\n");
     ana.sync(&host_a).await;
     let rep = ben.sync(&host_b).await;
     assert_eq!(rep.conflicts.len(), 1);
-    assert_eq!(ben.text("small.csv"), "a,b\n1,2\n");
+    assert_eq!(ben.text("small.txt"), "a,b\n1,2\n");
     assert_eq!(
-        ben.read(&format!("small (my copy {TODAY}).csv"))
+        ben.read(&format!("small (my copy {TODAY}).txt"))
             .unwrap()
             .len(),
         big.len()
@@ -266,6 +294,7 @@ async fn the_linked_servers_own_token_never_travels_inside_a_file() {
         keep: &keep,
         today: TODAY,
         never_send: &never,
+        labels: &ana.labels,
     };
     let rep = columbus_sync::sync(&ana.root, &host, &mut ana.state, &opts)
         .await
@@ -507,7 +536,7 @@ async fn a_folder_with_far_too_many_files_is_refused() {
     for i in 0..=columbus_sync::MAX_FILES {
         std::fs::write(dir.join(format!("{i}.txt")), b"").unwrap();
     }
-    let err = columbus_sync::check(&ana.root, &host, &ana.state)
+    let err = columbus_sync::check(&ana.root, &host, &ana.state, &ana.labels)
         .await
         .unwrap_err();
     assert!(err.to_string().contains("more than 20000 files"), "{err}");

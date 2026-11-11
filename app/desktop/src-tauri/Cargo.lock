@@ -612,6 +612,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "columbus-flow"
+version = "0.15.0"
+dependencies = [
+ "columbus-shared",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "columbus-shared"
 version = "0.15.0"
 dependencies = [
@@ -637,6 +646,8 @@ version = "0.15.0"
 dependencies = [
  "base64 0.22.1",
  "chrono",
+ "columbus-flow",
+ "columbus-shared",
  "hex",
  "reqwest",
  "serde",

@@ -490,6 +490,12 @@ async fn paths_and_files_the_rules_refuse_stay_refused() {
         b"SQLite format 3\0\x10\0\x01\x01",
     )
     .unwrap();
+    std::fs::write(
+        files_dir.join("picture.png"),
+        b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR",
+    )
+    .unwrap();
+    std::fs::write(files_dir.join("codes.csv"), "code,name\n7,arterial\n").unwrap();
     std::fs::write(files_dir.join(".env"), "DB_PASSWORD=hunter2\n").unwrap();
     std::fs::write(files_dir.join("run.bat"), "echo theirs\r\n").unwrap();
     std::fs::create_dir_all(files_dir.join(".git")).unwrap();
@@ -559,7 +565,7 @@ async fn paths_and_files_the_rules_refuse_stay_refused() {
     // replaced, not removed.
     for (path, why) in [
         ("big.txt", "larger than 1024 KB"),
-        ("layer.gpkg", "not a text file"),
+        ("picture.png", "not a text file"),
     ] {
         let e = err(&files(&c, json!({"action": "read", "path": path})).await);
         assert!(e.contains(why), "{path}: {e}");
@@ -582,6 +588,38 @@ async fn paths_and_files_the_rules_refuse_stay_refused() {
             "{path}: {e}"
         );
     }
+    // Data (R-103): a project's files are for scripts and notes, so the
+    // assistant writes no data format there, new or over one the person
+    // put there. Results leave a chat only through an export (D-19). One
+    // the person put there is read as before, when it is text.
+    let e = err(&files(&c, json!({"action": "read", "path": "layer.gpkg"})).await);
+    assert!(e.contains("not a text file"), "{e}");
+    let r = ok(&files(&c, json!({"action": "read", "path": "codes.csv"})).await);
+    assert_eq!(r["result"]["text"], "code,name\n7,arterial\n");
+    let theirs = r["result"]["sha256"].as_str().unwrap().to_string();
+    for args in [
+        json!({"action": "write", "path": "codes.csv", "text": "code,name\n8,local\n", "sha256": theirs}),
+        json!({"action": "write", "path": "layer.gpkg", "text": "x", "sha256": sha256("x")}),
+        json!({"action": "write", "path": "data/rows.csv", "text": "id,owner\n1,M. Okafor\n"}),
+        json!({"action": "write", "path": "data/rows.tsv", "text": "id\towner\n"}),
+        json!({"action": "write", "path": "roads.geojson", "text": "{\"type\": \"FeatureCollection\", \"features\": []}"}),
+        json!({"action": "write", "path": "places.kml", "text": "<kml/>"}),
+        json!({"action": "write", "path": "book.xlsx", "text": "x"}),
+        json!({"action": "write", "path": "cache.sqlite", "text": "x"}),
+    ] {
+        let e = err(&files(&c, args.clone()).await);
+        assert!(
+            e.contains("is data") && e.contains("only through an export (export_output)"),
+            "{args}: {e}"
+        );
+    }
+    let e = err(&files(
+        &c,
+        json!({"action": "write", "path": "bundle.zip", "text": "x"}),
+    )
+    .await);
+    assert!(e.contains("is an archive"), "{e}");
+    assert!(!files_dir.join("data").exists());
     let e = err(&files(
         &c,
         json!({"action": "write", "path": "notes/long.md", "text": "a".repeat(1024 * 1024 + 1)}),
@@ -650,12 +688,15 @@ async fn paths_and_files_the_rules_refuse_stay_refused() {
         [
             ".env",
             "big.txt",
+            "codes.csv",
             "columbus-project.yaml",
             "layer.gpkg",
+            "picture.png",
             "run.bat",
             "scripts/widths.py"
         ]
     );
+
     let note = |path: &str| {
         l["result"]["files"]
             .as_array()

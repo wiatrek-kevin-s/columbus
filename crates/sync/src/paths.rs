@@ -5,6 +5,8 @@
 //! on every system alike, to what is in the folder and to what the server
 //! lists. Paths are relative, with `/` between their parts.
 
+use columbus_shared::file_kinds::{self, FolderKind, Kind};
+
 /// A file larger than this never syncs (D-20).
 pub const MAX_FILE: u64 = 5 * 1024 * 1024;
 
@@ -92,69 +94,60 @@ pub fn refused_name(name: &str) -> Option<&'static str> {
     None
 }
 
-/// File name endings that never sync: keys and connection files, geodata
-/// formats, archives.
-const IGNORED_ENDINGS: &[&str] = &[
-    ".pem", ".key", ".pfx", ".p12", ".sde", ".ags", ".gpkg", ".shp", ".shx", ".dbf", ".prj",
-    ".cpg", ".sbn", ".sbx", ".tif", ".tiff", ".las", ".laz", ".zip",
-];
-
-/// Folders that never sync, wherever they are.
-const IGNORED_FOLDERS: &[&str] = &["__pycache__", ".venv", "outputs"];
-
-/// Files the system itself leaves in folders.
-const SYSTEM_FILES: &[&str] = &[".ds_store", "thumbs.db", "desktop.ini"];
-
-/// The rule of the ignore list a path falls under, or `None`. Data, secrets
-/// and outputs stay out of a repository (D-20): `.env*`, keys and
-/// certificates, connection files (`.sde`, `.ags`), geodata (`*.gdb/`,
-/// `.gpkg`, shapefile parts, rasters, point clouds), archives,
-/// `__pycache__/`, `.venv/` and `outputs/`. Letter case does not matter.
+/// Why a path never syncs by what its name says it is, or `None`. The
+/// table is `columbus_shared::file_kinds`, the same one that says what the
+/// assistant may not write into a project's files, so the two cannot drift
+/// (R-103). Kept out, on both sides (never sent, never fetched):
+///
+/// * passwords, keys and connection files (`.env*`, `.pgpass`, `id_rsa`,
+///   `.pem`, `.sde`, `.dsn` …);
+/// * data (geodata such as `.gpkg`, shapefile parts, `.geojson`, rasters;
+///   tables and databases such as `.csv`, `.xlsx`, `.parquet`, `.sqlite`):
+///   data leaves Columbus only through an export (D-19, D-20);
+/// * archives and disk images;
+/// * files the system runs or follows when they are opened (`.bat`,
+///   `.lnk`, `.url` …);
+/// * `__pycache__/`, `.venv/`, `outputs/`, `*.gdb/`, and the files the
+///   system itself leaves in folders.
+///
+/// Letter case does not matter. The words finish the sentence
+/// "<path> does not sync: …".
 pub fn ignored(path: &str) -> Option<&'static str> {
-    let lower = path.to_lowercase();
-    let mut parts: Vec<&str> = lower.split('/').collect();
+    let mut parts: Vec<&str> = path.split('/').collect();
     let name = parts.pop().unwrap_or("");
     for folder in &parts {
         if let Some(why) = ignored_folder(folder) {
             return Some(why);
         }
     }
-    if name.starts_with(".env") {
-        return Some("an .env file is on the ignore list (it usually holds secrets)");
-    }
-    if SYSTEM_FILES.contains(&name) {
-        return Some("a file the system makes is on the ignore list");
-    }
-    if IGNORED_ENDINGS.iter().any(|e| name.ends_with(e)) {
-        return Some(ending_rule(name));
-    }
-    None
+    Some(match file_kinds::kind_of(name)? {
+        Kind::EnvFile => "an .env file is on the ignore list (it usually holds secrets)",
+        Kind::Key => "keys and certificates are on the ignore list",
+        Kind::Passwords => "password files are on the ignore list",
+        Kind::Connection => "connection files are on the ignore list (they can hold a password)",
+        Kind::Runs => RUNS,
+        Kind::Geodata => "geodata is on the ignore list (data leaves Columbus only through export)",
+        Kind::Table => {
+            "tables and databases are on the ignore list (data leaves Columbus only through export)"
+        }
+        Kind::Archive => "archives are on the ignore list",
+        Kind::System => "a file the system makes is on the ignore list",
+    })
 }
+
+const RUNS: &str = "it is a kind the system runs or follows when it is opened (a program, a shortcut, an installer), which never syncs";
 
 /// The same for a folder's own name (so a walk need not enter it).
 pub fn ignored_folder(name: &str) -> Option<&'static str> {
-    let lower = name.to_lowercase();
-    if IGNORED_FOLDERS.contains(&lower.as_str()) {
-        return Some(match lower.as_str() {
-            "outputs" => "the outputs folder is on the ignore list",
-            ".venv" => "a .venv folder is on the ignore list",
-            _ => "a __pycache__ folder is on the ignore list",
+    if let Some(kind) = file_kinds::folder_kind(name) {
+        return Some(match kind {
+            FolderKind::Outputs => "the outputs folder is on the ignore list",
+            FolderKind::Venv => "a .venv folder is on the ignore list",
+            FolderKind::PyCache => "a __pycache__ folder is on the ignore list",
+            FolderKind::Geodatabase => "a file geodatabase (.gdb) is on the ignore list",
         });
     }
-    if lower.ends_with(".gdb") {
-        return Some("a file geodatabase (.gdb) is on the ignore list");
-    }
     None
-}
-
-fn ending_rule(name: &str) -> &'static str {
-    let ext = name.rsplit('.').next().unwrap_or("");
-    match ext {
-        "pem" | "key" | "pfx" | "p12" => "keys and certificates are on the ignore list",
-        "sde" | "ags" => "connection files are on the ignore list (they can hold a password)",
-        "zip" => "archives are on the ignore list",
-        _ => "geodata is on the ignore list (data leaves Columbus only through export)",
-    }
 }
 
 /// The name a person's version is kept under beside a file both sides
@@ -292,6 +285,45 @@ mod tests {
             (".DS_Store", "system"),
             ("pics/Thumbs.db", "system"),
             ("desktop.ini", "system"),
+            // Tables and databases (R-103).
+            ("data.csv", "tables"),
+            ("data/codes.TSV", "tables"),
+            ("book.xlsx", "tables"),
+            ("old.xls", "tables"),
+            ("big.parquet", "tables"),
+            ("cache.sqlite", "tables"),
+            ("cache.duckdb", "tables"),
+            ("access.mdb", "tables"),
+            ("roads.gpkg-wal", "tables"),
+            // More geodata.
+            ("roads.geojson", "geodata"),
+            ("roads.fgb", "geodata"),
+            ("places.kml", "geodata"),
+            ("places.kmz", "geodata"),
+            ("track.gpx", "geodata"),
+            ("parcels.gml", "geodata"),
+            // Password, key and connection files, by the names the
+            // assistant is kept from.
+            (".pgpass", "password"),
+            ("home/.netrc", "password"),
+            ("_netrc", "password"),
+            ("pgpass.conf", "password"),
+            ("aws/credentials", "password"),
+            ("id_rsa", "keys"),
+            ("id_ed25519", "keys"),
+            ("store.jks", "keys"),
+            ("debug.keystore", "keys"),
+            ("vault.kdbx", "keys"),
+            ("putty.ppk", "keys"),
+            ("prod.dsn", "connection"),
+            ("prod.udl", "connection"),
+            ("cube.odc", "connection"),
+            // Files the system runs or follows when they are opened.
+            ("open me.bat", "runs or follows"),
+            ("report.pdf.lnk", "runs or follows"),
+            // More archives.
+            ("bundle.7z", "archives"),
+            ("bundle.tar.gz", "archives"),
         ] {
             let why = ignored(path);
             assert!(why.is_some_and(|w| w.contains(word)), "{path}: {why:?}");
@@ -306,10 +338,26 @@ mod tests {
             "shp_notes.txt",
             "a.gdb.txt",
             "zip.py",
-            "data.csv",
+            "csv.md",
+            "settings.json",
+            "run.sh",
+            "tool.ps1",
+            "query.sql",
             "columbus-project.yaml",
         ] {
             assert_eq!(ignored(path), None, "{path}");
+        }
+    }
+
+    /// Every entry of the table sync shares with the assistant's project
+    /// files (`columbus_shared::file_kinds`) is kept out of a sync, as a
+    /// file at the top and inside a folder.
+    #[test]
+    fn everything_in_the_shared_table_never_syncs() {
+        for (name, kind) in columbus_shared::file_kinds::examples() {
+            for path in [name.clone(), format!("a/b/{name}")] {
+                assert!(ignored(&path).is_some(), "{path} ({kind:?}) would sync");
+            }
         }
     }
 

@@ -36,7 +36,6 @@
 //! * **Audited.** Every action is an audit line, with the path and the
 //!   text's hash, never the text.
 
-use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
@@ -56,8 +55,10 @@ use crate::safefs::Dir;
 use crate::server::{Check, Gateway, Output};
 
 /// The record of which data labels each file carries: beside the files
-/// folder, in the project's own folder, so it never syncs.
-const LABELS_FILE: &str = "files-labels.json";
+/// folder, in the project's own folder, so it never syncs. Sync reads it
+/// too (a file that carries labels is held until the person chooses to
+/// send it), through the same reader.
+const LABELS_FILE: &str = pf::LABELS_FILE;
 const LABELS_LOCK: &str = "files-labels.lock";
 
 /// What the assistant is told when the chat has no project.
@@ -361,29 +362,12 @@ impl Drop for LabelsLock {
     }
 }
 
-type Labels = BTreeMap<String, BTreeSet<String>>;
+type Labels = pf::Labels;
 
 /// The data labels each file carries (path -> labels). A record that is
 /// there but does not read is an error, never "no labels".
 fn load_labels(folder: &Path) -> Result<Labels, String> {
-    let path = folder.join(LABELS_FILE);
-    match std::fs::symlink_metadata(&path) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Labels::new()),
-        Ok(m) if m.is_file() && m.len() <= 4 * 1024 * 1024 => {}
-        _ => {
-            return Err(format!(
-                "the record of where this project's files came from ({LABELS_FILE}) is not a plain file, so the files are not used until the person removes it"
-            ))
-        }
-    }
-    std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|t| serde_json::from_str::<Labels>(&t).ok())
-        .ok_or_else(|| {
-            format!(
-                "the record of where this project's files came from ({LABELS_FILE}) does not read, so the files are not used until the person removes it"
-            )
-        })
+    pf::load_labels(folder)
 }
 
 /// Change the labels record under its lock.
@@ -1091,6 +1075,7 @@ impl Gateway {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
 
     fn p(s: &str) -> Vec<String> {
         pf::parts(s).unwrap()

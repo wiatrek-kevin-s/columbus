@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-sync-send-anyway"
+description = "Enables the sync_send_anyway command without any pre-configured scope."
+commands.allow = ["sync_send_anyway"]
+
+[[permission]]
+identifier = "deny-sync-send-anyway"
+description = "Denies the sync_send_anyway command without any pre-configured scope."
+commands.deny = ["sync_send_anyway"]
