@@ -64,6 +64,7 @@ mod personal_tools;
 mod plugin_run;
 mod plugins;
 mod project_db;
+mod project_files;
 mod propose_tool;
 mod providers;
 mod raster_tools;

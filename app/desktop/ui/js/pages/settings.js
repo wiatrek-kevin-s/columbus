@@ -29,12 +29,21 @@ export function saves() {
   return Promise.all([...pending]);
 }
 
+// What the scripts switch gives depends on the approval rule in force
+// (scripts.approval: each, session or none).
+function scriptsText(rule) {
+  if (rule === "none") return "Your assistant may run Python scripts it writes. They run in a sandbox with no network, on copies, without asking you each time; one that needs the internet or leaves the sandbox still asks.";
+  if (rule === "session") return "Your assistant may run Python scripts it writes, after you read and approve each one; you can allow a script for a whole chat. They run in a sandbox with no network.";
+  return "Your assistant may run Python scripts it writes, after you read and approve each one. They run in a sandbox with no network.";
+}
+
 const SWITCHES = {
   allow_edits: ["Allow edits.", "Your assistant may write to connections set to read-write, and only after you approve each change set. When off, every connection is read-only."],
-  allow_scripts: ["Allow Python scripts.", "Your assistant may run Python scripts it writes, after you read and approve each one. They run in a sandbox with no network."],
+  allow_scripts: ["Allow Python scripts.", (p) => scriptsText(p.script_approval)],
   allow_personal_tools: ["Allow personal tools.", "Your assistant may propose tools made from its scripts, and use the ones you install without asking each time. They run in the same sandbox as scripts."],
   allow_shared_tools: ["Allow shared tools and workflows.", "You may open tools and workflows coworkers share with you as a file. Each arrives as a proposal you read and approve yourself, like your assistant's; nothing from a shared file is installed or run before that."],
   allow_workflows: ["Allow workflows.", "Your assistant may propose workflows, and the ones you approve run by themselves on their schedule, without asking each time, within what they list."],
+  allow_project_files: ["Allow project files.", "Your assistant may list, read and write text files in a project's own folder (scripts and notes), and run scripts kept there in the sandbox. Data still leaves a chat only through an export."],
 };
 
 /** One of the organization's switches. Turning one on is confirmed by the
@@ -44,7 +53,8 @@ export function switchRow(name, st, after) {
   const box = h("input", { type: "checkbox", id: name });
   box.checked = !!p[name];
   box.disabled = !p.writable;
-  const [b, text] = SWITCHES[name];
+  const [b, words] = SWITCHES[name];
+  const text = typeof words === "function" ? words(p) : words;
   const err = h("p", { class: "error-text small", role: "alert", hidden: true });
   box.addEventListener("change", async () => {
     const want = box.checked;
@@ -64,6 +74,68 @@ export function switchRow(name, st, after) {
     }
   });
   return h("div", {}, h("label", { class: "switch-row" }, box, h("span", {}, h("b", {}, b), " ", text)), err);
+}
+
+/** How the assistant works (build brief 3, D-16): one choice between two
+ * cards, Work freely on copies or Ask me before each script, with the mode
+ * in force said under them. Choosing the first is confirmed by the person
+ * once (Touch ID, password or Windows Hello) in the app's Rust code, which
+ * then writes the settings; where the policy file is not the person's to
+ * change, the cards only show what is in force. `id` names the controls
+ * (the first run has its own); `after` runs once a choice is saved. */
+export function workMode(st, after, id = "work", inSheet = true) {
+  const p = st.policy;
+  const send = inSheet ? invoke : call;
+  const mine = p.writable && p.exists;
+  const free = p.work_mode === "free";
+  const err = h("p", { id: `${id}-error`, class: "error-text small", role: "alert", hidden: true });
+  const state = h("p", { id: `${id}-state`, class: "small", role: "status" });
+  const say = () => {
+    const now = p.work_mode === "free" ? "On now: Work freely on copies."
+      : p.work_mode === "ask" ? `On now: Ask me before each script.${p.script_approval === "session" ? " You can also allow a script for a whole chat." : ""}`
+        : "Python scripts are off, so your assistant runs none. Work freely on copies turns them on.";
+    const whose = !p.writable ? " This is set by your organization: this account cannot change it."
+      : !p.exists ? " There is no organization settings file yet, so Columbus's strict defaults apply. Create it as the install guide shows, then choose here."
+        : "";
+    state.replaceChildren(h("b", {}, now), whose ? h("span", { id: `${id}-managed` }, whose) : "");
+  };
+  const radio = (value, checked) => {
+    const r = h("input", { type: "radio", name: `${id}_mode`, id: `${id}-${value}`, value });
+    r.checked = checked;
+    r.disabled = !mine;
+    return r;
+  };
+  const freeBox = radio("free", free);
+  const askBox = radio("ask", !free);
+  const card = (box, title, more, text) => h("label", { class: "choice", "data-mode": box.value }, box,
+    h("span", { class: "text" }, h("b", {}, title, more ? h("span", { class: "muted" }, more) : ""), h("span", {}, text)));
+  const choose = async (want) => {
+    freeBox.disabled = askBox.disabled = true;
+    showError(err, null);
+    try {
+      await send("settings_set_work_mode", { free: want });
+      toast(want ? "Saved. Your assistant works freely on copies from its next request." : "Saved. Columbus asks you before each script from the next one.");
+      if (after) after();
+    } catch (e) {
+      showError(err, e);
+      freeBox.checked = free;
+      askBox.checked = !free;
+    } finally {
+      freeBox.disabled = askBox.disabled = !mine;
+    }
+  };
+  freeBox.addEventListener("change", () => { if (freeBox.checked) choose(true); });
+  askBox.addEventListener("change", () => { if (askBox.checked) choose(false); });
+  say();
+  const how = st.confirm_with === "not available on this system"
+    ? "On this system the app cannot confirm it is you (there is no Touch ID or Windows Hello), so set it in the policy file instead."
+    : `Choosing Work freely on copies asks for ${st.confirm_with} once. Going back to asking does not.`;
+  return h("div", { class: "stack", id },
+    h("div", { class: "choices", role: "radiogroup", "aria-label": "How your assistant works" },
+      card(freeBox, "Work freely on copies", " (recommended)", "Scripts and tools run without asking you each time, in a sandbox, on copies of your data. They cannot reach your connections, your passwords, your other files or the internet."),
+      card(askBox, "Ask me before each script", "", "You read each script your assistant writes and allow it before it runs, in the same sandbox.")),
+    state, err,
+    h("p", { class: "small muted" }, "Either way your assistant reads your data only through Columbus, under each source's rules, and Columbus still asks you before anything leaves the workspace or changes a source. ", mine ? how : ""));
 }
 
 /** The parts that open inside the sheet (also offered by the search). */
@@ -255,10 +327,21 @@ async function overview(body, foot) {
     theme.append(b);
   }
 
+  // How the assistant works: freely on copies, or asking before each script.
+  const modeBox = h("div", { class: "bd", id: "work-mode" }, h("p", { class: "small muted" }, "…"));
+  const drawMode = async () => {
+    try {
+      const st = await invoke("settings_state");
+      modeBox.replaceChildren(workMode(st, drawMode));
+    } catch (e) { modeBox.replaceChildren(h("p", { class: "error-text small" }, String(e))); }
+  };
+  drawMode();
+
   // This computer: where things are kept, and whose rules apply.
   const src = info ? info.policy.source : "";
   const rules = { organization: "Set by your organization.", file: "From a policy file on this computer.", defaults: "No policy file: Columbus's strict defaults apply.", unreadable: "The policy file cannot be read, so nothing beyond the defaults is allowed." }[src] || "";
   body.append(
+    h("section", { class: "card" }, sec("How your assistant works"), modeBox),
     h("section", { class: "card" }, sec("Assistant"),
       setRow("API key", keyLine, go("Change", "#/settings/ai", "set-key")),
       setRow("Model for new chats", "You can change it in any chat.", model),
@@ -470,13 +553,20 @@ async function environments(body) {
 }
 
 // ---------- Organization ----------
-function sentences(f) {
+function sentences(f, rule) {
   const out = [];
   const list = (a) => (a && a.length ? a.join(", ") : "none");
   out.push(["Connections", `Connection types allowed: ${list(f.connection_types)}.`]);
   out.push(["Edits", f.allow_edits ? "Your assistant may propose edits to read-write connections; you approve each change set." : "No edits: every connection is read-only."]);
-  out.push(["Scripts", f.allow_scripts ? "Your assistant may run Python scripts, after you read and approve each one." : "No Python scripts."]);
+  out.push(["Scripts", !f.allow_scripts ? "No Python scripts."
+    : rule === "none" ? "Your assistant may run Python scripts without asking you each time, in a sandbox with no network, on copies. A script that needs the internet or leaves the sandbox still asks you every time."
+      : rule === "session" ? "Your assistant may run Python scripts, after you read and approve each one; you can allow a script for a whole chat."
+        : "Your assistant may run Python scripts, after you read and approve each one."]);
+  out.push(["Python environments", f.environments && f.environments.allow ? "Scripts may run in Python environments you register." : "Scripts run only in the GIS engine's own Python."]);
   out.push(["Personal tools", f.allow_personal_tools ? "Tools you install from what your assistant proposes may run without asking." : "Personal tools are off."]);
+  out.push(["Toolboxes", f.allow_toolboxes ? "Toolboxes you install may be used; their tools run in the sandbox." : "Toolboxes are off."]);
+  out.push(["Project files", f.allow_project_files ? "Your assistant may read and write text files in a project's own folder, and run scripts kept there." : "Project files are off."]);
+  out.push(["Sync", f.allow_sync ? `A project's files may sync with a Git server when you press Sync${f.sync && f.sync.hosts && f.sync.hosts.length ? ` (only ${f.sync.hosts.join(", ")})` : ""}.` : "Sync with Git servers is off."]);
   if (f.return_rows != null) out.push(["Rows to the AI", `Your assistant sees at most ${Number(f.return_rows).toLocaleString()} rows per call.`]);
   if (f.hide_fields && f.hide_fields.length) out.push(["Hidden fields", `Never shown or sent to the AI: ${f.hide_fields.join(", ")}.`]);
   if (Array.isArray(f.exports)) out.push(["Exports", f.exports.length ? `Export folders: ${f.exports.map((e) => e.id || e.path).join(", ")}.` : "No export folders are set up."]);
@@ -500,9 +590,11 @@ async function org(body) {
   body.append(h("div", { class: `notice ${src === "unreadable" ? "fail" : src === "defaults" ? "warn" : ""}` }, h("div", {}, h("b", {}, "Policy in force. "), where, " ", h("span", { class: "mono" }, p.path))));
   if (p.problem) body.append(h("p", { id: "policy-problem", class: "error-text" }, p.problem));
   const sw = h("div", {});
+  const mode = h("div", { class: "bd" });
   const drawSw = async () => {
     try {
       const s = await invoke("settings_state");
+      mode.replaceChildren(workMode(s, drawSw, "org-work"));
       sw.replaceChildren(
         h("p", { id: "org-managed", class: "small muted", hidden: s.policy.writable }, "These are managed by your organization. Ask your IT team to change them."),
         ...Object.keys(SWITCHES).map((n) => switchRow(n, s, drawSw)),
@@ -510,10 +602,11 @@ async function org(body) {
     } catch (e) { showError(error, e); }
   };
   await drawSw();
-  body.append(h("section", { class: "card" }, sec("Switches"), h("div", { class: "bd" }, sw)));
+  body.append(h("section", { class: "card" }, sec("How your assistant works"), mode),
+    h("section", { class: "card" }, sec("Switches"), h("div", { class: "bd" }, sw)));
   if (info) {
     const dl = h("dl", { class: "kv" });
-    for (const [k, v] of sentences(info.policy.in_force || {})) dl.append(h("dt", {}, k), h("dd", {}, v));
+    for (const [k, v] of sentences(info.policy.in_force || {}, info.policy.script_approval)) dl.append(h("dt", {}, k), h("dd", {}, v));
     body.append(h("section", { class: "card" }, sec("In plain words"), h("div", { class: "bd" }, dl)));
     if (info.policy.text) {
       body.append(h("section", { class: "card" }, sec("The file as written, read only"),

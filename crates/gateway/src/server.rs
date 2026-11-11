@@ -381,6 +381,26 @@ pub struct PolicySummary {
     pub trusted_environments_allowed: bool,
     /// Governed environments may have network access (level B).
     pub environment_network_allowed: bool,
+    /// When a script that runs in the sandbox with no network (the engine's
+    /// Python, or a governed level A environment) asks the person first:
+    /// `each` run, once per `session` for the same code, or `none` (the
+    /// sandbox is the boundary). A run with network (level B) or in a
+    /// trusted environment asks every time, whatever this says.
+    pub script_approval: String,
+    /// The same, in a sentence.
+    pub script_approval_means: String,
+    /// Toolboxes (installed programs that describe their own tools) are on.
+    pub toolboxes_allowed: bool,
+    /// The built-in catalogue may download a toolbox the person installs.
+    pub toolbox_catalogue: bool,
+    /// The assistant may list, read and write text files in its project's
+    /// own folder (project_files), and run scripts kept there.
+    pub project_files_allowed: bool,
+    /// A project's files may sync with a Git server, on the person's click.
+    pub sync_allowed: bool,
+    /// Git servers a project may sync with; empty means any the person
+    /// connects.
+    pub sync_hosts: Vec<String>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -428,7 +448,10 @@ pub struct ToolCard {
     /// `read`, `write` or `destructive`, as reviewed (connected tools).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub risk: Option<columbus_broker::manifest::Risk>,
-    /// `no`, `yes`, or `if_labelled` (only while governed data is in the session).
+    /// `no`, `yes`, `if_labelled` (only while governed data is in the
+    /// session), or, for run_python where policy says scripts.approval:
+    /// none, `if_outside_sandbox` (only a run with network or in a trusted
+    /// environment asks).
     pub approval: String,
 }
 
@@ -1450,7 +1473,8 @@ impl Gateway {
                 + Self::workflow_router()
                 + Self::env_router()
                 + Self::snapshot_router()
-                + Self::project_db_router(),
+                + Self::project_db_router()
+                + Self::project_files_router(),
         }
     }
 
@@ -2072,6 +2096,13 @@ impl Gateway {
                 environments_allowed: p.environments.allow,
                 trusted_environments_allowed: p.environments.allow_trusted,
                 environment_network_allowed: p.environments.allow_network,
+                script_approval: crate::script_tools::approval_name(p).into(),
+                script_approval_means: crate::script_tools::approval_words(p),
+                toolboxes_allowed: p.allow_toolboxes,
+                toolbox_catalogue: p.toolboxes.catalogue,
+                project_files_allowed: p.allow_project_files,
+                sync_allowed: p.allow_sync,
+                sync_hosts: p.sync.hosts.clone(),
             },
             connections: self.connection_cards(),
             connections_folder: self.state.paths.connections.display().to_string(),
@@ -2164,6 +2195,10 @@ impl Gateway {
                 if !self.state.policy().tool_allowed(&t.name) {
                     continue;
                 }
+                // Not offered while organization policy turns it off.
+                if t.name == "project_files" && !self.state.policy().allow_project_files {
+                    continue;
+                }
                 let desc = t.description.as_deref().unwrap_or("").to_string();
                 candidates.push((
                     format!("{} {}", t.name.replace('_', " "), desc),
@@ -2172,7 +2207,18 @@ impl Gateway {
                         summary: summary_of(&desc),
                         provider: "columbus".into(),
                         risk: None,
-                        approval: if t.name == "run_python" { "yes" } else { "no" }.into(),
+                        approval: if t.name == "run_python" {
+                            // What is true under the policy in force (D-16).
+                            match self.state.policy().scripts.approval_rule() {
+                                columbus_shared::policy::ScriptApproval::None => {
+                                    "if_outside_sandbox"
+                                }
+                                _ => "yes",
+                            }
+                        } else {
+                            "no"
+                        }
+                        .into(),
                     },
                 ));
             }
@@ -2386,10 +2432,19 @@ impl Gateway {
                 ))
             }
         };
+        if tool.name == "project_files" && !self.state.policy().allow_project_files {
+            return Err(self.deny(&ctx, rec, crate::project_files::POLICY_OFF));
+        }
         self.audit(&ctx, rec)?;
+        let mut description = tool.description.as_deref().unwrap_or("").to_string();
+        if tool.name == "run_python" {
+            // When it asks the person, under the policy in force now.
+            description.push_str("\n\nIn force now: ");
+            description.push_str(&crate::script_tools::approval_words(&self.state.policy()));
+        }
         Ok(out(ToolDetail {
             name: tool.name.to_string(),
-            description: tool.description.as_deref().unwrap_or("").to_string(),
+            description,
             input_schema: Value::Object((*tool.input_schema).clone()),
             read_only: tool
                 .annotations

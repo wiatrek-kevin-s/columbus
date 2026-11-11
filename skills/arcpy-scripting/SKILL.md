@@ -188,7 +188,7 @@ More messages and fixes: [references/errors-and-fixes.md](references/errors-and-
 
 ## If the Columbus tools are available
 
-**Columbus does not run ArcPy today.** `run_python` runs approved Python, but in
+**Columbus does not run ArcPy today.** `run_python` runs Python, but in
 Columbus's confined engine Python, which has geopandas, shapely, pyproj, rasterio and
 pandas and not ArcPy: ArcPy needs ArcGIS Pro's own Python environment and licence, which
 `run_python` does not support yet (the ArcPy worker for enterprise geodatabases is on the
@@ -210,8 +210,10 @@ What you can do now:
   geometry and CRS checks. Offer those when they cover the task.
 - When the job needs code but not ArcPy (a calculation over a layer, a custom table),
   `run_python {"code": "...", "inputs": {"roads": "<ws:// handle>"}}` can do it with
-  geopandas or pandas, if `whoami` shows `scripts_allowed`. The person reads the full code
-  and approves every run; it has no network and writes only `out/` in its own folder. Read
+  geopandas or pandas, if `whoami` shows `scripts_allowed`. It runs in a sandbox: no
+  network, and it writes only `out/` in its own folder. Whether the person reads the code
+  and approves each run first is their organization's choice (`whoami`:
+  `policy.script_approval`); the app asks them itself when it is needed. Read
   inputs from the paths in `inputs.json`, write results to `out/`, and check `stderr` and
   the `script.*` checks before using what it made.
 - An organization may have approved an **engine plugin** for a recurring job. Find it with

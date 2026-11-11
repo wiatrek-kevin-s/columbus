@@ -300,6 +300,10 @@ details.card[open] > summary.hd::after { transform: rotate(45deg); }
 .list > li.clickable:hover { background: var(--fill); }
 .list > li.sel { background: var(--fill); }
 .list > li .acts { display: flex; gap: 6px; flex: none; flex-wrap: wrap; justify-content: flex-end; align-items: center; }
+/* A project's files: a folder's name once, its files under it. */
+#pj-file-list > li.folder { min-height: 0; padding-bottom: 0; }
+#pj-file-list > li.file { min-height: 44px; }
+#pj-file-list > li.file.in { padding-left: 28px; }
 .list > li .when { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; color: var(--mute); white-space: nowrap; flex: none; font-variant-numeric: tabular-nums; }
 .list > li .where.clip { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .list > li.tool { align-items: center; }

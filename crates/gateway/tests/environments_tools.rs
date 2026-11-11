@@ -1009,3 +1009,259 @@ async fn a_trusted_or_network_environment_never_offers_the_session_approval() {
     );
     c.cancel().await.unwrap();
 }
+
+/// The audit lines of the session's script runs, oldest first.
+fn script_lines(env: &Env) -> Vec<Value> {
+    let mut files: Vec<PathBuf> = std::fs::read_dir(env.root.join("audit"))
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .collect();
+    files.sort();
+    files
+        .iter()
+        .flat_map(|f| {
+            std::fs::read_to_string(f)
+                .unwrap()
+                .lines()
+                .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+                .collect::<Vec<_>>()
+        })
+        .filter(|l| l["tool"] == "run_python")
+        .collect()
+}
+
+/// One boundary in place of approving each script (T-27; build brief 3,
+/// D-16, F-15, REQ-36). Under `scripts.approval: none` a script in the
+/// engine's Python or a governed level-A environment runs with no approval,
+/// and its audit line names the rule that allowed it. A level-B (network)
+/// run and a trusted run still ask every time. Under `each` everything
+/// asks, as before. whoami, search_tools and describe_tool say what is in
+/// force.
+#[tokio::test]
+async fn under_scripts_approval_none_only_a_run_that_leaves_the_sandbox_asks() {
+    let Some(py) = engine() else { return };
+    if !can_confine() {
+        return;
+    }
+    let env = setup(
+        &py,
+        "allow_scripts: true\nallow_personal_tools: true\nenvironments: { allow: true, allow_trusted: true, allow_network: true }\nscripts: { approval: none }\n",
+    );
+    let gpy = make_venv(&py, &env.root.join("geo-venv"));
+    let tpy = make_venv(&py, &env.root.join("trusted-venv"));
+    let npy = make_venv(&py, &env.root.join("net-venv"));
+    register(&env, "geo", &gpy, Trust::Governed, Confinement::A);
+    register(&env, "pro", &tpy, Trust::Trusted, Confinement::A);
+    register(&env, "net", &npy, Trust::Governed, Confinement::B);
+    let can_b = StdCommand::new(env!("CARGO_BIN_EXE_columbus-confine"))
+        .args(["--check", "B"])
+        .output()
+        .is_ok_and(|o| o.status.success());
+    let c = start(&env).await;
+
+    // What the assistant is told is what is in force.
+    let w = ok(&call(&c, "whoami", json!({})).await);
+    let p = &w["result"]["policy"];
+    assert_eq!(p["script_approval"], "none", "{p}");
+    assert!(
+        p["script_approval_means"]
+            .as_str()
+            .unwrap()
+            .contains("without asking"),
+        "{p}"
+    );
+    let found = ok(&call(&c, "search_tools", json!({"query": "run a python script"})).await);
+    let card = found["result"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "run_python")
+        .unwrap_or_else(|| panic!("{found}"));
+    assert_eq!(card["approval"], "if_outside_sandbox", "{card}");
+    let d = ok(&call(&c, "describe_tool", json!({"name": "run_python"})).await);
+    let text = d["result"]["description"].as_str().unwrap();
+    assert!(
+        text.contains("In force now: A script that runs in the sandbox with no network")
+            && text.contains("scripts.approval: none")
+            && !text.contains("approves every run (scripts.approval: each)"),
+        "{text}"
+    );
+
+    let two = roads(&c, Some(2)).await;
+    let four = roads(&c, Some(4)).await;
+    // Inside the boundary: no approval, whatever the code and its inputs.
+    let mut free = 0;
+    for environment in [None, Some("geo")] {
+        let r = call(
+            &c,
+            "run_python",
+            script(CODE, json!({"roads": two}), environment),
+        )
+        .await;
+        if r.is_error == Some(true) && a1_fallback(&err(&r)) {
+            continue;
+        }
+        let r = ok(&r);
+        assert_eq!(r["result"]["status"], "done", "{environment:?}: {r}");
+        assert!(
+            r["result"]["stdout"].as_str().unwrap().contains("size "),
+            "{r}"
+        );
+        // Provenance says how it came to run.
+        let prov = r["provenance"].as_str().unwrap();
+        let ws = PathBuf::from(
+            ok(&call(&c, "whoami", json!({})).await)["result"]["workspace"]
+                .as_str()
+                .unwrap(),
+        );
+        let rec: Value = serde_json::from_str(
+            &std::fs::read_to_string(ws.join("provenance").join(format!("{prov}.prov.json")))
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(rec["steps"][0]["approval"], "scripts.approval: none");
+        assert_eq!(rec["steps"][0]["confinement"]["level"], "A");
+        assert_eq!(rec["steps"][0]["confinement"]["network"], "none");
+        let changed = CODE.replace("\"size\"", "\"bytes\"");
+        assert_ne!(changed, CODE);
+        let r = ok(&call(
+            &c,
+            "run_python",
+            script(&changed, json!({"roads": four}), environment),
+        )
+        .await);
+        assert_eq!(r["result"]["status"], "done", "{environment:?}: {r}");
+        free += 2;
+    }
+
+    // Across it: a trusted run and a network run ask every time.
+    let mut browser = None;
+    let mut asked = 0;
+    let mut cases = vec![("pro", "outside the sandbox")];
+    if can_b {
+        cases.push(("net", "can reach the internet"));
+    }
+    for (id, why) in cases {
+        let args = script(CODE, json!({"roads": two}), Some(id));
+        let r = call(&c, "run_python", args.clone()).await;
+        if r.is_error == Some(true) && a1_fallback(&err(&r)) {
+            continue;
+        }
+        let (ap, card) = card_of(&env, &mut browser, &ok(&r)).await;
+        let b = browser.as_ref().unwrap();
+        assert_eq!(card["offer_always"], false, "{id}: {card}");
+        let summary = card["summary"].as_str().unwrap();
+        assert!(
+            summary.contains(why) && summary.contains("is approved every run"),
+            "{id}: {summary}"
+        );
+        // Choosing "for the session" anyway counts as once.
+        b.decide(&ap, "always_this_session").await;
+        let mut with = args.clone();
+        with["approval_id"] = json!(ap);
+        let r = ok(&call(&c, "run_python", with).await);
+        assert_eq!(r["result"]["status"], "done", "{id}: {r}");
+        let again = ok(&call(&c, "run_python", args).await);
+        assert_eq!(
+            again["result"]["status"], "approval_required",
+            "{id}: {again}"
+        );
+        asked += 1;
+    }
+    // A proposed tool's test run is asked about too, whatever the rule for
+    // scripts: a new tool is something being installed.
+    let r = ok(&call(&c, "propose_tool", proposal(&two, Some("geo"))).await);
+    assert_eq!(r["result"]["status"], "approval_required", "{r}");
+    c.cancel().await.unwrap();
+
+    // The audit log: the rule, for every run that was not asked about; an
+    // approval's id for every run that was.
+    let lines = script_lines(&env);
+    let by_rule: Vec<&Value> = lines
+        .iter()
+        .filter(|l| l["approval"] == "scripts.approval: none")
+        .collect();
+    // Each run writes two lines: when it starts and when it ends.
+    assert_eq!(by_rule.len(), free * 2, "{lines:?}");
+    for l in &by_rule {
+        assert!(
+            l["environment"].is_null() || l["environment"] == "geo",
+            "{l}"
+        );
+        assert!(
+            l["decision"] == "running" || l["decision"] == "allowed",
+            "{l}"
+        );
+    }
+    let waited: Vec<&Value> = lines
+        .iter()
+        .filter(|l| l["decision"] == "approval_required")
+        .collect();
+    assert_eq!(waited.len(), asked * 2, "{lines:?}");
+    for l in &waited {
+        assert!(
+            l["environment"] == "pro" || l["environment"] == "net",
+            "{l}"
+        );
+    }
+    for l in lines
+        .iter()
+        .filter(|l| l["environment"] == "pro" || l["environment"] == "net")
+    {
+        assert_ne!(l["approval"], "scripts.approval: none", "{l}");
+    }
+
+    // The same scripts under `each`: every run asks, as before.
+    env.policy("allow_scripts: true\nenvironments: { allow: true }\nscripts: { approval: each }\n");
+    let c = start(&env).await;
+    let w = ok(&call(&c, "whoami", json!({})).await);
+    assert_eq!(w["result"]["policy"]["script_approval"], "each");
+    let found = ok(&call(&c, "search_tools", json!({"query": "run a python script"})).await);
+    let card = found["result"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "run_python")
+        .unwrap();
+    assert_eq!(card["approval"], "yes");
+    let d = ok(&call(&c, "describe_tool", json!({"name": "run_python"})).await);
+    assert!(
+        d["result"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("approves every run (scripts.approval: each)"),
+        "{d}"
+    );
+    let layer = roads(&c, Some(2)).await;
+    let mut browser = None;
+    for environment in [None, Some("geo")] {
+        let args = script(CODE, json!({"roads": layer}), environment);
+        let r = call(&c, "run_python", args.clone()).await;
+        if r.is_error == Some(true) && a1_fallback(&err(&r)) {
+            continue;
+        }
+        let (ap, card) = card_of(&env, &mut browser, &ok(&r)).await;
+        let b = browser.as_ref().unwrap();
+        assert_eq!(card["offer_always"], false, "{card}");
+        assert!(
+            card["summary"]
+                .as_str()
+                .unwrap()
+                .contains("Scripts are approved one run at a time"),
+            "{card}"
+        );
+        b.decide(&ap, "allow_once").await;
+        let mut with = args.clone();
+        with["approval_id"] = json!(ap);
+        assert_eq!(
+            ok(&call(&c, "run_python", with).await)["result"]["status"],
+            "done"
+        );
+        assert_eq!(
+            ok(&call(&c, "run_python", args).await)["result"]["status"],
+            "approval_required"
+        );
+    }
+    c.cancel().await.unwrap();
+}

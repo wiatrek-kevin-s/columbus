@@ -1748,6 +1748,8 @@ expires: 2027-06-30
             e.contains("sometimes") && e.contains("each") && e.contains("none"),
             "{e}"
         );
+        // And the key: where in the file to look.
+        assert!(e.contains("scripts.approval"), "{e}");
     }
 
     #[test]
