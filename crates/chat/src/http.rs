@@ -25,6 +25,12 @@ const API_VERSION: &str = "2023-06-01";
 pub(crate) const MAX_STREAM: usize = 32 * 1024 * 1024;
 /// Most bytes read of an answer that is an error.
 const MAX_ERROR_BODY: usize = 256 * 1024;
+/// The longest an error's body is read for, from first byte to last: a
+/// service that sends it a byte at a time does not hold the chat.
+const ERROR_BODY_TIME: Duration = Duration::from_secs(30);
+/// Who is asking, in every request (some gateways refuse a request that
+/// does not say).
+pub const USER_AGENT: &str = concat!("Columbus/", env!("CARGO_PKG_VERSION"));
 /// Most characters of a service's own words shown.
 const MAX_SAID: usize = 600;
 
@@ -54,6 +60,7 @@ impl Net {
             // A streamed reply may take long in all; each read waits at
             // most a few minutes (see read_sse).
             .timeout(Duration::from_secs(3600))
+            .user_agent(USER_AGENT)
             .redirect(reqwest::redirect::Policy::none());
         if checked.local {
             // A service on this computer is spoken to directly: a proxy
@@ -257,10 +264,19 @@ pub(crate) async fn read_body(mut r: reqwest::Response, cap: usize) -> Result<Ve
     Ok(bytes)
 }
 
-/// The body of an answer that is an error: what fits, and no failure.
-pub(crate) async fn read_error_body(mut r: reqwest::Response) -> Vec<u8> {
+/// The body of an answer that is an error: what fits and arrives in time,
+/// and no failure.
+pub(crate) async fn read_error_body(r: reqwest::Response) -> Vec<u8> {
+    read_error_body_within(r, ERROR_BODY_TIME).await
+}
+
+/// As [`read_error_body`], reading for `limit` at most in all (not for
+/// each piece: a body that arrives a byte every few seconds would keep a
+/// limit on each piece from ever running out).
+async fn read_error_body_within(mut r: reqwest::Response, limit: Duration) -> Vec<u8> {
     let mut bytes = Vec::new();
-    while let Ok(Ok(Some(chunk))) = tokio::time::timeout(Duration::from_secs(20), r.chunk()).await {
+    let end = tokio::time::Instant::now() + limit;
+    while let Ok(Ok(Some(chunk))) = tokio::time::timeout_at(end, r.chunk()).await {
         let room = MAX_ERROR_BODY.saturating_sub(bytes.len());
         bytes.extend_from_slice(&chunk[..chunk.len().min(room)]);
         if room <= chunk.len() {
@@ -885,6 +901,49 @@ mod tests {
         assert!(!told_not_to_retry(&h));
         h.insert("x-should-retry", "false".parse().unwrap());
         assert!(told_not_to_retry(&h));
+    }
+
+    /// A server that answers 400 and then sends its body a byte at a time,
+    /// for as long as anyone listens.
+    fn dripping_error() -> String {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let at = format!("http://{}", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            let mut request = [0u8; 4096];
+            let _ = stream.read(&mut request);
+            let head = "HTTP/1.1 400 Bad Request\r\ncontent-type: application/json\r\ntransfer-encoding: chunked\r\n\r\n";
+            if stream.write_all(head.as_bytes()).is_err() {
+                return;
+            }
+            // One chunk of one byte, ten times a second.
+            while stream.write_all(b"1\r\n \r\n").is_ok() && stream.flush().is_ok() {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        });
+        at
+    }
+
+    #[tokio::test]
+    async fn an_errors_body_is_read_for_a_set_time_in_all() {
+        // (Each piece arrives well inside any limit on a piece: only a
+        // limit on the whole ends the reading.)
+        let at = dripping_error();
+        let r = reqwest::Client::new().get(&at).send().await.unwrap();
+        assert_eq!(r.status().as_u16(), 400);
+        let began = std::time::Instant::now();
+        let bytes = read_error_body_within(r, Duration::from_millis(700)).await;
+        let took = began.elapsed();
+        assert!(took < Duration::from_secs(3), "{took:?}");
+        assert!(
+            (3..=10).contains(&bytes.len()),
+            "{} bytes in {took:?}",
+            bytes.len()
+        );
+        assert_eq!(ERROR_BODY_TIME, Duration::from_secs(30));
     }
 
     #[test]

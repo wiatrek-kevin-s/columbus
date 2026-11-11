@@ -2280,3 +2280,166 @@ async fn a_key_made_of_words_leaves_ordinary_words_alone() {
         drop(dir);
     }
 }
+
+/// A plain answer in the format's own shape, for a test to change before
+/// the stand-in sends it.
+fn raw(fmt: Fmt, said: &Said) -> Value {
+    ai_stand_ins::plain(fmt, said)
+}
+
+/// What a service sends beside its reply (a signature on a tool call, an
+/// encrypted reasoning item, a thinking block's signature) goes back with
+/// the conversation. A faulty service that sends megabytes of it cannot
+/// make the conversation grow: more than Columbus keeps is left out, and
+/// the tools still run and get their results.
+#[tokio::test]
+async fn what_a_service_sends_beside_its_reply_cannot_grow_the_conversation() {
+    let Some(py) = python() else { return };
+    let big = "S".repeat(3_000_000);
+    for fmt in ALL {
+        let bloated = |n: usize| {
+            let mut v = raw(fmt, &call(&format!("b{n}"), "whoami", json!({})));
+            match fmt {
+                Fmt::Messages => v["content"].as_array_mut().unwrap().insert(
+                    0,
+                    json!({"type": "thinking", "thinking": "", "signature": big}),
+                ),
+                Fmt::Responses => v["output"].as_array_mut().unwrap().insert(
+                    0,
+                    json!({"type": "reasoning", "id": format!("rs_{n}"), "summary": [], "encrypted_content": big}),
+                ),
+                Fmt::Chat => {
+                    v["choices"][0]["message"]["tool_calls"][0]["extra_content"] =
+                        json!({"google": {"thought_signature": big}})
+                }
+            }
+            Next::Raw(v)
+        };
+        let mut script: Vec<Next> = (0..4).map(bloated).collect();
+        script.push(reply(say("Done.")));
+        let mut run = Run::start(&py, fmt, false, script).await;
+        let what = run.what();
+        run.send("who am I, four times?").await.unwrap();
+        run.assert_well_formed();
+        let finished = run.ui.finished();
+        assert_eq!(finished.len(), 4, "{what}: {finished:?}");
+        assert!(finished.iter().all(|f| f.1), "{what}: {finished:?}");
+        let requests = run.stand.requests();
+        assert_eq!(requests.len(), 5, "{what}");
+        for (n, r) in requests.iter().enumerate() {
+            let size = r.to_string().len();
+            assert!(
+                size < 1_000_000,
+                "{what}: request {} holds {size} characters",
+                n + 1
+            );
+        }
+        // Every call still has its result in the last request.
+        assert_eq!(results(fmt, &requests[4]).len(), 4, "{what}");
+        run.close().await;
+    }
+}
+
+/// A plain answer may hold no more parts than a streamed one (a thousand):
+/// a faulty service cannot have ten thousand calls kept.
+#[tokio::test]
+async fn a_plain_answer_holds_no_more_parts_than_a_streamed_one() {
+    let Some(py) = python() else { return };
+    for fmt in ALL {
+        let many: Vec<(String, &str, Value)> = (0..1_001)
+            .map(|n| (format!("c{n}"), "whoami", json!({})))
+            .collect();
+        let many: Vec<(&str, &str, Value)> = many
+            .iter()
+            .map(|(id, name, args)| (id.as_str(), *name, args.clone()))
+            .collect();
+        let mut run = Run::start(
+            &py,
+            fmt,
+            false,
+            vec![Next::Raw(raw(fmt, &calls(&many))), reply(say("Hello."))],
+        )
+        .await;
+        let what = run.what();
+        let e = run.send("hello").await.unwrap_err().to_string();
+        assert_eq!(e, "the reply had too many parts", "{what}");
+        assert!(run.ui.finished().is_empty(), "{what}: nothing was run");
+        // The chat goes on.
+        run.send("hello again").await.unwrap();
+        run.assert_well_formed();
+        run.close().await;
+    }
+}
+
+/// Token counts no service would send (the largest number there is) are
+/// counts all the same: the cap stops the message, and nothing breaks.
+#[tokio::test]
+async fn token_counts_beyond_reason_stop_the_message_and_break_nothing() {
+    let Some(py) = python() else { return };
+    let most = u64::MAX;
+    for fmt in ALL {
+        let counted = |id: &str, n: u64| {
+            let mut v = raw(fmt, &call(id, "whoami", json!({})));
+            v["usage"] = match fmt {
+                Fmt::Messages => {
+                    json!({"input_tokens": n, "cache_creation_input_tokens": n, "cache_read_input_tokens": n, "output_tokens": 1})
+                }
+                Fmt::Responses => {
+                    json!({"input_tokens": n, "input_tokens_details": {"cached_tokens": 0}, "output_tokens": 1})
+                }
+                Fmt::Chat => json!({"prompt_tokens": n, "completion_tokens": 1}),
+            };
+            Next::Raw(v)
+        };
+        let mut run = Run::start(
+            &py,
+            fmt,
+            false,
+            vec![
+                counted("u1", 10),
+                counted("u2", most),
+                reply(say("Never asked for.")),
+            ],
+        )
+        .await;
+        let what = run.what();
+        run.send("who am I?").await.unwrap();
+        let statuses = run.ui.statuses();
+        assert!(
+            statuses
+                .iter()
+                .any(|s| s.starts_with("Stopped: this message has used about")),
+            "{what}: {statuses:?}"
+        );
+        assert_eq!(run.stand.requests().len(), 2, "{what}: not asked again");
+        run.close().await;
+    }
+}
+
+/// Every request says who is asking (`User-Agent: Columbus/<version>`):
+/// some gateways refuse a request that says nothing.
+#[tokio::test]
+async fn every_request_says_it_is_columbus() {
+    let Some(py) = python() else { return };
+    let us = concat!("Columbus/", env!("CARGO_PKG_VERSION"));
+    for fmt in ALL {
+        let mut run = Run::start(&py, fmt, false, vec![reply(say("Hello."))]).await;
+        let what = run.what();
+        run.send("hello").await.unwrap();
+        columbus_chat::list_models(&run.stand.base, KEY, &known(fmt).0)
+            .await
+            .unwrap();
+        let seen = run.stand.seen();
+        assert_eq!(seen.len(), 2, "{what}");
+        for s in &seen {
+            assert_eq!(
+                s.header("user-agent"),
+                Some(us),
+                "{what}: {} {}",
+                s.method,
+                s.path
+            );
+        }
+        run.close().await;
+    }
+}

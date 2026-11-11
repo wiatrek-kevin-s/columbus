@@ -20,8 +20,8 @@ use serde_json::{json, Map, Value};
 
 use crate::schema;
 use crate::wire::{
-    arguments, arguments_value, error_text, size, Ask, Assemble, Body, Call, Ids, Outcome, Refused,
-    Reply, Stop, Wire, NO_PICTURE,
+    arguments, arguments_value, error_text, json_size, size, Ask, Assemble, Body, Call, Ids,
+    Outcome, Refused, Reply, Stop, Wire, MAX_EXTRA, MAX_PARTS, NO_PICTURE, TOO_MANY_PARTS,
 };
 use crate::{HISTORY_CHARS, MAX_OUTPUT_TOKENS};
 
@@ -102,6 +102,15 @@ impl Wire for Completions {
                 total = total.saturating_sub(before.saturating_sub(m.to_string().len()));
             }
         }
+        // Still too long: the tool calls of the steps before the latest
+        // keep their name and arguments alone.
+        if total > HISTORY_CHARS {
+            for m in self.messages.iter_mut().take(last) {
+                for tc in m["tool_calls"].as_array_mut().into_iter().flatten() {
+                    *tc = bare_call(tc);
+                }
+            }
+        }
     }
 
     fn body(&self, ask: &Ask) -> Body {
@@ -176,6 +185,13 @@ impl Wire for Completions {
         }
         let mut calls = Vec::new();
         let mut kept_calls = Vec::new();
+        // A plain answer may hold no more parts than a streamed one.
+        if message["tool_calls"]
+            .as_array()
+            .is_some_and(|c| c.len() > MAX_PARTS)
+        {
+            bail!(TOO_MANY_PARTS);
+        }
         for tc in message["tool_calls"].as_array().into_iter().flatten() {
             // Kept whole, with whatever else it arrived with.
             let mut tc = if tc.is_object() {
@@ -217,6 +233,18 @@ impl Wire for Completions {
                 fault,
             });
             kept_calls.push(tc);
+        }
+        // What the calls arrived with beside their name and arguments (a
+        // thought signature) goes back with every later request: more of
+        // it than such a thing can come to is a fault, and is not kept.
+        let beside: usize = kept_calls
+            .iter()
+            .map(|tc| json_size(tc).saturating_sub(json_size(&bare_call(tc))))
+            .sum();
+        if beside > MAX_EXTRA {
+            for tc in &mut kept_calls {
+                *tc = bare_call(tc);
+            }
         }
         // What the service calls the end is read with what it sent: a
         // reply with tool calls asks for tools, whatever word ends it
@@ -303,6 +331,13 @@ impl Wire for Completions {
     }
 }
 
+/// A tool call as the format itself needs it: its id, name and arguments,
+/// without whatever else it arrived with.
+fn bare_call(tc: &Value) -> Value {
+    json!({"id": tc["id"], "type": "function", "function": {
+        "name": tc["function"]["name"], "arguments": tc["function"]["arguments"]}})
+}
+
 /// The service's own refusal, if `answer` is an error in place of a reply.
 fn refused(answer: &Value) -> Option<Refused> {
     let e = &answer["error"];
@@ -363,8 +398,8 @@ impl Assembly {
         if let Some(at) = known {
             return Ok(at);
         }
-        if self.calls.len() >= 1000 {
-            bail!("the reply had too many parts");
+        if self.calls.len() >= MAX_PARTS {
+            bail!(TOO_MANY_PARTS);
         }
         self.calls.push(json!({}));
         let at = self.calls.len() - 1;
@@ -670,6 +705,83 @@ mod tests {
         // person's message, and stay with the results.
         w.forget_unanswered();
         assert_eq!(w.history().len(), 6);
+    }
+
+    #[test]
+    fn what_a_tool_call_arrives_with_is_kept_up_to_a_size() {
+        let tools = tool();
+        let reply = |n: usize| {
+            json!({"choices": [{"index": 0, "finish_reason": "tool_calls", "message": {"role": "assistant", "content": null,
+                "tool_calls": [
+                    {"id": "a", "type": "function", "function": {"name": "map_snapshot", "arguments": "{}"},
+                     "extra_content": {"google": {"thought_signature": "s".repeat(n)}}},
+                    {"id": "b", "type": "function", "function": {"name": "map_snapshot", "arguments": "{\"layers\": []}"}}]}}]})
+        };
+        // A thought signature goes back as it came (A-12).
+        let mut w = Completions::new(true);
+        w.user("draw");
+        w.reply(reply(50_000), &ask(&tools, false)).unwrap();
+        assert_eq!(
+            w.history()[1]["tool_calls"][0]["extra_content"]["google"]["thought_signature"]
+                .as_str()
+                .map(str::len),
+            Some(50_000)
+        );
+        // More than such a thing can come to is a fault: every call of
+        // the reply keeps its name and arguments alone.
+        let mut w = Completions::new(true);
+        w.user("draw");
+        let r = w.reply(reply(MAX_EXTRA + 1), &ask(&tools, false)).unwrap();
+        assert_eq!(r.calls.len(), 2);
+        assert_eq!(
+            w.history()[1]["tool_calls"],
+            json!([
+                {"id": "a", "type": "function", "function": {"name": "map_snapshot", "arguments": "{}"}},
+                {"id": "b", "type": "function", "function": {"name": "map_snapshot", "arguments": "{\"layers\": []}"}}])
+        );
+        // A plain answer with more calls than a streamed one may hold.
+        let many: Vec<Value> = (0..=MAX_PARTS)
+            .map(|n| json!({"id": format!("c{n}"), "type": "function", "function": {"name": "map_snapshot", "arguments": "{}"}}))
+            .collect();
+        let e = Completions::new(true)
+            .reply(
+                json!({"choices": [{"index": 0, "finish_reason": "tool_calls", "message": {"role": "assistant", "tool_calls": many}}]}),
+                &ask(&tools, false),
+            )
+            .unwrap_err();
+        assert_eq!(e.to_string(), TOO_MANY_PARTS);
+    }
+
+    #[test]
+    fn a_long_conversation_keeps_only_the_latest_steps_extras() {
+        let tools = tool();
+        let mut w = Completions::new(true);
+        w.user("go");
+        for n in 0..4 {
+            let r = w
+                .reply(
+                    json!({"choices": [{"index": 0, "finish_reason": "tool_calls", "message": {"role": "assistant", "content": null,
+                        "tool_calls": [{"id": format!("c{n}"), "type": "function", "function": {"name": "map_snapshot", "arguments": "{}"},
+                            "extra_content": {"google": {"thought_signature": "s".repeat(200_000)}}}]}}]}),
+                    &ask(&tools, false),
+                )
+                .unwrap();
+            w.results(vec![outcome(&r.calls[0].id, "{}", &[])]);
+        }
+        assert!(size(w.history()) > HISTORY_CHARS);
+        w.trim();
+        let extras: Vec<bool> = w
+            .history()
+            .iter()
+            .filter(|m| m["role"] == "assistant")
+            .map(|m| m["tool_calls"][0].get("extra_content").is_some())
+            .collect();
+        assert_eq!(
+            extras,
+            [false, false, false, true],
+            "only the latest step keeps what it came with"
+        );
+        assert!(size(w.history()) < HISTORY_CHARS);
     }
 
     #[test]

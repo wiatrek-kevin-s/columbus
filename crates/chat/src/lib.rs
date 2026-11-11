@@ -49,7 +49,7 @@ pub mod schema;
 pub mod services;
 mod wire;
 
-pub use http::{list_models, MAX_LISTED_MODELS};
+pub use http::{list_models, MAX_LISTED_MODELS, USER_AGENT};
 pub use messages::read_stream;
 pub use services::{Format, KeyHeader, KeyRule, Service, EFFORTS, MODELS};
 
@@ -726,10 +726,11 @@ impl Chat {
                 stop,
                 input_tokens,
             } = reply.map_err(|e| self.named(e))?;
+            // (Added without overflow: a service can send any number.)
             match input_tokens {
-                Some(n) => used += n,
+                Some(n) => used = used.saturating_add(n),
                 None => {
-                    used += estimate;
+                    used = used.saturating_add(estimate);
                     estimated = true;
                 }
             }

@@ -17,8 +17,8 @@ use serde_json::{json, Value};
 
 use crate::schema;
 use crate::wire::{
-    arguments, arguments_value, error_text, size, Ask, Assemble, Body, Call, Ids, Outcome, Refused,
-    Reply, Stop, Wire, NO_PICTURE,
+    arguments, arguments_value, error_text, json_size, size, Ask, Assemble, Body, Call, Ids,
+    Outcome, Refused, Reply, Stop, Wire, MAX_EXTRA, MAX_PARTS, NO_PICTURE, TOO_MANY_PARTS,
 };
 use crate::{HISTORY_CHARS, MAX_OUTPUT_TOKENS};
 
@@ -81,6 +81,16 @@ fn plain_item(item: &Value) -> Option<Value> {
     }
 }
 
+/// How much of an item is beside its words or its call.
+fn beside(item: &Value) -> usize {
+    let whole = json_size(item);
+    match item["type"].as_str() {
+        Some("reasoning") => whole,
+        Some("function_call") => whole.saturating_sub(json_size(&item["arguments"])),
+        _ => whole.saturating_sub(message_text(item).iter().map(String::len).sum()),
+    }
+}
+
 /// The words of a message item: its text parts, and a refusal's words.
 fn message_text(item: &Value) -> Vec<String> {
     match &item["content"] {
@@ -137,6 +147,18 @@ impl Wire for Responses {
                 item["output"] = json!("[An older tool result, removed to keep the conversation short. Call the tool again if it is needed.]");
                 total = total.saturating_sub(before.saturating_sub(item.to_string().len()));
             }
+        }
+        // Still too long: the steps before the latest keep their words and
+        // their calls alone. Their reasoning goes, and what stays is made
+        // plain, so nothing still points at an item that is gone.
+        if total > HISTORY_CHARS {
+            let latest = self.input.split_off(last);
+            let before = self.input.len();
+            self.input = self.input.iter().filter_map(plain_item).collect();
+            let gone = before - self.input.len();
+            self.input.extend(latest);
+            self.step = self.step.saturating_sub(gone);
+            self.open = self.open.map(|i| i.saturating_sub(gone));
         }
     }
 
@@ -198,6 +220,10 @@ impl Wire for Responses {
         let Some(output) = answer["output"].as_array() else {
             bail!("the AI service sent no reply");
         };
+        // A plain answer may hold no more parts than a streamed one.
+        if output.len() > MAX_PARTS {
+            bail!(TOO_MANY_PARTS);
+        }
         let u = &answer["usage"];
         // Cached tokens are part of the count, and count a tenth.
         let input_tokens = u["input_tokens"].as_u64().map(|n| {
@@ -276,7 +302,11 @@ impl Wire for Responses {
         // will not be run, and reasoning cannot be sent back without the
         // call it led to. The same holds once the service has refused the
         // fields that carry reasoning.
-        if stop == Stop::Length || stop == Stop::Filtered || ask.bare {
+        // And so does a reply that carries more beside its words and its
+        // calls than a model's own reasoning can come to: that is a fault,
+        // and it would go back with every later request.
+        let too_much = kept.iter().map(beside).sum::<usize>() > MAX_EXTRA;
+        if stop == Stop::Length || stop == Stop::Filtered || ask.bare || too_much {
             kept = kept
                 .iter()
                 .filter(|i| stop == Stop::Tools || i["type"] != "function_call")
@@ -385,8 +415,8 @@ impl Assemble for Assembly {
         match kind {
             "response.output_item.done" => {
                 if let Some(i) = v["output_index"].as_u64() {
-                    if i > 1000 {
-                        bail!("the reply had too many parts");
+                    if i >= MAX_PARTS as u64 {
+                        bail!(TOO_MANY_PARTS);
                     }
                     self.done.insert(i, v["item"].clone());
                 }
@@ -751,6 +781,110 @@ mod tests {
                 .starts_with("tttt"),
             "the newer ones keep their words"
         );
+    }
+
+    #[test]
+    fn reasoning_beyond_what_a_model_makes_is_not_kept() {
+        let tools = tool();
+        let reply = |n: usize| {
+            json!({"status": "completed", "output": [
+                {"type": "reasoning", "id": "rs_1", "summary": [], "encrypted_content": "g".repeat(n)},
+                {"type": "function_call", "id": "fc_1", "call_id": "call_a", "name": "map_view", "arguments": "{}", "status": "completed"}]})
+        };
+        // A model's own reasoning goes back as it came.
+        let mut w = Responses::new(true);
+        w.user("Show me.");
+        w.reply(reply(100_000), &ask(&tools, "", false)).unwrap();
+        assert_eq!(w.history()[1]["type"], "reasoning");
+        assert_eq!(w.history()[2]["id"], "fc_1");
+        // More than that is a fault: the call is kept, made plain (no id
+        // of the service's still points at the reasoning that is gone).
+        let mut w = Responses::new(true);
+        w.user("Show me.");
+        let r = w
+            .reply(reply(MAX_EXTRA + 1), &ask(&tools, "", false))
+            .unwrap();
+        assert_eq!(r.calls.len(), 1);
+        assert_eq!(
+            w.history()[1..],
+            [
+                json!({"type": "function_call", "call_id": "call_a", "name": "map_view", "arguments": "{}"})
+            ]
+        );
+        // A plain answer with more parts than a streamed one may hold.
+        let many: Vec<Value> = (0..=MAX_PARTS)
+            .map(|_| json!({"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "x"}]}))
+            .collect();
+        let e = Responses::new(true)
+            .reply(
+                json!({"status": "completed", "output": many}),
+                &ask(&tools, "", false),
+            )
+            .unwrap_err();
+        assert_eq!(e.to_string(), TOO_MANY_PARTS);
+    }
+
+    #[test]
+    fn a_long_conversation_keeps_only_the_latest_steps_reasoning() {
+        let tools = tool();
+        let mut w = Responses::new(true);
+        w.user("go");
+        for n in 0..4 {
+            let r = w
+                .reply(
+                    json!({"status": "completed", "output": [
+                        {"type": "reasoning", "id": format!("rs_{n}"), "summary": [], "encrypted_content": "g".repeat(200_000)},
+                        {"type": "function_call", "id": format!("fc_{n}"), "call_id": format!("c{n}"), "name": "map_view", "arguments": "{}", "status": "completed"}]}),
+                    &ask(&tools, "", false),
+                )
+                .unwrap();
+            w.results(vec![Outcome {
+                id: r.calls[0].id.clone(),
+                name: "map_view".into(),
+                text: "{}".into(),
+                is_error: false,
+                images: vec![],
+            }]);
+        }
+        assert!(size(w.history()) > HISTORY_CHARS);
+        w.trim();
+        let kinds: Vec<&str> = w
+            .history()
+            .iter()
+            .map(|i| i["type"].as_str().unwrap_or("message"))
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                "message",
+                "function_call",
+                "function_call_output",
+                "function_call",
+                "function_call_output",
+                "function_call",
+                "function_call_output",
+                "reasoning",
+                "function_call",
+                "function_call_output"
+            ]
+        );
+        let h = w.history();
+        assert!(
+            h[1].get("id").is_none() && h[5].get("id").is_none(),
+            "made plain"
+        );
+        assert_eq!(
+            (h[7]["id"].as_str(), h[8]["id"].as_str()),
+            (Some("rs_3"), Some("fc_3")),
+            "the latest step as it came"
+        );
+        assert!(size(h) < HISTORY_CHARS);
+        // The conversation goes on where it was: a message, then taken back.
+        w.user("next");
+        assert_eq!(w.history().len(), 11);
+        w.forget_unanswered();
+        assert_eq!(w.history().len(), 10);
+        assert_eq!(w.history()[9]["type"], "function_call_output");
     }
 
     #[test]

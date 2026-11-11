@@ -1437,6 +1437,8 @@ async fn review(
         }
         let http = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
+            // Who is asking, as the app's chat says it.
+            .user_agent(columbus_chat::USER_AGENT)
             .timeout(deadline.saturating_duration_since(Instant::now()).max(Duration::from_secs(1)))
             .build()
             .map_err(|e| e.to_string())?;
