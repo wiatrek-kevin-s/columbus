@@ -451,7 +451,9 @@ def main():
         what = text(d, "sync-what")
         for words in ["with the project's name and instructions (the file columbus-project.yaml in it",
                       "every changed file in it is sent, except these", "data files", "CSV", "password, key and connection files",
+                      "map documents and layer files (they can hold a saved connection)",
                       "programs and shortcuts", "outputs", "5 MB",
+                      "Data is known by a file's name: a table saved as .txt or .json is not recognized as data.",
                       "a few other things (links, a .git folder, a Python environment or its cache, files the system makes, names another system cannot hold)",
                       "in a chat that had read one of your sources", "held back until you choose Send it anyway",
                       "looks like it holds a password or a token, nothing is sent", "listed here, with why, before anything goes"]:
