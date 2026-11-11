@@ -392,8 +392,6 @@ pub struct PolicySummary {
     pub script_approval: String,
     /// The same, in a sentence.
     pub script_approval_means: String,
-    /// Toolboxes (installed programs that describe their own tools) are on.
-    pub toolboxes_allowed: bool,
     /// The built-in catalogue may download a toolbox the person installs.
     pub toolbox_catalogue: bool,
     /// The assistant may list, read and write text files in its project's
@@ -2104,7 +2102,6 @@ impl Gateway {
                 environment_network_allowed: p.environments.allow_network,
                 script_approval: crate::script_tools::approval_name(p).into(),
                 script_approval_means: crate::script_tools::approval_words(p),
-                toolboxes_allowed: p.allow_toolboxes,
                 toolbox_catalogue: p.toolboxes.catalogue,
                 project_files_allowed: p.allow_project_files,
                 sync_allowed: p.allow_sync,
