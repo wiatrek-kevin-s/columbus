@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-chat-service-remove"
+description = "Enables the chat_service_remove command without any pre-configured scope."
+commands.allow = ["chat_service_remove"]
+
+[[permission]]
+identifier = "deny-chat-service-remove"
+description = "Denies the chat_service_remove command without any pre-configured scope."
+commands.deny = ["chat_service_remove"]

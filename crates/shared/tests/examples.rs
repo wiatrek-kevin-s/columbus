@@ -34,6 +34,7 @@ fn example_policy_has_every_new_key() {
         "allow_project_files:",
         "allow_sync:",
         "sync:",
+        "assistant:",
         "map:",
         "allow_web_layers:",
         "sources:",
@@ -49,6 +50,8 @@ fn example_policy_has_every_new_key() {
     );
     assert!(!p.allow_toolboxes && p.toolboxes.catalogue);
     assert!(!p.allow_project_files && !p.allow_sync && p.sync.hosts.is_empty());
+    // F-19: written out at its default (any AI service the person sets up).
+    assert!(p.assistant.hosts.is_empty());
     assert_eq!(
         p.environments.index_hosts,
         ["pypi.org", "files.pythonhosted.org"]

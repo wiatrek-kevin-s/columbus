@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-chat-service-save"
+description = "Enables the chat_service_save command without any pre-configured scope."
+commands.allow = ["chat_service_save"]
+
+[[permission]]
+identifier = "deny-chat-service-save"
+description = "Denies the chat_service_save command without any pre-configured scope."
+commands.deny = ["chat_service_save"]
