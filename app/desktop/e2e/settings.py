@@ -13,12 +13,11 @@ the policy file, nothing else); checks twice that a read of the settings
 which ends after a newer one is not drawn over it (the mode, a switch);
 then, with the person declining to confirm, checks that nothing that
 widens access is saved (a connection, a switch, a tool, the mode), while
-turning a switch off still works;
-and, with the policy file managed by the organization, that the mode in
-force and the switches are shown and cannot be changed. A debug build
-stands in for Touch ID / Windows Hello with COLUMBUS_APP_TEST_CONFIRM
-(allow or deny), and for a managed policy file with
-COLUMBUS_APP_TEST_MANAGED. A real Columbus session runs beside
+turning a switch off still works; and, with the policy file managed by
+the organization, that the mode in force and the switches are shown and
+cannot be changed. A debug build stands in for Touch ID / Windows Hello
+with COLUMBUS_APP_TEST_CONFIRM (allow or deny), and for a managed policy
+file with COLUMBUS_APP_TEST_MANAGED. A real Columbus session runs beside
 the app on the same files: Test asks it to open a connection before it is
 saved, and the saved notice says no restart is needed.
 
@@ -406,19 +405,19 @@ gpd.GeoDataFrame({"RTE": ["IH0035", "US0183"], "district": [14, 12]}, geometry=[
         d.save_screenshot(str(OUT / "settings-switches.png"))
         step("toolboxes and sync: turning one off, then on, changes its own line of the policy file and nothing else")
         for name, _, _ in SWITCH_WORDS:
-            for on in [False, True]:
+            for want in [False, True]:
                 before, before_text = policy(root)
-                assert before[name] is not on, (name, before)
+                assert before[name] is not want, (name, before)
                 wait.until(lambda drv: drv.find_element(By.ID, name).is_enabled())
                 click(d, By.ID, name)
-                wait.until(lambda drv: policy(root)[0].get(name) is on)
+                wait.until(lambda drv: policy(root)[0].get(name) is want)
                 after, after_text = policy(root)
-                assert after == dict(before, **{name: on}), (before, after)
+                assert after == dict(before, **{name: want}), (before, after)
                 was, now = before_text.splitlines(), after_text.splitlines()
                 assert len(was) == len(now) and [(a, b) for a, b in zip(was, now) if a != b] == \
-                    [(f"{name}: {str(not on).lower()}", f"{name}: {str(on).lower()}")], (before_text, after_text)
+                    [(f"{name}: {str(not want).lower()}", f"{name}: {str(want).lower()}")], (before_text, after_text)
                 # The page shows the switch as the file has it.
-                wait.until(lambda drv: drv.find_element(By.ID, name).is_enabled() and drv.find_element(By.ID, name).is_selected() is on)
+                wait.until(lambda drv: drv.find_element(By.ID, name).is_enabled() and drv.find_element(By.ID, name).is_selected() is want)
 
         step("a read of the settings that ends after a newer one does not put an older switch back")
         # Allow toolboxes is turned off (the answer to the read that follows
