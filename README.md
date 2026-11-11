@@ -43,7 +43,7 @@
 <p align="center">
   <picture>
     <source type="image/webp" srcset="docs/images/demo.webp">
-    <img src="docs/images/demo.gif" width="900" alt="A short animation of the Columbus app. It opens on the finished answer: a table of fatal crashes by year in the chat's panel, on a map of the IH 35 corridor with the counted crashes highlighted. Then it replays how it got there: the analyst types the question; the assistant reads two layers, which appear on the map; the checks pass and it answers with a table; asked to export, Columbus shows a request with exactly what will be written and where; the analyst allows it once and the export is done.">
+    <img src="docs/images/demo.gif" width="900" alt="A short animation of the Columbus app. It opens on the finished answer: a table of fatal crashes by year in the chat, and beside it, in the panel on the right, a map of the IH 35 corridor with the counted crashes highlighted. Then it replays how it got there: the analyst types the question; the assistant reads two layers, which appear on the map as the panel opens; the checks pass and it answers with a table; asked to export, Columbus shows a request with exactly what will be written and where; the analyst allows it once and the export is done.">
   </picture>
   <br><sub>Ask, read, map, check. The export waits until you allow it.</sub>
 </p>
