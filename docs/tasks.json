@@ -876,7 +876,7 @@
         }
       ],
       "status": "todo",
-      "evidence": "Review run on commit 428cabd by a fresh subagent that built nothing (2026-11-11; its brief is docs/final-review.md applied to build-brief-3). It ran: the whole Rust suite (529 passed), the Python worker tests, the map page unit tests, all twelve desktop scripts and four map page scripts, fmt, both clippy runs, skills and link checks; a licence check of the 36 crates part 3 added (all MIT, Apache-2.0, Zlib or 0BSD) and a match of all 620 locked crates against RustSec's database (no vulnerability advisory applies; cargo audit itself could not be installed); a secret scan of the part-3 diff (stand-ins only); the five GeoLibre pins against the publisher's files, with two archives downloaded and hashed and the program's text read, never run. Its own negative tests through the real gateway on Linux: a script under scripts.approval none was refused every read outside its inputs (including /etc, /proc, the policy, connections, the audit log, other sessions), every socket family, signals, ptrace, namespaces, links and renames out of its folder; toolbox arguments, project file path tricks and toolbox command failures all behaved. Verdict: part 3 does what the owner asked and the boundary held against every attempt run. Twelve findings: one Fix now (sync sends data and password files the page says stay out: R-103), three Fix when convenient, eight Accept; the cheap ones are R-104; the rest are logged in docs/progress-log.md. No finding lets the assistant widen its own access. Not checked: anything at run time on Windows or macOS (code and CI logs read), the real GeoLibre program (H-3), a real GitHub or Gitea (H-4). Fixes and the re-check: see R-103 and R-104."
+      "evidence": "Review run on commit 428cabd by a fresh subagent that built nothing (2026-11-11; its brief is docs/final-review.md applied to build-brief-3). It ran: the whole Rust suite (529 passed), the Python worker tests, the map page unit tests, all twelve desktop scripts and four map page scripts, fmt, both clippy runs, skills and link checks; a licence check of the 36 crates part 3 added (all MIT, Apache-2.0, Zlib or 0BSD) and a match of all 620 locked crates against RustSec's database (no vulnerability advisory applies; cargo audit itself could not be installed); a secret scan of the part-3 diff (stand-ins only); the five GeoLibre pins against the publisher's files, with two archives downloaded and hashed and the program's text read, never run. Its own negative tests through the real gateway on Linux: a script under scripts.approval none was refused every read outside its inputs (including /etc, /proc, the policy, connections, the audit log, other sessions), every socket family, signals, ptrace, namespaces, links and renames out of its folder; toolbox arguments, project file path tricks and toolbox command failures all behaved. Verdict: part 3 does what the owner asked and the boundary held against every attempt run. Twelve findings: one Fix now (sync sends data and password files the page says stay out: R-103), three Fix when convenient, eight Accept; the cheap ones are R-104; the rest are logged in docs/progress-log.md. No finding lets the assistant widen its own access. Not checked: anything at run time on Windows or macOS (code and CI logs read), the real GeoLibre program (H-3), a real GitHub or Gitea (H-4). Fixes and the re-check: see R-103 and R-104. Fixes merged as 4ed41ed. One re-check in another fresh subagent (2026-11-11, on 7077969, it built none of it and fixed nothing): R-103's fix-now part is fixed, seen by running; R-104 is fixed in seven of eight items; the secret scan is only partly fixed, which by this review's scale (a leaked password is data leaked) is a Fix-now finding: R-105. Its eight new findings and what was done with each are in docs/progress-log.md. This task is done when R-105 is."
     },
     {
       "id": "T-36",
@@ -913,8 +913,8 @@
           "expected": "the assistant's write of a .csv is refused in plain words; a name on the list is treated the same by both"
         }
       ],
-      "status": "todo",
-      "evidence": ""
+      "status": "done",
+      "evidence": "Commits c7fc166, cc4d982, b016d9e, 97e4787 (merged as 4ed41ed), docs eadee9c. One table of file kinds in crates/shared/src/file_kinds.rs serves sync and project_files; the assistant cannot write data formats; a file that carries data labels is held until the person chooses Send it anyway for that content, and has no such choice where a flow rule denies; the secret scan moved to crates/shared/src/secrets.rs and knows more shapes; the page and the docs say exactly what is sent. Failed before, pass now: the sync safety test sent 31 files where 1 should go; project_files accepted .csv and .acs; sync.py listed 5 files to send where 2 were expected. Tests: crates/shared (file_kinds, secrets, project_files), crates/sync (paths, safety, six in labels.rs), gateway project_files, app/desktop/e2e/sync.py. Re-check by a fresh subagent on 7077969 (2026-11-11), by running it: a CSV, GeoJSON, Excel file, SQLite file, .dsn, .pgpass, id_rsa and .env in the folder were each skipped with a reason and never reached the stand-in server; 26 data and archive names were refused to the assistant through the real gateway; a labelled file was held, named with its source, sent only after the choice, held again when changed, and had no choice under a deny rule. Whole Rust suite 556 passed, all twelve desktop scripts ok. CI: all 14 jobs passed on 0c027b5. What the re-check found still open in the scan (everyday forms such as a password in a code comment) is R-105; names not on the list (.json, .txt) still go, by decision, and SECURITY.md says so. The cost of the hold, as measured: four presses of Send it anyway in a small two-day session."
     },
     {
       "id": "R-104",
@@ -934,8 +934,8 @@
           "expected": "all pass on Linux here and on Windows, macOS and Linux in CI"
         }
       ],
-      "status": "todo",
-      "evidence": ""
+      "status": "done",
+      "evidence": "Commits 72ab0d1, f5acaa1, 6bd64c9 (a program only from a folder of its own; the Windows permission taken back), 7d219a5 (no file with a secret read to, written by or run for the assistant), 88034f1 (files that run when opened; no run permission from a sync), 6a51a89, 2134fe7 (sandbox proofs fail instead of skipping where tests must not skip, in nine gateway test files), 879acf6 (the words of the two choices), 0272b8f, 060c1f0 (the Mac limit in SECURITY.md and on the card), acd78a4 (a GitHub Enterprise Server is asked what it is before the token is sent), 8f2d499 (wording); merged as 4ed41ed; pictures retaken 7077969. Each item has a test that failed before its fix. Re-check by a fresh subagent on 7077969, seven of eight items confirmed: 21 cases of adding a program through the real command (14 refused, 7 added); 41 run-when-opened names refused; with the sandbox made unavailable and the CI variable set, 38 tests in 9 files fail saying they must not skip, and no assertion was weakened; the words read true against the code; a wrong GitHub Enterprise address got one request without the token. The eighth, the secret scan on read and run, is partly fixed: the plain forms are stopped, everyday forms are not (R-105). CI: all 14 jobs passed on 0c027b5 (Windows Rust job 549 passed, macOS 577), after one test of this round was corrected (0c027b5: toolboxes.py had assumed where a system program lives; CI's newer Ubuntu differs). Not verified at run time: the Windows permission take-back beyond its CI test, the Mac card on a Mac, a real GitHub Enterprise Server (H-4)."
     },
     {
       "id": "T-37",
@@ -1024,6 +1024,27 @@
         {
           "how": "Claude runs the review and the re-check and records both",
           "expected": "no Fix-now finding is open; the other findings are in the log"
+        }
+      ],
+      "status": "todo",
+      "evidence": ""
+    },
+    {
+      "id": "R-105",
+      "title": "Re-check of R-103 and R-104, finding 1 (Fix now) and its cheap neighbours: the search for passwords also finds them in code comments and docstrings, in assignments such as os.environ[\"PGPASSWORD\"] = \"…\", in notes' markup, in XML and SQL forms and on command lines; map documents and other tools' token files stay on the computer; more data formats and macro files are on the list; a program is not added from a folder of keys; Send it anyway is offered where the file is shown; the docs' sentences are exact",
+      "session": "S12",
+      "depends_on": [
+        "T-35"
+      ],
+      "done_by": "claude",
+      "acceptance": [
+        {
+          "how": "Claude adds, for every form the re-check sent through, a test that fails before the change, and for every new form a near-miss that must stay quiet",
+          "expected": "each form is stopped with the file and line and never the value; ordinary text is not stopped; the earlier near-miss tests still pass"
+        },
+        {
+          "how": "Claude runs the whole Rust suite, the desktop scripts, fmt and both clippy runs, then CI, and has a fresh subagent try the scan again with forms of its own",
+          "expected": "all pass on Linux here and on Windows, macOS and Linux in CI; what the fresh check still gets through is logged"
         }
       ],
       "status": "todo",

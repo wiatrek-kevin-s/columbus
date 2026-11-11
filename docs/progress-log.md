@@ -141,6 +141,8 @@ Kit version 1.1 · as of 2026-11-08, session S1 not started
 | 2026-11-11 | D-22: a workflow's optional AI review keeps using Anthropic with the Anthropic key | The review's service and models are part of the approved workflow format (a one-way door) | Decided (unchanged) |
 | 2026-11-11 | The chat's model list gains `claude-fable-5-2`; `claude-fable-5-1` is still accepted where it is already chosen | Anthropic's model page lists 5-1 as legacy and 5-2 as current (read 2026-11-11) | Decided |
 | 2026-11-11 | CI on the merged fixes (7077969): Desktop app (ubuntu-latest) failed in `toolboxes.py`, where the test typed `/usr/bin/env` as "a program in a system folder" and waited for the refusal. CI's Linux runners are now Ubuntu 26.04; the app looks at where a program really is, and the likeliest cause is that `env` there is a link to a file kept in a folder of its own, so the app rightly offered to add it. The test now puts its own program straight into the folder for temporary files, which is a system-kept place on every system. The app is unchanged | The check's intent is unchanged (a program directly in a system-kept folder is refused before anything is asked, with the same words); only the fixture no longer depends on how a distribution packages its tools. Not reproduced here (this machine is Ubuntu 24.04, where `env` is a plain file and the old test passed); the changed test passes here, and CI shows whether the cause was right | Decided |
+| 2026-11-11 | The re-check's finding 1 (the secret scan misses everyday forms) is treated as Fix now, though the re-checker scored it 24: `docs/final-review.md` puts "data lost or leaked" at severity 10, and a database password sent to a Git server or an AI service is that, so severity 9 or more with likelihood 3. It becomes R-105 with the cheap neighbours (findings 3, 4, 5, 8 in part), built by a fresh builder; a fresh subagent then tries the scan again with forms of its own | The rule for Fix now is the review's, not the reviewer's arithmetic; the one re-check the rules ask for has been spent on R-103 and R-104, so R-105 gets a narrow check of its own rather than none | Decided |
+| 2026-11-11 | Pull request 26 is merged with R-105 still open: it holds the review's fixes as re-checked, and nothing is published. R-105 follows in a small pull request of its own; the work on D-22 after that | Main gains the fixes now; a later stop of this session leaves a clean, green state | Decided |
 
 ## Change requests
 
@@ -156,6 +158,28 @@ Status: raised, approved, declined, or Sent to Blueprint (touches a one-way door
 ## Handoff notes
 
 Newest first, written as you go. Mark each claim verified (checked this session) or unverified.
+
+### Re-check of the review's fixes (2026-11-11)
+
+One re-check in another fresh subagent, on commit 7077969 (the fixes merged, before the corrected test of 0c027b5). It built its own tree, ran every suite (Rust 556 passed; twelve desktop scripts; the map page's; the Python worker's 270), wrote its own probes against the real gateway, the real `toolbox` command and the sync stand-ins, and fixed nothing.
+
+- **Verdict (the re-checker's):** R-103's fix-now part is fixed, seen by running: data files, password files and labelled files no longer reach the server, and the page says what goes. R-104 is fixed in seven of eight items. The secret scan (R-103 part 4, R-104 item 2) is only partly fixed.
+- **Its new findings, and what is done with each:**
+
+| # | Finding | Label | Done |
+|---|---|---|---|
+| 1 | The scan misses everyday forms: a password in a code comment or docstring, `os.environ["PGPASSWORD"] = "…"`, `cfg['password'] = '…'`, `**Password:** …` in a note, XML and SQL forms, a command line's `-P`. Such a file still syncs and is still read to the assistant | The re-checker scored 24 (severity 8). By the review's own guide a leaked password is data leaked, so severity 9 with likelihood 3: **Fix now** | R-105 |
+| 2 | CI was red on 7077969: `toolboxes.py` typed `/usr/bin/env` as a program in a system folder; on CI's Ubuntu 26.04 that is a link to a file kept elsewhere | Fix when convenient (20) | Done in 0c027b5; all 14 jobs passed on it |
+| 3 | Map documents (`.aprx .mxd .lyrx .qgs .qgz`) and other tools' token files (`.npmrc .pypirc`) go by name | Fix when convenient (21) | R-105 |
+| 4 | Data under other names goes: `.json`, `.txt`, `.dat`, and real formats the list lacks (`.mbtiles .asc .xyz .osm .pbf`, a loose `.gdbtable`) | Accept (16) | The missing formats: R-105. `.json` and `.txt` stay, by decision; SECURITY.md says the list is a help, not a proof |
+| 5 | The assistant can write `.html` and `.svg`; sync fetches them and macro-carrying Office files | Accept (8) | Macro files: R-105. Pages: one line under the honest limits (R-105) |
+| 6 | Four false stops on borderline lines (`password: admin123` in a note, a page token, a path under `pwd`, a column type) | Accept (9) | Logged; R-105 lets the last two pass where cheap |
+| 7 | Docs said more than the code ("does not hand it a file that holds a password") | Accept (15) | Reworded here and in R-105 |
+| 8 | The folder rule accepts `~/.ssh` and a working folder such as `Documents/GIS`; a Documents folder moved to another drive is not recognized | Accept (12) | Key folders: R-105. The rest logged: the folder is named to the person before they confirm |
+
+- **The cost of holding labelled files, as measured:** a chat is labelled by its first call to a source (`list_datasets` is enough). In a small two-day session (a chat reads a layer, writes two scripts and a note; one script changes the next day) the person presses Send it anyway four times and Sync twice. The page is clear and fits; Show had only Close (R-105 puts Send it anyway there too). Choosing several files at once is left for later.
+- **Also seen:** a file synced before the fix and now on the list is left alone on both sides, never deleted from the computer; a `server:*` deny beats a narrower `git:<host>` approve (the strict side).
+- **Not checked by the re-check:** anything at run time on Windows or macOS; a real GitHub, GitHub Enterprise Server or Gitea; a real `.aprx`; a screen reader.
 
 ### Final review of part 3 (2026-11-11)
 
