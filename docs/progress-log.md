@@ -262,6 +262,7 @@ Newest first, written as you go. Mark each claim verified (checked this session)
 - 2026-11-11 PR #25 merged (3ecacfd) after CI run 42970266183 green on 14 jobs (verified): T-27, T-28, T-29, T-31, T-32, T-33 are on main. Earlier runs on this pull request failed four times in all (see Decisions, 2026-11-11).
 - 2026-11-11 Follow-ups (branch work/s12a): a65e11f, 06ceb1b, 05fc662, c119cd1, 64d6328; whole Rust suite 529 passed, 12 desktop scripts pass on Linux (verified by the builder).
 - 2026-11-11 T-34 done: cd9d934, fe0913f, 309f1d7, 61262db, 3a27e87, df15694, ff109df, 5825e9f (merged 1f18f24); version 0.15.0; pictures and animation retaken; all local suites pass on Linux (verified by the builder; fast checks rerun after the merge).
+- 2026-11-11 Follow-ups' extras (branch work/s12a): 6f54a15 (Table on a script's result card), 9f6fda5 ("1 row"), 9488b5c (newest reads on the Tools page, each with a test that failed before its fix), 4c3f797 (the sentence where the app cannot confirm), 18cb9eb (reference); 12 desktop scripts pass on Linux (verified by the builder).
 
 ### Kit → Session S1 (2026-11-08)
 
