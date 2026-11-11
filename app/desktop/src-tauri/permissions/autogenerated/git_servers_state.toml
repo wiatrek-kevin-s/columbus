@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-git-servers-state"
+description = "Enables the git_servers_state command without any pre-configured scope."
+commands.allow = ["git_servers_state"]
+
+[[permission]]
+identifier = "deny-git-servers-state"
+description = "Denies the git_servers_state command without any pre-configured scope."
+commands.deny = ["git_servers_state"]

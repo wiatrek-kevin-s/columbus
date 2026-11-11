@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-git-server-pick-certificate"
+description = "Enables the git_server_pick_certificate command without any pre-configured scope."
+commands.allow = ["git_server_pick_certificate"]
+
+[[permission]]
+identifier = "deny-git-server-pick-certificate"
+description = "Denies the git_server_pick_certificate command without any pre-configured scope."
+commands.deny = ["git_server_pick_certificate"]

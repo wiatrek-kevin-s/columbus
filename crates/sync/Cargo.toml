@@ -1,0 +1,40 @@
+[package]
+name = "columbus-sync"
+description = "Syncs a project's files with a repository on GitHub, GitHub Enterprise Server, Gitea or Forgejo through the server's web API: no Git program and no Git library"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+sha2.workspace = true
+hex.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+# Git object ids are SHA-1 (or SHA-256, with sha2 above).
+sha1 = "0.10"
+base64 = "0.22"
+reqwest = { version = "0.13", default-features = false, features = ["json", "http2", "system-proxy"] }
+# Files a colleague deleted go to the system's trash (Recycle Bin, Trash).
+trash = { version = "5.3", default-features = false, features = ["coinit_apartmentthreaded", "freedesktop"] }
+
+# The operating system's certificate store on Windows (TLS inspection,
+# corporate roots); rustls with the platform's verifier elsewhere.
+[target.'cfg(windows)'.dependencies]
+reqwest = { version = "0.13", default-features = false, features = ["native-tls"] }
+[target.'cfg(not(windows))'.dependencies]
+reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
+
+[dev-dependencies]
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json", "query"] }
+tempfile.workspace = true
+tokio = { workspace = true, features = ["net"] }
+
+# A fake server with a certificate of its own, for the TLS checks.
+[target.'cfg(not(windows))'.dev-dependencies]
+rcgen = "0.14"
+tokio-rustls = "0.26"

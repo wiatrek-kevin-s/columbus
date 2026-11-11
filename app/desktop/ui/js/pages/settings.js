@@ -4,6 +4,7 @@
 // where files live, the keyboard, and the organization's policy in force
 // (read only, with today's switches, each turned on only after the person
 // confirms at the keyboard in the app's own code).
+import * as gitServers from "./git_servers.js";
 import { $, h, el, icon, invoke as call, store, showError, savePrefs, applyTheme, toast, button, iconButton, sec, openDialog } from "../core.js";
 
 // Whether anything was saved since the sheet opened: the page under it is
@@ -148,6 +149,10 @@ const LEDES = {
   org: "The policy in force on this computer, and the switches your organization lets you change. Your assistant cannot change any of these.",
 };
 
+// Git servers (sync) is a part of its own, in its own file.
+SECTIONS.splice(SECTIONS.length - 1, 0, gitServers.PART);
+LEDES[gitServers.PART[0]] = gitServers.LEDE;
+
 let sheet = null;
 let sheetClosed = null;
 
@@ -185,7 +190,7 @@ export function openSheet(sub, onClosed) {
   }
   // A screen reader starts at the sheet's title, not its close button.
   title.focus({ preventScroll: true });
-  if (part) ({ ai, privacy, keyboard, environments, org })[part[0]](body);
+  if (part) ({ ai, privacy, keyboard, environments, org, git: (b) => gitServers.part(b, () => { changed = true; }) })[part[0]](body);
   else overview(body, foot);
 }
 
@@ -359,6 +364,8 @@ async function overview(body, foot) {
   foot.replaceChildren(h("span", { class: "grow", id: "about" }, `Columbus ${info ? info.version : ""} · Apache-2.0 · no telemetry`),
     h("a", { href: "#/settings/keyboard" }, "Keyboard shortcuts"),
     h("button", { type: "button", class: "linkbtn classic", onclick: classicMenu, title: "The earlier session list and settings window, kept until the main window has proved itself" }, "Classic windows"));
+  body.append(h("section", { class: "card" }, sec("Sync"),
+    setRow("Git servers", gitServers.overviewLine(), go("Manage", "#/settings/git", "set-git"))));
 
   invoke("chat_settings").then((s) => {
     chat = s;

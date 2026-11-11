@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-sync-repos"
+description = "Enables the sync_repos command without any pre-configured scope."
+commands.allow = ["sync_repos"]
+
+[[permission]]
+identifier = "deny-sync-repos"
+description = "Denies the sync_repos command without any pre-configured scope."
+commands.deny = ["sync_repos"]

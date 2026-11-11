@@ -52,6 +52,7 @@ mod registry;
 mod settings;
 mod share;
 mod shell;
+mod sync;
 mod toolboxes;
 mod workflows;
 use tauri::{AppHandle, Manager, Url, WebviewUrl, WebviewWindowBuilder};
@@ -548,6 +549,23 @@ fn main() {
             environments::settings_env_remove,
             environments::settings_env_approve,
             environments::settings_env_decline,
+            sync::servers::git_servers_state,
+            sync::servers::git_server_connect,
+            sync::servers::git_server_remove,
+            sync::servers::git_server_token_page,
+            sync::servers::git_server_pick_certificate,
+            sync::sync_state,
+            sync::sync_repos,
+            sync::sync_branches,
+            sync::sync_link,
+            sync::sync_check,
+            sync::sync_now,
+            sync::sync_preview,
+            sync::sync_preview_kept,
+            sync::sync_resolve,
+            sync::sync_history,
+            sync::sync_disconnect,
+            sync::sync_settings,
             shell::shell_info,
             shell::engine_check,
             shell::prefs_get,
