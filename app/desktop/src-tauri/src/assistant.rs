@@ -1058,6 +1058,16 @@ pub(crate) fn other_apps(server: &str, env: &[(String, String)]) -> Vec<OtherApp
     ]
 }
 
+/// A path as a person writes it in another app's settings: Windows hands
+/// back `\\?\C:\…` for a file it was asked the real place of, which is the
+/// same file as `C:\…`. (A path to another computer is left as it is.)
+fn plain_path(p: &str) -> String {
+    match p.strip_prefix(r"\\?\") {
+        Some(rest) if rest.as_bytes().get(1) == Some(&b':') => rest.to_string(),
+        _ => p.to_string(),
+    }
+}
+
 /// How to connect other AI apps to the Columbus server on this computer.
 #[tauri::command]
 pub async fn chat_other_apps(app: AppHandle) -> Result<OtherApps, String> {
@@ -1068,7 +1078,7 @@ pub async fn chat_other_apps(app: AppHandle) -> Result<OtherApps, String> {
             .as_deref()
             .map(|srv: &Path| chat::server_env(&s, srv))
             .unwrap_or_default();
-        let shown = found.as_ref().map(|p| p.display().to_string());
+        let shown = found.as_ref().map(|p| plain_path(&p.display().to_string()));
         OtherApps {
             apps: other_apps(shown.as_deref().unwrap_or("columbus-mcp"), &env),
             server: shown,
@@ -1393,6 +1403,23 @@ mod tests {
             .unwrap()
             .entry
             .ends_with("env = { COLUMBUS_PYTHON = '/opt/gis/bin/python3' }"));
+        // Windows' long form of a path is written the usual way.
+        assert_eq!(
+            plain_path(r"\\?\C:\Columbus\columbus-mcp.exe"),
+            r"C:\Columbus\columbus-mcp.exe"
+        );
+        assert_eq!(
+            plain_path(r"C:\Columbus\columbus-mcp.exe"),
+            r"C:\Columbus\columbus-mcp.exe"
+        );
+        assert_eq!(
+            plain_path(r"\\?\UNC\host\share\columbus-mcp.exe"),
+            r"\\?\UNC\host\share\columbus-mcp.exe"
+        );
+        assert_eq!(
+            plain_path("/opt/columbus/columbus-mcp"),
+            "/opt/columbus/columbus-mcp"
+        );
         // A path with a quote mark in it is still one TOML string.
         assert_eq!(toml_string("it's"), "\"it's\"");
         // Nothing is promised of an app that was not confirmed.
