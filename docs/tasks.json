@@ -876,7 +876,7 @@
         }
       ],
       "status": "todo",
-      "evidence": ""
+      "evidence": "Review run on commit 428cabd by a fresh subagent that built nothing (2026-11-11; its brief is docs/final-review.md applied to build-brief-3). It ran: the whole Rust suite (529 passed), the Python worker tests, the map page unit tests, all twelve desktop scripts and four map page scripts, fmt, both clippy runs, skills and link checks; a licence check of the 36 crates part 3 added (all MIT, Apache-2.0, Zlib or 0BSD) and a match of all 620 locked crates against RustSec's database (no vulnerability advisory applies; cargo audit itself could not be installed); a secret scan of the part-3 diff (stand-ins only); the five GeoLibre pins against the publisher's files, with two archives downloaded and hashed and the program's text read, never run. Its own negative tests through the real gateway on Linux: a script under scripts.approval none was refused every read outside its inputs (including /etc, /proc, the policy, connections, the audit log, other sessions), every socket family, signals, ptrace, namespaces, links and renames out of its folder; toolbox arguments, project file path tricks and toolbox command failures all behaved. Verdict: part 3 does what the owner asked and the boundary held against every attempt run. Twelve findings: one Fix now (sync sends data and password files the page says stay out: R-103), three Fix when convenient, eight Accept; the cheap ones are R-104; the rest are logged in docs/progress-log.md. No finding lets the assistant widen its own access. Not checked: anything at run time on Windows or macOS (code and CI logs read), the real GeoLibre program (H-3), a real GitHub or Gitea (H-4). Fixes and the re-check: see R-103 and R-104."
     },
     {
       "id": "T-36",
@@ -890,6 +890,48 @@
         {
           "how": "Claude reads the Actions runs on main and writes the note",
           "expected": "all jobs green; the note is the newest in docs/progress-log.md"
+        }
+      ],
+      "status": "todo",
+      "evidence": ""
+    },
+    {
+      "id": "R-103",
+      "title": "Final review of part 3, finding 1 (Fix now): pressing Sync must not send data files, password files or files that may hold data read from a governed source, and the page must say exactly what is and is not sent",
+      "session": "S12",
+      "depends_on": [
+        "T-35"
+      ],
+      "done_by": "claude",
+      "acceptance": [
+        {
+          "how": "Claude adds tests in crates/sync and extends app/desktop/e2e/sync.py: a CSV, a GeoJSON, a .dsn, a file with a secret in a new shape, and a file that carries data labels are in the project's folder when Sync is pressed",
+          "expected": "none of them reaches the stand-in server; each is named on the page with its reason; a labelled file goes only after the person chooses to send it as it is, and is held again when it changes; where a flow rule denies it there is no such choice"
+        },
+        {
+          "how": "Claude checks that project_files refuses to write data formats and that one shared list serves both project_files and sync",
+          "expected": "the assistant's write of a .csv is refused in plain words; a name on the list is treated the same by both"
+        }
+      ],
+      "status": "todo",
+      "evidence": ""
+    },
+    {
+      "id": "R-104",
+      "title": "Final review of part 3, cheap hardening (findings 2, 3, 5, 6, 7, 8, 11 and wording): a program added from this computer says which folder its tools can read and refuses broad folders; project_files does not hand a file with a secret to the assistant; files that run when opened are neither written nor synced in; sandbox proofs fail instead of skipping in CI on every system; the choice's words say what it turns on; the Mac limit is stated where the promise is made; GitHub Enterprise is asked who it is before the token is sent",
+      "session": "S12",
+      "depends_on": [
+        "T-35"
+      ],
+      "done_by": "claude",
+      "acceptance": [
+        {
+          "how": "Claude adds a test for each item that fails before its fix",
+          "expected": "each passes after; nothing existing is weakened"
+        },
+        {
+          "how": "Claude runs the whole Rust suite, the twelve desktop scripts, the map page's scripts and unit tests, fmt and both clippy runs, then CI",
+          "expected": "all pass on Linux here and on Windows, macOS and Linux in CI"
         }
       ],
       "status": "todo",

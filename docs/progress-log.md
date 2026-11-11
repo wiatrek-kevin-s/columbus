@@ -141,6 +141,31 @@ Status: raised, approved, declined, or Sent to Blueprint (touches a one-way door
 
 Newest first, written as you go. Mark each claim verified (checked this session) or unverified.
 
+### Final review of part 3 (2026-11-11)
+
+A fresh subagent that built none of it reviewed commit 428cabd (method and scoring of `docs/final-review.md`, applied to `docs/build-brief-3.md`). It ran every suite and its own negative tests through the real gateway on Linux, read the Windows and macOS code and the CI logs, and fixed nothing.
+
+- **Verdict (the reviewer's):** part 3 does what the owner asked, and the boundary held against every attempt it ran. No finding lets the assistant widen its own access: every command that widens asks at the keyboard in the app's own code, the test stand-ins exist only in debug builds, a page in the map's frame cannot call the app, and sync holds the token only in the credential store and in memory.
+- **Findings and what was done with each:**
+
+| # | Finding | Label | Done |
+|---|---|---|---|
+| 1 | Sync sends data files (CSV, GeoJSON, Excel and more) and some password files, while the page says data and keys stay out; the secret scan misses several shapes; data labels are not looked at | Fix now (27; severity 9) | R-103 |
+| 2 | A program added from this computer exposes its whole folder to its tools, and the app's dialog does not say so | Fix when convenient (24) | R-104: said in the app, broad folders refused |
+| 3 | The assistant can read any text file in a project's files, a password file included | Fix when convenient (21) | R-104: the secret scan on read |
+| 4 | "Work freely on copies" cannot be chosen until a policy file is made by hand; a file made as administrator reads as the organization's | Fix when convenient (20), the owner's call | Put to the owner in the hand-over (it would change the rule logged on 2026-11-11) |
+| 5 | Files that run when opened can be put in a project's folder, by the assistant or by a sync | Accept (18), cheap | R-104 |
+| 6 | The sandbox proofs skip, not fail, on Windows and macOS if a runner cannot set the sandbox up | Accept (18), cheap | R-104 |
+| 7 | The choice does not say what else it turns on; "Ask me" leaves toolbox tools running unasked | Accept (18), words | R-104 |
+| 8 | On a Mac a sandboxed script can read what other running programs were started with; SECURITY.md and the card do not say so | Accept (16) | R-104: stated |
+| 9 | The README describes 0.15 while Download gives 0.14.0 | Accept (15) | The owner's word is needed to publish (D-21); said in the hand-over |
+| 10 | No cap on processes (Linux) or on what a run writes to disk | Accept (8) | Logged; the reference states it |
+| 11 | GitHub Enterprise: the token goes out with the first request | Accept (7), cheap | R-104 |
+| 12 | The path rules and the secret-name list exist twice and differ | Accept (6) | The shared list of R-103; the rest logged |
+
+- **The owner's instruction, line by line (the reviewer's reading):** the window, the lighter safety model, their Python, documentation, the map the assistant reads and sees, installable tools, Documentation, Workflows and Projects kept, the README, and sync are all there. Clumsy or missing, to say in the hand-over: a fresh PC needs the policy file made by hand (finding 4); arcpy is unchanged (trusted environment, an approval each run, never tried on a real ArcGIS Pro); the real GeoLibre program has never run; QGIS is not a toolbox; "any other program" needs a hand-written description file; workflows cannot use toolbox tools; sync covers a project's files, name and instructions, not its chats, project database or workflows; no Git server can be connected on Linux.
+- **Not checked by the review:** anything at run time on Windows or macOS (on Windows: whether a confined script can read the clipboard, the registry's ODBC entries or named pipes; company certificates; a turned-off Recycle Bin. On macOS: `/private/etc` readable whole, inherited files not closed); `cargo audit` and `pip-audit` themselves; a real screen reader; the first-run screen with no policy file in the running app.
+
 ### Part 3 begins: the open workbench (2026-11-10)
 
 - **Read first:** `docs/build-brief-3.md` (part 3 of the plan: the owner's instruction of 2026-11-10, the research, decisions D-15 to D-21, formats F-15 to F-18, requirements REQ-35 to REQ-45) and tasks T-26 to T-36 in `docs/tasks.json`. `CLAUDE.md` does not list them (see Decisions, 2026-11-10); treat brief 3 as a source of truth beside parts 1 and 2, and D-15 to D-21 and F-15 to F-18 as one-way doors from here on.
