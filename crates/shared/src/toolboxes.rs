@@ -2042,13 +2042,18 @@ pub fn builtin_catalogue() -> Vec<CatalogueEntry> {
     vec![geolibre_entry()]
 }
 
+/// The name of the test builds' own switch. It does not exist in a release
+/// build at all.
+#[cfg(debug_assertions)]
+const TEST_CATALOGUE: &str = "COLUMBUS_TOOLBOX_TEST_CATALOGUE";
+
 /// The catalogue in force. A release build always uses the built-in one.
-/// A test build (debug assertions on) reads `COLUMBUS_TOOLBOX_TEST_CATALOGUE`
-/// instead when it is set: a JSON file with a list of entries, so the
-/// tests can install a stand-in from a local server.
+/// A test build (debug assertions on) reads the file its test switch names
+/// instead, when that is set: a JSON list of entries, so the tests can
+/// install a stand-in from a server on this computer.
 pub fn catalogue() -> Vec<CatalogueEntry> {
     #[cfg(debug_assertions)]
-    if let Some(path) = crate::paths::env_path("COLUMBUS_TOOLBOX_TEST_CATALOGUE") {
+    if let Some(path) = crate::paths::env_path(TEST_CATALOGUE) {
         // A test that names a catalogue gets that one or nothing: never the
         // real one by mistake.
         return std::fs::read(&path)
@@ -2061,9 +2066,16 @@ pub fn catalogue() -> Vec<CatalogueEntry> {
 
 /// Whether the catalogue in force is a test's (a debug build told to use
 /// one). Then, and only then, a download may come from this computer over
-/// plain HTTP.
+/// plain HTTP. Always false in a release build.
 pub fn test_catalogue() -> bool {
-    cfg!(debug_assertions) && crate::paths::env_path("COLUMBUS_TOOLBOX_TEST_CATALOGUE").is_some()
+    #[cfg(debug_assertions)]
+    {
+        crate::paths::env_path(TEST_CATALOGUE).is_some()
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        false
+    }
 }
 
 pub fn catalogue_entry(id: &str) -> Option<CatalogueEntry> {

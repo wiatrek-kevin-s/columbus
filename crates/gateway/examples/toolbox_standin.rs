@@ -28,6 +28,8 @@ use std::process::ExitCode;
 use serde_json::{json, Value};
 
 const VERSION: &str = "1.8.1";
+/// How many `gridfill_NN` tools there are, all alike.
+const FILLERS: usize = 30;
 
 fn input(name: &str, dataset: Value, description: &str, required: bool) -> Value {
     let kind = dataset["kind"].clone();
@@ -76,7 +78,7 @@ fn manifest(
 fn manifests() -> Vec<Value> {
     let raster = || json!({"kind": "raster"});
     let vector = || json!({"kind": "vector", "geometry": "any"});
-    vec![
+    let mut all = vec![
         manifest(
             "raster_copy",
             "Raster Copy",
@@ -243,7 +245,23 @@ fn manifests() -> Vec<Value> {
             "taxonomy": {"category": "Conversion", "subcategory": "Reports"}}),
         // And one that is not a manifest at all.
         json!("not a manifest"),
-    ]
+    ];
+    // The real runner lists about a thousand tools; these stand for the
+    // crowd a search has to choose from.
+    for n in 1..=FILLERS {
+        all.push(manifest(
+            &format!("gridfill_{n:02}"),
+            &format!("Gridfill {n:02}"),
+            &format!("Fills gaps in a grid, variant {n}."),
+            ("Raster", "Gap filling"),
+            json!([
+                input("input", raster(), "Input raster", true),
+                output("output", raster(), "Output raster path", false),
+            ]),
+            json!({}),
+        ));
+    }
+    all
 }
 
 /// The runner's `infer_value`.
@@ -338,7 +356,7 @@ fn outputs(pairs: &[(&str, Option<String>)]) -> Value {
 
 fn run_tool(id: &str, args: &Args) -> Result<Value, String> {
     match id {
-        "raster_copy" | "vector_copy" => {
+        id if id == "raster_copy" || id == "vector_copy" || id.starts_with("gridfill_") => {
             println!("Reading {}", path_arg(args, "input")?);
             let out = copy(args, "output")?;
             println!("Progress: done");
