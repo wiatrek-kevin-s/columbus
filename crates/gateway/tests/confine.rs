@@ -2,12 +2,21 @@
 //! on whatever this machine is: Linux (Landlock, seccomp), macOS
 //! (Seatbelt) or Windows (AppContainer, restricted token, job object). Uses Python as the
 //! confined program so the same checks run on both.
+//!
+//! These are the proofs of the sandbox, so they must not pass by not
+//! running: where CI says tests must not skip
+//! (`COLUMBUS_TEST_REQUIRE_ENGINE=1`), a machine with no Python, or one
+//! that cannot set the sandbox up, fails each of them, on every system.
+
+// (Only the sandbox check is used here, not the engine finder.)
+#[allow(dead_code)]
+mod support;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn python() -> Option<String> {
-    ["python3", "python"]
+    let found = ["python3", "python"]
         .into_iter()
         .map(String::from)
         .find(|p| {
@@ -15,18 +24,50 @@ fn python() -> Option<String> {
                 .arg("--version")
                 .output()
                 .is_ok_and(|o| o.status.success())
-        })
+        });
+    assert!(
+        found.is_some() || !support::must_not_skip(),
+        "COLUMBUS_TEST_REQUIRE_ENGINE=1, so this test must not skip, but there is no python3 or python to confine"
+    );
+    found
 }
 
 fn launcher() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_columbus-confine"))
 }
 
+/// Whether this machine can set the sandbox up. Where CI says tests must
+/// not skip, a machine that cannot fails the test here, on every system.
 fn can_confine() -> bool {
-    Command::new(launcher())
-        .args(["--check", "A"])
-        .output()
-        .is_ok_and(|o| o.status.success())
+    support::can_confine(&launcher())
+}
+
+/// The rule itself (R-104): where tests must not skip, a machine that
+/// cannot set the sandbox up fails a sandbox test instead of passing it
+/// unrun; where they may skip, the test is told so and skips.
+#[test]
+fn where_tests_must_not_skip_a_machine_that_cannot_confine_fails_the_test() {
+    // A launcher that cannot confine: there is no such program.
+    let broken = PathBuf::from("no-such-columbus-confine");
+    assert!(!support::sandbox_or_fail(&broken, false));
+    let failed = std::panic::catch_unwind(|| support::sandbox_or_fail(&broken, true))
+        .expect_err("it did not fail");
+    let said = failed.downcast_ref::<String>().cloned().unwrap_or_default();
+    assert!(
+        said.contains("must not skip") && said.contains("cannot set up the sandbox"),
+        "{said}"
+    );
+    // One that answers no, as the real launcher does where the system
+    // refuses the sandbox: the same.
+    if cfg!(unix) {
+        let says_no = PathBuf::from("false");
+        assert!(!support::sandbox_or_fail(&says_no, false));
+        assert!(std::panic::catch_unwind(|| support::sandbox_or_fail(&says_no, true)).is_err());
+    }
+    // The real launcher: where it can confine, both say so.
+    if support::sandbox_or_fail(&launcher(), false) {
+        assert!(support::sandbox_or_fail(&launcher(), true));
+    }
 }
 
 /// The Python installation's folders, readable inside the confinement.
@@ -455,7 +496,9 @@ fn level_a_on_macos_reaches_no_socket_service_or_home_folder() {
         "svc com.apple.SecurityServer: refused",
         // Not "procargs parent": macOS's sandbox does not cover reading
         // the arguments and environment other processes of the same user
-        // started with (a known limit, in the README).
+        // started with (a known limit, stated in SECURITY.md, in the
+        // reference under Confinement levels, and on the app's card for
+        // Work freely on copies on a Mac).
         "proc list: refused",
     ] {
         assert!(
@@ -839,6 +882,8 @@ def _sysctl(mib):
         return "refused"
     buf = ctypes.create_string_buffer(size.value)
     return "ok" if _lib.sysctl(m, len(mib), buf, ctypes.byref(size), None, 0) == 0 else "refused"
+# Printed, not asserted: the sandbox does not cover it (the known limit
+# stated in SECURITY.md and in the reference).
 print("procargs parent:", _sysctl([1, 49, os.getppid()]))
 print("proc list:", _sysctl([1, 14, 0]))
 "#;

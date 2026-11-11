@@ -61,7 +61,8 @@ servers:
 # The most specific rule wins; deny beats approve at equal specificity.
 flows:
   - from: [connection:roads-prod, connection:assets-prod]
-    to:   ["*"]                 # any connected MCP server and any export folder
+    to:   ["*"]                 # every destination, among them connected servers, export folders, a
+                                # project's files and a Git server a project syncs with (git:<host>, git:*)
     action: deny
   - from: [connection:roads-prod]
     to:   [server:sharepoint]
@@ -138,8 +139,8 @@ scripts:
   session_approval: false
 
 # Toolboxes: programs that describe their own tools (the GeoLibre runner,
-# QGIS, or a program with a description file), installed by the person and
-# run confined at level A like scripts. Off by default.
+# or any program with a description file; QGIS is not one yet), installed by
+# the person and run confined at level A like scripts. Off by default.
 allow_toolboxes: false
 toolboxes:
   catalogue: true             # false: Columbus's built-in catalogue downloads nothing;

@@ -1,6 +1,7 @@
 """Writes docs/images/how-it-works-light.svg and -dark.svg: the README's
-"How it works" diagram (AI app -> Columbus -> your data and your Python).
-Hand-laid SVG; run again after editing the words or colours."""
+"How it works" diagram (AI app -> Columbus -> your data, and the sandbox
+where scripts and installed tools work on copies of it). Hand-laid SVG; run
+again after editing the words or colours."""
 
 from pathlib import Path
 
@@ -33,8 +34,9 @@ def svg(c):
 
     parts = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 330" width="920" height="330" font-family="{font}" role="img" '
              f'aria-labelledby="t d"><title id="t">How Columbus works</title><desc id="d">Your AI app asks Columbus. Columbus checks every request '
-             f'against your organization\'s rules, asks you before anything is exported or changed, and logs every step. Only then does it read '
-             f'your data or run your Python, on your computer.</desc>']
+             f'against your organization\'s rules, asks you before anything is exported, changed or run outside the sandbox, and logs every step. '
+             f'It reads your data under those rules. Scripts in your Python and the tools you install work on copies of what was read, in a '
+             f'sandbox with no network and no passwords, on your computer.</desc>']
     # 1. The AI app.
     parts.append(box(10, 95, 200, 140, c["box"], c["line"]))
     parts.append(text(110, 128, "Your AI app", 16, 600, anchor="middle"))
@@ -45,7 +47,7 @@ def svg(c):
     parts.append(text(445, 52, "Columbus", 18, 700, c["accent"], "middle"))
     parts.append(text(445, 72, "on your computer", 12, fill=c["muted"], anchor="middle"))
     rows = [("Rules", ["Read-only by default; only the rows", "and fields your organization allows"]),
-            ("Approvals", ["Exports, edits and scripts", "wait for your yes"]),
+            ("Approvals", ["Exports, edits and anything leaving", "the sandbox wait for your yes"]),
             ("Checks and log", ["Every result checked,", "every step written down"])]
     for i, (title, desc) in enumerate(rows):
         y = 86 + i * 74
@@ -55,15 +57,17 @@ def svg(c):
         parts.append(text(344, y + 25, title, 14, 600))
         parts.append(lines(324, y + 44, desc[:1], 12, fill=c["muted"]))
         parts.append(text(324 + 0, y + 58, desc[1], 12, fill=c["muted"]) if len(desc) > 1 else "")
-    parts.append(arrow(600, 105, 680, 105, "reads", 95))
-    parts.append(arrow(600, 240, 680, 240, "runs", 230))
-    # 3. Data and Python.
-    parts.append(box(680, 20, 230, 165, c["box"], c["line"]))
+    parts.append(arrow(600, 95, 680, 95, "reads", 85))
+    parts.append(arrow(600, 255, 680, 255, "runs", 245))
+    # 3. The data, and the sandbox that only ever gets copies of it.
+    parts.append(box(680, 20, 230, 150, c["box"], c["line"]))
     parts.append(text(700, 48, "Your data", 16, 600))
     parts.append(lines(700, 74, ["Oracle and SQL Server", "File geodatabases, shapefiles", "ArcGIS Online and Portal", "CSV, Excel, GeoPackage", "Rasters, PostGIS"], 12, 19))
-    parts.append(box(680, 195, 230, 115, c["box"], c["line"]))
-    parts.append(text(700, 223, "Your Python", 16, 600))
-    parts.append(lines(700, 249, ["Columbus's GIS tools, your", "own Python setups, and", "ArcGIS Pro's arcpy (experimental)"], 12, 19))
+    parts.append(f'<line x1="795" y1="170" x2="795" y2="192" stroke="{c["arrow"]}" stroke-width="2"/>'
+                 f'<path d="M795 200 l-6 -10 h12 z" fill="{c["arrow"]}"/>' + text(807, 190, "copies", 12, fill=c["muted"]))
+    parts.append(box(680, 200, 230, 110, c["box"], c["line"]))
+    parts.append(text(700, 228, "The sandbox", 16, 600))
+    parts.append(lines(700, 252, ["Scripts in your Python and", "installed tools work on copies:", "no network, no passwords"], 12, 19))
     parts.append("</svg>")
     return "".join(parts)
 

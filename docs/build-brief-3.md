@@ -139,3 +139,81 @@ T-26 to T-36 in `docs/tasks.json` (areas S9 to S12).
 - The sandbox is the operating system's (Windows AppContainer, macOS sandbox-exec, Linux Landlock and seccomp). Where it cannot be set up, Columbus refuses to run the code.
 - A synced project folder is not a Git clone. Developers can clone the same repository with Git elsewhere.
 - What the assistant writes into a project's files may quote data it has read. The person sees every changed file before a sync sends it.
+
+---
+
+# Addendum of 2026-11-11: any AI
+
+Added on the owner's instruction, after the final review of the parts above. It is part of 0.15.0 and follows the same rules.
+
+## The owner's instruction (2026-11-11)
+
+> also another thing, while i used 'claude' as an example, the app needs to allow users to connect whatever AI they want to the app; i.e. OpenAI, Xai, an API key, github copilot, etc... if this is possible please implement it.
+
+## What exists, and what the research found (2026-11-11)
+
+An AI reaches Columbus in two ways. An AI app can connect to Columbus (MCP): that already works with any app that speaks MCP (D-6). And the Columbus app has its own chat, which until now spoke only to Anthropic, with the person's key. The reference listed other services for the app's chat under "Not in this release".
+
+Facts read on 2026-11-11. The official SDK sources on GitHub were read directly; most documentation sites could be read only through a search tool, so what rests on them alone is an assumption (A-11):
+
+1. **Three request formats cover the field.** Anthropic's Messages. OpenAI's Responses, which OpenAI calls its primary API and which its newest models need for tool calling, and which xAI recommends (xAI calls its Chat Completions endpoint legacy). And OpenAI's Chat Completions, which nearly everything else accepts: Google Gemini's compatible endpoint, OpenRouter, Mistral, DeepSeek, Groq, Together, Azure OpenAI, Amazon Bedrock, and local runners such as Ollama and LM Studio.
+2. **GitHub Models was shut down by GitHub on 2026-07-30.** There is nothing left to connect there.
+3. **A Copilot subscription can be used inside another app only through GitHub's Copilot SDK.** It is not a chat API: it runs GitHub's own agent program (the Copilot CLI) with that program's shell and file tools on by default. No other route is supported by GitHub.
+4. **Copilot connects to Columbus as an AI app**, like Claude desktop does: in VS Code, the Copilot CLI, Visual Studio and JetBrains. The files this is set in changed during 2026.
+5. **Small differences matter.** A picture cannot ride in a Chat Completions tool result; token counts arrive differently in each format; Gemini's endpoint sends an extra field with each tool call that must be sent back unchanged; parameter names differ between services.
+
+## D-22: the app's chat works with any AI service
+
+- **Three formats.** The chat engine speaks Anthropic Messages, OpenAI Responses and OpenAI Chat Completions. Everything else in the chat is the same for all three: Columbus's tools and nothing else, approvals written by the app, the caps on steps, calls, tokens and result size, Stop, and what is recorded.
+- **Services built in:** Anthropic (as before), OpenAI and xAI (Responses), Google Gemini and OpenRouter (Chat Completions), and two that run on the person's own computer and need no key, Ollama and LM Studio (Chat Completions). Each offers a short list of current models; the person can also type a model's id or load the service's own list, because model names change faster than Columbus's releases.
+- **Any other service:** the person adds it with a name, an address, one of the three formats, and how the key is sent. This covers Azure OpenAI, Mistral, DeepSeek, Groq, Together, Bedrock and a company's own gateway. Adding one, or changing its address, is confirmed at the keyboard (Touch ID, Windows Hello), because it changes where the chat's messages and the rows it reads are sent. The services built in have fixed addresses in Columbus's code and need only their key.
+- **Keys.** One key per service, in the computer's credential store, never in a file and never given to a page. A key is sent only to its own service's address, over HTTPS; plain HTTP is accepted only for a service on this computer. Redirects are not followed.
+- **A chat keeps its service.** The service is chosen in Settings and at first run, for new chats. Inside a chat the person can change the model, not the service.
+- **The organization's say (F-19).** `assistant.hosts` in the policy names the only hosts the app's chat may talk to. Empty or absent, the person chooses. This loosens no rule: until now nothing limited which AI app a person connects to Columbus, and the organization's rules have always governed what Columbus returns, not which AI reads it. It adds a limit an organization can set.
+- **Other AI apps.** The app shows how to connect each of the common ones to Columbus, with the file to change and the exact entry for this computer: Claude desktop, GitHub Copilot (VS Code, the Copilot CLI, Visual Studio, JetBrains), Cursor, Codex and ChatGPT desktop, Gemini CLI, Claude Code, LM Studio.
+- **Not built, and why.**
+  - *A Copilot subscription inside Columbus's own chat.* It would mean shipping and running GitHub's agent program, whose licence is not among those the project allows for what it ships (security baseline item 5), switching off that program's own shell and file tools and proving they are off (or the boundary of D-16 is gone), and testing with a Copilot account. None of that can be done or checked in this build. It is put to the owner in the hand-over. Copilot works today as an AI app connected to Columbus.
+  - *GitHub Models.* Shut down by GitHub.
+  - *A workflow's optional AI review* keeps using Anthropic with the Anthropic key: the service is part of the approved workflow format (a one-way door).
+  - *Signing in with an account instead of a key* (ChatGPT, Google, Microsoft Entra sign-in), and services that have no key-based API in one of the three formats.
+
+## Requirements added
+
+| ID | The app must | Decision |
+|---|---|---|
+| REQ-46 | Let the chat use Anthropic, OpenAI, xAI, Google Gemini, OpenRouter, a local model through Ollama or LM Studio, or any other service that speaks one of the three formats, each with its own key, kept in the credential store and sent only to that service | D-22 |
+| REQ-47 | Let the person choose the service and the model in Settings and at first run, show in a chat which service and model it uses, and confirm at the keyboard a service whose address the person typed | D-22 |
+| REQ-48 | Refuse a service whose host the organization's `assistant.hosts` does not list, and say so | D-22 |
+| REQ-49 | Behave the same with every service: tools, approvals, pictures of the map, the caps, Stop and plain error messages; never run a tool call that arrived damaged; never show or log a key | D-22 |
+| REQ-50 | Show how to connect other AI apps to Columbus, with the current file and entry for each, in the app and in the docs | D-22, D-6 |
+
+## Rules and formats added
+
+- **F-19, the assistant's services.** Policy: `assistant: { hosts: [] }` (when not empty, the app's chat may use only a service whose host is listed; a host is a name as in `sync.hosts`). The app's own settings: `service` (the id of the service for new chats), a model per service, and `services`, the ones the person added: `id`, `name`, `address`, `format` (`messages`, `responses`, `chat`), `key_header` (`bearer`, `api-key`, `x-api-key`), `pictures` (whether its models are sent pictures). Keys are in the credential store only: Anthropic's under its earlier name, the others under `ai-key:<id>`.
+- **R-25.** A key is sent only to the address of the service it was saved for; the app never follows a redirect with it.
+- **R-26.** What a service sends back is untrusted: a tool call is run only if its name is one of Columbus's tools and its arguments are whole; text from a service's error is shown with any part of the key removed.
+
+## Assumptions and fallbacks
+
+| ID | Assumption | If false |
+|---|---|---|
+| A-11 | Each service's API matches what was read on 2026-11-11 (its published description, or its official SDK's source) | The chat says what the service answered, in plain words. A request the service refuses for an optional field is tried once more without the optional fields. The person can add the service again as "another service" with another format. Owner check H-6 |
+| A-12 | Gemini's compatible endpoint needs the extra field of each tool call sent back unchanged | Sending back what a service sent is harmless elsewhere |
+
+## Tasks
+
+T-37 to T-40 in `docs/tasks.json` (area S13). The hand-over (T-36) follows them.
+
+| Area | Tasks | Milestone |
+|---|---|---|
+| S13 | T-37, T-38, T-39, T-40 | Any AI: the engine, the app, the docs, the review |
+
+## Optional check for the owner
+
+- **H-6.** Settings › Assistant: choose your AI service (for example OpenAI), save its key, and ask in a new chat for something that reads a layer and shows it on the map. Columbus's side of every service except Anthropic was built from that service's published description and tested against stand-ins; no key of any service was used in the build, so this is its first meeting with the real one.
+
+## Honest limits to state in the docs
+
+- Every service but Anthropic is untried on the real thing (H-6).
+- With a service on your own computer nothing is sent to an AI company; small local models often call tools unreliably.
+- Whatever service is chosen, what the assistant reads is sent to it. Choosing a service is choosing who sees those rows.

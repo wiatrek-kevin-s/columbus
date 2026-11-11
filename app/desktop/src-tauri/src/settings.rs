@@ -1461,6 +1461,8 @@ fn set_switch(name: &str, on: bool) -> Result<(), String> {
             | "allow_workflows"
             | "allow_shared_tools"
             | "allow_project_files"
+            | "allow_toolboxes"
+            | "allow_sync"
     ) {
         return Err(format!("unknown setting {name:?}"));
     }
@@ -1501,6 +1503,8 @@ fn set_switch(name: &str, on: bool) -> Result<(), String> {
             "allow_scripts" => "let your assistant run Python scripts, after your approval of each one",
             "allow_workflows" => "let the workflows you approve run by themselves, on their schedule",
             "allow_project_files" => "let your assistant read and write text files in a project's own folder, and run scripts kept there",
+            "allow_toolboxes" => "let you install toolboxes, and let your assistant run their tools in the sandbox without asking each time",
+            "allow_sync" => "let a project's files sync with a Git server you connect, when you press Sync",
             "allow_shared_tools" => "let you open tools and workflows coworkers share with you, to review and approve each yourself",
             _ => "let your assistant use the tools you install from what it proposes, without asking each time",
         })?;
@@ -1575,6 +1579,11 @@ pub async fn settings_set_work_mode(free: bool) -> Result<(), String> {
         .map_err(|e| e.to_string())?
 }
 
+/// What the person is asked before **Work freely on copies** is saved:
+/// what it lets the assistant do, and everything else it turns on (F-15),
+/// so that one confirmation is for all of it.
+const FREE_QUESTION: &str = "let your assistant work freely on copies: run scripts and tools in the sandbox without asking you each time. This also turns on Python environments you register, your own tools, toolboxes, project files and sync";
+
 fn set_work_mode(free: bool) -> Result<(), String> {
     let path = paths::policy_file();
     if !writable(&path) {
@@ -1596,7 +1605,7 @@ fn set_work_mode(free: bool) -> Result<(), String> {
         return Ok(());
     }
     if free {
-        confirm("let your assistant work freely on copies: run scripts and tools in the sandbox without asking you each time")?;
+        confirm(FREE_QUESTION)?;
         if std::fs::read_to_string(&path).ok().as_deref() != Some(before.as_str()) {
             return Err("the settings file changed while you were asked; nothing was saved".into());
         }
@@ -2079,6 +2088,28 @@ mod tests {
 
     fn conn(yaml: &str) -> Connection {
         serde_yaml::from_str(yaml).unwrap()
+    }
+
+    /// The confirmation for Work freely on copies names everything the
+    /// choice turns on, not only scripts (R-104): one confirmation is for
+    /// all of it.
+    #[test]
+    fn the_question_for_working_freely_names_everything_it_turns_on() {
+        for (switch, words) in [
+            ("allow_scripts", "run scripts and tools"),
+            ("allow_personal_tools", "your own tools"),
+            ("allow_toolboxes", "toolboxes"),
+            ("allow_project_files", "project files"),
+            ("allow_sync", "sync"),
+        ] {
+            assert!(FREE_SWITCHES.contains(&switch), "{switch}");
+            assert!(FREE_QUESTION.contains(words), "{switch}: {FREE_QUESTION}");
+        }
+        assert!(FREE_QUESTION.contains("Python environments"));
+        // A switch added to the choice must be named in the question too.
+        assert_eq!(FREE_SWITCHES.len(), 5);
+        // What it is first: a long text may be cut short on the screen.
+        assert!(FREE_QUESTION.starts_with("let your assistant work freely on copies"));
     }
 
     #[test]

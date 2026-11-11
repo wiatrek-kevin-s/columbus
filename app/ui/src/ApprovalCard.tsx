@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { Approval } from "./api";
+import { rowsText } from "./words";
 
 const RISK: Record<string, string> = {
   export: "Export",
@@ -45,7 +46,7 @@ export function ApprovalCard(props: {
   const rows: [string, string][] = [];
   if (d.destination) rows.push(["Destination", d.destination]);
   if (Array.isArray(d.files) && d.files.length)
-    rows.push(["Files", d.files.map((f) => (typeof f === "string" ? f : f.rows != null ? `${f.name} (${f.rows} rows)` : f.name)).join(", ")]);
+    rows.push(["Files", d.files.map((f) => (typeof f === "string" ? f : f.rows != null ? `${f.name} (${rowsText(f.rows)})` : f.name)).join(", ")]);
   if (Array.isArray(d.labels) && d.labels.length) rows.push(["Data from", d.labels.join(", ")]);
   if (d.flow_rule) rows.push(["Flow rule", d.flow_rule]);
   if (d.arguments && typeof d.arguments === "object")

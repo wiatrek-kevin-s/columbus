@@ -104,15 +104,32 @@ fn end_group(pid: Option<u32>) {
     let _ = pid;
 }
 
+/// The name of a toolbox's confinement profile: one per toolbox, so on
+/// Windows no other program is ever granted this one's folder, and what
+/// was granted can be taken back when the toolbox is removed.
+pub(crate) fn sandbox_name(id: &str) -> String {
+    format!("toolbox.{id}")
+}
+
+/// The folders a toolbox's tools may read besides the copies they are
+/// given: the program's own, and the ones its `toolbox.yaml` lists.
+pub(crate) fn read_folders(tb: &Toolbox) -> Vec<PathBuf> {
+    tb.program_path()
+        .parent()
+        .map(Path::to_path_buf)
+        .into_iter()
+        .chain(tb.reads.iter().map(PathBuf::from))
+        .filter(|p| p.is_absolute())
+        .collect()
+}
+
 /// The confinement of a toolbox's program: level A, its run folder to
 /// write, its own folder (added by the launcher) and the folders its
 /// `toolbox.yaml` lists to read, the script limits.
 pub(crate) fn spec_for(tb: &Toolbox, run: &Path, memory_mb: u64) -> columbus_confine::Spec {
     columbus_confine::Spec {
         level: columbus_confine::Level::A,
-        // One profile per toolbox, so on Windows no other program is ever
-        // granted this one's folder.
-        name: format!("toolbox.{}", tb.id),
+        name: sandbox_name(&tb.id),
         read_write: vec![run.to_path_buf()],
         read_only: tb
             .reads

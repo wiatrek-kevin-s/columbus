@@ -372,13 +372,13 @@ filters, edits and exports here make new outputs):"
     );
     for l in r["layers"].as_array().into_iter().flatten() {
         t.push_str(&format!(
-            "\n- step {}: {} ({} rows)",
+            "\n- step {}: {} ({})",
             l["step"].as_str().unwrap_or(""),
             l["handle"].as_str().unwrap_or(""),
             l["rows"]
                 .as_u64()
-                .map(|n| n.to_string())
-                .unwrap_or_else(|| "?".into())
+                .map(rows)
+                .unwrap_or_else(|| "? rows".into())
         ));
     }
     if let Some(rep) = r["report"].as_str().filter(|s| !s.trim().is_empty()) {
@@ -1076,6 +1076,26 @@ fn made(v: Option<&Value>) -> Made {
     let Some(v) = v else {
         return Made::default();
     };
+    // A tool run through `run_tool` (a toolbox's, the person's own, a
+    // connected server's) lists the files it saved under `result.saved`,
+    // each with its kind. A script (`run_python`) lists what it wrote under
+    // `result.outputs`, with no kind: there a GeoPackage is a layer and a
+    // CSV a table, by the file's ending, as the map page takes them. Of
+    // those files: the first layer or table (what a table can show), else
+    // the first file.
+    let has_rows = |f: &Value| match f["kind"].as_str() {
+        Some(kind) => matches!(kind, "layer" | "table"),
+        None => f["handle"].as_str().is_some_and(|h| {
+            let h = h.to_ascii_lowercase();
+            h.ends_with(".gpkg") || h.ends_with(".csv")
+        }),
+    };
+    let listed = || {
+        let files = [&v["result"]["saved"], &v["result"]["outputs"]]
+            .into_iter()
+            .find_map(|l| l.as_array().filter(|a| !a.is_empty()))?;
+        files.iter().find(|f| has_rows(f)).or(files.first())?["handle"].as_str()
+    };
     Made {
         provenance: v["provenance"]
             .as_str()
@@ -1084,9 +1104,19 @@ fn made(v: Option<&Value>) -> Made {
         handle: v["result"]["layer"]["handle"]
             .as_str()
             .or(v["result"]["handle"].as_str())
+            .or_else(listed)
             .filter(|s| plain(s))
             .map(String::from),
         images: vec![],
+    }
+}
+
+/// A count of rows in words: "1 row", "12 rows".
+fn rows(n: u64) -> String {
+    if n == 1 {
+        "1 row".into()
+    } else {
+        format!("{n} rows")
     }
 }
 
@@ -1099,12 +1129,14 @@ fn result_summary(v: Option<&Value>) -> String {
     if let Some(s) = r["status"].as_str() {
         parts.push(s.replace('_', " "));
     }
+    let mut counted = false;
     if let Some(n) = r["rows_read"].as_u64().or(r["rows"].as_u64()) {
-        parts.push(format!("{n} rows"));
+        parts.push(rows(n));
+        counted = true;
     }
     if let Some(n) = r["layer"]["summary"]["rows"].as_u64() {
-        if !parts.iter().any(|p| p.ends_with(" rows")) {
-            parts.push(format!("{n} rows"));
+        if !counted {
+            parts.push(rows(n));
         }
     }
     if let Some(c) = r["layer"]["summary"]["crs"]["code"].as_str() {
@@ -1155,6 +1187,92 @@ mod tests {
         let v = json!({"result": {"rows_read": 12, "layer": {"summary": {"crs": {"code": "EPSG:3081"}}}}, "checks": [{"severity": "warn"}, {"severity": "fail"}, {"severity": "info"}]});
         assert_eq!(result_summary(Some(&v)), "12 rows, EPSG:3081");
         assert_eq!(count_checks(&v), (1, 1));
+        // One row is "1 row"; every other count keeps "rows". The count is
+        // said once, whether the result gives it, its layer, or both.
+        let said = |result: Value| result_summary(Some(&json!({ "result": result })));
+        assert_eq!(
+            said(
+                json!({"rows_read": 1, "layer": {"summary": {"rows": 1, "crs": {"code": "EPSG:3081"}}}})
+            ),
+            "1 row, EPSG:3081"
+        );
+        assert_eq!(said(json!({"layer": {"summary": {"rows": 1}}})), "1 row");
+        assert_eq!(said(json!({"status": "done", "rows": 1})), "done, 1 row");
+        assert_eq!(said(json!({"rows": 0})), "0 rows");
+        assert_eq!(said(json!({"layer": {"summary": {"rows": 2}}})), "2 rows");
+        assert_eq!(said(json!({"rows_read": 1000})), "1000 rows");
+    }
+
+    #[test]
+    fn a_result_names_the_layer_or_the_file_it_made() {
+        let handle = |v: Value| made(Some(&v)).handle;
+        // A reading or processing tool: its layer.
+        let v = json!({"result": {"layer": {"handle": "ws://s/results/roads-p_1a2b3c4d.gpkg"}}, "provenance": "p_1a2b3c4d"});
+        let m = made(Some(&v));
+        assert_eq!(
+            m.handle.as_deref(),
+            Some("ws://s/results/roads-p_1a2b3c4d.gpkg")
+        );
+        assert_eq!(m.provenance.as_deref(), Some("p_1a2b3c4d"));
+        // A toolbox's tool, run through run_tool: the file it saved.
+        let copy = "ws://s/results/geolibre-vector_copy-p_5e6f7a8b-output.gpkg";
+        let v = json!({"result": {"provider": "geolibre", "tool": "vector_copy", "status": "done",
+            "saved": [{"handle": copy, "bytes": 98304, "kind": "layer"}]}, "provenance": "p_5e6f7a8b"});
+        assert_eq!(handle(v).as_deref(), Some(copy));
+        // Several files: the first one a table can show (a layer or a table).
+        let v = json!({"result": {"saved": [
+            {"handle": "ws://s/results/t-hillshade.tif", "bytes": 1, "kind": "raster"},
+            {"handle": "ws://s/results/t-report.txt", "bytes": 1, "kind": "file"},
+            {"handle": "ws://s/results/t-stats.csv", "bytes": 1, "kind": "table"},
+            {"handle": "ws://s/results/t-lines.gpkg", "bytes": 1, "kind": "layer"}]}});
+        assert_eq!(handle(v).as_deref(), Some("ws://s/results/t-stats.csv"));
+        // None of them has rows: the first file.
+        let v = json!({"result": {"saved": [
+            {"handle": "ws://s/results/t-hillshade.tif", "bytes": 1, "kind": "raster"},
+            {"handle": "ws://s/external/vault.report-p_1-0.json", "bytes": 1, "kind": "application/json"}]}});
+        assert_eq!(handle(v).as_deref(), Some("ws://s/results/t-hillshade.tif"));
+        // The layer a result names itself comes first.
+        let v = json!({"result": {"layer": {"handle": "ws://s/results/a.gpkg"},
+            "saved": [{"handle": "ws://s/results/b.gpkg", "kind": "layer"}]}});
+        assert_eq!(handle(v).as_deref(), Some("ws://s/results/a.gpkg"));
+        // A script (run_python) lists what it wrote under `outputs`, with
+        // no kind: a CSV is a table and a GeoPackage a layer, by the name.
+        let counts = "ws://s/results/script-p_9a8b7c6d-counts.csv";
+        let v = json!({"result": {"status": "done", "exit_code": 0, "stdout": "", "stderr": "", "code_sha256": "ab12",
+            "outputs": [
+                {"handle": "ws://s/results/script-p_9a8b7c6d-a-note.txt", "name": "a-note.txt", "bytes": 12, "summary": null},
+                {"handle": counts, "name": "counts.csv", "bytes": 24, "summary": {"rows": 3}},
+                {"handle": "ws://s/results/script-p_9a8b7c6d-lines.gpkg", "name": "lines.gpkg", "bytes": 98304, "summary": {"rows": 2}}]},
+            "provenance": "p_9a8b7c6d"});
+        assert_eq!(handle(v).as_deref(), Some(counts));
+        let v = json!({"result": {"outputs": [
+            {"handle": "ws://s/results/script-p_1-readme.md", "name": "readme.md"},
+            {"handle": "ws://s/results/script-p_1-Lines.GPKG", "name": "Lines.GPKG"}]}});
+        assert_eq!(
+            handle(v).as_deref(),
+            Some("ws://s/results/script-p_1-Lines.GPKG")
+        );
+        // A script that wrote no layer or table: its first file.
+        let v = json!({"result": {"outputs": [
+            {"handle": "ws://s/results/script-p_1-a.txt", "name": "a.txt"},
+            {"handle": "ws://s/results/script-p_1-b.tif", "name": "b.tif"}]}});
+        assert_eq!(
+            handle(v).as_deref(),
+            Some("ws://s/results/script-p_1-a.txt")
+        );
+        // Nothing made or saved, or a handle that is not a plain id: none.
+        for v in [
+            json!({"result": {"status": "done"}}),
+            json!({"result": {"saved": []}}),
+            json!({"result": {"outputs": []}}),
+            json!({"result": {"outputs": [{"handle": null, "name": "counts.csv"}]}}),
+            json!({"result": {"saved": "ws://s/results/a.gpkg"}}),
+            json!({"result": {"saved": [{"kind": "layer"}]}}),
+            json!({"result": {"saved": [{"handle": "ws://s/results/<b>.gpkg", "kind": "layer"}]}}),
+        ] {
+            assert_eq!(handle(v.clone()), None, "{v}");
+        }
+        assert_eq!(made(None).handle, None);
     }
 
     #[test]
@@ -1182,12 +1300,16 @@ mod tests {
     fn an_opened_run_and_its_report_are_told_to_the_assistant() {
         assert!(run_text(&Value::Null).is_none());
         let t = run_text(&json!({"workflow": "row-widths", "run": "2026-11-06T06-00-00-000-1a2b", "name": "ROW widths",
-            "layers": [{"step": "fixed", "handle": "ws://s/results/row-widths-fixed.gpkg", "rows": 12}],
+            "layers": [{"step": "fixed", "handle": "ws://s/results/row-widths-fixed.gpkg", "rows": 12},
+                {"step": "one", "handle": "ws://s/results/row-widths-one.gpkg", "rows": 1},
+                {"step": "unread", "handle": "ws://s/results/row-widths-unread.gpkg"}],
             "report": "# ROW widths\n\nSucceeded."}))
         .unwrap();
         assert!(
             t.contains("\"ROW widths\"")
                 && t.contains("ws://s/results/row-widths-fixed.gpkg (12 rows)")
+                && t.contains("ws://s/results/row-widths-one.gpkg (1 row)")
+                && t.contains("ws://s/results/row-widths-unread.gpkg (? rows)")
                 && t.contains("never changed")
                 && t.contains("# ROW widths\n\nSucceeded."),
             "{t}"

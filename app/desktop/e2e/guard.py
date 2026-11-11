@@ -22,6 +22,10 @@
   `stop` waits for the app to go before it stops the driver; an app still
   there after APP_GRACE seconds is ended (SIGTERM, then SIGKILL) and the
   log says so.
+- `hold(d, cmd)` / `held(d)` / `newer(d)` / `release(d)`: keep the answer
+  to a page's next read of one of the app's commands back, and hand it
+  over later (as it is, or as a failure), to show that a read which ends
+  after a newer one is not drawn over it.
 """
 
 import atexit
@@ -259,6 +263,88 @@ def unnamed(d):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ui" / "e2e"))
     from a11y import UNNAMED
     return d.execute_script(UNNAMED)
+
+
+# An older read that ends after a newer one. A page asks the app for
+# something (a read) and draws the answer. With two reads under way, the one
+# begun first can end last; a page that drew it then would put back what has
+# changed since. `hold` keeps the answer to the page's next read of one
+# command back until `release`, so a script can let a newer read be drawn
+# first and then hand the page the older answer. Nothing of the app is
+# changed: the page's way to the app's commands is wrapped here, in the
+# page, for the one command (the object the page calls through is put back
+# on release).
+#
+# Some commands are also read by the window itself, on a timer and when it
+# gets the focus (the list of tools). To keep back the page's own read and
+# no other, `hold(d, cmd, after=...)` waits for the answer to another
+# command first: a page reads right after its own change, in the same turn
+# of the page's script, before a timer or the focus can start another read.
+_HOLD = """
+const [cmd, after] = arguments;
+const T = window.__TAURI__, real = T.core;
+const h = window.__held = { cmd, armed: !after, calls: 0, waiting: false, answered: false, newer: 0, delivered: false, answer: null, release: null };
+const wrapped = Object.create(real);
+Object.defineProperty(wrapped, 'invoke', { value: (c, ...rest) => {
+  const p = real.invoke(c, ...rest);
+  if (after && c === after) p.then(() => { h.armed = true; }, () => {});
+  if (c !== cmd || !h.armed) return p;
+  if (h.calls++ > 0) {
+    // A newer read: answered as always. Counted a moment after the page
+    // was given the answer, when the page has drawn it.
+    p.then(() => setTimeout(() => { h.newer += 1; }, 50), () => {});
+    return p;
+  }
+  h.waiting = true;
+  // The app has answered (what the read says is settled from here on).
+  p.then(() => { h.answered = true; }, () => { h.answered = true; });
+  return new Promise((resolve, reject) => {
+    h.release = (fail) => {
+      T.core = real;
+      // Marked a moment after the page was given the answer: by then the
+      // page has done with it what it does.
+      const given = () => setTimeout(() => { h.delivered = true; }, 50);
+      if (fail) { reject(fail); given(); return; }
+      p.then((r) => { h.answer = r; resolve(r); }, reject).finally(given);
+    };
+  });
+} });
+T.core = wrapped;
+"""
+
+
+def hold(d, cmd, after=None):
+    """Keep the answer to the page's next read of `cmd` from the page until
+    `release`. Later reads of it are answered as always. With `after`, the
+    read kept back is the first one made once the command `after` has been
+    answered (the page's own read after its own change)."""
+    d.execute_script(_HOLD, cmd, after)
+
+
+def held(d):
+    """Whether the app has answered that read, the answer kept back. A script
+    waits for this before it changes anything: until the app has answered,
+    the read could still see the change."""
+    return bool(d.execute_script("return !!(window.__held && window.__held.waiting && window.__held.answered)"))
+
+
+def newer(d):
+    """Whether a read of the same command, made after the one kept back, has
+    been answered and drawn."""
+    return bool(d.execute_script("return !!(window.__held && window.__held.newer > 0)"))
+
+
+def release(d, fail=None):
+    """Hand the page the answer kept back, wait until the page has had it,
+    and return it (what the older read said). With `fail`, the page is told
+    instead that the read failed, with these words: for commands that do
+    not fail by themselves, to show what a page does with a late failure."""
+    if not held(d):
+        raise SystemExit(f"{_name}: step '{last()}': no read was kept back")
+    d.execute_script("window.__held.release(arguments[0])", fail)
+    _until(lambda: d.execute_script("return window.__held.delivered === true"), 30,
+           "the answer that was kept back did not reach the page")
+    return d.execute_script("return window.__held.answer")
 
 
 def stop(d, proc):

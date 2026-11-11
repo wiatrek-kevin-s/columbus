@@ -194,7 +194,7 @@ export async function render(main, rest) {
     const chosen = new Set(p ? p.data_groups || [] : []);
     const known = new Set([...dg.mine.map((g) => g.id), ...dg.org.map((g) => g.id)]);
     for (const [gid, label, note] of [
-      ...dg.mine.map((g) => [g.id, g.name, `${g.datasets.length} datasets · yours`]),
+      ...dg.mine.map((g) => [g.id, g.name, `${plural(g.datasets.length, "dataset")} · yours`]),
       ...dg.org.map((g) => [g.id, g.title || g.id, "your organization's"]),
       ...[...chosen].filter((x) => !known.has(x)).map((x) => [x, x, "no longer found: chats won't start until you remove it"]),
     ]) {

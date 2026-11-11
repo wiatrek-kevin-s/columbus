@@ -7,6 +7,7 @@ import { Table } from "./Table";
 import { LAYER_TONES, useTheme } from "./theme";
 import { parseCommand, planCommand, viewReport, type CommandPart, type Extent, type ViewCommand } from "./view";
 import { NO_WEB_PREFS, ordered, WebLayers, type WebPrefs } from "./WebLayers";
+import { rowsText } from "./words";
 
 const POLL_MS = 2000;
 // The longest a table asked for by name waits for the results to be read.
@@ -192,7 +193,7 @@ function OutputRow(props: {
         </button>
         {!props.active && flag && <span className={`dot ${flag}`} role="img" aria-label={flagText} title={flagText} />}
         {o.rows != null && (
-          <span className="out-count" title={`${o.rows.toLocaleString()} rows`}>
+          <span className="out-count" title={rowsText(o.rows)}>
             {o.rows.toLocaleString()}
           </span>
         )}
@@ -200,7 +201,7 @@ function OutputRow(props: {
       {props.active ? (
         <div className="out-open">
           <div className="out-meta">
-            {o.rows != null && <span>{o.rows.toLocaleString()} rows</span>}
+            {o.rows != null && <span>{rowsText(o.rows)}</span>}
             <span>{size(o.bytes)}</span>
             <CheckBadges c={o.checks} />
             {cut}

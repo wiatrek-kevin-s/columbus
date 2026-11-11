@@ -148,8 +148,11 @@ pub(crate) fn kind(root: &Path, rel: &str) -> Result<Kind, Error> {
 }
 
 /// Write `bytes` as the file `rel`, replacing a plain file of that name.
-/// Folders on the way are made; nothing is written through a link.
-pub(crate) fn write(root: &Path, rel: &str, bytes: &[u8], exec: bool) -> Result<Stat, Error> {
+/// Folders on the way are made; nothing is written through a link. The
+/// file is a new one with the permissions any new file gets: nothing sync
+/// writes is ever marked as a program (R-104), whatever the file it
+/// replaces was.
+pub(crate) fn write(root: &Path, rel: &str, bytes: &[u8]) -> Result<Stat, Error> {
     walk_parents(root, rel, true)?;
     let path = full(root, rel);
     match std::fs::symlink_metadata(&path) {
@@ -163,17 +166,13 @@ pub(crate) fn write(root: &Path, rel: &str, bytes: &[u8], exec: bool) -> Result<
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(Error::io(&path, e)),
     }
-    write_new_then_rename_with(&path, bytes, exec)?;
+    write_new_then_rename(&path, bytes)?;
     let meta = std::fs::symlink_metadata(&path).map_err(|e| Error::io(&path, e))?;
     Ok(stat_of(&meta))
 }
 
 /// Write a file whole: a new file beside it, flushed, then moved into place.
 pub(crate) fn write_new_then_rename(path: &Path, bytes: &[u8]) -> Result<(), Error> {
-    write_new_then_rename_with(path, bytes, false)
-}
-
-fn write_new_then_rename_with(path: &Path, bytes: &[u8], exec: bool) -> Result<(), Error> {
     let dir = path
         .parent()
         .ok_or_else(|| Error::Refused(format!("{} has no folder", path.display())))?;
@@ -188,7 +187,6 @@ fn write_new_then_rename_with(path: &Path, bytes: &[u8], exec: bool) -> Result<(
             .open(&tmp)
             .map_err(|e| Error::io(&tmp, e))?;
         f.write_all(bytes).map_err(|e| Error::io(&tmp, e))?;
-        set_exec(&f, exec);
         f.sync_all().map_err(|e| Error::io(&tmp, e))?;
         drop(f);
         std::fs::rename(&tmp, path).map_err(|e| Error::io(path, e))
@@ -198,24 +196,6 @@ fn write_new_then_rename_with(path: &Path, bytes: &[u8], exec: bool) -> Result<(
     }
     done
 }
-
-#[cfg(unix)]
-fn set_exec(f: &std::fs::File, exec: bool) {
-    use std::os::unix::fs::PermissionsExt;
-    if !exec {
-        return;
-    }
-    if let Ok(m) = f.metadata() {
-        let mut p = m.permissions();
-        // Whoever may read it may run it.
-        let mode = p.mode();
-        p.set_mode(mode | ((mode & 0o444) >> 2));
-        let _ = f.set_permissions(p);
-    }
-}
-
-#[cfg(not(unix))]
-fn set_exec(_f: &std::fs::File, _exec: bool) {}
 
 /// Give the plain file `from` the name `to`, which nothing may have yet.
 pub(crate) fn rename_to_new(root: &Path, from: &str, to: &str) -> Result<(), Error> {
@@ -268,12 +248,12 @@ mod tests {
         let root = d.path();
         assert_eq!(read(root, "a/b/c.txt", 100).unwrap(), None);
         assert_eq!(kind(root, "a/b/c.txt").unwrap(), Kind::Nothing);
-        let st = write(root, "a/b/c.txt", b"one", false).unwrap();
+        let st = write(root, "a/b/c.txt", b"one").unwrap();
         assert_eq!(st.size, 3);
         let (bytes, st2) = read(root, "a/b/c.txt", 100).unwrap().unwrap();
         assert_eq!(bytes, b"one");
         assert_eq!(st, st2);
-        write(root, "a/b/c.txt", b"three", false).unwrap();
+        write(root, "a/b/c.txt", b"three").unwrap();
         assert_eq!(read(root, "a/b/c.txt", 100).unwrap().unwrap().0, b"three");
         assert!(
             read(root, "a/b/c.txt", 2).is_err(),
@@ -288,13 +268,13 @@ mod tests {
             .collect();
         assert_eq!(names, ["c.txt"]);
         // A folder where a file is wanted, and a file where a folder is.
-        assert!(write(root, "a/b", b"x", false).is_err());
-        assert!(write(root, "a/b/c.txt/d", b"x", false).is_err());
+        assert!(write(root, "a/b", b"x").is_err());
+        assert!(write(root, "a/b/c.txt/d", b"x").is_err());
         assert!(read(root, "a/b", 100).is_err());
 
         rename_to_new(root, "a/b/c.txt", "a/b/c (my copy).txt").unwrap();
         assert_eq!(kind(root, "a/b/c.txt").unwrap(), Kind::Nothing);
-        write(root, "a/b/c.txt", b"theirs", false).unwrap();
+        write(root, "a/b/c.txt", b"theirs").unwrap();
         assert!(rename_to_new(root, "a/b/c.txt", "a/b/c (my copy).txt").is_err());
 
         std::fs::remove_file(root.join("a/b/c.txt")).unwrap();
@@ -319,11 +299,11 @@ mod tests {
         std::os::unix::fs::symlink(outside.join("secret.txt"), root.join("link.txt")).unwrap();
         // Through a linked folder: neither read nor written.
         assert!(read(&root, "out/secret.txt", 100).is_err());
-        assert!(write(&root, "out/new.txt", b"x", false).is_err());
+        assert!(write(&root, "out/new.txt", b"x").is_err());
         assert!(!outside.join("new.txt").exists());
         // A linked file: not read, not written through.
         assert!(read(&root, "link.txt", 100).is_err());
-        assert!(write(&root, "link.txt", b"changed", false).is_err());
+        assert!(write(&root, "link.txt", b"changed").is_err());
         assert_eq!(
             std::fs::read(outside.join("secret.txt")).unwrap(),
             b"secret"
@@ -331,13 +311,22 @@ mod tests {
         assert_eq!(kind(&root, "link.txt").unwrap(), Kind::Other);
     }
 
+    /// Nothing sync writes is a program, even over a file that was one.
     #[cfg(unix)]
     #[test]
-    fn a_file_that_may_be_run_keeps_that() {
+    fn a_file_sync_writes_is_never_marked_as_a_program() {
+        use std::os::unix::fs::PermissionsExt;
         let d = tempfile::tempdir().unwrap();
-        let st = write(d.path(), "run.sh", b"#!/bin/sh\n", true).unwrap();
-        assert!(st.exec);
-        let st = write(d.path(), "plain.txt", b"x", false).unwrap();
+        let st = write(d.path(), "run.sh", b"#!/bin/sh\n").unwrap();
         assert!(!st.exec);
+        let path = d.path().join("run.sh");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(stat_of(&std::fs::metadata(&path).unwrap()).exec);
+        let st = write(d.path(), "run.sh", b"#!/bin/sh\necho newer\n").unwrap();
+        assert!(!st.exec, "the newer version is not a program");
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o111,
+            0
+        );
     }
 }

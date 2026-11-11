@@ -31,11 +31,11 @@ fn launcher() -> PathBuf {
     dir.join(format!("columbus-confine{}", std::env::consts::EXE_SUFFIX))
 }
 
+/// Whether this machine can set the sandbox up. Where CI says tests must
+/// not skip, a machine that cannot fails the test here, on every system
+/// (the one check in `support`).
 fn can_confine() -> bool {
-    StdCommand::new(launcher())
-        .args(["--check", "A"])
-        .output()
-        .is_ok_and(|o| o.status.success())
+    support::can_confine(&launcher())
 }
 
 /// Ten roads around Austin in EPSG:3081, eight in district 14.

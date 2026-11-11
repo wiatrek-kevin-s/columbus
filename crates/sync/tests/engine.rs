@@ -664,6 +664,7 @@ async fn a_sync_sends_only_what_the_person_was_shown() {
         keep: &keep,
         today: TODAY,
         never_send: &[],
+        labels: &ana.labels,
     };
     let rep = columbus_sync::sync(&ana.root, &host, &mut ana.state, &opts)
         .await

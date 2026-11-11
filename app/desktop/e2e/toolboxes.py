@@ -19,11 +19,13 @@ Two sessions of the app:
    licence, publisher and address before anything is downloaded; a
    download that is not the pinned file is refused and leaves nothing;
    Install downloads, checks, unpacks and lists, and says how many tools
-   are ready;
+   are ready (a read of the list that fails after a newer one was drawn
+   does not show its error over it);
    the tools are found by words and one opens in the panel on the right;
    the assistant finds one and runs it without being asked to approve, and
-   its result is a layer on the chat's map; a program changed after it
-   was installed is shown as off; Remove takes the toolbox away,
+   its result is a layer on the chat's map; Table on its result card
+   opens that result's rows, not a newer layer's; a program changed after
+   it was installed is shown as off; Remove takes the toolbox away,
    and the same chat's assistant is no longer offered its tools. Last, a
    program on this computer is added with its description file, listed,
    found and removed (the program itself stays where it is).
@@ -121,7 +123,11 @@ SCRIPT = [
     tool_use("t2", "query_features", {"connection": "tiger", "dataset": "tracts"}),
     "run_on_last",
     {"content": [{"type": "text", "text": "Copied the tracts with a toolbox tool."}], "stop_reason": "end_turn"},
-    # Second message, once the toolbox is removed: look again, and try it.
+    # Second message: a newer layer with one tract, so the Table of the
+    # tool's result card (two tracts) can be told from the newest layer's.
+    tool_use("t6", "query_features", {"connection": "tiger", "dataset": "tracts", "where": "NAME = 'B'"}),
+    {"content": [{"type": "text", "text": "Read tract B alone."}], "stop_reason": "end_turn"},
+    # Third message, once the toolbox is removed: look again, and try it.
     tool_use("t4", "search_tools", FIND),
     "run_again",
     {"content": [{"type": "text", "text": "That toolbox is no longer there."}], "stop_reason": "end_turn"},
@@ -269,11 +275,19 @@ def main():
         wait.until(lambda drv: shown(drv, "#tbx-off"))
         off = text(d, "#tbx-off")
         assert "Toolboxes are turned off" in off and "Work freely on copies" in off and "allow_toolboxes" in off, off
+        assert "Allow toolboxes switch" in off and "Organization rules" in off, off
         step("Turned off, nothing is offered: no Add tools, no search, no tools")
         assert not shown(d, "#tbx-add") and not shown(d, "#tbx-find"), "nothing is offered while toolboxes are off"
         assert not d.find_elements(By.CSS_SELECTOR, "#tbx-tools li")
         named(d)
         d.save_screenshot(str(OUT / "toolboxes-off.png"))
+        step("The notice leads to the switch: Settings > Organization rules, where Allow toolboxes is off")
+        d.find_element(By.ID, "tbx-settings").click()
+        wait.until(EC.presence_of_element_located((By.ID, "allow_toolboxes")))
+        assert not d.find_element(By.ID, "allow_toolboxes").is_selected()
+        assert "Allow toolboxes." in text(d, "#settings") and "runs in the sandbox" in text(d, "#settings")
+        d.find_element(By.ID, "settings-close").click()
+        wait.until(lambda drv: shown(drv, "#tbx-off") and not drv.execute_script("return document.getElementById('settings').open"))
 
         step("Turned on: Add tools is offered")
         policy.write_text("connection_types: [gpkg]\nallow_toolboxes: true\n")
@@ -361,6 +375,21 @@ def main():
         assert program.exists() and os.access(program, os.X_OK), "the program is in the toolbox's own folder"
         assert (root / "toolboxes" / "geolibre" / "toolbox.yaml").exists()
 
+        step("A read of the list that fails after a newer one was drawn does not show its error over it")
+        # The window gets the focus twice, so the list is read twice. The
+        # answer to the first read is kept back until the second is drawn,
+        # and is then given to the page as a failure (made up here: reading
+        # the list does not fail by itself).
+        assert not shown(d, "#tbx-error")
+        guard.hold(d, "toolboxes_state")
+        d.execute_script("window.dispatchEvent(new Event('focus'))")
+        wait.until(guard.held)
+        d.execute_script("window.dispatchEvent(new Event('focus'))")
+        wait.until(guard.newer)
+        guard.release(d, fail="the list of toolboxes could not be read (a failure made up by this test)")
+        assert not shown(d, "#tbx-error"), f"a read that failed late showed its error over the newer list: {text(d, '#tbx-error')}"
+        assert "In use" in text(d, "#toolboxes li[data-id='geolibre']")
+
         step("Its tools are found by words: name, summary, toolbox and category")
         wait.until(lambda drv: shown(drv, "#tbx-q"))
         wait.until(lambda drv: len(drv.find_elements(By.CSS_SELECTOR, "#tbx-tools li")) >= 10)
@@ -428,6 +457,48 @@ def main():
         finally:
             d.switch_to.default_content()
         d.save_screenshot(str(OUT / "toolboxes-map.png"))
+
+        step("Table on the tool's result card opens that result's rows, not a newer layer's")
+        send(d, "Now read tract B alone.")
+        WebDriverWait(d, 120).until(lambda drv: "Read tract B alone." in drv.find_element(By.ID, "log").text)
+        WebDriverWait(d, 20).until(lambda drv: len(drv.find_elements(By.CSS_SELECTOR, "#log .result")) == 2)
+
+        def table_shown():
+            """The table sheet on the map: whose rows it shows, and how many
+            (None: the sheet is not open)."""
+            d.switch_to.frame(frame)
+            try:
+                return d.execute_script(
+                    "const t = document.querySelector('section.table'); if (!t) return null;"
+                    "const n = t.querySelector('.table-name');"
+                    "return [n ? n.textContent : '', t.querySelectorAll('tbody tr').length];")
+            finally:
+                d.switch_to.default_content()
+
+        assert table_shown() is None, "the map alone until the table is asked for"
+        cards = d.find_elements(By.CSS_SELECTOR, "#log .result")
+        # The tool copied the two tracts; the newer layer holds one. The
+        # tool's card first: the newest layer is the one the map has in
+        # front, so a card that named no result would open the newest.
+        for card, made_by, rows in [(cards[0], "geolibre-vector_copy-", 2), (cards[1], "tracts-p_", 1), (cards[0], "geolibre-vector_copy-", 2)]:
+            press = card.find_element(By.CSS_SELECTOR, ".result-table")
+            d.execute_script("arguments[0].scrollIntoView({block: 'center'})", press)
+            press.click()
+
+            def is_that_cards():
+                name, n = table_shown() or ["", -1]
+                return n == rows and made_by in name
+
+            try:
+                WebDriverWait(d, 30).until(lambda drv: is_that_cards())
+                # It stays that card's when the page reads its results again (every 2 s).
+                time.sleep(2.6)
+                assert is_that_cards()
+            except Exception:
+                d.save_screenshot(str(OUT / "toolboxes-table-failed.png"))
+                raise SystemExit(f"Table on a result card showed {table_shown()}, not the {rows} rows of {made_by}")
+        named(d)
+        d.save_screenshot(str(OUT / "toolboxes-table.png"))
         chat = d.execute_script("return location.hash")
 
         step("A program that changed since it was installed: the toolbox says so, and its tools are not listed")
@@ -515,11 +586,48 @@ def main():
             # (Set, not typed: the driver takes a typed path of a real file for an upload.)
             d.execute_script("document.querySelector(`#tbx-form input[name='${arguments[0]}']`).value = arguments[1];", name, value)
 
+        def chosen(name):
+            """What the page does once a file is chosen or typed in a box."""
+            d.execute_script("document.querySelector(`#tbx-form input[name='${arguments[0]}']`).dispatchEvent(new Event('change', {bubbles: true}));", name)
+
+        # R-104: the program's whole folder becomes readable by its tools.
+        # The dialog says so, names the folder as soon as a program is
+        # chosen, and a program that sits in a folder that is not its own
+        # (here a folder the system keeps) is refused before anything is
+        # asked. The program is the tests' own, put straight into the folder
+        # for temporary files, which every program shares. (Not a system
+        # program such as /usr/bin/env: Columbus looks at where a program
+        # really is, and on some systems that one is a link to a file kept
+        # in a folder of its own.)
+        assert "They can read every file in the program's folder, so the program must sit in a folder of its own" in text(d, "#tbx-own"), text(d, "#tbx-own")
+        save = d.find_element(By.ID, "tbx-save")
+        loose = Path(os.path.realpath(tempfile.gettempdir())) / f"linetool-{os.getpid()}"
+        shutil.copy2(STANDIN, loose)
+        try:
+            fill("tbx_program", str(loose))
+            chosen("tbx_program")
+            wait.until(lambda drv: "a folder of its own" in text(drv, "#tbx-reads"))
+            said = text(d, "#tbx-reads")
+            assert f"{loose} is directly in a folder the system keeps" in said and "can read every file in the program's folder" in said, said
+            fill("tbx_tools", str(own / "tools.json"))
+            fill("tbx_id", "county-lines")
+            d.execute_script("arguments[0].scrollIntoView({block: 'center'})", save)
+            save.click()
+            wait.until(lambda drv: "a folder of its own" in text(drv, "#tbx-form-error"))
+            assert "is directly in a folder the system keeps" in text(d, "#tbx-form-error"), text(d, "#tbx-form-error")
+            assert not (root / "toolboxes" / "county-lines").exists(), "a program in a system folder was added"
+        finally:
+            loose.unlink(missing_ok=True)
+        # In a folder of its own: the dialog names the folder its tools will read.
         fill("tbx_program", str(own / "linetool"))
+        chosen("tbx_program")
+        wait.until(lambda drv: "Its tools will be able to read every file in the program's folder" in text(drv, "#tbx-reads"))
+        assert f"the program's folder, {own}." in text(d, "#tbx-reads"), text(d, "#tbx-reads")
+        named(d)
+        d.save_screenshot(str(OUT / "toolboxes-own-program.png"))
         fill("tbx_tools", str(own / "tools.json"))
         fill("tbx_id", "County Lines")
         fill("tbx_name", "County line tools")
-        save = d.find_element(By.ID, "tbx-save")
         d.execute_script("arguments[0].scrollIntoView({block: 'center'})", save)
         save.click()
         wait.until(lambda drv: "short name" in text(drv, "#tbx-form-error"))

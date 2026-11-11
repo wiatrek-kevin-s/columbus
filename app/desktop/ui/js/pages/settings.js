@@ -45,6 +45,8 @@ const SWITCHES = {
   allow_shared_tools: ["Allow shared tools and workflows.", "You may open tools and workflows coworkers share with you as a file. Each arrives as a proposal you read and approve yourself, like your assistant's; nothing from a shared file is installed or run before that."],
   allow_workflows: ["Allow workflows.", "Your assistant may propose workflows, and the ones you approve run by themselves on their schedule, without asking each time, within what they list."],
   allow_project_files: ["Allow project files.", "Your assistant may list, read and write text files in a project's own folder (scripts and notes), and run scripts kept there in the sandbox. Data still leaves a chat only through an export."],
+  allow_toolboxes: ["Allow toolboxes.", "You may install toolboxes (programs that bring many tools at once) on the Tools page, and your assistant may run their tools without asking each time: every tool runs in the sandbox, on copies of your data, with no network."],
+  allow_sync: ["Allow sync.", "A project's files may sync with a Git server you connect (GitHub, or your organization's own), and nothing syncs until you press Sync on the project's page."],
 };
 
 /** One of the organization's switches. Turning one on is confirmed by the
@@ -128,15 +130,20 @@ export function workMode(st, after, id = "work", inSheet = true) {
   freeBox.addEventListener("change", () => { if (freeBox.checked) choose(true); });
   askBox.addEventListener("change", () => { if (askBox.checked) choose(false); });
   say();
+  // On a Mac the sandbox has one limit that touches the card's promise
+  // ("cannot reach … your passwords"): said here, where the promise is.
+  const macLimit = navigator.platform.startsWith("Mac")
+    ? " On a Mac there is one limit: a script or a tool can read what your other running programs were started with. Columbus's own passwords are not exposed this way; a token another program was started with can be."
+    : "";
   const how = st.confirm_with === "not available on this system"
     ? "On this system the app cannot confirm it is you (there is no Touch ID or Windows Hello), so set it in the policy file instead."
     : `Choosing Work freely on copies asks for ${st.confirm_with} once. Going back to asking does not.`;
   return h("div", { class: "stack", id },
     h("div", { class: "choices", role: "radiogroup", "aria-label": "How your assistant works" },
-      card(freeBox, "Work freely on copies", " (recommended)", "Scripts and tools run without asking you each time, in a sandbox, on copies of your data. They cannot reach your connections, your passwords, your other files or the internet."),
-      card(askBox, "Ask me before each script", "", "You read each script your assistant writes and allow it before it runs, in the same sandbox.")),
+      card(freeBox, "Work freely on copies", " (recommended)", `Scripts and tools run without asking you each time, in a sandbox, on copies of your data. They cannot reach your connections, your passwords, your other files or the internet.${macLimit} Choosing this also turns on Python environments you register, your own tools, toolboxes, project files and sync.`),
+      card(askBox, "Ask me before each script", "", "You read each script your assistant writes and allow it before it runs, in the same sandbox. This changes scripts only: tools from a toolbox and your own installed tools still run without asking, and what the first choice turned on stays on.")),
     state, err,
-    h("p", { class: "small muted" }, "Either way your assistant reads your data only through Columbus, under each source's rules, and Columbus still asks you before anything leaves the workspace or changes a source. ", mine ? how : ""));
+    h("p", { class: "small muted" }, "Either way your assistant reads your data only through Columbus, under each source's rules, and Columbus asks you before it changes a source. An export to a folder that is not pre-approved asks; an export to a pre-approved folder, and what your assistant writes into a project's files, do not. ", mine ? how : ""));
 }
 
 /** The parts that open inside the sheet (also offered by the search). */
@@ -334,11 +341,16 @@ async function overview(body, foot) {
 
   // How the assistant works: freely on copies, or asking before each script.
   const modeBox = h("div", { class: "bd", id: "work-mode" }, h("p", { class: "small muted" }, "…"));
+  // Only the read begun last is drawn: one begun after an earlier choice
+  // can end after the one begun since, and would show the mode as it was.
+  let modeReads = 0;
   const drawMode = async () => {
+    const mine = ++modeReads;
     try {
       const st = await invoke("settings_state");
+      if (mine !== modeReads) return;
       modeBox.replaceChildren(workMode(st, drawMode));
-    } catch (e) { modeBox.replaceChildren(h("p", { class: "error-text small" }, String(e))); }
+    } catch (e) { if (mine === modeReads) modeBox.replaceChildren(h("p", { class: "error-text small" }, String(e))); }
   };
   drawMode();
 
@@ -598,15 +610,22 @@ async function org(body) {
   if (p.problem) body.append(h("p", { id: "policy-problem", class: "error-text" }, p.problem));
   const sw = h("div", {});
   const mode = h("div", { class: "bd" });
+  // Only the read begun last is drawn: one begun after an earlier change
+  // can end after the one begun since, and would show a switch as it was.
+  let reads = 0;
   const drawSw = async () => {
+    const mine = ++reads;
     try {
       const s = await invoke("settings_state");
+      if (mine !== reads) return;
       mode.replaceChildren(workMode(s, drawSw, "org-work"));
       sw.replaceChildren(
         h("p", { id: "org-managed", class: "small muted", hidden: s.policy.writable }, "These are managed by your organization. Ask your IT team to change them."),
         ...Object.keys(SWITCHES).map((n) => switchRow(n, s, drawSw)),
-        h("p", { class: "small muted" }, `Turning one on asks for ${st.confirm_with} first; turning one off does not. The rest of the file, comments included, is kept as it is.`));
-    } catch (e) { showError(error, e); }
+        h("p", { class: "small muted" }, st.confirm_with === "not available on this system"
+          ? "On this system the app cannot confirm it is you (there is no Touch ID or Windows Hello), so turn a switch on in the policy file instead. Turning one off works here. The rest of the file, comments included, is kept as it is."
+          : `Turning one on asks for ${st.confirm_with} first; turning one off does not. The rest of the file, comments included, is kept as it is.`));
+    } catch (e) { if (mine === reads) showError(error, e); }
   };
   await drawSw();
   body.append(h("section", { class: "card" }, sec("How your assistant works"), mode),

@@ -1,13 +1,15 @@
 // Tools: the person's own tools (ported from the Settings window), each
 // read in full before it is installed, which is confirmed at the keyboard
 // in the app's own code; and the Skills library, read only.
-import { $, h, el, invoke, store, button, pageHead, sec, showError, when, numbered, emptyState } from "../core.js";
+import { $, h, el, invoke, store, button, pageHead, sec, showError, when, numbered, emptyState, plural, CANNOT_CONFIRM, cannotConfirm } from "../core.js";
 import { switchRow } from "./settings.js";
 import { shareOut, shareIn, importedText, teamLibrary } from "./share.js";
 import { toolboxSection } from "./toolboxes.js";
 
 let tools = null;
 let reviewing = null;
+// Reads of the list begun so far (see `refresh`).
+let reads = 0;
 
 // Tools and skills are pages inside Workflows.
 const BACK = { href: "#/tools", label: "Tools" };
@@ -18,7 +20,7 @@ function testText(t) {
   const parts = [];
   if (p.imported) return importedText(p);
   if (p.proposed) parts.push(`Proposed ${when(p.proposed)}`);
-  const outs = (test.outputs || []).map((o) => `${o.kind}${o.rows != null ? ` (${o.rows} rows)` : ""}`);
+  const outs = (test.outputs || []).map((o) => `${o.kind}${o.rows != null ? ` (${plural(Number(o.rows), "row")})` : ""}`);
   if (outs.length) parts.push(`test run made ${outs.join(", ")}`);
   const checks = test.checks || [];
   const bad = checks.filter((c) => c.severity === "fail").map((c) => c.id);
@@ -117,20 +119,31 @@ export async function render(main) {
       installed.append(li);
     }
   };
+  // Only the read begun last is kept and drawn: one begun before a tool was
+  // installed, declined or removed can end after the one begun since (the
+  // list is also read whenever the window gets the focus), and would put
+  // back what is gone. Counted for the whole module, as `tools` is.
   const refresh = async () => {
+    const mine = ++reads;
     try {
-      tools = await invoke("settings_tools");
+      const now = await invoke("settings_tools");
+      if (mine !== reads) return;
+      tools = now;
       store.set("tools", tools);
       draw();
       showError(err, null);
-    } catch (e) { showError(err, e); }
+    } catch (e) { if (mine === reads) showError(err, e); }
   };
+  // The same for the switches: only the read begun last is drawn.
+  let switchReads = 0;
   const drawSwitch = async () => {
+    const mine = ++switchReads;
     try {
       const st = await invoke("settings_state");
+      if (mine !== switchReads) return;
       sw.replaceChildren(switchRow("allow_personal_tools", st, async () => { await drawSwitch(); await refresh(); }),
         switchRow("allow_shared_tools", st, async () => { await drawSwitch(); }));
-    } catch (e) { sw.replaceChildren(el("p", "error-text", String(e))); }
+    } catch (e) { if (mine === switchReads) sw.replaceChildren(el("p", "error-text", String(e))); }
   };
   async function decline(id) {
     try {
@@ -192,7 +205,9 @@ export async function render(main) {
     inst.hidden = false;
     $("review-decline").hidden = false;
     inst.disabled = !tools.allowed;
-    inst.title = tools.allowed ? `Install it (asks for ${store.info ? store.info.confirm_with : "confirmation"})` : "Personal tools are turned off in your organization's settings";
+    inst.title = !tools.allowed ? "Personal tools are turned off in your organization's settings"
+      : cannotConfirm(store.info) ? `Install it. ${CANNOT_CONFIRM}, so install it in a terminal instead: columbus-mcp tools install ${t.id}`
+        : `Install it (asks for ${store.info ? store.info.confirm_with : "confirmation"})`;
     inst.onclick = install;
     $("review-close").textContent = "Not now";
     $("review-decline").onclick = () => reviewing && decline(reviewing.id);

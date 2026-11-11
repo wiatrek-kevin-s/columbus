@@ -61,11 +61,11 @@ fn repo() -> PathBuf {
         .unwrap()
 }
 
+/// Whether this machine can set the sandbox up. Where CI says tests must
+/// not skip, a machine that cannot fails the test here, on every system
+/// (the one check in `support`).
 fn can_confine() -> bool {
-    let ok = StdCommand::new(env!("CARGO_BIN_EXE_columbus-confine"))
-        .args(["--check", "A"])
-        .output()
-        .is_ok_and(|o| o.status.success());
+    let ok = support::can_confine(std::path::Path::new(env!("CARGO_BIN_EXE_columbus-confine")));
     if !ok {
         eprintln!("skipping: this machine cannot confine at level A");
     }

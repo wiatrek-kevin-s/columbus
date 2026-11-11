@@ -575,7 +575,7 @@ dependencies = [
 
 [[package]]
 name = "columbus-chat"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "anyhow",
  "reqwest",
@@ -588,7 +588,7 @@ dependencies = [
 
 [[package]]
 name = "columbus-desktop"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "apple-native-keyring-store",
  "columbus-chat",
@@ -612,8 +612,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "columbus-flow"
+version = "0.15.0"
+dependencies = [
+ "columbus-shared",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "columbus-shared"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "chrono",
  "globset",
@@ -633,10 +642,12 @@ dependencies = [
 
 [[package]]
 name = "columbus-sync"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "base64 0.22.1",
  "chrono",
+ "columbus-flow",
+ "columbus-shared",
  "hex",
  "reqwest",
  "serde",

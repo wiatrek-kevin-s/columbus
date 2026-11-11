@@ -202,6 +202,12 @@ def main():
         assert "Reads only: tiger" in plain, plain
         assert "export folder outbox" in plain, plain
         assert "query_features" in text(d, "wf-review-file")
+        # R-104: where the app cannot confirm who is at the keyboard, the
+        # Approve button says so, in words.
+        tip = d.find_element(By.ID, "wf-review-install").get_attribute("title")
+        assert "asks for not available" not in tip, tip
+        assert tip == ("Approve it. On this system the app cannot confirm it is you (there is no Touch ID or Windows Hello), "
+                       "so a workflow cannot be approved here."), tip
         assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
         d.save_screenshot(str(OUT / "workflows-review.png"))
         click(d, By.ID, "wf-review-install")

@@ -35,8 +35,9 @@
 ## What it does
 
 - **Reaches all your data.** Oracle and SQL Server geodatabases, file geodatabases and shapefiles, ArcGIS Online and Portal layers, CSV and Excel, GeoPackage, PostGIS and rasters. You add each one once, in the app.
-- **Keeps your rules, in code.** Every connection is read-only unless your organization allows edits. Row filters and hidden fields apply before the AI sees anything. Exports, edits and scripts wait for your yes, unless you approved them ahead of time. Every step is logged on your computer.
+- **Keeps one boundary, in code.** Your connections and passwords stay with Columbus. It reads for the AI under each source's rules (read-only unless your organization allows edits; row filters and hidden fields applied first), and what is read lands as a copy on your computer. On copies the AI works freely: once you choose **Work freely on copies**, its scripts and tools run in a sandbox with no network, without asking each time. Columbus still asks before an export to a folder that isn't pre-approved, before any edit to a source, and before code that needs the network or must leave the sandbox. Every step is logged on your computer.
 - **Does real GIS work.** Queries, joins, buffers and overlays, raster analysis, your own Python and ArcGIS Pro's arcpy (experimental). Every result is checked (row counts, coordinate systems, valid shapes), and repeated jobs become scheduled workflows.
+- **Uses tools you install, not ones you build.** Add GeoLibre from the Tools page: about a thousand open-source terrain, hydrology, raster and vector tools. The AI finds the right one and runs it on copies, in the same sandbox. Any other command-line program can be added with a small description file.
 
 ## See it work
 
@@ -53,11 +54,11 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/how-it-works-dark.svg">
-    <img src="docs/images/how-it-works-light.svg" width="900" alt="Diagram: your AI app (Columbus's own chat, Claude, Copilot or another AI app) asks Columbus. Columbus, on your computer, applies the rules, the approvals, and the checks and log. Then it reads your data (Oracle, SQL Server, file geodatabases, shapefiles, ArcGIS Online and Portal, CSV, Excel, GeoPackage, rasters, PostGIS) or runs your Python (Columbus's GIS tools, your own Python setups, ArcGIS Pro's arcpy).">
+    <img src="docs/images/how-it-works-light.svg" width="900" alt="Diagram: your AI app (Columbus's own chat, Claude, Copilot or another AI app) asks Columbus. Columbus, on your computer, applies the rules, the approvals (exports, edits and anything leaving the sandbox wait for your yes), and the checks and log. It reads your data (Oracle, SQL Server, file geodatabases, shapefiles, ArcGIS Online and Portal, CSV, Excel, GeoPackage, rasters, PostGIS). Copies of what was read go to the sandbox, where Columbus runs scripts in your Python and installed tools: no network, no passwords.">
   </picture>
 </p>
 
-Your AI app never touches your data. It asks Columbus for each step, and Columbus decides in its own code what may be read or done. Columbus runs on your computer, with no account and no tracking. Your data goes only to the AI service you chose, and only the rows your rules allow. (AI apps reach Columbus through MCP, their standard way to use tools; the [technical reference](docs/reference.md) has the details.)
+Your AI app never touches your data. It asks Columbus for each step, and Columbus decides in its own code what may be read or done. What is read lands as a copy, and scripts and installed tools get only copies, inside your operating system's sandbox. Columbus runs on your computer, with no account and no tracking. Your data goes only to the AI service you chose, and only the rows your rules allow. (AI apps reach Columbus through MCP, their standard way to use tools; the [technical reference](docs/reference.md) has the details.)
 
 ## Get started
 
@@ -67,6 +68,7 @@ Your AI app never touches your data. It asks Columbus for each step, and Columbu
 2. **Set up Columbus's Python** once, from the server folder: `sh engine/setup-engine.sh` on a Mac, `engine\setup-engine.ps1` on Windows. It installs the GIS tools Columbus uses.
 3. **Connect an AI.** Install the extension in Claude desktop, or add your Anthropic API key in the app under **Settings › Assistant**.
 4. **Add your data and ask.** In the app, **Data › Add data** (a GeoPackage or a file geodatabase is the quickest start). Then ask, for example: *Check the parcels layer for invalid geometries and show me where they are.*
+5. **Choose how the AI works.** On the first-run screen or in **Settings**: **Work freely on copies** (recommended) or **Ask me before each script**. On your own computer you create Columbus's settings file once first; the guides show how.
 
 Step by step: [Windows](docs/install.md) · [Mac](docs/install-macos.md). The app is not code-signed yet, so Windows and macOS warn the first time; the guides say what to do.
 
@@ -81,18 +83,23 @@ Step by step: [Windows](docs/install.md) · [Mac](docs/install-macos.md). The ap
     <td><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/tour-workflow-run-dark.png"><img src="docs/images/tour-workflow-run-light.png" alt="Under Workflows, the report of a weekly crash check's last run, on its own page: steps, row counts, checks and the exported files."></picture><br><b>Workflows.</b> Repeated jobs, with a report each run.</td>
     <td><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/tour-checks-dark.png"><img src="docs/images/tour-checks-light.png" alt="The chat with a result's How it was made open in the panel on the right: its checks, the datasets it was made from and its full record."></picture><br><b>How it was made.</b> Each result's checks, and what it was made from.</td>
   </tr>
+  <tr>
+    <td><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/tour-toolboxes-dark.png"><img src="docs/images/tour-toolboxes-light.png" alt="The Add tools dialog, over the Tools page. GeoLibre tools: about a thousand open-source terrain, hydrology, raster and vector tools in one program, with its version, the size of the download, its licence, its publisher and the address it is downloaded from, a line saying Columbus checks the download against a pinned hash, and an Install button. Under it, a form to add a program that is already on this computer, with its description file."></picture><br><b>Toolboxes.</b> Tools you install instead of building.</td>
+    <td><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/tour-project-dark.png"><img src="docs/images/tour-project-light.png" alt="The page of a project named IH 35 safety review, with a button for a new chat in the project. Its Sync section says the project's files can sync with a repository on GitHub or the organization's own Git server, that nothing is sent until Sync is pressed, and that no Git server is connected yet. Under it, the project's chat, and its three files in two folders, a note and two scripts, with a button that opens the folder."></picture><br><b>Projects.</b> Files that can sync with GitHub or Gitea.</td>
+  </tr>
 </table>
 
 More pages in the [app tour](docs/app-tour.md). Every picture is taken from the app by a script ([`screenshots.py`](app/desktop/e2e/screenshots.py)) on [public data](docs/images/DATA-CREDITS.md).
 
-## What's in 0.14
+## What's in 0.15
 
-- **More of your data:** folders of CSV, Excel, GeoJSON and other files, and ArcGIS Online and Portal layers, under the same rules.
-- **Your own Python** for scripts, and ArcGIS Pro's arcpy (*experimental*: not yet tried on a real ArcGIS Pro computer).
-- **More ways to save results:** file geodatabases and GeoTIFF, with route measures kept.
-- **Easier review:** imagery under your map, a workflow's last run opened in a chat, measuring on the map.
+- **A window like the AI apps you know:** a sidebar, the chat, and a panel on the right with the map, the table and how each result was made.
+- **Work freely on copies:** one choice replaces approving each script. Exports to folders you haven't approved, edits, and code that leaves the sandbox still ask.
+- **Toolboxes:** install GeoLibre, about a thousand open-source tools, from the Tools page; or add any command-line program with a small description file.
+- **The map, both ways:** the AI can read what your map shows, and point it at a result.
+- **Projects with files, synced with GitHub or Gitea:** each project has a folder for scripts and notes, which the AI can write and run from. Link it to a repository and press **Sync**; no Git is needed on your PC.
 
-All the changes, files and upgrade steps: [release notes](https://github.com/wiatrek-kevin-s/columbus/releases).
+Said plainly: the GeoLibre program itself was never run while this was built, so your first install is its first real run. Sync was tested against stand-in servers, never a real GitHub or Gitea. arcpy is still *experimental*, not yet tried on a real ArcGIS Pro computer; it has to run outside the sandbox, where code could reach your connections, so Columbus asks before every such run. And 0.15 may not be published yet: if the newest version on the [releases page](https://github.com/wiatrek-kevin-s/columbus/releases) is still 0.14, it has none of the above. What changes for people coming from 0.14 is in the [release notes](packaging/release-notes.md).
 
 ## Learn more
 

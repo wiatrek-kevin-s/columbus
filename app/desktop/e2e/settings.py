@@ -5,12 +5,18 @@ whose classic copy stays reachable from Classic windows).
 Adds a GeoPackage connection, makes it read-write, turns edits on and
 removes it, checking each file as the server reads it; turns personal
 tools on, reads a tool an assistant proposed, installs one, declines
-another and removes the installed one; chooses Work freely on copies
+another and removes the installed one (and checks that a read of the
+list of tools, or of the switches there, which ends after a newer one is
+not drawn over it); chooses Work freely on copies
 (one confirmation, seven settings, the rest of the file kept) and goes
-back to asking (scripts.approval each, nothing else); then, with the
-person declining to confirm, checks that nothing that widens access is
-saved (a connection, a switch, a tool, the mode); and, with the policy
-file managed by the organization, that the mode in force is shown and
+back to asking (scripts.approval each, nothing else); turns the switches
+for toolboxes and for sync off and on, each by itself (its own line of
+the policy file, nothing else); checks twice that a read of the settings
+which ends after a newer one is not drawn over it (the mode, a switch);
+then, with the person declining to confirm, checks that nothing that
+widens access is saved (a connection, a switch, a tool, the mode), while
+turning a switch off still works; and, with the policy file managed by
+the organization, that the mode in force and the switches are shown and
 cannot be changed. A debug build stands in for Touch ID / Windows Hello
 with COLUMBUS_APP_TEST_CONFIRM (allow or deny), and for a managed policy
 file with COLUMBUS_APP_TEST_MANAGED. A real Columbus session runs beside
@@ -70,7 +76,7 @@ tools:
 TOOL_PY = "def run(ctx):\n    return {}\n"
 
 
-def propose(root, tool_id, title):
+def propose(root, tool_id, title, made=None):
     """A proposal as propose_tool files it; returns the hash the person installs."""
     d = root / "tools" / "proposals" / tool_id
     d.mkdir(parents=True)
@@ -78,7 +84,7 @@ def propose(root, tool_id, title):
     (d / "plugin.yaml").write_text(y)
     (d / "tool.py").write_text(TOOL_PY)
     (d / "proposal.json").write_text(json.dumps({"proposed": "2026-11-05T10:00:00+00:00",
-                                                 "test": {"outputs": [{"kind": "file", "rows": None}], "checks": []}}))
+                                                 "test": {"outputs": made or [{"kind": "file", "rows": None}], "checks": []}}))
     return "sha256:" + hashlib.sha256(y.encode() + b"\0" + TOOL_PY.encode()).hexdigest()
 
 
@@ -105,6 +111,12 @@ def columbus(root):
 # The settings Work freely on copies turns on (F-15).
 SEVEN = {"allow_scripts": True, "scripts": {"approval": "none"}, "environments": {"allow": True},
          "allow_personal_tools": True, "allow_toolboxes": True, "allow_project_files": True, "allow_sync": True}
+
+# The switches for toolboxes and for sync (F-15), each with its title and
+# what its words must say: toolbox tools run in the sandbox, and nothing
+# syncs until the person presses Sync.
+SWITCH_WORDS = [("allow_toolboxes", "Allow toolboxes.", "runs in the sandbox"),
+                ("allow_sync", "Allow sync.", "nothing syncs until you press Sync")]
 
 
 def policy(root):
@@ -168,8 +180,12 @@ gpd.GeoDataFrame({"RTE": ["IH0035", "US0183"], "district": [14, 12]}, geometry=[
     broken = root / "broken.gpkg"
     broken.write_bytes(b"not a GeoPackage")
 
-    count_hash = propose(root, "personal.count-rows", "Count rows")
+    # Its test run made a table of one row and a layer of twelve (R-104).
+    count_hash = propose(root, "personal.count-rows", "Count rows", [{"kind": "table", "rows": 1}, {"kind": "layer", "rows": 12}])
     propose(root, "personal.other-tool", "Other tool")
+    # Two more, declined one after the other further down.
+    propose(root, "personal.late-one", "Late tool one")
+    propose(root, "personal.late-two", "Late tool two")
 
     step("a Columbus session")
     server = columbus(root)
@@ -281,6 +297,14 @@ gpd.GeoDataFrame({"RTE": ["IH0035", "US0183"], "district": [14, 12]}, geometry=[
         assert len(d.find_elements(By.CSS_SELECTOR, "#review-code span.ln")) == 2
         assert "id: personal.count-rows" in d.find_element(By.ID, "review-manifest").text
         assert count_hash in d.find_element(By.ID, "review-name").text
+        # R-104: one row is "1 row"; and where the app cannot confirm who is
+        # at the keyboard, the Install button says so, in words.
+        made = d.find_element(By.ID, "review-test").text
+        assert "test run made table (1 row), layer (12 rows)" in made, made
+        tip = d.find_element(By.ID, "review-install").get_attribute("title")
+        assert "asks for not available" not in tip, tip
+        assert tip == ("Install it. On this system the app cannot confirm it is you (there is no Touch ID or Windows Hello), "
+                       "so install it in a terminal instead: columbus-mcp tools install personal.count-rows"), tip
         assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
         d.save_screenshot(str(OUT / "settings-tool-review.png"))
         click(d, By.ID, "review-install")
@@ -301,6 +325,47 @@ gpd.GeoDataFrame({"RTE": ["IH0035", "US0183"], "district": [14, 12]}, geometry=[
         d.find_element(By.XPATH, "//ul[@id='tools-installed']//button[normalize-space()='Remove']").click()
         wait.until(lambda drv: not installed.exists())
         assert yaml.safe_load((root / "tools" / "approved.yaml").read_text()) in (None, {})
+
+        step("tools: a read of the list that ends after a newer one does not put a declined tool back")
+        # One tool is declined (the answer to the page's read that follows is
+        # kept back), then the other. The window reads the list too, on a
+        # timer and when it gets the focus: the read kept back is the page's
+        # own, the first one after the decline was answered.
+        proposals = root / "tools" / "proposals"
+        guard.hold(d, "settings_tools", after="settings_tool_decline")
+        click(d, By.XPATH, waiting.format("Late tool one", "Decline"))
+        wait.until(lambda drv: not (proposals / "personal.late-one").exists() and guard.held(drv))
+        click(d, By.XPATH, waiting.format("Late tool two", "Decline"))
+        wait.until(lambda drv: not (proposals / "personal.late-two").exists())
+        wait.until(lambda drv: drv.find_element(By.ID, "no-waiting").is_displayed())  # the newer read was drawn
+        # Now the first read ends: it was made while the second tool waited.
+        older = guard.release(d)
+        assert [x["title"] for x in older["waiting"]] == ["Late tool two"], older["waiting"]
+        assert "Late tool two" not in d.execute_script("return document.getElementById('tools-waiting').textContent"), \
+            "a read that ended late put a declined tool back in the list"
+        assert d.find_element(By.ID, "no-waiting").is_displayed()
+
+        step("tools: a read of the settings that ends after a newer one does not put the switch back")
+        # Allow personal tools is turned off (the answer to the read that
+        # follows is kept back), then on again.
+        d.execute_script("document.getElementById('tools-about').open = true")
+        drawn_before = d.find_element(By.ID, "allow_personal_tools")
+        assert drawn_before.is_selected()
+        d.execute_script("arguments[0].scrollIntoView({block: 'center'})", drawn_before)
+        guard.hold(d, "settings_state")
+        drawn_before.click()
+        wait.until(lambda drv: policy(root)[0].get("allow_personal_tools") is False and guard.held(drv))
+        # The row drawn before is still there: nothing was drawn since.
+        wait.until(lambda drv: drawn_before.is_enabled())
+        drawn_before.click()
+        wait.until(lambda drv: policy(root)[0].get("allow_personal_tools") is True)
+        wait.until(EC.staleness_of(drawn_before))  # the newer read was drawn
+        # Now the first read ends: it was made while the switch was off.
+        older = guard.release(d)
+        assert older["policy"]["allow_personal_tools"] is False, older["policy"]
+        box = d.find_element(By.ID, "allow_personal_tools")
+        assert box.is_selected() and box.is_enabled(), "a read that ended late put the switch back to off, while the file says on"
+        wait.until(lambda drv: not drv.find_element(By.ID, "tools-off").is_displayed())
 
         # Removing needs no confirmation.
         open_source(d, wait, "roads")
@@ -324,7 +389,31 @@ gpd.GeoDataFrame({"RTE": ["IH0035", "US0183"], "district": [14, 12]}, geometry=[
         words = d.find_element(By.ID, "work").text
         assert "Work freely on copies (recommended)" in words and "Ask me before each script" in words, words
         assert "cannot reach your connections, your passwords, your other files or the internet" in words, words
-        assert "still asks you before anything leaves the workspace or changes a source" in words, words
+        # R-104: the cards say what the first choice turns on besides
+        # scripts, that the second changes scripts only, and exactly what
+        # still asks when something leaves the workspace.
+        assert "Choosing this also turns on Python environments you register, your own tools, toolboxes, project files and sync" in words, words
+        assert "This changes scripts only: tools from a toolbox and your own installed tools still run without asking" in words, words
+        assert "Columbus asks you before it changes a source" in words, words
+        assert ("An export to a folder that is not pre-approved asks; an export to a pre-approved folder, and what your "
+                "assistant writes into a project's files, do not") in words, words
+        assert "before anything leaves the workspace" not in words, words
+        # R-104: on a Mac the card states the sandbox's one limit where it
+        # makes its promise. Not on this system; so the page is told it is
+        # on a Mac, and drawn again.
+        assert "On a Mac" not in words, words
+        d.execute_script("Object.defineProperty(navigator, 'platform', {get: () => 'MacIntel', configurable: true});")
+        click(d, By.ID, "settings-close")
+        nav(d, wait, "#/settings", "work-free")
+        wait.until(lambda drv: "Python scripts are off" in drv.find_element(By.ID, "work-state").text)
+        on_mac = d.find_element(By.ID, "work").text
+        assert ("On a Mac there is one limit: a script or a tool can read what your other running programs were started with. "
+                "Columbus's own passwords are not exposed this way; a token another program was started with can be.") in on_mac, on_mac
+        d.execute_script("delete navigator.platform;")
+        click(d, By.ID, "settings-close")
+        nav(d, wait, "#/settings", "work-free")
+        wait.until(lambda drv: "Python scripts are off" in drv.find_element(By.ID, "work-state").text)
+        assert "On a Mac" not in d.find_element(By.ID, "work").text
         assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
         d.save_screenshot(str(OUT / "settings-work-mode.png"))
         step("work freely on copies: on, after one confirmation, writes the seven settings")
@@ -340,6 +429,26 @@ gpd.GeoDataFrame({"RTE": ["IH0035", "US0183"], "district": [14, 12]}, geometry=[
         assert d.find_element(By.ID, "work-free").is_selected()
         assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
         d.save_screenshot(str(OUT / "settings-work-freely.png"))
+        step("a read of the settings that ends after a newer one does not put the older mode back")
+        # Ask me before each script is chosen (the answer to the read that
+        # follows is kept back), then Work freely on copies again.
+        drawn_before = d.find_element(By.ID, "work-free")
+        guard.hold(d, "settings_state")
+        click(d, By.ID, "work-ask")
+        wait.until(lambda drv: "approval: each" in (root / "policy.yaml").read_text() and guard.held(drv))
+        # The cards drawn before are still there: nothing was drawn since.
+        wait.until(lambda drv: drawn_before.is_enabled())
+        drawn_before.click()
+        wait.until(lambda drv: "approval: none" in (root / "policy.yaml").read_text())
+        wait.until(EC.staleness_of(drawn_before))  # the newer read was drawn
+        wait.until(lambda drv: "On now: Work freely on copies." in drv.find_element(By.ID, "work-state").text)
+        # Now the first read ends: it was made while the mode was Ask me.
+        older = guard.release(d)
+        assert older["policy"]["work_mode"] == "ask", older["policy"]
+        assert "On now: Work freely on copies." in d.find_element(By.ID, "work-state").text, \
+            "a read that ended late put the mode back to Ask me, while the file says Work freely on copies"
+        assert d.find_element(By.ID, "work-free").is_selected() and d.find_element(By.ID, "work-free").is_enabled()
+        assert policy(root) == (on, text), "the file is as it was before the two choices"
         # Organization rules says the same in plain words.
         nav(d, wait, "#/settings/org", "org-work-free")
         assert d.find_element(By.ID, "org-work-free").is_selected()
@@ -361,6 +470,53 @@ gpd.GeoDataFrame({"RTE": ["IH0035", "US0183"], "district": [14, 12]}, geometry=[
         click(d, By.ID, "allow_scripts")
         wait.until(lambda drv: "allow_scripts: false" in (root / "policy.yaml").read_text())
         wait.until(lambda drv: "Python scripts are off" in drv.find_element(By.ID, "org-work-state").text)
+
+        # Toolboxes and sync have their own switches too (F-15): on with the
+        # rest since Work freely on copies, and each one changed by itself.
+        step("toolboxes and sync: each has its own switch, saying what it allows")
+        for name, title, words in SWITCH_WORDS:
+            box = wait.until(EC.presence_of_element_located((By.ID, name)))
+            assert box.is_selected() and box.is_enabled(), name
+            row = d.execute_script("return arguments[0].closest('label').textContent", box)
+            assert title in row and words in row, row
+        d.execute_script("document.getElementById('allow_sync').scrollIntoView({block: 'center'})")
+        assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
+        d.save_screenshot(str(OUT / "settings-switches.png"))
+        step("toolboxes and sync: turning one off, then on, changes its own line of the policy file and nothing else")
+        for name, _, _ in SWITCH_WORDS:
+            for want in [False, True]:
+                before, before_text = policy(root)
+                assert before[name] is not want, (name, before)
+                wait.until(lambda drv: drv.find_element(By.ID, name).is_enabled())
+                click(d, By.ID, name)
+                wait.until(lambda drv: policy(root)[0].get(name) is want)
+                after, after_text = policy(root)
+                assert after == dict(before, **{name: want}), (before, after)
+                was, now = before_text.splitlines(), after_text.splitlines()
+                assert len(was) == len(now) and [(a, b) for a, b in zip(was, now) if a != b] == \
+                    [(f"{name}: {str(not want).lower()}", f"{name}: {str(want).lower()}")], (before_text, after_text)
+                # The page shows the switch as the file has it.
+                wait.until(lambda drv: drv.find_element(By.ID, name).is_enabled() and drv.find_element(By.ID, name).is_selected() is want)
+
+        step("a read of the settings that ends after a newer one does not put an older switch back")
+        # Allow toolboxes is turned off (the answer to the read that follows
+        # is kept back), then on again.
+        drawn_before = d.find_element(By.ID, "allow_toolboxes")
+        assert drawn_before.is_selected()
+        d.execute_script("arguments[0].scrollIntoView({block: 'center'})", drawn_before)
+        guard.hold(d, "settings_state")
+        drawn_before.click()
+        wait.until(lambda drv: policy(root)[0].get("allow_toolboxes") is False and guard.held(drv))
+        # The row drawn before is still there: nothing was drawn since.
+        wait.until(lambda drv: drawn_before.is_enabled())
+        drawn_before.click()
+        wait.until(lambda drv: policy(root)[0].get("allow_toolboxes") is True)
+        wait.until(EC.staleness_of(drawn_before))  # the newer read was drawn
+        # Now the first read ends: it was made while the switch was off.
+        older = guard.release(d)
+        assert older["policy"]["allow_toolboxes"] is False, older["policy"]
+        box = d.find_element(By.ID, "allow_toolboxes")
+        assert box.is_selected() and box.is_enabled(), "a read that ended late put the switch back to off, while the file says on"
     finally:
         try:
             d.save_screenshot(str(OUT / "settings-last.png"))
@@ -414,6 +570,27 @@ gpd.GeoDataFrame({"RTE": ["IH0035", "US0183"], "district": [14, 12]}, geometry=[
         assert "not confirmed" in d.find_element(By.ID, "work-error").text
         assert (root / "policy.yaml").read_text() == text
         assert d.find_element(By.ID, "work-ask").is_selected() and not d.find_element(By.ID, "work-free").is_selected()
+        # Toolboxes and sync: turning one off takes access away, so it needs
+        # no confirmation; turning one on asks, and here the answer is no.
+        step("denied: toolboxes and sync are turned off without the confirmation, and not turned on without it")
+        for name, _, _ in SWITCH_WORDS:
+            nav(d, wait, "#/settings/org", name)
+            before, _ = policy(root)
+            assert before[name] is True, before
+            wait.until(lambda drv: drv.find_element(By.ID, name).is_enabled() and drv.find_element(By.ID, name).is_selected())
+            click(d, By.ID, name)
+            wait.until(lambda drv: policy(root)[0].get(name) is False)
+            off, text = policy(root)
+            assert off == dict(before, **{name: False}), (before, off)
+            assert not d.find_element(By.ID, "error").is_displayed(), d.find_element(By.ID, "error").text
+            wait.until(lambda drv: drv.find_element(By.ID, name).is_enabled() and not drv.find_element(By.ID, name).is_selected())
+            click(d, By.ID, name)
+            wait.until(lambda drv: drv.find_element(By.ID, "error").is_displayed())
+            assert "not confirmed" in d.find_element(By.ID, "error").text, d.find_element(By.ID, "error").text
+            assert (root / "policy.yaml").read_text() == text, "nothing is saved without the confirmation"
+            wait.until(lambda drv: drv.find_element(By.ID, name).is_enabled() and not drv.find_element(By.ID, name).is_selected())
+            # (The part is opened afresh for the next one, so its error line starts empty.)
+            nav(d, wait, "#/settings", "work-free")
     finally:
         step("closing the second app")
         guard.stop(d, proc)
@@ -438,6 +615,17 @@ gpd.GeoDataFrame({"RTE": ["IH0035", "US0183"], "district": [14, 12]}, geometry=[
             "const done = arguments[arguments.length - 1];"
             "window.__TAURI__.core.invoke('settings_set_work_mode', { free: false }).then(() => done('saved'), (e) => done(String(e)));")
         assert "managed by your organization" in answer, answer
+        assert (root / "policy.yaml").read_text() == managed
+        step("managed: the switches for toolboxes and sync are shown, not offered, and the app's own code refuses")
+        nav(d, wait, "#/settings/org", "allow_toolboxes")
+        assert d.find_element(By.ID, "org-managed").is_displayed()
+        for name, _, _ in SWITCH_WORDS:
+            box = d.find_element(By.ID, name)
+            assert not box.is_enabled() and not box.is_selected(), name
+            answer = d.execute_async_script(
+                "const done = arguments[arguments.length - 1];"
+                "window.__TAURI__.core.invoke('settings_set_switch', { name: arguments[0], on: true }).then(() => done('saved'), (e) => done(String(e)));", name)
+            assert "managed by your organization" in answer, answer
         assert (root / "policy.yaml").read_text() == managed
         print("desktop settings e2e (main window): ok")
     finally:

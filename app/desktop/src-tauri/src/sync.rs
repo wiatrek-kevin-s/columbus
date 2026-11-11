@@ -17,6 +17,11 @@
 //!   person accepts, through the project's normal save.
 //! * The organization's policy is checked at every call (`allow_sync`,
 //!   `sync.hosts`), in `git_servers`.
+//! * A file that may hold data read from a source is held, not sent
+//!   (R-103): the data labels the server keeps beside the project's files
+//!   are read at every check and every sync, with the organization's flow
+//!   rules. Such a file goes only after the person chose Send it anyway for
+//!   it, as the last check showed it.
 //!
 //! The assistant has no part in this: nothing here is a tool.
 
@@ -27,7 +32,8 @@ use std::sync::Mutex;
 use columbus_shared::projects as pj;
 use columbus_sync::settings::{self as shared, Shared};
 use columbus_sync::{
-    Changes, Choice, Commit, Conflict, Host, Keep, Kept, Link, Options, Preview, Record, Report,
+    Changes, Choice, Commit, Conflict, DataLabels, Host, Keep, Kept, Link, Options, Preview,
+    Record, Report,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
@@ -48,6 +54,9 @@ struct Shown {
     seen: BTreeMap<String, String>,
     theirs: BTreeMap<String, String>,
     mine: Vec<String>,
+    /// The files held because they may hold data, which the person may
+    /// choose to send anyway: path to what the file held when it was shown.
+    held: BTreeMap<String, String>,
 }
 
 static SHOWN: Mutex<Option<HashMap<String, Shown>>> = Mutex::new(None);
@@ -384,21 +393,35 @@ struct Linked {
     remote: columbus_sync::remote::Remote,
     folder: PathBuf,
     project: pj::Project,
+    /// The data labels of the project's files, as they are now, with the
+    /// organization's flow rules for this server.
+    labels: DataLabels,
 }
 
 fn linked(app: &AppHandle, project: &str) -> Result<Linked, String> {
     let p = pj::load(project)?;
     git_servers::allowed()?;
     let record = load_record(app, &p)?.ok_or("This project is not linked to a repository.")?;
-    let (_, server) = git_servers::open(app, &record.link.server)?;
+    let (entry, server) = git_servers::open(app, &record.link.server)?;
     let remote = server
         .remote(&record.link.owner, &record.link.repo, &record.link.branch)
         .map_err(|e| e.to_string())?;
+    let host = columbus_sync::remote::Address::parse(entry.kind, &entry.url)
+        .map(|a| a.host)
+        .map_err(|e| e.to_string())?;
+    let folder = files_dir(project)?;
+    // The record is beside the files folder, in the project's own folder.
+    let labels = DataLabels::load(
+        &pj::projects_dir().join(project),
+        &crate::settings::policy_now().flows,
+        &host,
+    );
     Ok(Linked {
-        folder: files_dir(project)?,
+        folder,
         record,
         remote,
         project: p,
+        labels,
     })
 }
 
@@ -415,7 +438,7 @@ async fn check(app: &AppHandle, project: &str) -> Result<Changes, String> {
     let mut l = linked(app, project)?;
     let mine = project_settings(&l.project);
     let before = l.record.settings.clone();
-    let mut changes = columbus_sync::check(&l.folder, &l.remote, &l.record.state)
+    let mut changes = columbus_sync::check(&l.folder, &l.remote, &l.record.state, &l.labels)
         .await
         .map_err(|e| e.to_string())?;
     let on_server = changes
@@ -430,7 +453,7 @@ async fn check(app: &AppHandle, project: &str) -> Result<Changes, String> {
         save_record(app, project, &l.record)?;
     }
     if written {
-        changes = columbus_sync::check(&l.folder, &l.remote, &l.record.state)
+        changes = columbus_sync::check(&l.folder, &l.remote, &l.record.state, &l.labels)
             .await
             .map_err(|e| e.to_string())?;
     }
@@ -458,6 +481,17 @@ async fn check(app: &AppHandle, project: &str) -> Result<Changes, String> {
     for i in &changes.here {
         if let Some(base) = l.record.state.files.get(&i.path) {
             s.theirs.insert(i.path.clone(), base.blob.clone());
+        }
+    }
+    // Held files can be looked at too, and sent anyway only as shown here
+    // (and only where the organization's rules leave that choice).
+    for h in &changes.held {
+        s.mine.push(h.path.clone());
+        if let Some(base) = l.record.state.files.get(&h.path) {
+            s.theirs.insert(h.path.clone(), base.blob.clone());
+        }
+        if h.choice {
+            s.held.insert(h.path.clone(), h.hash.clone());
         }
     }
     shown(|all| all.insert(project.to_string(), s));
@@ -510,6 +544,7 @@ pub async fn sync_now(
         keep: &keep,
         today: &today,
         never_send: &never_send,
+        labels: &l.labels,
     };
     let done = columbus_sync::sync(&l.folder, &l.remote, &mut l.record.state, &opts).await;
     // Whatever happened, what was done is recorded.
@@ -522,6 +557,40 @@ pub async fn sync_now(
     Ok(Synced {
         view: view(&app, &project)?,
         report,
+        changes,
+    })
+}
+
+/// The person's choice for a file that is held because it may hold data
+/// read from a source: **Send it anyway** (`send`), for the file exactly
+/// as the last check showed it, or take that choice back. Nothing is sent
+/// here: the file goes with the next sync, if it still holds the same.
+/// Where the organization's flow rules forbid it, the file was not offered
+/// the choice, and this refuses it.
+#[tauri::command]
+pub async fn sync_send_anyway(
+    app: AppHandle,
+    project: String,
+    path: String,
+    send: bool,
+) -> Result<Checked, String> {
+    let _busy = BUSY.lock().await;
+    git_servers::allowed()?;
+    let p = pj::load(&project)?;
+    let mut record = load_record(&app, &p)?.ok_or("This project is not linked to a repository.")?;
+    if send {
+        let Some(hash) = shown(|s| s.get(&project).and_then(|x| x.held.get(&path).cloned())) else {
+            return Err("That file is not among the held files the last check showed, or your organization's rules do not allow it to be sent. Check for changes again.".into());
+        };
+        record.state.send_anyway(&path, &hash);
+    } else {
+        record.state.hold_again(&path);
+    }
+    save_record(&app, &project, &record)?;
+    // A fresh look: the file is now among what a sync sends, or held again.
+    let changes = check(&app, &project).await?;
+    Ok(Checked {
+        view: view(&app, &project)?,
         changes,
     })
 }

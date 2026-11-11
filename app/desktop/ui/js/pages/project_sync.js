@@ -4,8 +4,11 @@
 //
 // Nothing is sent unless the person presses Sync, and a sync sends only
 // the changes this section listed: the app's own code keeps what the last
-// check showed, and anything that changed after it waits. Everything shown
-// here that comes from a file, a server or a colleague is shown as text.
+// check showed, and anything that changed after it waits. A file that may
+// hold data read from a source (the assistant wrote it in a chat that had
+// read one) is listed under Not syncing and goes only after the person
+// chose Send it anyway for it. Everything shown here that comes from a
+// file, a server or a colleague is shown as text.
 import { h, el, invoke, button, showError, toast, askConfirm, openDialog, ago, plural } from "../core.js";
 
 const WHAT = { new: "new", changed: "changed", deleted: "deleted" };
@@ -56,16 +59,34 @@ function syncCard(project) {
     if (c.here.length) parts.push(`${c.here.length} changed here`);
     if (c.server.length) parts.push(`${c.server.length} on the server`);
     if (c.both.length) parts.push(`${c.both.length} on both sides`);
+    const held = (c.held || []).length;
+    if (held) parts.push(`${held} held back (${held === 1 ? "it" : "they"} may hold data)`);
     return parts.length ? `${parts.join(", ")}.` : "Everything is in sync.";
   }
 
+  /** "roads-prod", "roads-prod and hr", "a, b and c". */
+  const sources = (list) => (list.length > 1 ? `${list.slice(0, -1).join(", ")} and ${list[list.length - 1]}` : list[0] || "one of your sources");
+
   // ---- What changed -----------------------------------------------------
-  function fileRow(path, note, show) {
+  function fileRow(path, note, show, more) {
     const li = h("li", {}, h("div", { class: "text" }, h("b", { class: "wrap-any" }, path), h("span", { class: "where" }, note)));
-    if (show) li.append(h("div", { class: "acts" }, button("Show", "sm", show, { "aria-label": `Show ${path}` })));
+    const acts = [show ? button("Show", "sm", show, { "aria-label": `Show ${path}` }) : null, ...(more || [])].filter(Boolean);
+    if (acts.length) li.append(h("div", { class: "acts" }, ...acts));
     li.dataset.path = path;
     return li;
   }
+
+  // The person's choice for a file that is held because it may hold data:
+  // send it anyway as it is now, or take that back. Nothing is sent here.
+  const sendAnyway = (path, send) => (ev) => act(ev.currentTarget, "Working…", async () => {
+    const r = await invoke("sync_send_anyway", { project: id, path, send });
+    view = r.view;
+    changes = r.changes;
+    status.textContent = summary(changes);
+    toast(send ? `${path} goes with your next sync, as it is now. If it changes, it is held again.` : `${path} is held back again.`);
+    drawChanges();
+    drawLook();
+  });
 
   function group(idName, title, about, rows) {
     if (!rows.length) return null;
@@ -94,19 +115,37 @@ function syncCard(project) {
     changesBox.replaceChildren();
     if (!changes) return;
     const c = changes;
-    const here = c.here.map((i) => fileRow(i.path, WHAT[i.what], () => showPreview(i.path, { left: "On the server now", right: "Here (what a sync sends)", load: preview(i.path) })));
+    const here = c.here.map((i) => {
+      const chosen = (i.may_hold || []).length > 0;
+      return fileRow(i.path, chosen ? `${WHAT[i.what]} · may hold data read from ${sources(i.may_hold)}; you chose to send it` : WHAT[i.what],
+        () => showPreview(i.path, { left: "On the server now", right: "Here (what a sync sends)", load: preview(i.path) }),
+        chosen ? [button("Don't send", "sm", sendAnyway(i.path, false), { "aria-label": `Don't send ${i.path}` })] : null);
+    });
     const server = c.server.map((i) => fileRow(i.path, WHAT[i.what], () => showPreview(i.path, { left: "Here now", right: "On the server (what a sync gets)", swap: true, load: preview(i.path) })));
     const both = c.both.map((i) => fileRow(i.path, BOTH[i.kind], () => showPreview(i.path, { left: "The server's", right: "Yours", load: preview(i.path) })));
     const n = here.length + server.length + both.length;
-    const skipped = c.skipped.length ? h("details", { id: "sync-skipped" }, h("summary", { class: "small" }, `Not syncing (${c.skipped.length})`),
-      h("ul", { class: "small" }, ...c.skipped.map((s) => el("li", "wrap-any", `${s.path}${s.on_server ? " (on the server)" : ""}: ${s.why}`)))) : null;
+    // Held back: files that may hold data read from a source. Each can be
+    // looked at, and sent anyway where the organization's rules allow.
+    const heldFiles = c.held || [];
+    const held = heldFiles.length ? h("div", { class: "stack", id: "sync-held-box" },
+      h("p", { class: "small" }, h("b", {}, `Held back (${heldFiles.length}). `),
+        "These may quote data your assistant read from one of your sources, so they stay here. Look at one and choose Send it anyway, and it goes with your next sync, as it is now."),
+      h("ul", { class: "list compact", id: "sync-held" }, ...heldFiles.map((f) => fileRow(f.path, `${WHAT[f.what]} · ${f.why}`,
+        () => showPreview(f.path, { left: "On the server now", right: "Here (held back)", load: preview(f.path) }),
+        f.choice ? [button("Send it anyway", "sm", sendAnyway(f.path, true), { "aria-label": `Send it anyway: ${f.path}` })] : null)))) : null;
+    const notSyncing = c.skipped.length + heldFiles.length;
+    const skipped = notSyncing ? h("details", { id: "sync-skipped", class: "stack" }, h("summary", { class: "small" }, `Not syncing (${notSyncing})`),
+      held,
+      c.skipped.length ? h("ul", { class: "small", id: "sync-skipped-list" }, ...c.skipped.map((s) => el("li", "wrap-any", `${s.path}${s.on_server ? " (on the server)" : ""}: ${s.why}`))) : null) : null;
+    // A held file needs the person: it is not left folded away.
+    if (skipped && heldFiles.length) skipped.open = true;
     if (!n && !skipped) return;
     const details = h("details", { id: "sync-changes", class: "stack" }, h("summary", { class: "small" }, n ? `What changed (${n})` : "What changed"),
       group("sync-here", "Changed here", "A sync sends these, as they are now.", here),
       group("sync-there", "Changed on the server", "A sync gets these.", server),
       group("sync-both", "Changed on both sides", "A sync keeps both versions and lists the file under Needs a look, unless the two turn out to hold the same.", both),
       skipped);
-    details.open = n > 0;
+    details.open = n > 0 || heldFiles.length > 0;
     changesBox.append(details);
   }
 
@@ -185,6 +224,8 @@ function syncCard(project) {
     // Each with its reason, in the sync's own words (it changed after the
     // person looked, or this sync was full).
     if (r.not_sent.length) said.push(`${plural(r.not_sent.length, "change")} ${r.not_sent.length === 1 ? "was" : "were"} not sent: ${r.not_sent.map((x) => `${x.path} (${x.why})`).join(", ")}.`);
+    const heldBack = r.held || [];
+    if (heldBack.length) said.push(`${plural(heldBack.length, "file")} ${heldBack.length === 1 ? "was" : "were"} held back and not sent, because ${heldBack.length === 1 ? "it" : "they"} may hold data: ${heldBack.map((x) => x.path).join(", ")}.`);
     if (r.rounds) said.push("The server changed while Columbus was syncing, so it read it again; nothing was overwritten.");
     if (!r.stopped && !said.length) said.push("Nothing to get and nothing to send.");
     if (said.length) result.append(h("p", { class: "small", id: "sync-report" }, said.join(" ")));
@@ -249,14 +290,20 @@ function syncCard(project) {
   function history() {
     const box = h("div", { id: "sync-history-list" }, h("p", { class: "muted small" }, "Looking…"));
     const d = h("details", { id: "sync-history" }, h("summary", { class: "small" }, "History"), box);
+    // Only the read begun last is drawn: History opened, closed and opened
+    // again reads the server twice, and the first answer can come last.
+    let reads = 0;
     d.addEventListener("toggle", async () => {
       if (!d.open) return;
+      const mine = ++reads;
       try {
         const items = await invoke("sync_history", { project: id });
+        if (mine !== reads) return;
         box.replaceChildren(items.length ? h("ul", { class: "list compact" }, ...items.map((c) => h("li", {}, h("div", { class: "text" },
           h("b", { class: "wrap-any" }, (c.note || "(no note)").split("\n")[0]), h("span", { class: "where" }, `${c.who || "someone"} · ${ago(c.when) || c.when}`)))))
           : h("p", { class: "muted small" }, "Nothing has been synced to this repository yet."));
       } catch (e) {
+        if (mine !== reads) return;
         box.replaceChildren(h("p", { class: "error-text small", role: "alert" }, String(e)));
       }
     });
@@ -371,7 +418,8 @@ function syncCard(project) {
   function draw() {
     disconnect.hidden = !(view && view.allowed && view.link);
     if (!view.allowed) {
-      bd.replaceChildren(h("p", { id: "sync-off", class: "small muted" }, view.why_not || "Sync is turned off."));
+      bd.replaceChildren(h("p", { id: "sync-off", class: "small muted" }, view.why_not || "Sync is turned off.", " The switch for it, Allow sync, is in ",
+        h("a", { href: "#/settings/org", id: "sync-off-switch" }, "Settings › Organization rules"), "."));
       return;
     }
     if (!view.link) {
@@ -396,7 +444,8 @@ function syncCard(project) {
         button("Sync", "primary sm", onSync, { id: "sync-go", disabled: !!l.problem })),
       h("label", { class: "field", for: "sync-note" }, "What did you change? (optional)", note),
       status, result, changesBox, lookSlot, history(),
-      h("p", { class: "small muted wrap-any" }, "What syncs is this project's files folder, ", h("code", {}, view.folder), ". Data, keys and outputs stay out of it.")].filter(Boolean));
+      h("p", { class: "small muted wrap-any", id: "sync-what" }, "What syncs is this project's files folder, ", h("code", {}, view.folder),
+        ", with the project's name and instructions (the file columbus-project.yaml in it, which Columbus writes). When you press Sync, every changed file in it is sent, except these, which stay here: data files (GeoPackages, shapefiles, GeoJSON, CSV, Excel, databases and other data formats), password, key and connection files, archives, programs and shortcuts, anything in a folder named outputs, files over 5 MB, and a few other things (links, a .git folder, a Python environment or its cache, files the system makes, names another system cannot hold). A file your assistant wrote in a chat that had read one of your sources may quote data, so it is held back until you choose Send it anyway. If a file looks like it holds a password or a token, nothing is sent. What will be sent and what is not syncing is listed here, with why, before anything goes.")].filter(Boolean));
     drawChanges();
   }
 

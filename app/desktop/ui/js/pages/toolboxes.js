@@ -57,8 +57,8 @@ export function toolboxSection() {
     off.replaceChildren(h("div", {}, h("b", {}, "Toolboxes are turned off. "),
       st.managed
         ? "Your organization's settings do not allow them (allow_toolboxes), so none are used and none can be added. Ask whoever manages Columbus for you to turn them on."
-        : "None are used and none can be added. To turn them on, choose Work freely on copies in Settings, or set allow_toolboxes in your organization settings file.",
-      st.managed ? null : " ", st.managed ? null : h("a", { href: "#/settings", id: "tbx-settings" }, "Open Settings")));
+        : "None are used and none can be added. To turn them on, use the Allow toolboxes switch (allow_toolboxes) in Settings › Organization rules, or choose Work freely on copies in Settings.",
+      st.managed ? null : " ", st.managed ? null : h("a", { href: "#/settings/org", id: "tbx-settings" }, "Open Organization rules")));
     // Turned off: nothing is offered.
     add.hidden = !st.allowed;
     const ready = st.installed.filter((t) => t.state === "ready" && t.tools);
@@ -100,7 +100,11 @@ export function toolboxSection() {
       draw();
       showError(error, null);
       if (!find.hidden) search(); else { hits.replaceChildren(); more.textContent = ""; }
-    } catch (e) { showError(error, e); }
+    } catch (e) {
+      // Nor is an older read's failure shown over what a newer one drew.
+      if (closed || mine !== reads) return;
+      showError(error, e);
+    }
   };
 
   async function remove(t, btn) {
@@ -217,7 +221,7 @@ export function toolboxSection() {
     }
 
     const own = h("section", { class: "stack", id: "tbx-own", "aria-label": "A program on this computer" }, h("h3", {}, "A program on this computer"),
-      h("p", { class: "small" }, "A command-line program you already have, with a description file that lists its tools and their parameters (a tools.json; the reference shows how to write one). Its tools run in the sandbox like every toolbox tool."));
+      h("p", { class: "small" }, "A command-line program you already have, with a description file that lists its tools and their parameters (a tools.json; the reference shows how to write one). Its tools run in the sandbox like every toolbox tool. They can read every file in the program's folder, so the program must sit in a folder of its own: not straight in your Downloads, Documents or Desktop."));
     if (!st.can_confirm) {
       own.append(...terminal("columbus-mcp toolbox add PROGRAM --id SHORT-NAME --kind described --tools TOOLS.JSON"));
     } else {
@@ -225,17 +229,40 @@ export function toolboxSection() {
       const pickProgram = h("button", { type: "button", class: "btn" }, "Choose file…");
       const pickTools = h("button", { type: "button", class: "btn" }, "Choose file…");
       const err = h("p", { id: "tbx-form-error", class: "error-text", role: "alert", hidden: true });
+      // Which folder the program's tools will be able to read, said as soon
+      // as a program is chosen; or why it cannot be added from where it is.
+      const reads = h("p", { id: "tbx-reads", class: "small wide wrap-any", role: "status", hidden: true });
       const save = h("button", { type: "submit", id: "tbx-save", class: "btn primary" }, "Add");
       const form = h("form", { id: "tbx-form", class: "stack" },
         h("div", { class: "grid2" },
           h("label", { class: "field wide" }, "Program", h("span", { class: "pick" }, inp("tbx_program", { required: true }), pickProgram), h("small", {}, "The program's file, with its full path.")),
+          reads,
           h("label", { class: "field wide" }, "Description file", h("span", { class: "pick" }, inp("tbx_tools", { required: true }), pickTools), h("small", {}, "The tools.json that describes it.")),
           h("label", { class: "field" }, "Short name", inp("tbx_id", { required: true, maxlength: "40", placeholder: "e.g. county-lines" }), h("small", {}, "Lowercase letters, digits and -. Its tools are named after it: county-lines.<tool>.")),
           h("label", { class: "field" }, "Name", inp("tbx_name", { placeholder: "e.g. County line tools" }), h("small", {}, "Shown here and to your assistant."))),
         err, h("div", { class: "row" }, save));
-      const pick = (kind, field) => async () => {
-        try { const p = await invoke("toolbox_pick", { kind }); if (p) field.value = p; } catch (x) { showError(err, x); }
+      // Only the answer for the program now in the box is shown.
+      let checks = 0;
+      const checkProgram = async () => {
+        const mine = ++checks;
+        const program = form.tbx_program.value.trim();
+        // What was said of the program chosen before no longer holds.
+        showError(err, null);
+        if (!program) { reads.hidden = true; return; }
+        let text, bad = false;
+        try { text = (await invoke("toolbox_program_check", { program })).reads; } catch (x) { text = String(x); bad = true; }
+        if (mine !== checks) return;
+        reads.textContent = text;
+        reads.classList.toggle("error-text", bad);
+        reads.hidden = false;
       };
+      const pick = (kind, field) => async () => {
+        try {
+          const p = await invoke("toolbox_pick", { kind });
+          if (p) { field.value = p; if (kind === "program") await checkProgram(); }
+        } catch (x) { showError(err, x); }
+      };
+      form.tbx_program.addEventListener("change", checkProgram);
       pickProgram.addEventListener("click", pick("program", form.tbx_program));
       pickTools.addEventListener("click", pick("description", form.tbx_tools));
       form.addEventListener("submit", async (ev) => {

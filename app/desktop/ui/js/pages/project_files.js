@@ -21,14 +21,21 @@ export function filesCard(p) {
   const again = button("Check again", "sm", () => draw(), { id: "pj-files-refresh", title: "Read the folder again" });
   const card = h("section", { class: "card", id: "pj-files" }, h("div", { class: "hd" }, title, h("span", { class: "spacer" }), again, open), err, bd);
 
+  // Only the read begun last is drawn: one begun earlier (Check again
+  // pressed twice, or Open the folder and then Check again) can end later,
+  // and would put back the list as it was before a file was added.
+  let reads = 0;
   async function draw() {
+    const mine = ++reads;
     let r;
     try {
       r = await invoke("project_files", { id: p.id });
     } catch (e) {
+      if (mine !== reads) return;
       bd.replaceChildren(h("p", { class: "pad small error-text" }, `Couldn't list them: ${e}`));
       return;
     }
+    if (mine !== reads) return;
     const files = r.files || [];
     title.textContent = files.length ? `Files (${files.length}${r.more ? "+" : ""})` : "Files";
     const parts = [];
@@ -60,7 +67,7 @@ export function filesCard(p) {
       }
       parts.push(ul);
       parts.push(h("p", { class: "pad small muted" }, `${plural(files.length, "file")}, ${size(r.total_bytes)} in all${r.more ? " (the first 1,000 are listed)" : ""}. `,
-        r.allowed ? "Your assistant can list, read and write the text files here, and run a script from here in the sandbox. Data stays out: results leave a chat only through an export." : ""));
+        r.allowed ? "Your assistant can list, read and write the text files here, and run a script from here in the sandbox. Data stays out: results leave a chat only through an export. A file that looks like it holds a password, a key or a token is not read to your assistant and not run: it is told which lines, never what is on them." : ""));
     }
     const skipped = r.skipped || [];
     if (skipped.length) {
