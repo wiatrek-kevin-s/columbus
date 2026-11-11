@@ -371,7 +371,7 @@ function syncCard(project) {
   function draw() {
     disconnect.hidden = !(view && view.allowed && view.link);
     if (!view.allowed) {
-      bd.replaceChildren(h("p", { id: "sync-off", class: "small" }, h("b", {}, "Sync is off. "), view.why_not || ""));
+      bd.replaceChildren(h("p", { id: "sync-off", class: "small muted" }, view.why_not || "Sync is turned off."));
       return;
     }
     if (!view.link) {
