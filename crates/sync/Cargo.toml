@@ -21,7 +21,7 @@ chrono.workspace = true
 uuid.workspace = true
 # Git object ids are SHA-1 (or SHA-256, with sha2 above).
 sha1 = "0.10"
-base64 = "0.22"
+base64 = "0.23"
 reqwest = { version = "0.13", default-features = false, features = ["json", "http2", "system-proxy"] }
 # Files a colleague deleted go to the system's trash (Recycle Bin, Trash).
 trash = { version = "5.3", default-features = false, features = ["coinit_apartmentthreaded", "freedesktop"] }
