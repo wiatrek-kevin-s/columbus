@@ -45,6 +45,8 @@ const SWITCHES = {
   allow_shared_tools: ["Allow shared tools and workflows.", "You may open tools and workflows coworkers share with you as a file. Each arrives as a proposal you read and approve yourself, like your assistant's; nothing from a shared file is installed or run before that."],
   allow_workflows: ["Allow workflows.", "Your assistant may propose workflows, and the ones you approve run by themselves on their schedule, without asking each time, within what they list."],
   allow_project_files: ["Allow project files.", "Your assistant may list, read and write text files in a project's own folder (scripts and notes), and run scripts kept there in the sandbox. Data still leaves a chat only through an export."],
+  allow_toolboxes: ["Allow toolboxes.", "You may install toolboxes (programs that bring many tools at once) on the Tools page, and your assistant may run their tools without asking each time: every tool runs in the sandbox, on copies of your data, with no network."],
+  allow_sync: ["Allow sync.", "A project's files may sync with a Git server you connect (GitHub, or your organization's own), and nothing syncs until you press Sync on the project's page."],
 };
 
 /** One of the organization's switches. Turning one on is confirmed by the

@@ -371,7 +371,8 @@ function syncCard(project) {
   function draw() {
     disconnect.hidden = !(view && view.allowed && view.link);
     if (!view.allowed) {
-      bd.replaceChildren(h("p", { id: "sync-off", class: "small muted" }, view.why_not || "Sync is turned off."));
+      bd.replaceChildren(h("p", { id: "sync-off", class: "small muted" }, view.why_not || "Sync is turned off.", " The switch for it, Allow sync, is in ",
+        h("a", { href: "#/settings/org", id: "sync-off-switch" }, "Settings › Organization rules"), "."));
       return;
     }
     if (!view.link) {

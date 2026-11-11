@@ -274,11 +274,19 @@ def main():
         wait.until(lambda drv: shown(drv, "#tbx-off"))
         off = text(d, "#tbx-off")
         assert "Toolboxes are turned off" in off and "Work freely on copies" in off and "allow_toolboxes" in off, off
+        assert "Allow toolboxes switch" in off and "Organization rules" in off, off
         step("Turned off, nothing is offered: no Add tools, no search, no tools")
         assert not shown(d, "#tbx-add") and not shown(d, "#tbx-find"), "nothing is offered while toolboxes are off"
         assert not d.find_elements(By.CSS_SELECTOR, "#tbx-tools li")
         named(d)
         d.save_screenshot(str(OUT / "toolboxes-off.png"))
+        step("The notice leads to the switch: Settings > Organization rules, where Allow toolboxes is off")
+        d.find_element(By.ID, "tbx-settings").click()
+        wait.until(EC.presence_of_element_located((By.ID, "allow_toolboxes")))
+        assert not d.find_element(By.ID, "allow_toolboxes").is_selected()
+        assert "Allow toolboxes." in text(d, "#settings") and "runs in the sandbox" in text(d, "#settings")
+        d.find_element(By.ID, "settings-close").click()
+        wait.until(lambda drv: shown(drv, "#tbx-off") and not drv.execute_script("return document.getElementById('settings').open"))
 
         step("Turned on: Add tools is offered")
         policy.write_text("connection_types: [gpkg]\nallow_toolboxes: true\n")

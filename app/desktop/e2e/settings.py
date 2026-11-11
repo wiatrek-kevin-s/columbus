@@ -7,13 +7,16 @@ removes it, checking each file as the server reads it; turns personal
 tools on, reads a tool an assistant proposed, installs one, declines
 another and removes the installed one; chooses Work freely on copies
 (one confirmation, seven settings, the rest of the file kept) and goes
-back to asking (scripts.approval each, nothing else); then, with the
-person declining to confirm, checks that nothing that widens access is
-saved (a connection, a switch, a tool, the mode); and, with the policy
-file managed by the organization, that the mode in force is shown and
-cannot be changed. A debug build stands in for Touch ID / Windows Hello
-with COLUMBUS_APP_TEST_CONFIRM (allow or deny), and for a managed policy
-file with COLUMBUS_APP_TEST_MANAGED. A real Columbus session runs beside
+back to asking (scripts.approval each, nothing else); turns the switches
+for toolboxes and for sync off and on, each by itself (its own line of
+the policy file, nothing else); then, with the person declining to
+confirm, checks that nothing that widens access is saved (a connection,
+a switch, a tool, the mode), while turning a switch off still works;
+and, with the policy file managed by the organization, that the mode in
+force and the switches are shown and cannot be changed. A debug build
+stands in for Touch ID / Windows Hello with COLUMBUS_APP_TEST_CONFIRM
+(allow or deny), and for a managed policy file with
+COLUMBUS_APP_TEST_MANAGED. A real Columbus session runs beside
 the app on the same files: Test asks it to open a connection before it is
 saved, and the saved notice says no restart is needed.
 
@@ -105,6 +108,12 @@ def columbus(root):
 # The settings Work freely on copies turns on (F-15).
 SEVEN = {"allow_scripts": True, "scripts": {"approval": "none"}, "environments": {"allow": True},
          "allow_personal_tools": True, "allow_toolboxes": True, "allow_project_files": True, "allow_sync": True}
+
+# The switches for toolboxes and for sync (F-15), each with its title and
+# what its words must say: toolbox tools run in the sandbox, and nothing
+# syncs until the person presses Sync.
+SWITCH_WORDS = [("allow_toolboxes", "Allow toolboxes.", "runs in the sandbox"),
+                ("allow_sync", "Allow sync.", "nothing syncs until you press Sync")]
 
 
 def policy(root):
@@ -361,6 +370,33 @@ gpd.GeoDataFrame({"RTE": ["IH0035", "US0183"], "district": [14, 12]}, geometry=[
         click(d, By.ID, "allow_scripts")
         wait.until(lambda drv: "allow_scripts: false" in (root / "policy.yaml").read_text())
         wait.until(lambda drv: "Python scripts are off" in drv.find_element(By.ID, "org-work-state").text)
+
+        # Toolboxes and sync have their own switches too (F-15): on with the
+        # rest since Work freely on copies, and each one changed by itself.
+        step("toolboxes and sync: each has its own switch, saying what it allows")
+        for name, title, words in SWITCH_WORDS:
+            box = wait.until(EC.presence_of_element_located((By.ID, name)))
+            assert box.is_selected() and box.is_enabled(), name
+            row = d.execute_script("return arguments[0].closest('label').textContent", box)
+            assert title in row and words in row, row
+        d.execute_script("document.getElementById('allow_sync').scrollIntoView({block: 'center'})")
+        assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
+        d.save_screenshot(str(OUT / "settings-switches.png"))
+        step("toolboxes and sync: turning one off, then on, changes its own line of the policy file and nothing else")
+        for name, _, _ in SWITCH_WORDS:
+            for on in [False, True]:
+                before, before_text = policy(root)
+                assert before[name] is not on, (name, before)
+                wait.until(lambda drv: drv.find_element(By.ID, name).is_enabled())
+                click(d, By.ID, name)
+                wait.until(lambda drv: policy(root)[0].get(name) is on)
+                after, after_text = policy(root)
+                assert after == dict(before, **{name: on}), (before, after)
+                was, now = before_text.splitlines(), after_text.splitlines()
+                assert len(was) == len(now) and [(a, b) for a, b in zip(was, now) if a != b] == \
+                    [(f"{name}: {str(not on).lower()}", f"{name}: {str(on).lower()}")], (before_text, after_text)
+                # The page shows the switch as the file has it.
+                wait.until(lambda drv: drv.find_element(By.ID, name).is_enabled() and drv.find_element(By.ID, name).is_selected() is on)
     finally:
         try:
             d.save_screenshot(str(OUT / "settings-last.png"))
@@ -414,6 +450,27 @@ gpd.GeoDataFrame({"RTE": ["IH0035", "US0183"], "district": [14, 12]}, geometry=[
         assert "not confirmed" in d.find_element(By.ID, "work-error").text
         assert (root / "policy.yaml").read_text() == text
         assert d.find_element(By.ID, "work-ask").is_selected() and not d.find_element(By.ID, "work-free").is_selected()
+        # Toolboxes and sync: turning one off takes access away, so it needs
+        # no confirmation; turning one on asks, and here the answer is no.
+        step("denied: toolboxes and sync are turned off without the confirmation, and not turned on without it")
+        for name, _, _ in SWITCH_WORDS:
+            nav(d, wait, "#/settings/org", name)
+            before, _ = policy(root)
+            assert before[name] is True, before
+            wait.until(lambda drv: drv.find_element(By.ID, name).is_enabled() and drv.find_element(By.ID, name).is_selected())
+            click(d, By.ID, name)
+            wait.until(lambda drv: policy(root)[0].get(name) is False)
+            off, text = policy(root)
+            assert off == dict(before, **{name: False}), (before, off)
+            assert not d.find_element(By.ID, "error").is_displayed(), d.find_element(By.ID, "error").text
+            wait.until(lambda drv: drv.find_element(By.ID, name).is_enabled() and not drv.find_element(By.ID, name).is_selected())
+            click(d, By.ID, name)
+            wait.until(lambda drv: drv.find_element(By.ID, "error").is_displayed())
+            assert "not confirmed" in d.find_element(By.ID, "error").text, d.find_element(By.ID, "error").text
+            assert (root / "policy.yaml").read_text() == text, "nothing is saved without the confirmation"
+            wait.until(lambda drv: drv.find_element(By.ID, name).is_enabled() and not drv.find_element(By.ID, name).is_selected())
+            # (The part is opened afresh for the next one, so its error line starts empty.)
+            nav(d, wait, "#/settings", "work-free")
     finally:
         step("closing the second app")
         guard.stop(d, proc)
@@ -438,6 +495,17 @@ gpd.GeoDataFrame({"RTE": ["IH0035", "US0183"], "district": [14, 12]}, geometry=[
             "const done = arguments[arguments.length - 1];"
             "window.__TAURI__.core.invoke('settings_set_work_mode', { free: false }).then(() => done('saved'), (e) => done(String(e)));")
         assert "managed by your organization" in answer, answer
+        assert (root / "policy.yaml").read_text() == managed
+        step("managed: the switches for toolboxes and sync are shown, not offered, and the app's own code refuses")
+        nav(d, wait, "#/settings/org", "allow_toolboxes")
+        assert d.find_element(By.ID, "org-managed").is_displayed()
+        for name, _, _ in SWITCH_WORDS:
+            box = d.find_element(By.ID, name)
+            assert not box.is_enabled() and not box.is_selected(), name
+            answer = d.execute_async_script(
+                "const done = arguments[arguments.length - 1];"
+                "window.__TAURI__.core.invoke('settings_set_switch', { name: arguments[0], on: true }).then(() => done('saved'), (e) => done(String(e)));", name)
+            assert "managed by your organization" in answer, answer
         assert (root / "policy.yaml").read_text() == managed
         print("desktop settings e2e (main window): ok")
     finally:

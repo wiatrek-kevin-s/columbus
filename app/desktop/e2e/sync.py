@@ -288,14 +288,24 @@ def main():
         wait.until(lambda drv: shown(drv, "git-off"))
         assert "allow_sync" in text(d, "git-off") and "turned off" in text(d, "git-off"), text(d, "git-off")
         assert not shown(d, "git-card") and not shown(d, "git-connect"), "nothing is offered"
+        # Both notices say where the switch is: Settings > Organization rules.
+        assert "Allow sync" in text(d, "git-off") and "Organization rules" in text(d, "git-off"), text(d, "git-off")
+        assert d.find_element(By.ID, "git-off-switch").get_attribute("href").endswith("#/settings/org")
         assert not guard.unnamed(d), guard.unnamed(d)
         d.save_screenshot(str(OUT / "sync-off.png"))
         click(d, By.ID, "settings-close")
         open_project(d, wait, "roads-qc")
         wait.until(lambda drv: shown(drv, "sync-off"))
         assert "allow_sync" in text(d, "sync-off"), text(d, "sync-off")
+        assert "Allow sync" in text(d, "sync-off") and "Organization rules" in text(d, "sync-off"), text(d, "sync-off")
         for gone in ["sync-link", "sync-check", "sync-go", "sync-disconnect"]:
             assert not shown(d, gone), f"{gone} is offered with sync off"
+        # The project's notice leads there: the switch is on that page, off.
+        click(d, By.ID, "sync-off-switch")
+        wait.until(EC.presence_of_element_located((By.ID, "allow_sync")))
+        assert not d.find_element(By.ID, "allow_sync").is_selected()
+        click(d, By.ID, "settings-close")
+        wait.until(lambda drv: shown(drv, "sync-off"))
         # The page is not what holds the line: the app's own code refuses.
         for cmd, args in [("git_server_connect", {"form": {"kind": "gitea", "url": gitea.url, "token": TOKEN}}),
                           ("git_server_token_page", {"kind": "gitea", "url": gitea.url}),

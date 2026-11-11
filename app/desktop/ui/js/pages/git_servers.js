@@ -55,7 +55,8 @@ export async function part(body, saved = () => {}) {
 
   const draw = () => {
     off.hidden = st.allowed;
-    off.replaceChildren(h("div", {}, h("b", {}, st.why_not || "Sync is turned off."), " No server can be connected, and no project syncs."));
+    off.replaceChildren(h("div", {}, h("b", {}, st.why_not || "Sync is turned off."), " No server can be connected, and no project syncs. The switch for it, Allow sync, is in ",
+      h("a", { href: "#/settings/org", id: "git-off-switch" }, "Settings › Organization rules"), "."));
     // With sync off, nothing is offered.
     card.hidden = !st.allowed;
     foot.hidden = !st.allowed;
