@@ -289,6 +289,9 @@ function serviceDialog(st, old, done) {
   }
   const err = h("p", { id: "svc-error", class: "error-text", role: "alert", hidden: true });
   const form = h("form", { id: "svc-form", class: "stack" },
+    // Changed outside the app, or never confirmed here: said before
+    // anything is saved, with the address that was confirmed.
+    old && old.problem ? h("p", { id: "svc-problem", class: "error-text" }, old.problem) : null,
     h("div", { class: "grid2" },
       h("label", { class: "field wide", for: "svc-name" }, "Name", name, h("small", {}, "What you want to call it. Errors and notices use this name.")),
       h("label", { class: "field wide", for: "svc-address" }, "Address", address,
@@ -298,7 +301,7 @@ function serviceDialog(st, old, done) {
     h("label", { class: "switch-row" }, pictures, h("span", {}, h("b", {}, "Send pictures."), " Turn this on only if the model you will use can look at pictures: a map picture your assistant asks for is then sent to it. Off, it is told in words that a picture was made.")),
     h("p", { class: "small muted", id: "svc-note" }, cannot
       ? `${CANNOT_CONFIRM}, so a service cannot be added here.`
-      : `Saving asks for ${st.confirm_with} first when the address, the format or the way the key is sent is new: from then on, this chat's messages and what your assistant reads from your data are sent to that address.`),
+      : `Saving asks for ${st.confirm_with} first when the address, the format or the way the key is sent is new: from then on, this chat's messages and what your assistant reads from your data are sent to that address. A key saved for the service before is deleted then: save it again for the new address.`),
     err);
   const save = h("button", { type: "submit", id: "svc-save", class: "btn primary", form: "svc-form" }, old ? "Save" : "Add");
   const cancel = h("button", { type: "button", class: "btn" }, "Cancel");
@@ -310,9 +313,9 @@ function serviceDialog(st, old, done) {
     save.disabled = true;
     showError(err, null);
     try {
-      await invoke("chat_service_save", { service: { id: old ? old.id : null, name: name.value, address: address.value, format: format.value, key_header: header.value, pictures: pictures.checked } });
+      const r = await invoke("chat_service_save", { service: { id: old ? old.id : null, name: name.value, address: address.value, format: format.value, key_header: header.value, pictures: pictures.checked } });
       d.close();
-      done(name.value.trim());
+      done(name.value.trim(), !!(r && r.key_removed));
     } catch (e) {
       showError(err, e);
     } finally {
@@ -476,7 +479,10 @@ async function ai(body) {
       text.append(el("span", "where", `${x.format || x.format_id}${x.pictures ? " · pictures are sent" : ""}`));
       if (x.problem) text.append(el("span", "where error-text", x.problem));
       if (!x.allowed && x.why_not) text.append(el("span", "where error-text", x.why_not));
-      const change = button("Change", "sm", () => serviceDialog(st, x, async (n) => { await refresh(); toast(`Saved ${n}.`); }), { "aria-label": `Change ${x.name}` });
+      const change = button("Change", "sm", () => serviceDialog(st, x, async (n, keyRemoved) => {
+        await refresh();
+        toast(keyRemoved ? `Saved ${n}. Its key was deleted from this computer: it was saved for what you confirmed before. Save it again if the service should have it.` : `Saved ${n}.`);
+      }), { "aria-label": `Change ${x.name}` });
       const remove = button("Remove", "sm danger", async () => {
         if (!(await askConfirm(`Remove ${x.name}?`, "Its address and its key are deleted from this computer. Chats that ran on it stay saved.", "Remove service", true))) return;
         showError(error, null);

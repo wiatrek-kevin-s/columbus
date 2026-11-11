@@ -281,6 +281,12 @@ def save_key(d, key):
     reads_right(d, "#settings")
 
 
+def change_added(d, service_id):
+    """Open the form of a service the person added."""
+    d.find_element(By.CSS_SELECTOR, f"#services-added li[data-id='{service_id}'] button:not(.danger)").click()
+    Wait(d, 10).until(EC.visibility_of_element_located((By.ID, "svc-address")))
+
+
 def write_policy(root, hosts=None):
     text = f"connection_types: [gpkg]\nexports:\n  - {{ id: outbox, path: {json.dumps(str(root / 'outbox'))} }}\n"
     if hosts is not None:
@@ -735,6 +741,79 @@ def main():
         Wait(d, 15).until(lambda drv: drv.find_elements(By.CSS_SELECTOR, "#services-added li[data-id='my-gateway']"))
         choose_service(d, "my-gateway")
         assert "No key saved for My gateway" in d.find_element(By.ID, "key-state").text
+
+        step("A key does not follow an address rewritten in the settings file, even when the change is confirmed again")
+        # My gateway is at its address, confirmed, and gets a key: a chat uses it there.
+        save_key(d, KEYS["gateway"])
+        d.find_element(By.ID, "model-other").send_keys("deployment-1")
+        # (The sheet was scrolled down to the added services: bring the button clear of its header.)
+        save = d.find_element(By.CSS_SELECTOR, "#prefs-form button[type=submit]")
+        d.execute_script("arguments[0].scrollIntoView({block: 'center'})", save)
+        save.click()
+        Wait(d, 15).until(lambda drv: settings_json(drv)[1]["model"] == "deployment-1")
+        close_settings(d)
+        new_chat(d)
+        Wait(d, 10).until(lambda drv: chat_service(drv) == "My gateway")
+        SCRIPT[:] = [("say", "Hello from the gateway again.")]
+        send(d, "Hello", "Hello from the gateway again.")
+        path, headers, _ = SEEN[-1]
+        assert path == "/gw/v1/chat/completions" and header(headers, "authorization") == f"Bearer {KEYS['gateway']}", path
+        # Another program rewrites the settings file: the service points elsewhere now.
+        settings_file = next((root / "config").rglob("settings.json"))
+        saved = json.loads(settings_file.read_text())
+        assert saved["services"][0]["address"] == f"{here}/gw/v1", saved["services"]
+        saved["services"][0]["address"] = f"{here}/elsewhere/v1"
+        settings_file.write_text(json.dumps(saved))
+        # No chat starts on it. The sentence shows the address that was
+        # confirmed and the one in the file, and both ways out.
+        new_chat(d, ready=False)
+        before = len(SEEN)
+        refused = d.execute_async_script(
+            "const done = arguments[arguments.length - 1];"
+            "window.__TAURI__.core.invoke('chat_start', {project: null, run: null}).then(() => done('started'), e => done(String(e)));")
+        assert refused != "started" and len(SEEN) == before, refused
+        changed = (f"My gateway was changed outside this app, so it is not used. You confirmed the address {here}/gw/v1; "
+                   f"the settings file now gives {here}/elsewhere/v1. If you did not change it, remove it in Settings › Assistant. "
+                   "To use it as the file has it, choose Change there and confirm it; the key saved for it is deleted first, "
+                   "so it is never sent somewhere you did not save it for.")
+        assert refused == changed, refused
+        # Settings says the same beside the service, where Change and Remove are.
+        open_assistant(d)
+        row = d.find_element(By.CSS_SELECTOR, "#services-added li[data-id='my-gateway']")
+        assert [b.text for b in row.find_elements(By.TAG_NAME, "button")] == ["Change", "Remove"], row.text
+        assert changed in row.text, row.text
+        # The person follows it. Change says it again before anything is
+        # saved; Save is confirmed at the keyboard (allowed in this run).
+        change_added(d, "my-gateway")
+        assert d.find_element(By.ID, "svc-address").get_attribute("value") == f"{here}/elsewhere/v1"
+        assert d.find_element(By.ID, "svc-problem").text == changed
+        d.find_element(By.ID, "svc-save").click()
+        Wait(d, 15).until(lambda drv: not drv.find_elements(By.ID, "svc-dialog"))
+        Wait(d, 10).until(lambda drv: "Its key was deleted from this computer" in drv.execute_script("return document.getElementById('toast').textContent"))
+        # The key was saved for the address confirmed before: it is gone.
+        _, s = settings_json(d)
+        mine = next(v for v in s["services"] if v["id"] == "my-gateway")
+        assert mine["problem"] is None and mine["key_saved"] is False, mine
+        Wait(d, 10).until(lambda drv: "No key saved for My gateway" in drv.find_element(By.ID, "key-state").text)
+        # And a chat on it sends none to the new address.
+        close_settings(d)
+        new_chat(d)
+        Wait(d, 10).until(lambda drv: chat_service(drv) == "My gateway")
+        SCRIPT[:] = [("say", "Hello from elsewhere.")]
+        send(d, "Hello", "Hello from elsewhere.")
+        path, headers, _ = SEEN[-1]
+        assert path == "/elsewhere/v1/chat/completions", path
+        assert all(header(headers, h) is None for h in ("authorization", "api-key", "x-api-key")), \
+            "the key saved for the confirmed address was sent to the rewritten one"
+        # Back at its own address for what follows (confirmed again).
+        open_assistant(d)
+        change_added(d, "my-gateway")
+        address = d.find_element(By.ID, "svc-address")
+        address.clear()
+        address.send_keys(f"{here}/gw/v1")
+        d.find_element(By.ID, "svc-save").click()
+        Wait(d, 15).until(lambda drv: not drv.find_elements(By.ID, "svc-dialog"))
+        Wait(d, 10).until(lambda drv: f"{here}/gw/v1" in drv.find_element(By.CSS_SELECTOR, "#services-added li[data-id='my-gateway']").text)
         choose_service(d, "openai")
 
         step("How to connect other AI apps: this computer's path, each app's own file and entry, Copy")
@@ -875,8 +954,7 @@ def main():
         assert [a["id"] for a in saved["services"]] == ["my-gateway"], "nothing is added without the confirmation"
         d.find_element(By.XPATH, "//dialog[@id='svc-dialog']//button[normalize-space()='Cancel']").click()
         # A change of address needs it too; a change of name alone does not.
-        d.find_element(By.CSS_SELECTOR, "#services-added li[data-id='my-gateway'] button:not(.danger)").click()
-        Wait(d, 10).until(EC.visibility_of_element_located((By.ID, "svc-address")))
+        change_added(d, "my-gateway")
         address = d.find_element(By.ID, "svc-address")
         address.clear()
         address.send_keys(f"{here}/moved/v1")
@@ -889,7 +967,8 @@ def main():
         # the service is one whose address nobody confirmed, and no chat
         # starts on it.
         choose(d, "service", "my-gateway")
-        Wait(d, 10).until(lambda drv: "is not the one you confirmed in this app" in drv.find_element(By.ID, "service-error").text)
+        Wait(d, 10).until(lambda drv: f"My gateway has not been confirmed on this computer, so it is not used. The settings file gives its address as {here}/gw/v1." in drv.find_element(By.ID, "service-error").text)
+        assert "remove it in Settings › Assistant" in d.find_element(By.ID, "service-error").text
         assert settings_json(d)[1]["service"] != "my-gateway"
         assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
         print("desktop services e2e: ok")
