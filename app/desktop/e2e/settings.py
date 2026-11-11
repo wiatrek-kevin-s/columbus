@@ -5,7 +5,9 @@ whose classic copy stays reachable from Classic windows).
 Adds a GeoPackage connection, makes it read-write, turns edits on and
 removes it, checking each file as the server reads it; turns personal
 tools on, reads a tool an assistant proposed, installs one, declines
-another and removes the installed one; chooses Work freely on copies
+another and removes the installed one (and checks that a read of the
+list of tools, or of the switches there, which ends after a newer one is
+not drawn over it); chooses Work freely on copies
 (one confirmation, seven settings, the rest of the file kept) and goes
 back to asking (scripts.approval each, nothing else); turns the switches
 for toolboxes and for sync off and on, each by itself (its own line of
@@ -180,6 +182,9 @@ gpd.GeoDataFrame({"RTE": ["IH0035", "US0183"], "district": [14, 12]}, geometry=[
 
     count_hash = propose(root, "personal.count-rows", "Count rows")
     propose(root, "personal.other-tool", "Other tool")
+    # Two more, declined one after the other further down.
+    propose(root, "personal.late-one", "Late tool one")
+    propose(root, "personal.late-two", "Late tool two")
 
     step("a Columbus session")
     server = columbus(root)
@@ -311,6 +316,47 @@ gpd.GeoDataFrame({"RTE": ["IH0035", "US0183"], "district": [14, 12]}, geometry=[
         d.find_element(By.XPATH, "//ul[@id='tools-installed']//button[normalize-space()='Remove']").click()
         wait.until(lambda drv: not installed.exists())
         assert yaml.safe_load((root / "tools" / "approved.yaml").read_text()) in (None, {})
+
+        step("tools: a read of the list that ends after a newer one does not put a declined tool back")
+        # One tool is declined (the answer to the page's read that follows is
+        # kept back), then the other. The window reads the list too, on a
+        # timer and when it gets the focus: the read kept back is the page's
+        # own, the first one after the decline was answered.
+        proposals = root / "tools" / "proposals"
+        guard.hold(d, "settings_tools", after="settings_tool_decline")
+        click(d, By.XPATH, waiting.format("Late tool one", "Decline"))
+        wait.until(lambda drv: not (proposals / "personal.late-one").exists() and guard.held(drv))
+        click(d, By.XPATH, waiting.format("Late tool two", "Decline"))
+        wait.until(lambda drv: not (proposals / "personal.late-two").exists())
+        wait.until(lambda drv: drv.find_element(By.ID, "no-waiting").is_displayed())  # the newer read was drawn
+        # Now the first read ends: it was made while the second tool waited.
+        older = guard.release(d)
+        assert [x["title"] for x in older["waiting"]] == ["Late tool two"], older["waiting"]
+        assert "Late tool two" not in d.execute_script("return document.getElementById('tools-waiting').textContent"), \
+            "a read that ended late put a declined tool back in the list"
+        assert d.find_element(By.ID, "no-waiting").is_displayed()
+
+        step("tools: a read of the settings that ends after a newer one does not put the switch back")
+        # Allow personal tools is turned off (the answer to the read that
+        # follows is kept back), then on again.
+        d.execute_script("document.getElementById('tools-about').open = true")
+        drawn_before = d.find_element(By.ID, "allow_personal_tools")
+        assert drawn_before.is_selected()
+        d.execute_script("arguments[0].scrollIntoView({block: 'center'})", drawn_before)
+        guard.hold(d, "settings_state")
+        drawn_before.click()
+        wait.until(lambda drv: policy(root)[0].get("allow_personal_tools") is False and guard.held(drv))
+        # The row drawn before is still there: nothing was drawn since.
+        wait.until(lambda drv: drawn_before.is_enabled())
+        drawn_before.click()
+        wait.until(lambda drv: policy(root)[0].get("allow_personal_tools") is True)
+        wait.until(EC.staleness_of(drawn_before))  # the newer read was drawn
+        # Now the first read ends: it was made while the switch was off.
+        older = guard.release(d)
+        assert older["policy"]["allow_personal_tools"] is False, older["policy"]
+        box = d.find_element(By.ID, "allow_personal_tools")
+        assert box.is_selected() and box.is_enabled(), "a read that ended late put the switch back to off, while the file says on"
+        wait.until(lambda drv: not drv.find_element(By.ID, "tools-off").is_displayed())
 
         # Removing needs no confirmation.
         open_source(d, wait, "roads")

@@ -617,7 +617,9 @@ async function org(body) {
       sw.replaceChildren(
         h("p", { id: "org-managed", class: "small muted", hidden: s.policy.writable }, "These are managed by your organization. Ask your IT team to change them."),
         ...Object.keys(SWITCHES).map((n) => switchRow(n, s, drawSw)),
-        h("p", { class: "small muted" }, `Turning one on asks for ${st.confirm_with} first; turning one off does not. The rest of the file, comments included, is kept as it is.`));
+        h("p", { class: "small muted" }, st.confirm_with === "not available on this system"
+          ? "On this system the app cannot confirm it is you (there is no Touch ID or Windows Hello), so turn a switch on in the policy file instead. Turning one off works here. The rest of the file, comments included, is kept as it is."
+          : `Turning one on asks for ${st.confirm_with} first; turning one off does not. The rest of the file, comments included, is kept as it is.`));
     } catch (e) { if (mine === reads) showError(error, e); }
   };
   await drawSw();

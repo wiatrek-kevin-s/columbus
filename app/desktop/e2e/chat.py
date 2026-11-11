@@ -8,7 +8,9 @@ chat from the main window, sends a message, waits for the approval prompt
 the server raises for the export, allows it after its one-second guard,
 and checks the export landed and the reply was shown (its last result as
 a card, with how it was made in the panel on the right); then a script (declined,
-its code in its own box) and a stop while a prompt waits. With the panel
+its code in its own box) and a stop while a prompt waits. Table on a result
+card opens that card's own rows, a script's card included (a script that is
+allowed writes a table, and a newer layer is made after it). With the panel
 on the right closed by the person, a scripted `map_view` that only reads
 leaves it closed (and is told no map is open), and one that changes the
 view opens it, with the map following (T-30). The chat is saved: it is
@@ -314,6 +316,58 @@ def main():
             WebDriverWait(d, 10).until(lambda drv: drv.find_element(By.ID, "send").is_enabled())
             d.find_element(By.ID, "send").click()
             WebDriverWait(d, 90).until(lambda drv: done in drv.find_element(By.ID, "log").text)
+
+        step("Table on a script's result card opens the script's own rows, not a newer layer's")
+        # The script writes a note and a table of three rows; the person allows it.
+        SCRIPT[:0] = [
+            tool_use("t10", "run_python", {"code": "import csv\n"
+                                                   "with open('out/a-note.txt', 'w') as f:\n"
+                                                   "    f.write('three counts')\n"
+                                                   "with open('out/counts.csv', 'w', newline='') as f:\n"
+                                                   "    csv.writer(f).writerows([['what', 'n'], ['a', 1], ['b', 2], ['c', 3]])\n"}),
+            {"content": [{"type": "text", "text": "The script wrote three counts."}], "stop_reason": "end_turn"},
+        ]
+        box.send_keys("Count them with a script.")
+        WebDriverWait(d, 10).until(lambda drv: drv.find_element(By.ID, "send").is_enabled())
+        d.find_element(By.ID, "send").click()
+        WebDriverWait(d, 90).until(lambda drv: len(drv.find_elements(By.CSS_SELECTOR, ".ask")) == 4)
+        allow = d.find_elements(By.CSS_SELECTOR, ".ask")[3].find_element(By.XPATH, ".//button[normalize-space()='Allow once']")
+        WebDriverWait(d, 5).until(lambda drv: allow.is_enabled())
+        allow.click()
+        WebDriverWait(d, 90).until(lambda drv: "The script wrote three counts." in drv.find_element(By.ID, "log").text)
+        ran = answer_to("t10")["result"]
+        assert ran["status"] == "done", ran
+        # The note comes first in what the script lists: the card names the table.
+        assert [o["name"] for o in ran["outputs"]] == ["a-note.txt", "counts.csv"], ran["outputs"]
+        # Then a newer layer, with one row.
+        ask("Which tract is named B?", [
+            tool_use("t11", "query_features", {"connection": "tiger", "dataset": "tracts", "where": "NAME = 'B'"}),
+            {"content": [{"type": "text", "text": "One tract is named B."}], "stop_reason": "end_turn"},
+        ], "One tract is named B.")
+        WebDriverWait(d, 20).until(lambda drv: len(drv.find_elements(By.CSS_SELECTOR, "#log .result")) == 4)
+
+        def table_name():
+            """Whose rows the table sheet on the map shows ("": it is not open)."""
+            d.switch_to.frame(frame)
+            try:
+                return d.execute_script("const n = document.querySelector('section.table .table-name'); return n ? n.textContent : ''")
+            finally:
+                d.switch_to.default_content()
+
+        by_turn = d.find_elements(By.CSS_SELECTOR, "#log .result")
+        for card, rows, name in [(by_turn[2], 3, "-counts.csv"), (by_turn[3], 1, "tracts-p_"), (by_turn[2], 3, "-counts.csv")]:
+            click_table = card.find_element(By.CSS_SELECTOR, ".result-table")
+            d.execute_script("arguments[0].scrollIntoView({block: 'center'})", click_table)
+            click_table.click()
+            try:
+                WebDriverWait(d, 30).until(lambda drv: rows_shown() == rows and name in table_name())
+                time.sleep(2.6)
+                assert rows_shown() == rows and name in table_name()
+            except Exception:
+                d.save_screenshot(str(OUT / "chat-table-failed.png"))
+                raise SystemExit(f"Table on a result card showed {rows_shown()} rows of {table_name()!r}, not that card's {rows} of {name}")
+        assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
+        d.save_screenshot(str(OUT / "chat-table-script.png"))
 
         step("The person closes the panel: the assistant reading the map leaves it closed, and is told no map is open")
         d.find_element(By.ID, "out-close").click()
