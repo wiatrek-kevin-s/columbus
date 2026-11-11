@@ -715,6 +715,115 @@ async fn paths_and_files_the_rules_refuse_stay_refused() {
     assert!(audit.contains("\"decision\":\"denied\""));
 }
 
+/// `columbus-project.yaml` at the top of the folder holds the project's
+/// shared settings (its name and its instructions for the assistant), and
+/// travels with the files when the project syncs (F-17). Instructions steer
+/// the assistant, so the assistant may read the file and never writes or
+/// removes it: in any letter case, with the file there or not.
+#[tokio::test]
+async fn the_assistant_never_writes_or_removes_the_shared_settings_file() {
+    let env = setup(None, "allow_project_files: true\n");
+    let files_dir = env.files("review");
+    let c = start(&env, Some("review")).await;
+    let names = [
+        "columbus-project.yaml",
+        "Columbus-Project.yaml",
+        "COLUMBUS-PROJECT.YAML",
+    ];
+    let planted = "name: Mine\ninstructions: planted-instructions-marker\n";
+    let mut refused = 0;
+
+    // Not there (a project that is not linked): the assistant cannot make it.
+    for name in names {
+        let e = err(&files(
+            &c,
+            json!({"action": "write", "path": name, "text": planted}),
+        )
+        .await);
+        assert!(
+            e.contains("shared settings") && e.contains("may read it, not change it"),
+            "{name}: {e}"
+        );
+        let e = err(&files(
+            &c,
+            json!({"action": "delete", "path": name, "sha256": sha256(planted)}),
+        )
+        .await);
+        assert!(
+            e.contains("shared settings") && e.contains("may read it, not remove it"),
+            "{name}: {e}"
+        );
+        refused += 2;
+    }
+    assert!(!files_dir.exists(), "a refused write makes no folder");
+
+    // There, as a sync leaves it: read, and neither replaced nor removed,
+    // with or without the hash a read returned.
+    let theirs = "name: Parcel review\ninstructions: Report areas in acres.\n";
+    std::fs::create_dir_all(&files_dir).unwrap();
+    std::fs::write(files_dir.join("columbus-project.yaml"), theirs).unwrap();
+    let r = ok(&files(
+        &c,
+        json!({"action": "read", "path": "columbus-project.yaml"}),
+    )
+    .await);
+    assert_eq!(r["result"]["text"], theirs);
+    let seen = r["result"]["sha256"].as_str().unwrap().to_string();
+    assert_eq!(seen, sha256(theirs));
+    for name in names {
+        for args in [
+            json!({"action": "write", "path": name, "text": planted, "sha256": seen}),
+            json!({"action": "write", "path": name, "text": planted}),
+        ] {
+            let e = err(&files(&c, args.clone()).await);
+            assert!(
+                e.contains("shared settings") && e.contains("may read it, not change it"),
+                "{args}: {e}"
+            );
+            refused += 1;
+        }
+        for args in [
+            json!({"action": "delete", "path": name, "sha256": seen}),
+            json!({"action": "delete", "path": name}),
+        ] {
+            let e = err(&files(&c, args.clone()).await);
+            assert!(
+                e.contains("shared settings") && e.contains("may read it, not remove it"),
+                "{args}: {e}"
+            );
+            refused += 1;
+        }
+    }
+    // The file is as it was, and nothing was put beside it.
+    assert_eq!(
+        snapshot(&files_dir),
+        [(
+            files_dir.join("columbus-project.yaml"),
+            theirs.as_bytes().to_vec()
+        )]
+    );
+
+    c.cancel().await.unwrap();
+    // Every refusal is in the audit log with its reason, never the text.
+    let audit = env.audit();
+    let denied = audit
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter(|l| {
+            l["tool"] == "project_files"
+                && l["decision"] == "denied"
+                && l["dataset"]
+                    .as_str()
+                    .is_some_and(|d| d.eq_ignore_ascii_case("project:review/columbus-project.yaml"))
+                && l["reason"]
+                    .as_str()
+                    .is_some_and(|r| r.contains("shared settings"))
+        })
+        .count();
+    assert_eq!(denied, refused, "{audit}");
+    assert!(!audit.contains("planted-instructions-marker"), "{audit}");
+}
+
 #[tokio::test]
 async fn with_no_project_or_with_the_policy_off_there_are_no_project_files() {
     // A chat that is not in a project: told to start one in a project.

@@ -57,8 +57,8 @@ export function toolboxSection() {
     off.replaceChildren(h("div", {}, h("b", {}, "Toolboxes are turned off. "),
       st.managed
         ? "Your organization's settings do not allow them (allow_toolboxes), so none are used and none can be added. Ask whoever manages Columbus for you to turn them on."
-        : "None are used and none can be added. To turn them on, choose Work freely on copies in Settings, or set allow_toolboxes in your organization settings file.",
-      st.managed ? null : " ", st.managed ? null : h("a", { href: "#/settings", id: "tbx-settings" }, "Open Settings")));
+        : "None are used and none can be added. To turn them on, use the Allow toolboxes switch (allow_toolboxes) in Settings › Organization rules, or choose Work freely on copies in Settings.",
+      st.managed ? null : " ", st.managed ? null : h("a", { href: "#/settings/org", id: "tbx-settings" }, "Open Organization rules")));
     // Turned off: nothing is offered.
     add.hidden = !st.allowed;
     const ready = st.installed.filter((t) => t.state === "ready" && t.tools);

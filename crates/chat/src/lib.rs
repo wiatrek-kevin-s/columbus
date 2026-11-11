@@ -1076,6 +1076,18 @@ fn made(v: Option<&Value>) -> Made {
     let Some(v) = v else {
         return Made::default();
     };
+    // A tool run through `run_tool` (a toolbox's, the person's own, a
+    // connected server's) lists the files it saved under `result.saved`:
+    // the first layer or table among them (what a table can show), else
+    // the first file.
+    let saved = || {
+        let files = v["result"]["saved"].as_array()?;
+        files
+            .iter()
+            .find(|f| matches!(f["kind"].as_str(), Some("layer" | "table")))
+            .or(files.first())?["handle"]
+            .as_str()
+    };
     Made {
         provenance: v["provenance"]
             .as_str()
@@ -1084,6 +1096,7 @@ fn made(v: Option<&Value>) -> Made {
         handle: v["result"]["layer"]["handle"]
             .as_str()
             .or(v["result"]["handle"].as_str())
+            .or_else(saved)
             .filter(|s| plain(s))
             .map(String::from),
         images: vec![],
@@ -1155,6 +1168,51 @@ mod tests {
         let v = json!({"result": {"rows_read": 12, "layer": {"summary": {"crs": {"code": "EPSG:3081"}}}}, "checks": [{"severity": "warn"}, {"severity": "fail"}, {"severity": "info"}]});
         assert_eq!(result_summary(Some(&v)), "12 rows, EPSG:3081");
         assert_eq!(count_checks(&v), (1, 1));
+    }
+
+    #[test]
+    fn a_result_names_the_layer_or_the_file_it_made() {
+        let handle = |v: Value| made(Some(&v)).handle;
+        // A reading or processing tool: its layer.
+        let v = json!({"result": {"layer": {"handle": "ws://s/results/roads-p_1a2b3c4d.gpkg"}}, "provenance": "p_1a2b3c4d"});
+        let m = made(Some(&v));
+        assert_eq!(
+            m.handle.as_deref(),
+            Some("ws://s/results/roads-p_1a2b3c4d.gpkg")
+        );
+        assert_eq!(m.provenance.as_deref(), Some("p_1a2b3c4d"));
+        // A toolbox's tool, run through run_tool: the file it saved.
+        let copy = "ws://s/results/geolibre-vector_copy-p_5e6f7a8b-output.gpkg";
+        let v = json!({"result": {"provider": "geolibre", "tool": "vector_copy", "status": "done",
+            "saved": [{"handle": copy, "bytes": 98304, "kind": "layer"}]}, "provenance": "p_5e6f7a8b"});
+        assert_eq!(handle(v).as_deref(), Some(copy));
+        // Several files: the first one a table can show (a layer or a table).
+        let v = json!({"result": {"saved": [
+            {"handle": "ws://s/results/t-hillshade.tif", "bytes": 1, "kind": "raster"},
+            {"handle": "ws://s/results/t-report.txt", "bytes": 1, "kind": "file"},
+            {"handle": "ws://s/results/t-stats.csv", "bytes": 1, "kind": "table"},
+            {"handle": "ws://s/results/t-lines.gpkg", "bytes": 1, "kind": "layer"}]}});
+        assert_eq!(handle(v).as_deref(), Some("ws://s/results/t-stats.csv"));
+        // None of them has rows: the first file.
+        let v = json!({"result": {"saved": [
+            {"handle": "ws://s/results/t-hillshade.tif", "bytes": 1, "kind": "raster"},
+            {"handle": "ws://s/external/vault.report-p_1-0.json", "bytes": 1, "kind": "application/json"}]}});
+        assert_eq!(handle(v).as_deref(), Some("ws://s/results/t-hillshade.tif"));
+        // The layer a result names itself comes first.
+        let v = json!({"result": {"layer": {"handle": "ws://s/results/a.gpkg"},
+            "saved": [{"handle": "ws://s/results/b.gpkg", "kind": "layer"}]}});
+        assert_eq!(handle(v).as_deref(), Some("ws://s/results/a.gpkg"));
+        // Nothing made or saved, or a handle that is not a plain id: none.
+        for v in [
+            json!({"result": {"status": "done"}}),
+            json!({"result": {"saved": []}}),
+            json!({"result": {"saved": "ws://s/results/a.gpkg"}}),
+            json!({"result": {"saved": [{"kind": "layer"}]}}),
+            json!({"result": {"saved": [{"handle": "ws://s/results/<b>.gpkg", "kind": "layer"}]}}),
+        ] {
+            assert_eq!(handle(v.clone()), None, "{v}");
+        }
+        assert_eq!(made(None).handle, None);
     }
 
     #[test]

@@ -9,9 +9,21 @@ and the demo animation's frames (app/desktop/e2e/out/frames/).
 `--root` is the stand-in person's home folder: their GIS files and Columbus
 settings go there, and its paths are what the pictures show (so use a plain
 one, never a temporary folder; it is emptied first). The street basemap
-comes from tiles.openfreemap.org, so the pictures need internet; the
-"README pictures" workflow takes them on GitHub's runners. Then
+comes from tiles.openfreemap.org, so pictures with it need internet; the
+"README pictures" workflow takes them on GitHub's runners. `--no-basemap`
+takes them with the street background off (the app's own default), on a
+machine that cannot reach the tiles. Then
 `sh app/desktop/e2e/demo/animate.sh` makes the animation.
+
+Each theme is two sessions of the app. The first is a first run: nothing
+is connected yet, and the person chooses Work freely on copies (the
+confirmation at the keyboard is the tests' stand-in, since Linux has no
+Touch ID or Windows Hello). That writes the policy's seven settings, so
+the second session shows the app as it is from then on: the chat, a
+workflow, the data, a project with its files and a chat that runs one of
+its scripts in the sandbox without asking, and the Tools page with
+Columbus's own catalogue. Nothing is downloaded or installed: no toolbox
+is shown that is not really there.
 
 The data: app/desktop/e2e/demo/austin.gpkg, a public extract (US Census
 TIGER/Line roads and blocks, NHTSA FARS fatal crashes; see
@@ -24,12 +36,14 @@ on the organization's host list, so nothing is ever sent to them.
 import argparse
 import json
 import os
+import re
 import shutil
 import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import unquote
 
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
@@ -66,12 +80,69 @@ CRASHES = "fars_fatal_crashes_2020_2023"
 # TIGER names IH 35 "I- 35", "N I- 35", "I- 35 Svc Rd S" (frontage roads) and so on.
 IH35_WHERE = "street_name LIKE '%I- 35%'"
 
+# A project: its instructions, the files the person keeps in its folder,
+# and what they ask in a chat of it.
+PROJECT = "IH 35 safety review"
+PROJECT_NOTES = ("Report distances in feet, in Texas Central State Plane (EPSG:2277). "
+                 "Count a crash once, even when it lies near two roadways.")
+PROJECT_ASK = "Count all the fatal crashes by year with the project's script."
+PROJECT_SCRIPT = "scripts/crashes_by_year.py"
+PROJECT_FILES = {
+    "notes/method.md": """# How we count crashes near IH 35
+
+- Roads: street centerlines of central Austin (US Census TIGER/Line 2024), the
+  IH 35 mainlanes and frontage roads.
+- Corridor: 150 feet either side, measured in Texas Central State Plane
+  (EPSG:2277, feet).
+- Crashes: NHTSA FARS fatal crashes, 2020 to 2023. A crash counts once.
+- Check: the counted points must lie on the corridor, not beside it.
+""",
+    # Standard library only, so it runs wherever the engine's Python does
+    # (a GeoPackage is a SQLite file).
+    PROJECT_SCRIPT: '''"""Count crashes and deaths by year.
+
+Give it one layer of crashes, named "crashes", with year and fatalities
+fields. It writes out/crashes_by_year.csv and prints the table.
+"""
+import csv
+import json
+import sqlite3
+
+inputs = json.load(open("inputs.json"))
+layer = sqlite3.connect(inputs["crashes"])
+table = layer.execute("SELECT table_name FROM gpkg_contents WHERE data_type = 'features'").fetchone()[0]
+rows = layer.execute(f'SELECT year, COUNT(*), SUM(fatalities) FROM "{table}" GROUP BY year ORDER BY year').fetchall()
+with open("out/crashes_by_year.csv", "w", newline="") as out:
+    csv.writer(out).writerows([("year", "crashes", "deaths"), *rows])
+for year, crashes, deaths in rows:
+    print(year, crashes, deaths)
+''',
+    "scripts/outside_corridor.py": '''"""List the crashes that lie outside the corridor.
+
+Give it two layers: "crashes" (points) and "corridor" (the buffer around
+the roadway). It writes out/outside_corridor.gpkg and prints how many.
+"""
+import json
+
+import geopandas as gpd
+
+inputs = json.load(open("inputs.json"))
+crashes = gpd.read_file(inputs["crashes"])
+corridor = gpd.read_file(inputs["corridor"]).to_crs(crashes.crs)
+outside = crashes[~crashes.within(corridor.union_all())]
+print(f"{len(outside)} of {len(crashes)} crashes lie outside the corridor")
+outside.to_file("out/outside_corridor.gpkg", driver="GPKG")
+''',
+}
+
 
 # ---------------------------------------------------------------- the data
 
 def prepare(root):
-    """The person's GIS files and Columbus settings under `root`; returns
-    the facts the assistant's answer states, computed from the data."""
+    """The person's GIS files and a new Columbus under `root`, as on a first
+    run: the server, the engine and the organization's settings, and no
+    connection yet (`connect` adds those). Returns the facts the
+    assistant's answers state, computed from the data."""
     import geopandas as gpd
 
     if root.exists():
@@ -113,9 +184,28 @@ def prepare(root):
     pts = crashes.to_crs("EPSG:2277")
     near = pts[pts.within(corridor)]
     by_year = near.groupby("year").agg(crashes=("case_id", "size"), deaths=("fatalities", "sum")).reset_index()
+    every = crashes.groupby("year").agg(crashes=("case_id", "size"), deaths=("fatalities", "sum")).reset_index()
     facts = {"total": len(crashes), "near": len(near), "deaths": int(near["fatalities"].sum()),
-             "segments": len(ih35), "rows": [(int(r.year), int(r.crashes), int(r.deaths)) for r in by_year.itertuples()]}
+             "segments": len(ih35), "rows": [(int(r.year), int(r.crashes), int(r.deaths)) for r in by_year.itertuples()],
+             "all_deaths": int(crashes["fatalities"].sum()),
+             "all_rows": [(int(r.year), int(r.crashes), int(r.deaths)) for r in every.itertuples()]}
 
+    # Scripts are off here: the person turns them on in the first run, with
+    # the choice Work freely on copies, which writes its seven settings.
+    (col / "policy.yaml").write_text(
+        "connection_types: [gpkg, filegdb, files, oracle, arcgis]\nallow_workflows: true\nallow_personal_tools: true\n"
+        f"exports:\n  - {{ id: outbox, path: {json.dumps(str(col / 'exports' / 'Outbox'))}, granted: true }}\n"
+        f"  - {{ id: review, path: {json.dumps(str(col / 'exports' / 'Review'))} }}\n")
+    return facts
+
+
+def connect(root):
+    """What the person has added since the first run: their connections,
+    and a tool and a workflow their assistant proposed."""
+    gis = root / "GIS"
+    austin = gis / "Austin"
+    crash_dir = gis / "Crash records"
+    col = root / "Columbus"
     conns = col / "connections"
     (conns / "austin-streets.yaml").write_text(
         f"id: austin-streets\ntype: gpkg\npath: {json.dumps(str(austin / 'Austin_Streets.gpkg'))}\n"
@@ -134,10 +224,6 @@ def prepare(root):
     (conns / "bike-lanes-agol.yaml").write_text(
         "id: bike-lanes-agol\ntype: arcgis\nurl: https://services.arcgis.com/aUstInDemo0001/arcgis/rest/services/Bicycle_Facilities/FeatureServer\n"
         "datasets:\n  allow: [\"*\"]\ndescription: Bicycle facilities (ArcGIS Online, public layer)\n")
-    (col / "policy.yaml").write_text(
-        "connection_types: [gpkg, filegdb, files, oracle, arcgis]\nallow_workflows: true\nallow_personal_tools: true\nallow_scripts: true\n"
-        f"exports:\n  - {{ id: outbox, path: {json.dumps(str(col / 'exports' / 'Outbox'))}, granted: true }}\n"
-        f"  - {{ id: review, path: {json.dumps(str(col / 'exports' / 'Review'))} }}\n")
 
     td = col / "tools" / "proposals" / "personal.crashes-by-year"
     td.mkdir(parents=True)
@@ -148,7 +234,6 @@ def prepare(root):
     wd.mkdir(parents=True)
     (wd / "workflow.yaml").write_text(WORKFLOW)
     (wd / "proposal.json").write_text(json.dumps({"id": "weekly-ih35-crash-check", "proposed": "2026-11-06T07:45:00-06:00"}))
-    return facts
 
 
 WORKFLOW = f"""id: weekly-ih35-crash-check
@@ -208,7 +293,11 @@ class Assistant:
     def __init__(self, facts):
         f = facts
         table = "\n".join(f"| {y} | {c} | {d} |" for y, c, d in f["rows"])
+        every = "\n".join(f"| {y} | {c} | {d} |" for y, c, d in f["all_rows"])
+        self.facts = f
         self.handles = {}
+        self.results = {}
+        self.problem = None
         self.script = [
             tool_use("t1", "query_features", {"connection": "crash-records", "dataset": CRASHES},
                      "I'll read the fatal crash records first."),
@@ -227,8 +316,28 @@ class Assistant:
             lambda h: tool_use("t6", "export_output", {"handle": h["t4"], "folder": "review", "name": "ih35_fatal_crashes"},
                                "I'll export them to the review folder. It is not pre-approved, so Columbus will ask you first."),
             answer(f"Exported **{f['near']} crashes** to the review folder as `ih35_fatal_crashes.gpkg`, with a provenance file beside it."),
+            # A chat in the project: one of its own scripts, run in the
+            # sandbox on a copy. Under Work freely on copies nothing asks.
+            tool_use("p1", "project_files", {"action": "list"}, "I'll look at the project's files first."),
+            tool_use("p2", "query_features", {"connection": "crash-records", "dataset": CRASHES}, "Now the fatal crash records."),
+            lambda h: tool_use("p3", "run_python", {"script": PROJECT_SCRIPT, "inputs": {"crashes": h["p2"]}},
+                               "And the project's script on them. It runs in the sandbox, on a copy of the records."),
+            lambda h: self.counted(every),
         ]
         self.delay = 1.6
+
+    def counted(self, table):
+        """The answer of the project's chat, said only if the script really
+        ran and printed these counts."""
+        f = self.facts
+        ran = json.dumps(self.results.get("p3", {}))
+        missing = [y for y, c, d in f["all_rows"] if not re.search(rf"{y}\s+{c}\s+{d}\b", ran.replace("\\n", "\n"))]
+        if "stdout" not in ran or missing:
+            self.problem = f"the project's script did not print the counts for {missing or 'any year'}: {ran[:1500]}"
+            return answer("The project's script did not run as expected.")
+        return answer(f"**{f['total']} fatal crashes** in this part of Austin from 2020 to 2023, with **{f['all_deaths']} deaths**, "
+                      f"counted by the project's own script, `{PROJECT_SCRIPT}`:\n\n| Year | Crashes | Deaths |\n|---|---:|---:|\n{table}\n\n"
+                      "The table is also in this chat's results, as a CSV file.")
 
     def reply(self, body):
         last = body["messages"][-1]["content"]
@@ -236,6 +345,7 @@ class Assistant:
             c = last[0]["content"]
             text = c if isinstance(c, str) else next((x["text"] for x in c if x.get("type") == "text"), "")
             try:
+                self.results[last[0]["tool_use_id"]] = json.loads(text)
                 self.handles[last[0]["tool_use_id"]] = json.loads(text)["result"]["layer"]["handle"]
             except Exception:
                 pass
@@ -289,10 +399,22 @@ class Session:
 
     def tidy(self):
         # Focus as after a click, and no words only Linux shows.
+        # Where a line says more than that (the choice of how the assistant
+        # works ends with a sentence for this system), only that sentence goes.
         self.d.execute_script("""
             if (document.activeElement && document.activeElement.id === 'page-title') document.activeElement.blur();
-            for (const n of document.querySelectorAll('.notice, p.small, .footline')) if (/no Touch ID or Windows Hello|Schedules are not available|cannot be made here/.test(n.textContent)) n.remove();
+            const linux = /no Touch ID or Windows Hello/;
+            for (const n of document.querySelectorAll('.notice, p.small, .footline')) {
+              if (!/no Touch ID or Windows Hello|Schedules are not available|cannot be made here/.test(n.textContent)) continue;
+              const own = [...n.childNodes].filter((c) => c.nodeType === 3 && linux.test(c.textContent));
+              if (own.length && own.some((c) => c.textContent.trim() !== n.textContent.trim())) own.forEach((c) => c.remove());
+              else n.remove();
+            }
         """)
+
+    def quiet(self):
+        """Wait for the note that says something was saved to go."""
+        WebDriverWait(self.d, 12).until(lambda drv: drv.execute_script("const t = document.getElementById('toast'); return !t || t.hidden"))
 
     def shot(self, name, budget_kb, size=None, settle=1.2, crop=None):
         time.sleep(settle)
@@ -326,15 +448,16 @@ class Session:
         self.frame(hold)
         self.frames.insert(0, self.frames.pop())
 
-    def frames_until(self, cond, limit=120, every=0.7):
+    def frames_until(self, cond, limit=120, every=0.7, frames=True):
         """Frames while waiting for `cond` (or just wait, with no frames)."""
+        taking = frames and self.frames is not None
         end = time.monotonic() + limit
         while not cond(self.d):
             if time.monotonic() > end:
                 raise SystemExit(f"step '{guard.last()}' waited {limit}s in vain")
-            if self.frames is not None:
+            if taking:
                 self.frame(0.45)
-            time.sleep(every if self.frames is None else 0.15)
+            time.sleep(0.15 if taking else every)
 
 
 def layers_on(d, names=None):
@@ -356,13 +479,11 @@ def layers_on(d, names=None):
             return
 
 
-def run(theme, facts, frames):
-    step(f"{theme}: setting up")
-    assistant = Assistant(facts)
-    srv = stand_in(assistant)
+def app_env(srv=None):
+    """The app's settings for a session; with `srv`, an AI is connected
+    (the stand-in). Confirmations at the keyboard are the tests' stand-in."""
     col = ROOT / "Columbus"
     env = dict(os.environ, HOME=str(ROOT),
-               COLUMBUS_APP_API_KEY="sk-ant-example-0000", COLUMBUS_APP_API_BASE=f"http://127.0.0.1:{srv.server_port}",
                COLUMBUS_SERVER=str(col / "columbus-mcp"), COLUMBUS_APP_TEST_CONFIRM="allow",
                COLUMBUS_POLICY=str(col / "policy.yaml"), COLUMBUS_CONNECTIONS=str(col / "connections"),
                COLUMBUS_WORKSPACES=str(col / "workspaces"), COLUMBUS_AUDIT_DIR=str(col / "audit"),
@@ -370,7 +491,49 @@ def run(theme, facts, frames):
                COLUMBUS_WORKER=str(REPO / "workers/python/columbus_worker.py"), COLUMBUS_PYTHON=str(col / "engine" / "venv" / "bin" / "python"),
                COLUMBUS_APPROVALS_BROWSER="none", XDG_CONFIG_HOME=str(ROOT / ".config"), XDG_DATA_HOME=str(ROOT / ".local/share"),
                COLUMBUS_UI_DIR=str(REPO / "app/ui/dist"), COLUMBUS_LOG="warn")
-    d, proc = guard.driver(env, APP)
+    # Only Columbus's own catalogue of toolboxes is ever shown.
+    for k in ["COLUMBUS_APP_API_KEY", "COLUMBUS_APP_API_BASE", "COLUMBUS_TOOLBOX_TEST_CATALOGUE"]:
+        env.pop(k, None)
+    if srv:
+        env.update(COLUMBUS_APP_API_KEY="sk-ant-example-0000", COLUMBUS_APP_API_BASE=f"http://127.0.0.1:{srv.server_port}")
+    return env
+
+
+def first_run(theme):
+    """A new computer: no connection, no AI. The first steps ask how the
+    assistant should work, and the person chooses Work freely on copies."""
+    step(f"{theme}: the first run, and the choice")
+    d, proc = guard.driver(app_env(), APP)
+    s = Session(theme, None)
+    s.d = d
+    try:
+        d.set_window_size(W, H)
+        wait = WebDriverWait(d, 60)
+        guard.ready(d, wait)
+        d.execute_script("window.__TAURI__.core.invoke('prefs_set', {prefs: {theme: arguments[0], basemap: arguments[1], skipped: [], setup_done: false}})", theme, not ARGS.no_basemap)
+        d.refresh()
+        guard.ready(d, wait)
+        free = wait.until(EC.presence_of_element_located((By.ID, "fr-work-free")))
+        wait.until(lambda drv: "Python scripts are off" in drv.find_element(By.ID, "fr-work-state").text)
+        d.execute_script("arguments[0].click()", free)
+        wait.until(lambda drv: "On now: Work freely on copies." in drv.find_element(By.ID, "fr-work-state").text)
+        policy = (ROOT / "Columbus" / "policy.yaml").read_text()
+        for line in ["allow_scripts: true", "approval: none", "allow_toolboxes: true", "allow_project_files: true", "allow_sync: true"]:
+            if line not in policy:
+                sys.exit(f"the choice did not write {line!r} to the policy file:\n{policy}")
+        s.quiet()
+        if theme == "light":
+            s.shot("first-run", 250, size=(1280, 800))
+    finally:
+        guard.stop(d, proc)
+
+
+def run(theme, facts, frames):
+    step(f"{theme}: setting up")
+    assistant = Assistant(facts)
+    srv = stand_in(assistant)
+    col = ROOT / "Columbus"
+    d, proc = guard.driver(app_env(srv), APP)
     s = Session(theme, frames)
     s.d = d
     sfx = f"-{theme}"
@@ -516,6 +679,51 @@ def run(theme, facts, frames):
         WebDriverWait(d, 30).until(lambda drv: drv.find_elements(By.CSS_SELECTOR, "#connections li.conn") and len(drv.find_elements(By.CSS_SELECTOR, "#connections li.conn")) >= 5)
         s.shot(f"tour-connections{sfx}", 250, size=(1280, 800))
 
+        step(f"{theme}: a project, its files, and a chat that runs one of its scripts")
+        d.execute_script("location.hash = '#/projects/new'")
+        wait.until(EC.visibility_of_element_located((By.ID, "pj-name"))).send_keys(PROJECT)
+        d.find_element(By.ID, "pj-instructions").send_keys(PROJECT_NOTES)
+        d.find_element(By.ID, "pj-save").click()
+        WebDriverWait(d, 20).until(lambda drv: re.fullmatch(r"#/projects/(?!new$)[^/]+", drv.execute_script("return location.hash")))
+        project = unquote(d.execute_script("return location.hash").rsplit("/", 1)[1])
+        s.quiet()
+        # The person's own scripts and notes, put in the project's folder.
+        for rel, text in PROJECT_FILES.items():
+            f = col / "projects" / project / "files" / rel
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text(text)
+        WebDriverWait(d, 20).until(EC.element_to_be_clickable((By.ID, "pj-chat"))).click()
+        box = wait.until(EC.visibility_of_element_located((By.ID, "text")))
+        WebDriverWait(d, 20).until(lambda drv: drv.execute_script("return !!document.querySelector('.chat-empty .starters')"))
+        box.send_keys(PROJECT_ASK)
+        WebDriverWait(d, 10).until(lambda drv: drv.find_element(By.ID, "send").is_enabled())
+        d.find_element(By.ID, "send").click()
+        # Nothing asks: the script stays in the sandbox. (Not in the animation.)
+        s.frames_until(lambda drv: assistant.problem or drv.find_elements(By.CSS_SELECTOR, ".ask")
+                       or "counted by the project's own script" in drv.find_element(By.ID, "log").text, limit=180, frames=False)
+        if assistant.problem or d.find_elements(By.CSS_SELECTOR, ".ask"):
+            sys.exit(assistant.problem or "Columbus asked before the project's script, which Work freely on copies should not need")
+        d.execute_script("location.hash = arguments[0]", f"#/projects/{project}")
+        WebDriverWait(d, 30).until(lambda drv: len(drv.find_elements(By.CSS_SELECTOR, "#pj-file-list li.file")) == len(PROJECT_FILES)
+                                   and drv.find_elements(By.CSS_SELECTOR, "#pj-chats li") and drv.find_elements(By.ID, "sync-unlinked"))
+        d.execute_script("document.getElementById('pj-sync').scrollIntoView({block: 'start'}); document.activeElement && document.activeElement.blur();")
+        s.shot(f"tour-project{sfx}", 250, size=(1280, 800))
+
+        step(f"{theme}: tools to install")
+        d.execute_script("location.hash = '#/tools'")
+        add = WebDriverWait(d, 20).until(EC.element_to_be_clickable((By.ID, "tbx-add")))
+        if theme == "light":
+            # The page itself: toolboxes first, then the person's own tools.
+            WebDriverWait(d, 20).until(lambda drv: drv.find_elements(By.ID, "tools-waiting") and "Crashes by year" in drv.find_element(By.ID, "tools-waiting").text)
+            s.shot("tools", 250, size=(1280, 800))
+        add.click()
+        # What Columbus's catalogue offers on this system. Nothing is downloaded.
+        WebDriverWait(d, 20).until(lambda drv: drv.find_elements(By.CSS_SELECTOR, "#tbx-dialog .tbx-entry button.tbx-install"))
+        if not d.find_elements(By.CSS_SELECTOR, "#tbx-dialog .tbx-entry[data-id='geolibre']"):
+            sys.exit("the catalogue's GeoLibre entry is not offered")
+        s.shot(f"tour-toolboxes{sfx}", 250, size=(1280, 800))
+        d.find_element(By.ID, "tbx-add-close").click()
+
         if theme == "light":
             step("light: the other pages, for docs/app-tour.md")
             d.execute_script("location.hash = '#/tools'")
@@ -542,6 +750,8 @@ def main():
     for theme in ARGS.themes.split(","):
         facts = prepare(ROOT)
         print("facts:", json.dumps(facts))
+        first_run(theme)
+        connect(ROOT)
         frames = [] if theme == "light" else None
         run(theme, facts, frames)
         if frames is not None:

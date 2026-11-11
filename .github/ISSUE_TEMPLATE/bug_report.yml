@@ -10,8 +10,8 @@ body:
     id: version
     attributes:
       label: Columbus version
-      description: "From `columbus-mcp --version`, or the app's Settings › General › About."
-      placeholder: "0.14.0"
+      description: "From `columbus-mcp --version`, or the foot of the app's Settings."
+      placeholder: "0.15.0"
     validations:
       required: true
   - type: dropdown
