@@ -372,13 +372,13 @@ filters, edits and exports here make new outputs):"
     );
     for l in r["layers"].as_array().into_iter().flatten() {
         t.push_str(&format!(
-            "\n- step {}: {} ({} rows)",
+            "\n- step {}: {} ({})",
             l["step"].as_str().unwrap_or(""),
             l["handle"].as_str().unwrap_or(""),
             l["rows"]
                 .as_u64()
-                .map(|n| n.to_string())
-                .unwrap_or_else(|| "?".into())
+                .map(rows)
+                .unwrap_or_else(|| "? rows".into())
         ));
     }
     if let Some(rep) = r["report"].as_str().filter(|s| !s.trim().is_empty()) {
@@ -1111,6 +1111,15 @@ fn made(v: Option<&Value>) -> Made {
     }
 }
 
+/// A count of rows in words: "1 row", "12 rows".
+fn rows(n: u64) -> String {
+    if n == 1 {
+        "1 row".into()
+    } else {
+        format!("{n} rows")
+    }
+}
+
 /// A few plain words about a result: rows, the layer made, the status.
 fn result_summary(v: Option<&Value>) -> String {
     let Some(r) = v.map(|v| &v["result"]) else {
@@ -1120,12 +1129,14 @@ fn result_summary(v: Option<&Value>) -> String {
     if let Some(s) = r["status"].as_str() {
         parts.push(s.replace('_', " "));
     }
+    let mut counted = false;
     if let Some(n) = r["rows_read"].as_u64().or(r["rows"].as_u64()) {
-        parts.push(format!("{n} rows"));
+        parts.push(rows(n));
+        counted = true;
     }
     if let Some(n) = r["layer"]["summary"]["rows"].as_u64() {
-        if !parts.iter().any(|p| p.ends_with(" rows")) {
-            parts.push(format!("{n} rows"));
+        if !counted {
+            parts.push(rows(n));
         }
     }
     if let Some(c) = r["layer"]["summary"]["crs"]["code"].as_str() {
@@ -1176,6 +1187,20 @@ mod tests {
         let v = json!({"result": {"rows_read": 12, "layer": {"summary": {"crs": {"code": "EPSG:3081"}}}}, "checks": [{"severity": "warn"}, {"severity": "fail"}, {"severity": "info"}]});
         assert_eq!(result_summary(Some(&v)), "12 rows, EPSG:3081");
         assert_eq!(count_checks(&v), (1, 1));
+        // One row is "1 row"; every other count keeps "rows". The count is
+        // said once, whether the result gives it, its layer, or both.
+        let said = |result: Value| result_summary(Some(&json!({ "result": result })));
+        assert_eq!(
+            said(
+                json!({"rows_read": 1, "layer": {"summary": {"rows": 1, "crs": {"code": "EPSG:3081"}}}})
+            ),
+            "1 row, EPSG:3081"
+        );
+        assert_eq!(said(json!({"layer": {"summary": {"rows": 1}}})), "1 row");
+        assert_eq!(said(json!({"status": "done", "rows": 1})), "done, 1 row");
+        assert_eq!(said(json!({"rows": 0})), "0 rows");
+        assert_eq!(said(json!({"layer": {"summary": {"rows": 2}}})), "2 rows");
+        assert_eq!(said(json!({"rows_read": 1000})), "1000 rows");
     }
 
     #[test]
@@ -1275,12 +1300,16 @@ mod tests {
     fn an_opened_run_and_its_report_are_told_to_the_assistant() {
         assert!(run_text(&Value::Null).is_none());
         let t = run_text(&json!({"workflow": "row-widths", "run": "2026-11-06T06-00-00-000-1a2b", "name": "ROW widths",
-            "layers": [{"step": "fixed", "handle": "ws://s/results/row-widths-fixed.gpkg", "rows": 12}],
+            "layers": [{"step": "fixed", "handle": "ws://s/results/row-widths-fixed.gpkg", "rows": 12},
+                {"step": "one", "handle": "ws://s/results/row-widths-one.gpkg", "rows": 1},
+                {"step": "unread", "handle": "ws://s/results/row-widths-unread.gpkg"}],
             "report": "# ROW widths\n\nSucceeded."}))
         .unwrap();
         assert!(
             t.contains("\"ROW widths\"")
                 && t.contains("ws://s/results/row-widths-fixed.gpkg (12 rows)")
+                && t.contains("ws://s/results/row-widths-one.gpkg (1 row)")
+                && t.contains("ws://s/results/row-widths-unread.gpkg (? rows)")
                 && t.contains("never changed")
                 && t.contains("# ROW widths\n\nSucceeded."),
             "{t}"
