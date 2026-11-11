@@ -15,7 +15,9 @@
 //! no script runs, whatever the policy allows elsewhere.
 //!
 //! Needs Python with geopandas, pyogrio, shapely and pyproj; skipped
-//! otherwise (CI installs it, and fails instead of skipping).
+//! otherwise (CI installs it, and fails instead of skipping). On Linux in
+//! CI the first test also fails, instead of skipping, where the sandbox
+//! cannot be set up; on other systems it runs where the sandbox can be.
 
 mod support;
 
@@ -45,6 +47,11 @@ fn can_confine() -> bool {
         .args(["--check", "A"])
         .output()
         .is_ok_and(|o| o.status.success())
+}
+
+/// CI says tests must not skip (the same switch as for the engine).
+fn must_not_skip() -> bool {
+    std::env::var("COLUMBUS_TEST_REQUIRE_ENGINE").is_ok_and(|v| v == "1")
 }
 
 /// Ten roads around Austin in EPSG:3081, eight in district 14.
@@ -326,6 +333,12 @@ async fn a_script_cannot_cross_the_boundary() {
         let e = err(&call(&other, "run_python", json!({"code": "print(1)"})).await);
         assert!(e.contains("confined"), "{e}");
         other.cancel().await.unwrap();
+        // On Linux, where tests must not skip (CI), this one must run.
+        assert!(
+            !(cfg!(target_os = "linux") && must_not_skip()),
+            "COLUMBUS_TEST_REQUIRE_ENGINE=1, so this test must not skip, but this machine cannot \
+             confine at level A (Landlock and seccomp are needed)"
+        );
         eprintln!("skipping: this machine cannot confine at level A");
         return;
     }

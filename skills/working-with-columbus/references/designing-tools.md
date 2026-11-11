@@ -19,8 +19,8 @@ and call it with `run_tool` knowing only what you write in its manifest. Write f
 4. **Call `propose_tool`** with the manifest, the code and a test on this session's layers
    (`test.inputs`: a `ws://` handle for every input). Columbus checks everything and refuses
    with the full list of problems; fix them all and call again.
-5. **The person approves the test run**, reading the code, as for a script. If it fails, fix
-   the code; nothing was filed.
+5. **The person approves the test run**, reading the code: every time, whatever the rule
+   for scripts is. If it fails, fix the code; nothing was filed.
 6. **The result says `waiting_for_person`.** Tell the person, in plain words, that the tool
    is waiting in the Columbus app under **Tools**, that they read its code and
    install it there (Touch ID or Windows Hello), and what it does. You cannot install it.

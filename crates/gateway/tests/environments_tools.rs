@@ -1046,7 +1046,7 @@ async fn under_scripts_approval_none_only_a_run_that_leaves_the_sandbox_asks() {
     }
     let env = setup(
         &py,
-        "allow_scripts: true\nenvironments: { allow: true, allow_trusted: true, allow_network: true }\nscripts: { approval: none }\n",
+        "allow_scripts: true\nallow_personal_tools: true\nenvironments: { allow: true, allow_trusted: true, allow_network: true }\nscripts: { approval: none }\n",
     );
     let gpy = make_venv(&py, &env.root.join("geo-venv"));
     let tpy = make_venv(&py, &env.root.join("trusted-venv"));
@@ -1169,6 +1169,10 @@ async fn under_scripts_approval_none_only_a_run_that_leaves_the_sandbox_asks() {
         );
         asked += 1;
     }
+    // A proposed tool's test run is asked about too, whatever the rule for
+    // scripts: a new tool is something being installed.
+    let r = ok(&call(&c, "propose_tool", proposal(&two, Some("geo"))).await);
+    assert_eq!(r["result"]["status"], "approval_required", "{r}");
     c.cancel().await.unwrap();
 
     // The audit log: the rule, for every run that was not asked about; an

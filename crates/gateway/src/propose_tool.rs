@@ -7,7 +7,8 @@
 //! subprocesses, credentials, environment, absolute paths or URLs; a
 //! `run(ctx)` that uses exactly the declared inputs and outputs), and runs
 //! it once, confined at level A, on workspace layers the assistant names,
-//! after the person approves that test run as they would a script. Only
+//! after the person approves that test run (asked every time, whatever
+//! `scripts.approval` says). Only
 //! then is the proposal filed for the person: it waits in the Columbus
 //! app's Settings, where the person reads the code and the manifest and
 //! installs it with Touch ID or Windows Hello. Nothing here installs
@@ -1276,7 +1277,7 @@ impl Gateway {
     }
 
     #[tool(
-        description = "Package a script as one of the person's own tools, so later sessions (and other assistants) can run it with run_tool instead of writing and approving a script each time. Give a name, title, description (what it does, when to use it) and not_for, typed inputs (workspace layers or tables, each with geometry, CRS and required fields), scalar params (numbers with units), outputs, the checks it reports, examples, the code (a run(ctx) function) and a test on this session's layers. Columbus checks the manifest and the code (no network, credentials, environment or absolute paths), then test-runs it confined, once the person approves the test like a script. If the test runs, the tool waits in the Columbus app's Settings, where the person reads the code and installs it; only they can, and it is usable from the next call after that. Read columbus_guide {\"name\": \"designing-tools\"} first. Needs organization policy to allow personal tools and scripts (whoami: personal_tools_allowed, scripts_allowed).",
+        description = "Package a script as one of the person's own tools, so later sessions (and other assistants) can run it with run_tool instead of writing the script again each time. Give a name, title, description (what it does, when to use it) and not_for, typed inputs (workspace layers or tables, each with geometry, CRS and required fields), scalar params (numbers with units), outputs, the checks it reports, examples, the code (a run(ctx) function) and a test on this session's layers. Columbus checks the manifest and the code (no network, credentials, environment or absolute paths), then test-runs it confined, once the person approves the test (asked every time, whatever the rule for scripts is). If the test runs, the tool waits in the Columbus app's Settings, where the person reads the code and installs it; only they can, and it is usable from the next call after that. Read columbus_guide {\"name\": \"designing-tools\"} first. Needs organization policy to allow personal tools and scripts (whoami: personal_tools_allowed, scripts_allowed).",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -1474,7 +1475,8 @@ impl Gateway {
             .map(|l| l.trim_start_matches("connection:").to_string())
             .collect();
 
-        // The person approves the test run, reading the code, as for a script.
+        // The person approves the test run, reading the code: every time,
+        // whatever `scripts.approval` says.
         let lines = built.entry.lines().count();
         let summary = format!(
             "Test-run a tool your assistant wants to save, \"{}\" ({}.{}, {lines} lines, {}){where_runs}, on {}; no network; it can write only its own folder.{} If it runs, it waits for you in the Columbus app (Tools): it is added only if you install it there.",
