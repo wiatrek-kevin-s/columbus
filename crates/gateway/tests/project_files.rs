@@ -863,6 +863,10 @@ async fn a_files_text_keeps_its_data_labels_and_the_flow_rules_apply() {
         "{r}"
     );
     assert!(!env.files("both").join("notes").join("asked.md").exists());
+    assert!(
+        !env.files("both").join("notes").exists(),
+        "a write that waits makes no folder"
+    );
     c.cancel().await.unwrap();
 }
 

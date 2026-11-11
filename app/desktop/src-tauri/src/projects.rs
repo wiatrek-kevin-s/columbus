@@ -196,3 +196,87 @@ pub async fn project_dbs(app: tauri::AppHandle, project: Option<String>) -> Resu
     .await
     .map_err(|e| e.to_string())?
 }
+
+/// A project's files (build brief 3, D-19, F-17): `projects/<id>/files/`,
+/// as the Files section of its page lists them. Names, sizes and times
+/// only: the listing never follows a link and opens no file.
+#[tauri::command]
+pub async fn project_files(id: String) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        use columbus_shared::project_files as pf;
+        // Only a project that exists.
+        pj::load(&id)?;
+        let dir = pf::files_dir(&id)?;
+        let listing = pf::list(&dir, &[], pf::MAX_FILES)
+            .map_err(|e| format!("the project's files cannot be listed: {e}"))?;
+        Ok(json!({
+            "dir": dir.display().to_string(),
+            "exists": dir.is_dir(),
+            // Whether the assistant may use them (policy allow_project_files).
+            "allowed": policy_now().allow_project_files,
+            "files": listing.files,
+            "folders": listing.folders,
+            "skipped": listing.skipped,
+            "total_bytes": listing.total_bytes,
+            "more": listing.more,
+        }))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Open a project's files folder in the system's file manager, making it
+/// first if it is not there yet, so the person can put their own scripts
+/// and notes in it.
+#[tauri::command]
+pub async fn project_files_open(id: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        pj::load(&id)?;
+        let dir = columbus_shared::project_files::files_dir(&id)?;
+        match std::fs::symlink_metadata(&dir) {
+            Ok(m) if m.is_dir() && !m.file_type().is_symlink() => {}
+            Ok(_) => {
+                return Err(format!(
+                    "{} is a link or not a folder, so it is not opened",
+                    dir.display()
+                ))
+            }
+            Err(_) => std::fs::create_dir(&dir)
+                .map_err(|e| format!("cannot make {}: {e}", dir.display()))?,
+        }
+        open_folder(&dir).map_err(|e| format!("could not open {}: {e}", dir.display()))?;
+        Ok(dir.display().to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Show a folder in Explorer, Finder or the desktop's file manager.
+fn open_folder(dir: &std::path::Path) -> std::io::Result<()> {
+    use std::process::{Command, Stdio};
+    // Tests only (debug builds): the folder is written to a file instead
+    // of opening a file manager.
+    #[cfg(debug_assertions)]
+    if let Some(to) = std::env::var_os("COLUMBUS_APP_TEST_OPEN") {
+        return std::fs::write(to, dir.display().to_string());
+    }
+    let mut cmd = if cfg!(windows) {
+        let root = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
+        Command::new(std::path::Path::new(&root).join("explorer.exe"))
+    } else if cfg!(target_os = "macos") {
+        Command::new("/usr/bin/open")
+    } else {
+        Command::new("xdg-open")
+    };
+    let mut child = cmd
+        .arg(dir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    // Explorer answers 1 even when it opened the folder: not waited on.
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
+}

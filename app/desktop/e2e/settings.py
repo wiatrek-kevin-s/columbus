@@ -345,6 +345,8 @@ gpd.GeoDataFrame({"RTE": ["IH0035", "US0183"], "district": [14, 12]}, geometry=[
         assert d.find_element(By.ID, "org-work-free").is_selected()
         wait.until(lambda drv: "without asking you each time" in drv.find_element(By.ID, "settings").text)
         assert d.find_element(By.ID, "allow_scripts").is_selected()
+        # Project files have their own switch here, on with the rest.
+        assert d.find_element(By.ID, "allow_project_files").is_selected()
         step("ask me before each script: scripts.approval goes back to each, nothing else changes")
         click(d, By.ID, "org-work-ask")
         wait.until(lambda drv: "approval: each" in (root / "policy.yaml").read_text())

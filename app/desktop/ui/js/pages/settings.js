@@ -43,6 +43,7 @@ const SWITCHES = {
   allow_personal_tools: ["Allow personal tools.", "Your assistant may propose tools made from its scripts, and use the ones you install without asking each time. They run in the same sandbox as scripts."],
   allow_shared_tools: ["Allow shared tools and workflows.", "You may open tools and workflows coworkers share with you as a file. Each arrives as a proposal you read and approve yourself, like your assistant's; nothing from a shared file is installed or run before that."],
   allow_workflows: ["Allow workflows.", "Your assistant may propose workflows, and the ones you approve run by themselves on their schedule, without asking each time, within what they list."],
+  allow_project_files: ["Allow project files.", "Your assistant may list, read and write text files in a project's own folder (scripts and notes), and run scripts kept there in the sandbox. Data still leaves a chat only through an export."],
 };
 
 /** One of the organization's switches. Turning one on is confirmed by the

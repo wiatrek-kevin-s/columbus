@@ -20,6 +20,8 @@ fn main() {
             "projects_state",
             "project_save",
             "project_remove",
+            "project_files",
+            "project_files_open",
             "datagroups_state",
             "datagroup_save",
             "datagroup_remove",

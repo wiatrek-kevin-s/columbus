@@ -1460,6 +1460,7 @@ fn set_switch(name: &str, on: bool) -> Result<(), String> {
             | "allow_personal_tools"
             | "allow_workflows"
             | "allow_shared_tools"
+            | "allow_project_files"
     ) {
         return Err(format!("unknown setting {name:?}"));
     }
@@ -1499,6 +1500,7 @@ fn set_switch(name: &str, on: bool) -> Result<(), String> {
             }
             "allow_scripts" => "let your assistant run Python scripts, after your approval of each one",
             "allow_workflows" => "let the workflows you approve run by themselves, on their schedule",
+            "allow_project_files" => "let your assistant read and write text files in a project's own folder, and run scripts kept there",
             "allow_shared_tools" => "let you open tools and workflows coworkers share with you, to review and approve each yourself",
             _ => "let your assistant use the tools you install from what it proposes, without asking each time",
         })?;

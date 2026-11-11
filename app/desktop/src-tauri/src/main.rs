@@ -484,6 +484,8 @@ fn main() {
             projects::projects_state,
             projects::project_save,
             projects::project_remove,
+            projects::project_files,
+            projects::project_files_open,
             datagroups::datagroups_state,
             datagroups::datagroup_save,
             datagroups::datagroup_remove,

@@ -23,6 +23,8 @@
     "allow-projects-state",
     "allow-project-save",
     "allow-project-remove",
+    "allow-project-files",
+    "allow-project-files-open",
     "allow-datagroups-state",
     "allow-datagroup-save",
     "allow-datagroup-remove",

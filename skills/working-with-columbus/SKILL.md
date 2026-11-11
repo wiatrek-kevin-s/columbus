@@ -56,6 +56,8 @@ Call `whoami` once, first, with no arguments. Read and keep:
   `policy.script_approval`: whether a script that stays in the sandbox asks the person
   first (`each`, `session`) or runs at once (`none`); one with network or outside it asks.
   `policy.personal_tools_allowed`: whether the person's own tools (section 13) are on.
+  `policy.project_files_allowed`: in a project's chat, `project_files` keeps scripts and
+  notes in the project's own folder, and `run_python` runs one by its path (`script`).
 - `policy.rows_returned_per_call` (at most 500), `policy.rows_read_per_query` (default
   200,000; an organization may raise it, up to 20,000,000), `policy.query_seconds`
   (default 120, at most 3,600), `policy.limits_raised`, and `policy.project_db` (whether

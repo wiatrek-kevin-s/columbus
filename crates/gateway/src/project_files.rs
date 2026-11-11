@@ -116,14 +116,24 @@ fn shown(parts: &[String]) -> String {
 /// time, never through a link. Each name must be there exactly as given: a
 /// name that differs only by case from one that is there is refused (F-17:
 /// they are one file on Windows and macOS). With `create`, the files folder
-/// and missing folders on the way are made.
+/// and missing folders on the way are made; without it, a missing folder
+/// means there is no such file.
 fn parent(root: &Path, parts: &[String], create: bool) -> Result<(Dir, String, bool), String> {
-    let gone = || {
+    walk(root, parts, create)?.ok_or_else(|| {
         format!(
             "there is no file {} in the project's files (project_files with action list shows what is there)",
             shown(parts)
         )
-    };
+    })
+}
+
+/// [`parent`], with `None` where the files folder or a folder on the way
+/// is not there (and `create` is off): nothing of that path exists yet.
+fn walk(
+    root: &Path,
+    parts: &[String],
+    create: bool,
+) -> Result<Option<(Dir, String, bool)>, String> {
     match std::fs::symlink_metadata(root) {
         Ok(m) if m.is_dir() && !m.file_type().is_symlink() => {}
         Ok(_) => {
@@ -133,7 +143,7 @@ fn parent(root: &Path, parts: &[String], create: bool) -> Result<(Dir, String, b
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             if !create {
-                return Err(gone());
+                return Ok(None);
             }
             std::fs::create_dir(root)
                 .map_err(|e| format!("could not make the project's files folder: {e}"))?;
@@ -165,16 +175,16 @@ fn parent(root: &Path, parts: &[String], create: bool) -> Result<(Dir, String, b
             }
         }
         if i == folders.len() {
-            return Ok((dir, name.clone(), exact));
+            return Ok(Some((dir, name.clone(), exact)));
         }
         if !exact {
             if !create {
-                return Err(gone());
+                return Ok(None);
             }
             // The rest of the way is new.
             let all: Vec<&str> = folders.iter().map(String::as_str).collect();
             let dir = Dir::open_beneath(root, &all, true).map_err(|e| refused(e, folders))?;
-            return Ok((dir, name.clone(), false));
+            return Ok(Some((dir, name.clone(), false)));
         }
         have.push(part);
     }
@@ -796,13 +806,14 @@ impl Gateway {
             ));
         }
 
-        // Where it goes, and what is there now.
-        let (dir, name, exists) = match parent(&home.files, parts, true) {
+        // What is there now. Folders on the way are made only once the
+        // write is allowed, so a refused one leaves nothing behind.
+        let there = match walk(&home.files, parts, false) {
             Ok(v) => v,
             Err(e) => return Err(self.deny(ctx, rec, e)),
         };
-        let old = if exists {
-            match read_in(&dir, &name, pf::MAX_FILE_BYTES, &what) {
+        let old = match &there {
+            Some((dir, name, true)) => match read_in(dir, name, pf::MAX_FILE_BYTES, &what) {
                 Ok(f) => Some(f),
                 Err(e) => {
                     return Err(self.deny(
@@ -811,9 +822,8 @@ impl Gateway {
                         format!("{e}, so the assistant does not replace it"),
                     ))
                 }
-            }
-        } else {
-            None
+            },
+            _ => None,
         };
         if let Some(old) = &old {
             if old.sha256 == new_sha256 {
@@ -910,8 +920,13 @@ impl Gateway {
             }
             // The person took a while: what is there must still be what
             // was there when they were asked.
-            let now = read_in(&dir, &name, pf::MAX_FILE_BYTES, &what).ok();
-            if now.as_ref().map(|f| &f.sha256) != old.as_ref().map(|f| &f.sha256) {
+            let now = match walk(&home.files, parts, false) {
+                Ok(Some((dir, name, true))) => read_in(&dir, &name, pf::MAX_FILE_BYTES, &what)
+                    .ok()
+                    .map(|f| f.sha256),
+                _ => None,
+            };
+            if now != old.as_ref().map(|f| f.sha256.clone()) {
                 return Err(self.deny(
                     ctx,
                     rec,
@@ -920,6 +935,11 @@ impl Gateway {
             }
         }
 
+        // Allowed: now the folders on the way are made.
+        let (dir, name, _) = match parent(&home.files, parts, true) {
+            Ok(v) => v,
+            Err(e) => return Err(self.deny(ctx, rec, e)),
+        };
         // The labels first, added to what the file carried: whichever text
         // is there if the write fails, it never carries less than it may.
         let recorded = update_labels(&home.folder, |all| {
