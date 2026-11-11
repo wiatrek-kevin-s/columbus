@@ -186,7 +186,7 @@ function history(body, foot, view) {
         // In plain words first; then the line as the log has it.
         rows.append(h("li", {},
           h("span", { class: "t" }, clock(l.ts)),
-          h("span", { class: "w" }, describe(String(l.tool || ""), { dataset: l.dataset, connection: l.connection })),
+          h("span", { class: "w" }, describe(String(l.tool || ""), { dataset: l.dataset, connection: l.connection, reason: l.reason })),
           h("span", { class: tone ? `d ${tone}` : "d", title: `decision: ${dec}` }, words),
           h("span", { class: "s", title: `${l.tool || ""} · ${clientName(l.client)}${what ? ` · ${what}` : ""} · line ${l.line}` },
             h("span", { class: "mono" }, String(l.tool || "")), ` · ${clientName(l.client)}${what ? ` · ${what}` : ""} · line ${l.line}`)));

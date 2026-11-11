@@ -151,7 +151,8 @@ def assistant_and_the_map(mcp, ctx, page, port, root, routes, problems):
             if ok(r):
                 return r
             assert time.time() < end, f"{what}: {json.dumps(r)[:1500]}"
-            page.wait_for_timeout(250)
+            # (Not the page's clock: this is also used once the page is closed.)
+            time.sleep(0.25)
 
     def shown(where):
         """What the page shows, worked out here from the sheets: the part
@@ -238,6 +239,35 @@ def assistant_and_the_map(mcp, ctx, page, port, root, routes, problems):
     expect(page.locator("section.table")).to_have_count(0)
     settled(page)
     until("the table closed", lambda r: r["view"]["table_open"] is False)
+
+    # A turned map says the box around what it shows (Shift and an arrow
+    # key turn the map by 15 degrees).
+    flat = read()["view"]
+    page.locator(".map canvas").focus()
+    page.keyboard.press("Shift+ArrowRight")
+    settled(page, before=view(page))
+    turned = until("a turned map", lambda r: r["view"]["extent"] != flat["extent"])["view"]
+
+    def spans(ext):
+        return math.radians(ext[2] - ext[0]), merc(ext[3]) - merc(ext[1])
+
+    (w0, h0), (w1, h1) = spans(flat["extent"]), spans(turned["extent"])
+    a = math.radians(15)
+    assert abs(w1 - (w0 * math.cos(a) + h0 * math.sin(a))) < 0.02 * w1, (flat, turned)
+    assert abs(h1 - (w0 * math.sin(a) + h0 * math.cos(a))) < 0.02 * h1, (flat, turned)
+    page.keyboard.press("Shift+ArrowLeft")
+    settled(page, before=view(page))
+    until("the map turned back", lambda r: all(abs(x - y) < 1e-5 for x, y in zip(r["view"]["extent"], flat["extent"])))
+    print("map: a turned map reports the box around what it shows")
+
+    # A page that is not in front of the person (its tab in the background)
+    # is not their map: it says so at once, and again when it is back.
+    page.evaluate("() => { Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' });"
+                  " document.dispatchEvent(new Event('visibilitychange')); }")
+    until("a page in the background", lambda r: r["status"] == "not_open", t=4)
+    page.evaluate("() => { delete document.visibilityState; document.dispatchEvent(new Event('visibilitychange')); }")
+    until("the page in front again", lambda r: r["status"] == "open" and r["view"]["extent"] == flat["extent"])
+    print("map: a page in the background is not the person's map")
 
     # ---- Steering. A second result: the page lists it, turns it on and
     # makes it the active one, as it does for every new layer.

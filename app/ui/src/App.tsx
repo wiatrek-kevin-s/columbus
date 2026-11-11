@@ -311,6 +311,8 @@ export function App() {
   // ---------- What the map shows, for the assistant (T-30) ----------
   // Where the map looks now (filled in by the map).
   const seenNow = useRef<(() => Seen | null) | null>(null);
+  // Framed: whether the app says its panel shows this page now.
+  const appShows = useRef(true);
   // When the person last used this page, or it came on show.
   const lastUsed = useRef(Date.now());
   const wasShowing = useRef(false);
@@ -340,7 +342,7 @@ export function App() {
     if (!FRAMED) return;
     const on = (e: MessageEvent) => {
       if (e.source !== window.parent || !APP_ORIGINS.includes(e.origin)) return;
-      const d = e.data as { type?: unknown; view?: unknown; output?: unknown; basemap?: unknown; theme?: unknown; inset?: unknown } | null;
+      const d = e.data as { type?: unknown; view?: unknown; output?: unknown; basemap?: unknown; theme?: unknown; inset?: unknown; shown?: unknown } | null;
       if (d && d.type === "columbus-web-layers") {
         webReload.current();
         return;
@@ -361,6 +363,13 @@ export function App() {
       // What the app's panel covers, in CSS pixels: checked numbers only.
       const covered = parseInset(d.inset);
       if (covered) setInset(covered);
+      // Whether the app has this page in front of the person (its panel
+      // open, this map in it). A page in a closed panel keeps its size in
+      // some web views, so it cannot tell by itself; it is not their map.
+      if (typeof d.shown === "boolean" && d.shown !== appShows.current) {
+        appShows.current = d.shown;
+        sendView.current();
+      }
       if (typeof d.basemap === "boolean" && !basemapSet.current) {
         basemapSet.current = true;
         setBasemapState(d.basemap);
@@ -767,8 +776,9 @@ export function App() {
       s.again = true;
       return;
     }
-    // On show: the window is in front, and the map has a size.
-    const inFront = document.visibilityState === "visible" && window.innerWidth > 0 && window.innerHeight > 0;
+    // On show: the window is in front, the app (when it frames this page)
+    // has its panel open, and the map has a size.
+    const inFront = document.visibilityState === "visible" && appShows.current && window.innerWidth > 0 && window.innerHeight > 0;
     const seen = inFront ? (seenNow.current?.() ?? null) : null;
     // Just come on show: the map the person opened last.
     if (seen && !wasShowing.current) lastUsed.current = Date.now();

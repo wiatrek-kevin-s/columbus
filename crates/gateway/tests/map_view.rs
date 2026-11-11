@@ -18,6 +18,8 @@
 //!   layer the person has saved appears in any answer.
 //! * `deny_tools: [map_view]` turns all of it off; every call is audited,
 //!   reports are not.
+//! * The selected feature's attributes follow the rules for rows: left out
+//!   when the policy denies `read_output` or returns no rows.
 //!
 //! Needs the GIS engine; skipped without it.
 
@@ -733,6 +735,11 @@ async fn the_assistant_reads_and_steers_the_persons_map() {
     let s = call(&client, "map_snapshot", json!({"layers": [all]})).await;
     assert_eq!(s["result"]["crs"], "EPSG:3081", "{s}");
     assert!(s["result"].get("view").is_none(), "{s}");
+    // A workspace file that is not a layer or table in the session's
+    // results (the picture just made) is nothing the map can show.
+    let picture = s["result"]["handle"].as_str().unwrap().to_string();
+    let e = refused(&client, "map_view", json!({"show": [picture]})).await;
+    assert!(e.contains("not a layer or table the map lists"), "{e}");
 
     // ---- The page is no longer on show (its panel closed, its window in
     // the background): no map is open, at once.
@@ -817,7 +824,7 @@ async fn the_assistant_reads_and_steers_the_persons_map() {
     let lines = audit_lines(&env, "map_view");
     let allowed = lines.iter().filter(|l| l["decision"] == "allowed").count();
     let denied = lines.iter().filter(|l| l["decision"] == "denied").count();
-    assert_eq!(denied, 9, "each refusal is audited");
+    assert_eq!(denied, 10, "each refusal is audited");
     assert!(allowed >= 10, "each call is audited: {allowed}");
     assert!(
         lines
@@ -832,8 +839,13 @@ async fn the_assistant_reads_and_steers_the_persons_map() {
         "{lines:?}"
     );
     // The read that returned the selected feature's attributes is recorded
-    // as a read of one row.
-    assert!(lines.iter().any(|l| l["rows"] == 1), "{lines:?}");
+    // as a read of one row of that layer, as read_output records one.
+    assert!(
+        lines.iter().any(|l| l["rows"] == 1
+            && l["prov"].is_string()
+            && l["labels"] == json!(["connection:tiger"])),
+        "{lines:?}"
+    );
     let all_lines = std::fs::read_dir(env.root.join("audit"))
         .unwrap()
         .flatten()
@@ -906,4 +918,57 @@ async fn an_organization_can_turn_the_map_tool_off() {
         .iter()
         .all(|l| l["decision"] == "denied"));
     client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn the_selected_features_values_follow_the_rules_for_rows() {
+    let Some(py) = python() else {
+        eprintln!("skipping: the GIS engine is not installed");
+        return;
+    };
+    // Where the assistant may not read rows of a result, or is returned
+    // none, the selection is named (its layer and row) without its values.
+    for policy in ["deny_tools: [read_output]\n", "return_rows: 0\n"] {
+        let env = setup(&py, policy);
+        let client = start(&env, &py).await;
+        let w = call(&client, "whoami", json!({})).await;
+        let session = w["result"]["session"].as_str().unwrap().to_string();
+        let q = call(
+            &client,
+            "query_features",
+            json!({"connection": "tiger", "dataset": "tracts"}),
+        )
+        .await;
+        let all = q["result"]["layer"]["handle"].as_str().unwrap().to_string();
+        let page = Page::open(&env, &session).await;
+        page.report(&showing(
+            [-97.85, 30.2, -97.65, 30.32],
+            11.5,
+            &[&all],
+            Some(&all),
+            Some((&all, 1)),
+            true,
+            false,
+            0,
+        ))
+        .await;
+        let v = call(&client, "map_view", json!({})).await;
+        assert_eq!(v["result"]["status"], "open", "{policy}: {v}");
+        assert_eq!(
+            v["result"]["view"]["selected"],
+            json!({"layer": all, "feature": 1}),
+            "{policy}: {v}"
+        );
+        assert!(
+            !v.to_string().contains("ACRES") && !v.to_string().contains("20.0"),
+            "{policy}: {v}"
+        );
+        assert!(
+            audit_lines(&env, "map_view")
+                .iter()
+                .all(|l| l.get("rows").is_none()),
+            "{policy}: no row was read"
+        );
+        client.cancel().await.unwrap();
+    }
 }
