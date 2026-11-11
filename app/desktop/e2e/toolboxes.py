@@ -22,7 +22,8 @@ Two sessions of the app:
    are ready;
    the tools are found by words and one opens in the panel on the right;
    the assistant finds one and runs it without being asked to approve, and
-   its result is a layer on the chat's map; Remove takes the toolbox away,
+   its result is a layer on the chat's map; a program changed after it
+   was installed is shown as off; Remove takes the toolbox away,
    and the same chat's assistant is no longer offered its tools. Last, a
    program on this computer is added with its description file, listed,
    found and removed (the program itself stays where it is).
@@ -429,8 +430,18 @@ def main():
         d.save_screenshot(str(OUT / "toolboxes-map.png"))
         chat = d.execute_script("return location.hash")
 
-        step("Remove: the toolbox and its program go")
+        step("A program that changed since it was installed: the toolbox says so, and its tools are not listed")
+        with open(program, "ab") as f:
+            f.write(b"\0")
         nav(d, wait, "#/tools", "toolbox-card")
+        wait.until(lambda drv: "Off: its program changed" in text(drv, "#toolboxes li[data-id='geolibre']"))
+        row = text(d, "#toolboxes li[data-id='geolibre']")
+        assert "install it again" in row, row
+        assert not shown(d, "#tbx-find"), "a changed toolbox's tools are not listed"
+        named(d)
+        d.save_screenshot(str(OUT / "toolboxes-changed.png"))
+
+        step("Remove: the toolbox and its program go")
         wait.until(lambda drv: drv.find_elements(By.CSS_SELECTOR, "#toolboxes li[data-id='geolibre']"))
         remove = d.find_element(By.XPATH, "//ul[@id='toolboxes']/li[@data-id='geolibre']//button[normalize-space()='Remove']")
         d.execute_script("arguments[0].scrollIntoView({block: 'center'})", remove)
