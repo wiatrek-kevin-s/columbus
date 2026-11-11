@@ -14,4 +14,6 @@ In the pictures, the street names and crash counts are the data's own. The answe
 
 **Made up for the pictures:** the connection names, the Oracle enterprise geodatabase and the ArcGIS Online layer in the connections list (listed only, never reached), the project and the scripts and note in its folder (written by the script; the one that is run counts the real records), and the user folder `/home/analyst`.
 
+The pictures are taken on Linux. Where the app asks for Touch ID or Windows Hello, the tests' stand-in answers (Linux has neither), and the Add tools dialog names the download for Linux, the system it was taken on.
+
 The pictures here were taken with the street background off, the app's own default, so none shows a basemap. Taken with it on (the **README pictures** workflow does that), the basemap is © [OpenFreeMap](https://openfreemap.org), © [OpenMapTiles](https://www.openmaptiles.org), data © [OpenStreetMap contributors](https://www.openstreetmap.org/copyright).
