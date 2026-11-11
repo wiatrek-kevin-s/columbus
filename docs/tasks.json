@@ -936,6 +936,98 @@
       ],
       "status": "todo",
       "evidence": ""
+    },
+    {
+      "id": "T-37",
+      "title": "Any AI, the engine (D-22, REQ-46, REQ-49): the app's chat speaks three request formats (Anthropic Messages, OpenAI Responses, OpenAI Chat Completions) behind one loop, with the built-in services' addresses and models in one table, the address rules (HTTPS; HTTP only on this computer; no redirects) and plain errors that never show a key",
+      "session": "S13",
+      "depends_on": [
+        "T-34"
+      ],
+      "done_by": "claude",
+      "acceptance": [
+        {
+          "how": "Claude runs the existing chat tests unchanged against the Anthropic stand-in",
+          "expected": "every one passes: the same request bodies as before, so nothing changed for Anthropic"
+        },
+        {
+          "how": "Claude adds stand-in services for the Responses and Chat Completions formats (plain and streamed answers) and drives a governed session through each: tools called, an approval asked and declined, an export, a map snapshot the model sees as a picture, several tool calls in one step, a reply cut off at its length limit",
+          "expected": "the same outcome as with Anthropic in each format; the picture travels inside the tool result in Responses and in a following user message in Chat Completions; a service set up without pictures gets a line of text instead"
+        },
+        {
+          "how": "Claude feeds each new format damaged and odd answers: a tool call with broken arguments, a tool name Columbus does not have, an empty or repeated call id, a stream that ends early, no token counts, an extra field on a tool call, an error that quotes the key, a 429 and a 500, a redirect",
+          "expected": "a damaged call is not run and the model is told; ids are made unique; the caps still hold with estimated counts; the extra field is sent back unchanged; no key or part of one reaches the page, the transcript or a log; retries as for Anthropic; a redirect is never followed"
+        },
+        {
+          "how": "Claude checks the address rules and the key's destination",
+          "expected": "HTTP to a host that is not this computer is refused; the key header goes only to the service's own address, in the form that service takes it"
+        }
+      ],
+      "status": "todo",
+      "evidence": ""
+    },
+    {
+      "id": "T-38",
+      "title": "Any AI, the app (D-22, REQ-46 to REQ-48, REQ-50, F-19): choose the service and model in Settings and at first run; one key per service in the credential store; add any other service by address, confirmed at the keyboard; the organization's assistant.hosts; a chat shows and keeps its service; how to connect other AI apps, with the entry for this computer",
+      "session": "S13",
+      "depends_on": [
+        "T-37"
+      ],
+      "done_by": "claude",
+      "acceptance": [
+        {
+          "how": "Claude extends the desktop WebDriver scripts: choose each kind of service against its stand-in, save a key, start a chat, change the model in the chat, add another service by address and confirm it, remove it",
+          "expected": "each chat works and shows its service and model; the page never receives a key; an added service is refused without the confirmation; every control has a name a screen reader can say"
+        },
+        {
+          "how": "Claude sets assistant.hosts in the policy and tries a service whose host is not listed, in Settings, at chat start and in a running chat",
+          "expected": "refused each time with a sentence naming the organization's rule; Organization rules shows the limit"
+        },
+        {
+          "how": "Claude checks the page that shows how to connect other AI apps",
+          "expected": "each app's entry carries this computer's real path to columbus-mcp and matches the form read on 2026-11-11; Copy works"
+        },
+        {
+          "how": "Claude runs the whole Rust suite, every desktop script, the map page's scripts, fmt and both clippy runs, then CI",
+          "expected": "all pass on Linux here and on Windows, macOS and Linux in CI"
+        }
+      ],
+      "status": "todo",
+      "evidence": ""
+    },
+    {
+      "id": "T-39",
+      "title": "Any AI, the docs (REQ-50, REQ-45): README, both install guides, the app tour, capabilities, SECURITY, the reference, architecture, release notes and the manual checks (H-6) say what the app does now and what is untried; the pictures of Settings and the first run are retaken",
+      "session": "S13",
+      "depends_on": [
+        "T-38"
+      ],
+      "done_by": "claude",
+      "acceptance": [
+        {
+          "how": "Claude reads every changed sentence against the code and retakes the pictures from the app",
+          "expected": "no doc says the chat needs Claude or an Anthropic key; the honest limits of D-22 are stated; pictures and alt texts match the app; the link check passes"
+        }
+      ],
+      "status": "todo",
+      "evidence": ""
+    },
+    {
+      "id": "T-40",
+      "title": "Any AI: an independent review of T-37 to T-39 in a fresh subagent (the method of docs/final-review.md), every Fix-now finding fixed as a task numbered from R-105, and one re-check in another fresh subagent. The hand-over (T-36) follows",
+      "session": "S13",
+      "depends_on": [
+        "T-39"
+      ],
+      "done_by": "claude",
+      "acceptance": [
+        {
+          "how": "Claude runs the review and the re-check and records both",
+          "expected": "no Fix-now finding is open; the other findings are in the log"
+        }
+      ],
+      "status": "todo",
+      "evidence": ""
     }
   ]
 }
