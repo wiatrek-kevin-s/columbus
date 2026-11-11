@@ -14,6 +14,10 @@
 
 #![allow(dead_code)]
 
+pub mod gitea;
+pub mod github;
+pub mod http;
+
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -620,5 +624,84 @@ impl Rng {
 
     pub fn pick<'a, T>(&mut self, items: &'a [T]) -> &'a T {
         &items[self.below(items.len())]
+    }
+}
+
+/// A stand-in server of one kind, running, with one account ("ana", whose
+/// name is Ana Example) and its token.
+pub struct Lab {
+    pub kind: columbus_sync::remote::Kind,
+    pub world: http::Shared,
+    pub running: http::Running,
+    pub token: String,
+}
+
+/// A made-up token for the stand-in servers. It has a mark (`zq7k`) that
+/// nothing else has, so a test can look for it anywhere.
+pub const TOKEN: &str = "zq7k-stand-in-token-0123456789";
+
+impl Lab {
+    pub async fn new(kind: columbus_sync::remote::Kind) -> Lab {
+        columbus_sync::remote::allow_loopback_http_for_tests();
+        let world = http::shared();
+        world.lock().unwrap().user("ana", "Ana Example", TOKEN);
+        let app = match kind {
+            columbus_sync::remote::Kind::GitHub => github::enterprise(world.clone()),
+            columbus_sync::remote::Kind::Gitea => gitea::router(world.clone()),
+        };
+        Lab {
+            kind,
+            running: http::serve(app).await,
+            world,
+            token: TOKEN.into(),
+        }
+    }
+
+    pub fn address(&self) -> columbus_sync::remote::Address {
+        columbus_sync::remote::Address::parse(self.kind, &self.running.url())
+            .expect("the stand-in's address")
+    }
+
+    pub fn server(&self) -> columbus_sync::remote::Server {
+        self.server_with(&self.token)
+    }
+
+    pub fn server_with(&self, token: &str) -> columbus_sync::remote::Server {
+        columbus_sync::remote::Server::new(&self.address(), token, None).expect("a server")
+    }
+
+    /// The branch `main` of `ana/<repo>`.
+    pub fn remote(&self, repo: &str) -> columbus_sync::remote::Remote {
+        self.server().remote("ana", repo, "main").expect("a remote")
+    }
+
+    /// Work on a repository of ana's (made if it is not there).
+    pub fn repo<R>(&self, name: &str, f: impl FnOnce(&mut Repo) -> R) -> R {
+        f(self.world.lock().unwrap().repo("ana", name))
+    }
+
+    /// A colleague's commit that lands while the next send is under way.
+    pub fn land_during_next_send(&self, repo: &str, edits: Vec<Edit>) {
+        let repo = repo.to_string();
+        self.world
+            .lock()
+            .unwrap()
+            .knobs
+            .before_landing
+            .push(Box::new(move |w| {
+                w.repo("ana", &repo)
+                    .commit("main", &edits, "Cy, meanwhile", "Cy");
+            }));
+    }
+
+    /// Every request the server was sent, as `METHOD path`.
+    pub fn requests(&self) -> Vec<String> {
+        self.world
+            .lock()
+            .unwrap()
+            .seen
+            .iter()
+            .map(|s| format!("{} {}", s.method, s.path))
+            .collect()
     }
 }
