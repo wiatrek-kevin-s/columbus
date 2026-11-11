@@ -130,12 +130,13 @@ fn resolve_added(a: &Added) -> Result<Resolved, String> {
         .ok_or("choose how the key is sent: bearer, api-key or x-api-key")?;
     let at = check_address(&a.address)?;
     Ok(Resolved {
-        service: services::added(&a.id, name, format, key_header, a.pictures),
+        service: services::added(&a.id, name, format, key_header, a.pictures)
+            .on_this_computer(at.local),
         address: at.url,
         host: at.host,
         local: at.local,
         about: if at.local {
-            "A service on this computer that you added.".into()
+            "A service on this computer that you added. It needs a model that can call tools and a context length of about 32,000 tokens or more.".into()
         } else {
             format!("A service you added. What the chat reads is sent to {}, and that service bills its use.", a.address.trim())
         },

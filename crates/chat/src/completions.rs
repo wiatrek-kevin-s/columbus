@@ -39,7 +39,18 @@ pub(crate) struct Completions {
     step: usize,
     ids: Ids,
     pictures: bool,
+    /// The name the limit on a reply's length is sent under.
+    length_limit: &'static str,
 }
+
+/// The limit on a reply's length as OpenAI names it now (`max_tokens` "is
+/// now deprecated in favor of `max_completion_tokens`, and is not
+/// compatible with o-series models").
+const LENGTH_LIMIT: &str = "max_completion_tokens";
+/// The earlier name, which servers on this computer read: Ollama reads no
+/// other (its adapter has no field for the newer one, so it would go
+/// unread), and it is the one LM Studio's documentation lists.
+const LOCAL_LENGTH_LIMIT: &str = "max_tokens";
 
 impl Completions {
     pub fn new(pictures: bool) -> Completions {
@@ -49,7 +60,19 @@ impl Completions {
             step: 0,
             ids: Ids::default(),
             pictures,
+            length_limit: LENGTH_LIMIT,
         }
+    }
+
+    /// For a server on this computer when `local`: it is sent the limit on
+    /// a reply's length under the name such servers read.
+    pub fn on_this_computer(mut self, local: bool) -> Completions {
+        self.length_limit = if local {
+            LOCAL_LENGTH_LIMIT
+        } else {
+            LENGTH_LIMIT
+        };
+        self
     }
 }
 
@@ -138,7 +161,7 @@ impl Wire for Completions {
         // reply, and the cap on a reply.
         if !ask.bare {
             body["stream_options"] = json!({"include_usage": true});
-            body["max_completion_tokens"] = json!(MAX_OUTPUT_TOKENS);
+            body[self.length_limit] = json!(MAX_OUTPUT_TOKENS);
         }
         Body {
             json: body,

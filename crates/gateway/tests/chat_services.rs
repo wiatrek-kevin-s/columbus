@@ -2443,3 +2443,122 @@ async fn every_request_says_it_is_columbus() {
         run.close().await;
     }
 }
+
+/// The services on this computer that Columbus knows.
+const LOCAL: [&str; 2] = ["ollama", "lmstudio"];
+
+/// Local models, the likeliest first failure: a service on this computer
+/// is sent the limit on a reply's length under the name it reads
+/// (`max_tokens`: Ollama reads no other). A service elsewhere keeps the
+/// name OpenAI uses now.
+#[tokio::test]
+async fn a_service_on_this_computer_is_sent_the_length_limit_under_the_name_it_reads() {
+    let Some(py) = python() else { return };
+    for id in LOCAL {
+        let service = builtin(id).unwrap().service();
+        let mut run = Run::start_as(
+            &py,
+            Fmt::Chat,
+            false,
+            vec![reply(say("Hello."))],
+            service,
+            "gemma3",
+            Answer::AllowOnce,
+        )
+        .await;
+        run.send("hello").await.unwrap();
+        let first = &run.stand.requests()[0];
+        assert_eq!(first["max_tokens"], 32_000, "{id}: {first}");
+        assert!(first.get("max_completion_tokens").is_none(), "{id}");
+        run.close().await;
+    }
+    let mut run = Run::start(&py, Fmt::Chat, false, vec![reply(say("Hello."))]).await;
+    run.send("hello").await.unwrap();
+    let first = &run.stand.requests()[0];
+    assert_eq!(first["max_completion_tokens"], 32_000);
+    assert!(first.get("max_tokens").is_none());
+    run.close().await;
+}
+
+/// What Ollama answers for a model that cannot call tools (its own words,
+/// from the review's run).
+fn no_tools() -> Value {
+    json!({"error": {"message": "registry.ollama.ai/library/gemma3:latest does not support tools", "type": "api_error", "param": null, "code": null}})
+}
+
+/// A model that cannot call tools is said to be that, with what to do, and
+/// the chat's one second try is not spent on it.
+#[tokio::test]
+async fn a_model_that_cannot_call_tools_is_named_and_the_second_try_is_kept() {
+    let Some(py) = python() else { return };
+    for id in LOCAL {
+        let service = builtin(id).unwrap().service();
+        let name = service.name.clone();
+        let mut run = Run::start_as(
+            &py,
+            Fmt::Chat,
+            false,
+            vec![
+                reply(say("Hello.")),
+                Next::Status(400, vec![], no_tools()),
+                Next::Status(
+                    400,
+                    vec![],
+                    error_body(
+                        Fmt::Chat,
+                        "invalid_request_error",
+                        "Unrecognized request argument supplied: stream_options",
+                    ),
+                ),
+                reply(say("Hello again.")),
+            ],
+            service,
+            "gemma3",
+            Answer::AllowOnce,
+        )
+        .await;
+        run.send("hello").await.unwrap();
+        // What the advice says about the first request's size stays true.
+        let bytes = run.stand.requests()[0].to_string().len();
+        println!("{id}: the first request is {bytes} bytes");
+        let kb = bytes / 1024;
+        assert!(
+            (45..=70).contains(&kb),
+            "{id}: the first request is {kb} KB"
+        );
+
+        let e = run.send("and the tracts?").await.unwrap_err().to_string();
+        assert_eq!(
+            e,
+            format!("{name} says the model gemma3 cannot call tools (registry.ollama.ai/library/gemma3:latest does not support tools). Choose a model that can call tools, and give it a context length of about 32,000 tokens or more: Columbus's first request alone is about 58 KB"),
+            "{id}"
+        );
+        assert_eq!(
+            run.stand.requests().len(),
+            2,
+            "{id}: not asked again without the optional fields"
+        );
+        assert!(
+            run.ui.statuses().is_empty(),
+            "{id}: {:?}",
+            run.ui.statuses()
+        );
+
+        // The one second try is still there for what it is for.
+        run.send("hello again").await.unwrap();
+        run.assert_well_formed();
+        let reqs = run.stand.requests();
+        assert_eq!(reqs.len(), 4, "{id}");
+        assert!(reqs[2].get("stream_options").is_some(), "{id}");
+        assert!(reqs[3].get("stream_options").is_none(), "{id}: {}", reqs[3]);
+        assert!(
+            run.ui
+                .statuses()
+                .iter()
+                .any(|s| s.contains("took the request without")),
+            "{id}: {:?}",
+            run.ui.statuses()
+        );
+        run.close().await;
+    }
+}

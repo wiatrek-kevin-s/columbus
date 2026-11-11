@@ -605,7 +605,9 @@ impl Chat {
         let wire: Box<dyn Wire> = match net.service.format {
             Format::Messages => Box::new(messages::Messages::new(pictures)),
             Format::Responses => Box::new(responses::Responses::new(pictures)),
-            Format::Chat => Box::new(completions::Completions::new(pictures)),
+            Format::Chat => Box::new(
+                completions::Completions::new(pictures).on_this_computer(net.service.local),
+            ),
         };
         Ok(Chat {
             client,
@@ -967,11 +969,14 @@ impl Chat {
             }
             // Refused, with fields in the request the format can do
             // without: one more try without them, once in a chat (build
-            // brief 3, A-11). The second answer is the one reported.
+            // brief 3, A-11). The second answer is the one reported. (Not
+            // for a model that cannot call tools: no second try helps it,
+            // and the chat keeps its one for a model that can.)
             if status == 400
                 && body.optional
                 && !no_credit
                 && !said.unknown_model(status)
+                && !said.no_tools()
                 && !self.tried_bare.swap(true, Ordering::SeqCst)
             {
                 self.bare.store(true, Ordering::SeqCst);

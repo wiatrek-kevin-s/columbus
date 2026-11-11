@@ -391,6 +391,41 @@ impl Said {
                     || m.contains("unknown model")))
     }
 
+    /// Whether the refusal says the model cannot call tools at all, in
+    /// the words services use for it: Ollama's "<model> does not support
+    /// tools", OpenRouter's "No endpoints found that support tool use",
+    /// OpenAI's "'tools' is not supported with this model". A refusal of
+    /// one field of a tool (`tools[3].function…`, `tool_choice`) is not
+    /// this: the second try is for those.
+    pub fn no_tools(&self) -> bool {
+        let m: String = self
+            .message
+            .to_ascii_lowercase()
+            .chars()
+            .filter(|c| !matches!(c, '\'' | '"' | '`'))
+            .collect();
+        // ("doesn't" is read without its quote mark, like every quoted word.)
+        const CANNOT: [&str; 3] = ["not support ", "nt support ", "found that support "];
+        const WHAT: [&str; 6] = [
+            "tools",
+            "tool use",
+            "tool calling",
+            "tool calls",
+            "function calling",
+            "functions",
+        ];
+        const SUBJECT: [&str; 4] = ["tools", "tool use", "tool calling", "function calling"];
+        CANNOT
+            .iter()
+            .any(|c| WHAT.iter().any(|w| m.contains(&format!("{c}{w}"))))
+            || SUBJECT.iter().any(|w| {
+                ["is not supported", "are not supported"].iter().any(|n| {
+                    let p = format!("{w} {n}");
+                    m.starts_with(&p) || m.contains(&format!(" {p}"))
+                })
+            })
+    }
+
     fn in_brackets(&self) -> String {
         if self.message.is_empty() {
             String::new()
@@ -399,6 +434,11 @@ impl Said {
         }
     }
 }
+
+/// What to do about a model that cannot call tools. Columbus works only
+/// through its tools, and their descriptions alone make a first request of
+/// about 58 KB: a model needs room for that and for what the tools return.
+const NO_TOOLS_ADVICE: &str = "Choose a model that can call tools, and give it a context length of about 32,000 tokens or more: Columbus's first request alone is about 58 KB";
 
 /// What the person is told when a service answers with an error status,
 /// in plain words that name the service.
@@ -411,6 +451,9 @@ pub(crate) fn refusal(name: &str, model: &str, status: u16, said: &Said, has_key
     };
     if said.no_credit(status) {
         return format!("your account at {name} has no credit left, or has reached its spending limit{its}. Columbus did not try again");
+    }
+    if said.no_tools() {
+        return format!("{name} says {the_model} cannot call tools{its}. {NO_TOOLS_ADVICE}");
     }
     if said.unknown_model(status) {
         return format!(
@@ -805,6 +848,62 @@ mod tests {
         assert!(read(json!({"error": {"message": "You exceeded your current quota", "code": "insufficient_quota"}})).no_credit(429));
         assert!(read(json!({"error": {"type": "invalid_request_error", "message": "Your credit balance is too low to access the Anthropic API."}})).no_credit(400));
         assert!(!read(json!({"error": {"message": "Rate limit reached for requests", "code": "rate_limit_exceeded"}})).no_credit(429));
+    }
+
+    #[test]
+    fn a_model_that_cannot_call_tools_is_told_from_other_refusals() {
+        let said = |m: &str| Said {
+            message: m.into(),
+            codes: String::new(),
+        };
+        for m in [
+            // Ollama (the review's run).
+            "registry.ollama.ai/library/gemma3:latest does not support tools",
+            // OpenRouter.
+            "No endpoints found that support tool use. To learn more about provider routing, visit: https://openrouter.ai/docs",
+            // OpenAI's wording for a model without them.
+            "Unsupported parameter: 'tools' is not supported with this model.",
+            "This model doesn't support function calling",
+            "`tool calling` is not supported with this model",
+            "Function calling is not supported by this deployment",
+        ] {
+            assert!(said(m).no_tools(), "{m}");
+        }
+        for m in [
+            // One field of a tool, or another setting: the second try's.
+            "Unsupported parameter: 'tools[3].function.parameters.additionalProperties' is not supported",
+            "Invalid schema for function 'export': 'anyOf' is not supported",
+            "tool_choice is not supported",
+            "This model does not support tool_choice",
+            "parallel tool calls are not supported",
+            "Unrecognized request argument supplied: stream_options",
+            "This model does not support reasoning effort",
+            "model \"llama9\" not found, try pulling it first",
+            "",
+        ] {
+            assert!(!said(m).no_tools(), "{m}");
+        }
+        let t = refusal(
+            "Ollama on this computer",
+            "gemma3",
+            400,
+            &said("registry.ollama.ai/library/gemma3:latest does not support tools"),
+            false,
+        );
+        assert_eq!(t, "Ollama on this computer says the model gemma3 cannot call tools (registry.ollama.ai/library/gemma3:latest does not support tools). Choose a model that can call tools, and give it a context length of about 32,000 tokens or more: Columbus's first request alone is about 58 KB");
+        // Whatever the status (OpenRouter answers 404), and never read as
+        // an address with nothing at it.
+        let t = refusal(
+            "OpenRouter",
+            "x/y",
+            404,
+            &said("No endpoints found that support tool use."),
+            true,
+        );
+        assert!(
+            t.starts_with("OpenRouter says the model x/y cannot call tools"),
+            "{t}"
+        );
     }
 
     #[test]

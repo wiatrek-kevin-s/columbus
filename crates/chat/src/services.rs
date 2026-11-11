@@ -139,9 +139,20 @@ pub struct Service {
     pub other_models: bool,
     /// The thinking levels it takes (id, label); "" is the model's own.
     pub efforts: Vec<(String, String)>,
+    /// Whether it is a server on this computer (Ollama, LM Studio, or one
+    /// the person added at an address here). Such a server is sent what
+    /// local servers read: see [`Service::on_this_computer`].
+    pub local: bool,
 }
 
 impl Service {
+    /// This service, said to be on this computer or not (the app says it
+    /// for a service the person added, from its checked address).
+    pub fn on_this_computer(mut self, local: bool) -> Service {
+        self.local = local;
+        self
+    }
+
     /// Whether a chat on this service may use `model`.
     pub fn model_ok(&self, model: &str) -> bool {
         self.models.iter().any(|(id, _)| id == model)
@@ -315,7 +326,7 @@ pub const BUILTIN: &[Builtin] = &[
         models: &[],
         earlier_models: &[],
         efforts: DEFAULT_ONLY,
-        about: "No key and no bill: the model runs on this computer. Ollama must be running, with a model pulled that can call tools.",
+        about: "No key and no bill: the model runs on this computer. Ollama must be running, with a model that can call tools and a context length of about 32,000 tokens or more.",
     },
     Builtin {
         id: "lmstudio",
@@ -328,7 +339,7 @@ pub const BUILTIN: &[Builtin] = &[
         models: &[],
         earlier_models: &[],
         efforts: DEFAULT_ONLY,
-        about: "No bill: the model runs on this computer. LM Studio's local server must be running, with a model loaded that can call tools. A key is needed only if you turned on its sign-in.",
+        about: "No bill: the model runs on this computer. LM Studio's local server must be running, with a model that can call tools and a context length of about 32,000 tokens or more. A key is needed only if you turned on its sign-in.",
     },
 ];
 
@@ -356,6 +367,7 @@ impl Builtin {
             earlier_models: own(self.earlier_models),
             other_models: true,
             efforts: own(self.efforts),
+            local: check_address(self.address).is_ok_and(|a| a.local),
         }
     }
 }
@@ -391,6 +403,7 @@ pub fn added(
             .iter()
             .map(|(a, b)| (a.to_string(), b.to_string()))
             .collect(),
+        local: false,
     }
 }
 
@@ -562,7 +575,18 @@ mod tests {
             assert!(!b.about.is_empty());
             let s = b.service();
             assert!(s.other_models && s.effort_ok(""));
+            // A server on this computer is known as one, and its line says
+            // what its model must be able to do.
+            assert_eq!(s.local, a.local, "{}", b.id);
+            assert_eq!(
+                b.about.contains("a model that can call tools and a context length of about 32,000 tokens or more"),
+                a.local,
+                "{}",
+                b.id
+            );
         }
+        let mine = added("mine", "Mine", Format::Chat, KeyHeader::Bearer, false);
+        assert!(!mine.local && mine.on_this_computer(true).local);
         assert_eq!(BUILTIN[0].id, "anthropic");
         assert_eq!(
             builtin("openai").map(|b| (b.format, b.address)),

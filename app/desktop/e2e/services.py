@@ -67,6 +67,9 @@ KEYS = {
     "gateway": "tk-gw-9Lp2Qs7x",
 }
 
+# What a service on this computer says its model must be able to do.
+LOCAL_MODEL = "a model that can call tools and a context length of about 32,000 tokens or more"
+
 # What "the model" does next, the same whatever the service: ("call", id,
 # tool, arguments), "export_last" (export the layer the last result made),
 # or ("say", words).
@@ -450,6 +453,13 @@ def main():
         wait.until(lambda drv: "Ollama must be running" in drv.find_element(By.ID, "fr-ai-about").text)
         assert not d.find_elements(By.ID, "fr-key"), "a service that takes no key shows no key field"
         assert "Choose its model in Settings › Assistant" in d.find_element(By.ID, "fr-ai-need").text
+        # And what its model must be able to do: the likeliest first failure.
+        assert LOCAL_MODEL in d.find_element(By.ID, "fr-ai-about").text, d.find_element(By.ID, "fr-ai-about").text
+        choose(d, "fr-service", "lmstudio")
+        wait.until(lambda drv: "LM Studio's local server must be running" in drv.find_element(By.ID, "fr-ai-about").text)
+        assert LOCAL_MODEL in d.find_element(By.ID, "fr-ai-about").text, d.find_element(By.ID, "fr-ai-about").text
+        choose(d, "fr-service", "ollama")
+        wait.until(lambda drv: "Ollama must be running" in drv.find_element(By.ID, "fr-ai-about").text)
         assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
         d.save_screenshot(str(OUT / "services-first-run.png"))
         # OpenAI, with its key.
@@ -598,6 +608,7 @@ def main():
         assert "Ollama on this computer needs no key." in d.find_element(By.ID, "key-state").text
         assert not d.find_element(By.ID, "key").is_displayed()
         assert "On this computer · OpenAI Chat Completions" in d.find_element(By.ID, "service-about").text
+        assert LOCAL_MODEL in d.find_element(By.ID, "service-about").text, d.find_element(By.ID, "service-about").text
         assert d.execute_script("return document.getElementById('model').value") == "", "Columbus has no list of what is on the computer"
         _, s = settings_json(d)
         assert s["ready"] is False and s["key_needed"] is False and s["model"] == "", s
@@ -613,6 +624,8 @@ def main():
         path, headers, body = SEEN[-1]
         assert path == "/chat/completions" and body["model"] == "llama3.3:70b"
         assert header(headers, "authorization") is None and header(headers, "x-api-key") is None, "a service that takes no key is sent none"
+        # The limit on a reply's length, under the name a local server reads.
+        assert body.get("max_tokens") == 32000 and "max_completion_tokens" not in body, sorted(body)
 
         step("Another service, added by its address and confirmed; a bad address is refused first")
         open_assistant(d)
