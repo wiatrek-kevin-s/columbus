@@ -204,6 +204,16 @@ fn home() -> Option<PathBuf> {
         .filter(|p| p.is_dir())
 }
 
+/// A file's permissions and modified time, to see that neither changed.
+fn marks(p: &Path) -> (bool, u32, std::time::SystemTime) {
+    let m = std::fs::metadata(p).unwrap();
+    #[cfg(unix)]
+    let mode = std::os::unix::fs::PermissionsExt::mode(&m.permissions());
+    #[cfg(not(unix))]
+    let mode = 0;
+    (m.permissions().readonly(), mode, m.modified().unwrap())
+}
+
 /// A Python string for a path.
 fn py_str(p: &Path) -> String {
     serde_json::to_string(&p.display().to_string()).unwrap()
@@ -266,6 +276,11 @@ def ways_out(who, gateway):
     attempt(who + "write_policy", lambda: write(P["policy"]))
     attempt(who + "write_outside", lambda: write(os.path.join(P["outside"], "escape.txt")))
     attempt(who + "delete_connection", lambda: os.remove(P["connection_file"]))
+    # Permissions and times: refused, or (Linux) reported done and not done.
+    # The test looks at the files afterwards.
+    for name in ("policy", "connection_file", "other_file"):
+        attempt(who + "chmod_" + name, lambda: os.chmod(P[name], 0o777))
+        attempt(who + "utime_" + name, lambda: os.utime(P[name], (1, 1)))
 
 if len(sys.argv) > 1:
     # The program the script started: the same ways out, from one step on.
@@ -372,6 +387,13 @@ async fn a_script_cannot_cross_the_boundary() {
     }
     let home_escape = format!(".columbus-boundary-escape-{}.txt", std::process::id());
     let policy_before = std::fs::read_to_string(env.root.join("policy.yaml")).unwrap();
+    // Files outside whose permissions and times must stay as they are.
+    let marked: Vec<PathBuf> = vec![
+        env.root.join("policy.yaml"),
+        env.root.join("connections").join("austin.yaml"),
+        other_file.clone(),
+    ];
+    let marks_before: Vec<_> = marked.iter().map(|p| marks(p)).collect();
 
     let none = "\"\"".to_string();
     let paths = [
@@ -526,6 +548,14 @@ async fn a_script_cannot_cross_the_boundary() {
         policy_before
     );
     assert!(env.root.join("connections").join("austin.yaml").is_file());
+    for (p, before) in marked.iter().zip(&marks_before) {
+        assert_eq!(
+            &marks(p),
+            before,
+            "the permissions or times of {} changed",
+            p.display()
+        );
+    }
     assert!(
         listener.accept().is_err(),
         "a confined program connected to this computer"

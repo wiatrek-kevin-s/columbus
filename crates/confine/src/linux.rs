@@ -21,9 +21,15 @@
 //!   sockets behind the filter, is refused at every level.
 //! * Other processes: where the kernel has Landlock's scopes (6.12 or
 //!   later), a confined program cannot signal a process outside its
-//!   sandbox. Levels A and B cannot use the kernel's key store or System V
-//!   shared memory and message queues, which other programs of the same
-//!   person may share.
+//!   sandbox. Levels A and B cannot use the kernel's key store, System V
+//!   shared memory or message queues of either kind, which other programs
+//!   of the same person may share.
+//! * Permissions, owners, times and extended attributes: Landlock has no
+//!   say over changing these, so at levels A and B the calls do nothing
+//!   (and report success, so copying a file still works): no file's
+//!   permissions or times change, outside the sandbox or in it.
+//! * The filter cannot be stepped around: a call made by its 32-bit number
+//!   ends the program, and one made by its x32 number is refused.
 //! * Open files: anything the launcher was handed besides its input and
 //!   output is closed before the program starts.
 //! * Memory: `RLIMIT_AS`.
@@ -247,6 +253,12 @@ fn restrict_files(spec: &Spec) -> Result<(), Error> {
 /// - io_uring everywhere confined: it can open sockets without socket().
 /// - `truncate` on kernels whose Landlock cannot yet refuse it (before
 ///   6.2): it would empty any file the person may write.
+///
+/// Two more filters follow it: at levels A and B, calls that change a
+/// file's permissions, owner, times or extended attributes do nothing
+/// ([`METADATA_CALLS`]); and on x86-64, at every level, a call made by its
+/// x32 number is refused ([`refuse_x32`]), or every rule here could be
+/// stepped around on kernels that have that table.
 fn syscall_filter(level: Level, abi: i64) -> Result<(), Error> {
     use seccompiler::{
         SeccompAction, SeccompCmpArgLen, SeccompCmpOp, SeccompCondition, SeccompFilter,
@@ -302,6 +314,9 @@ fn syscall_filter(level: Level, abi: i64) -> Result<(), Error> {
             libc::SYS_msgsnd,
             libc::SYS_msgrcv,
             libc::SYS_msgctl,
+            // POSIX message queues are named for the whole computer too.
+            libc::SYS_mq_open,
+            libc::SYS_mq_unlink,
         ] {
             rules.insert(call, vec![]);
         }
@@ -317,7 +332,89 @@ fn syscall_filter(level: Level, abi: i64) -> Result<(), Error> {
     )
     .map_err(setup)?;
     let program: seccompiler::BpfProgram = filter.try_into().map_err(setup)?;
+    seccompiler::apply_filter(&program).map_err(|e| Error::Setup(e.to_string()))?;
+
+    if matches!(level, Level::A | Level::B) {
+        let mut quiet = std::collections::BTreeMap::new();
+        for call in METADATA_CALLS {
+            quiet.insert(*call, vec![]);
+        }
+        // "Errno 0": the call is not made, and the program is told it was.
+        let filter = SeccompFilter::new(quiet, SeccompAction::Allow, SeccompAction::Errno(0), arch)
+            .map_err(setup)?;
+        let program: seccompiler::BpfProgram = filter.try_into().map_err(setup)?;
+        seccompiler::apply_filter(&program).map_err(|e| Error::Setup(e.to_string()))?;
+    }
+    refuse_x32()
+}
+
+/// The calls that change a file's permissions, owner, times or extended
+/// attributes. Landlock does not cover them (as of Linux 6.18), so a
+/// confined program could make the person's private files readable by
+/// everyone on the computer, lock them out of their own files, or change
+/// when a file says it was written, anywhere the person owns files. At
+/// levels A and B these calls do nothing and report success: `shutil.copy`
+/// and `copy2`, which make them on the copy, go on working, and nothing
+/// changes that way, outside the sandbox or in it. (A new file still gets
+/// the permissions it is created with.)
+const METADATA_CALLS: &[libc::c_long] = &[
+    libc::SYS_fchmod,
+    libc::SYS_fchmodat,
+    // fchmodat2 (Linux 6.6), the same number everywhere.
+    452,
+    libc::SYS_fchown,
+    libc::SYS_fchownat,
+    libc::SYS_utimensat,
+    libc::SYS_setxattr,
+    libc::SYS_lsetxattr,
+    libc::SYS_fsetxattr,
+    libc::SYS_removexattr,
+    libc::SYS_lremovexattr,
+    libc::SYS_fremovexattr,
+    // setxattrat and removexattrat (Linux 6.13), likewise.
+    463,
+    466,
+    #[cfg(target_arch = "x86_64")]
+    libc::SYS_chmod,
+    #[cfg(target_arch = "x86_64")]
+    libc::SYS_chown,
+    #[cfg(target_arch = "x86_64")]
+    libc::SYS_lchown,
+    #[cfg(target_arch = "x86_64")]
+    libc::SYS_utime,
+    #[cfg(target_arch = "x86_64")]
+    libc::SYS_utimes,
+    #[cfg(target_arch = "x86_64")]
+    libc::SYS_futimesat,
+];
+
+/// On x86-64 a kernel may also answer the "x32" table of system calls,
+/// whose numbers are the usual ones with one high bit set. The filters
+/// above name calls by their usual numbers, so without this a program
+/// could make any refused call by its other number. Nothing Columbus runs
+/// uses that table: every call in it is refused.
+#[cfg(target_arch = "x86_64")]
+fn refuse_x32() -> Result<(), Error> {
+    use seccompiler::sock_filter;
+    // BPF: load a word of the call's data; jump if greater or equal; return.
+    const LOAD_WORD: u16 = 0x20;
+    const JUMP_IF_GE: u16 = 0x35;
+    const RETURN: u16 = 0x06;
+    const X32_BIT: u32 = 0x4000_0000;
+    let step = |code, jt, jf, k| sock_filter { code, jt, jf, k };
+    let program = [
+        // The call's number is the first word.
+        step(LOAD_WORD, 0, 0, 0),
+        step(JUMP_IF_GE, 0, 1, X32_BIT),
+        step(RETURN, 0, 0, libc::SECCOMP_RET_ERRNO | libc::EACCES as u32),
+        step(RETURN, 0, 0, libc::SECCOMP_RET_ALLOW),
+    ];
     seccompiler::apply_filter(&program).map_err(|e| Error::Setup(e.to_string()))
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn refuse_x32() -> Result<(), Error> {
+    Ok(())
 }
 
 /// Close every file the launcher was handed besides its input, output and

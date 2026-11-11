@@ -556,9 +556,25 @@ def datagram(address):
 attempt("dgram_abstract", lambda: datagram("\0" + ABSTRACT))
 attempt("dgram_path", lambda: datagram(SOCKET_PATH))
 attempt("signal_parent", lambda: os.kill(parent, 0))
-# The kernel's key store and System V shared memory, by number.
-numbers = {"x86_64": {"keyctl": 250, "add_key": 248, "shmget": 29, "msgget": 68},
-           "aarch64": {"keyctl": 219, "add_key": 217, "shmget": 194, "msgget": 186}}.get(platform.machine())
+# A file outside: its permissions, times and attributes. The calls report
+# success and do nothing; the test looks at the file afterwards.
+def marks(path):
+    os.chmod(path, 0o777)
+    os.utime(path, (1, 1))
+    os.setxattr(path, "user.columbus_test", b"1")
+attempt("marks_outside", lambda: marks(OUTSIDE_FILE))
+# Copying still works (shutil makes the same calls on the copy).
+def copies():
+    import shutil
+    with open("copy_from.txt", "w") as f:
+        f.write("x")
+    shutil.copy("copy_from.txt", "copy_a.txt")
+    shutil.copy2("copy_from.txt", "copy_b.txt")
+    print("copied", sorted(n for n in os.listdir(".") if n.startswith("copy_")), flush=True)
+attempt("copies", copies)
+# The kernel's key store, System V shared memory and message queues, by number.
+numbers = {"x86_64": {"keyctl": 250, "add_key": 248, "shmget": 29, "msgget": 68, "mq_open": 240},
+           "aarch64": {"keyctl": 219, "add_key": 217, "shmget": 194, "msgget": 186, "mq_open": 180}}.get(platform.machine())
 if numbers:
     libc = ctypes.CDLL(None, use_errno=True)
     def call(name, *args):
@@ -570,9 +586,29 @@ if numbers:
     attempt("add_key", lambda: call("add_key", b"user", b"columbus-test", b"x", 1, -4))
     attempt("shmget", lambda: call("shmget", 0, 4096, 0o1600))
     attempt("msgget", lambda: call("msgget", 0, 0o1600))
+    attempt("mq_open", lambda: call("mq_open", b"/columbus-test", 0, 0, 0))
+    if platform.machine() == "x86_64":
+        # getpid by its x32 number: the filter must not be stepped around.
+        def x32():
+            ctypes.set_errno(0)
+            if libc.syscall(ctypes.c_long(0x40000000 | 39)) < 0:
+                raise OSError(ctypes.get_errno(), "x32")
+        attempt("x32", x32)
 else:
     print("syscalls: not checked on", platform.machine())
 "#;
+
+/// The names of a file's extended attributes (none where the file system
+/// keeps none).
+#[cfg(target_os = "linux")]
+fn xattr_names(p: &Path) -> Vec<u8> {
+    use std::os::unix::ffi::OsStrExt;
+    let c = std::ffi::CString::new(p.as_os_str().as_bytes()).unwrap();
+    let mut buf = vec![0u8; 1024];
+    let n = unsafe { libc::listxattr(c.as_ptr(), buf.as_mut_ptr().cast(), buf.len()) };
+    buf.truncate(n.max(0) as usize);
+    buf
+}
 
 /// The kernel's Landlock version; 6 or more scopes signals.
 #[cfg(target_os = "linux")]
@@ -637,6 +673,14 @@ fn levels_a_and_b_on_linux_keep_the_system_and_other_processes_out() {
     // A file of the launcher's parent, left open for the launcher as 9.
     let secret = std::fs::File::open(d.outside.join("secret.txt")).unwrap();
     let secret_fd = secret.as_raw_fd();
+    // Its permissions and times, which no confined program may change.
+    let marks = |p: &Path| {
+        use std::os::unix::fs::MetadataExt;
+        let m = std::fs::metadata(p).unwrap();
+        (m.mode(), m.mtime(), m.mtime_nsec(), m.uid(), m.gid())
+    };
+    let outside_file = d.outside.join("secret.txt");
+    let marks_before = marks(&outside_file);
     for level in ["A", "B"] {
         let etc = if level == "A" {
             etc_outside_the_list(&[
@@ -652,8 +696,9 @@ fn levels_a_and_b_on_linux_keep_the_system_and_other_processes_out() {
             etc_outside_the_list(&["hostname", "fstab", "shells", "environment", "issue"])
         };
         let script = format!(
-            "ETC = {etc}\nABSTRACT = {name:?}\nSOCKET_PATH = {:?}\n{LINUX_PROBES}",
-            socket_path.display().to_string()
+            "ETC = {etc}\nABSTRACT = {name:?}\nSOCKET_PATH = {:?}\nOUTSIDE_FILE = {:?}\n{LINUX_PROBES}",
+            socket_path.display().to_string(),
+            outside_file.display().to_string()
         );
         let out = run_with(level, &d.ws, &[], &py, &script, |cmd| unsafe {
             cmd.pre_exec(move || {
@@ -681,6 +726,10 @@ fn levels_a_and_b_on_linux_keep_the_system_and_other_processes_out() {
             "stream_pair: ok",
             "dgram_abstract: refused PermissionError 13",
             "dgram_path: refused PermissionError 13",
+            // The calls report success; the file is looked at below.
+            "marks_outside: ok",
+            "copies: ok",
+            "copied ['copy_a.txt', 'copy_b.txt', 'copy_from.txt']",
         ];
         expected.push(if level == "A" {
             "sockets_not_refused: []"
@@ -702,7 +751,11 @@ fn levels_a_and_b_on_linux_keep_the_system_and_other_processes_out() {
                 "add_key: refused PermissionError 13",
                 "shmget: refused PermissionError 13",
                 "msgget: refused PermissionError 13",
+                "mq_open: refused PermissionError 13",
             ]);
+        }
+        if cfg!(target_arch = "x86_64") {
+            expected.push("x32: refused PermissionError 13");
         }
         for l in expected {
             assert!(
@@ -726,6 +779,17 @@ fn levels_a_and_b_on_linux_keep_the_system_and_other_processes_out() {
             );
         }
         assert!(!out.stdout.contains("the secret"), "{}", out.stdout);
+        // The file outside has the permissions and times it had, and no
+        // new attribute.
+        assert_eq!(
+            marks(&outside_file),
+            marks_before,
+            "level {level}: a confined program changed a file's permissions or times outside"
+        );
+        assert!(
+            xattr_names(&outside_file).is_empty(),
+            "level {level}: a confined program set an attribute on a file outside"
+        );
         // Nothing reached either socket outside.
         let mut buf = [0u8; 64];
         for (which, s) in [("abstract", &abstract_socket), ("path", &path_socket)] {
