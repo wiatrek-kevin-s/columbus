@@ -10,6 +10,8 @@ The README's pictures and animation show the Columbus app working on real public
 
 Source: U.S. Census Bureau, TIGER/Line Shapefiles; NHTSA, Fatality Analysis Reporting System. Neither agency endorses Columbus.
 
-In the pictures, the street names and crash counts are the data's own. The answer the scripted assistant gives is worked out from this data by [`screenshots.py`](../../app/desktop/e2e/screenshots.py). The coordinate system (Texas Central State Plane, feet) is applied by the script, as an Austin GIS team would store it.
+In the pictures, the street names and crash counts are the data's own. The answers the scripted assistant gives are worked out from this data by [`screenshots.py`](../../app/desktop/e2e/screenshots.py). The coordinate system (Texas Central State Plane, feet) is applied by the script, as an Austin GIS team would store it.
 
-**Made up for the pictures:** the connection names, the Oracle enterprise geodatabase and the ArcGIS Online layer in the connections list (listed only, never reached), and the user folder `/home/analyst`. The street basemap is © [OpenFreeMap](https://openfreemap.org), © [OpenMapTiles](https://www.openmaptiles.org), data © [OpenStreetMap contributors](https://www.openstreetmap.org/copyright).
+**Made up for the pictures:** the connection names, the Oracle enterprise geodatabase and the ArcGIS Online layer in the connections list (listed only, never reached), the project and the scripts and note in its folder (written by the script; the one that is run counts the real records), and the user folder `/home/analyst`.
+
+The pictures here were taken with the street background off, the app's own default, so none shows a basemap. Taken with it on (the **README pictures** workflow does that), the basemap is © [OpenFreeMap](https://openfreemap.org), © [OpenMapTiles](https://www.openmaptiles.org), data © [OpenStreetMap contributors](https://www.openstreetmap.org/copyright).

@@ -55,18 +55,26 @@ Taken from the app by [`screenshots.py`](../app/desktop/e2e/screenshots.py), on 
 <table>
   <tr>
     <td width="50%"><img src="images/start.png" alt="The start: the sidebar on the left and, in the middle of the window, the question What do you want to know? over a box to ask in, with questions to try and a line for what waits for you"><br><b>The start</b>: the question first.</td>
-    <td width="50%"><img src="images/chat.png" alt="A chat in the middle column, after an export the analyst allowed: the assistant's steps in one line and its answer, with the chat's map in the panel on the right"><br><b>A chat</b>: steps and answer in the middle, the map on the right.</td>
+    <td width="50%"><img src="images/first-run.png" alt="The first run. Start with your data, with an Add data button; two checks, connect an AI for the chat and the GIS engine, which was found; then How should your assistant work?, with Work freely on copies (recommended) chosen, Ask me before each script under it, and the line On now: Work freely on copies"><br><b>The first run</b>: your data, then how your assistant should work.</td>
   </tr>
   <tr>
+    <td><img src="images/chat.png" alt="A chat in the middle column, after an export the analyst allowed: the assistant's steps in one line and its answer, with the chat's map in the panel on the right"><br><b>A chat</b>: steps and answer in the middle, the map on the right.</td>
     <td><img src="images/map-only.png" alt="The same chat's map filling the window beside the sidebar, with the chat put away; a button in the panel's head brings the chat back"><br><b>Fill the window with the map</b>: the chat put away, for reviewing.</td>
-    <td><img src="images/tool-review.png" alt="A tool the assistant proposed, with its code, before it is installed"><br><b>Tools</b>: read line by line before installing.</td>
   </tr>
   <tr>
+    <td><img src="images/tools.png" alt="The Tools page. Toolboxes first, with an Add tools button, none installed yet, and a line saying that a toolbox's tools run in the sandbox, on copies, without asking; under it, a tool the assistant proposed, waiting to be read, then the installed tools, the team library and the sharing keys"><br><b>Tools</b>: toolboxes first, then tools made from your assistant's scripts.</td>
+    <td><img src="images/tour-toolboxes-light.png" alt="The Add tools dialog. GeoLibre tools, about a thousand open-source tools in one program, with its version, the size of the download, its licence, its publisher, the address it is downloaded from and an Install button; under it, a form to add a program that is already on this computer"><br><b>Add tools</b>: what would be installed, before anything is downloaded.</td>
+  </tr>
+  <tr>
+    <td><img src="images/tool-review.png" alt="A tool the assistant proposed, with its code, before it is installed"><br><b>A proposed tool</b>: read line by line before installing.</td>
     <td><img src="images/workflow-review.png" alt="A proposed workflow, in plain words and in full, before it is approved"><br><b>Workflows</b>: a proposal, read before it is approved.</td>
+  </tr>
+  <tr>
+    <td><img src="images/tour-project-light.png" alt="A project's page: its Sync section, which says nothing is sent until Sync is pressed and that no Git server is connected yet; the project's chat; and its three files in two folders, with a button that opens the folder"><br><b>A project</b>: sync, its chats and its files.</td>
     <td><img src="images/activity.png" alt="Activity: what waits for you on top; under it History, every call and decision in plain words, newest first, with a button that verifies the month's chain"><br><b>Activity</b>: what waits for you, then every call and every decision.</td>
   </tr>
   <tr>
-    <td><img src="images/settings.png" alt="The Settings sheet over the open page: the assistant (API key, model and thinking level for new chats), Python, the map and this computer"><br><b>Settings</b>: one sheet, over the page that is open.</td>
+    <td><img src="images/settings.png" alt="The Settings sheet over the open page. At the top, How your assistant works: Work freely on copies, chosen, and Ask me before each script, with the line On now: Work freely on copies. Under it, the assistant (API key, model and thinking level for new chats) and Python"><br><b>Settings</b>: one sheet, over the page that is open.</td>
     <td></td>
   </tr>
 </table>
