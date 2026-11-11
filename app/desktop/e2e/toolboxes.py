@@ -446,7 +446,15 @@ def main():
         remove = d.find_element(By.XPATH, "//ul[@id='toolboxes']/li[@data-id='geolibre']//button[normalize-space()='Remove']")
         d.execute_script("arguments[0].scrollIntoView({block: 'center'})", remove)
         remove.click()
-        wait.until(lambda drv: not drv.find_elements(By.CSS_SELECTOR, "#toolboxes li"))
+        try:
+            wait.until(lambda drv: not drv.find_elements(By.CSS_SELECTOR, "#toolboxes li"))
+        except Exception as e:
+            # Say what the page and the folder hold, so a failure names its cause.
+            folder = root / "toolboxes" / "geolibre"
+            left = sorted(str(p.relative_to(folder)) for p in folder.rglob("*")) if folder.exists() else None
+            page = d.execute_script("const c = document.getElementById('toolbox-card'); return c ? c.textContent.slice(0, 1500) : '(no toolbox card)'")
+            buttons = d.execute_script("return [...document.querySelectorAll('#toolboxes li button')].map((b) => b.textContent.trim() + (b.disabled ? ' (waiting)' : ''))")
+            raise AssertionError(f"the toolbox is still listed after Remove ({e.__class__.__name__}). Its buttons: {buttons!r}. On the page: {page!r}. Left in its folder: {left!r}") from e
         wait.until(lambda drv: "Removed geolibre" in text(drv, "#tbx-notice"))
         assert not (root / "toolboxes" / "geolibre").exists(), "the toolbox's folder is gone"
         assert not shown(d, "#tbx-find"), "no toolbox, nothing to search"

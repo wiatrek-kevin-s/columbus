@@ -94,7 +94,7 @@ pub async fn respond(world: Shared, prefix: &str, req: Request) -> Response {
     let method = req.method().to_string();
     let (headers, path, query, body) = match arrive(&world, prefix, req).await {
         Ok(x) => x,
-        Err(r) => return r,
+        Err(r) => return *r,
     };
     let body: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
     let mut w = world.lock().unwrap();

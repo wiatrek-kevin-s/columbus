@@ -124,12 +124,13 @@ pub fn answer(status: u16, body: Value) -> Response {
 }
 
 /// Note a request, and apply the switches that concern every request.
-/// `Err`: the answer to give instead of the route's own.
+/// `Err`: the answer to give instead of the route's own (boxed: a whole
+/// response is a large thing to carry in every `Result`).
 pub async fn arrive(
     world: &Shared,
     prefix: &str,
     req: Request,
-) -> Result<(HeaderMap, String, String, Bytes), Response> {
+) -> Result<(HeaderMap, String, String, Bytes), Box<Response>> {
     let (parts, body) = req.into_parts();
     let body = axum::body::to_bytes(body, 64 * 1024 * 1024)
         .await
@@ -144,7 +145,7 @@ pub async fn arrive(
     // The API lives under a prefix (`/api/v3`, `/api/v1`); what follows
     // it is what the server is asked.
     let Some(path) = parts.uri.path().strip_prefix(prefix).map(str::to_string) else {
-        return Err(StatusCode::NOT_FOUND.into_response());
+        return Err(Box::new(StatusCode::NOT_FOUND.into_response()));
     };
     let query = parts.uri.query().unwrap_or_default().to_string();
     let (delay, redirect, limited) = {
@@ -167,15 +168,17 @@ pub async fn arrive(
     }
     if let Some(to) = redirect {
         let target = format!("{}{}", to.trim_end_matches('/'), path);
-        return Err((StatusCode::TEMPORARY_REDIRECT, [("location", target)]).into_response());
+        return Err(Box::new(
+            (StatusCode::TEMPORARY_REDIRECT, [("location", target)]).into_response(),
+        ));
     }
     if limited {
-        return Err((
+        return Err(Box::new((
             StatusCode::FORBIDDEN,
             [("x-ratelimit-remaining", "0".to_string()), ("x-ratelimit-reset", "1794400000".to_string())],
             Json(json!({"message": "API rate limit exceeded for user ID 1.", "documentation_url": "https://docs.github.com/rest/overview/rate-limits-for-the-rest-api"})),
         )
-            .into_response());
+            .into_response()));
     }
     Ok((parts.headers, path, query, body))
 }

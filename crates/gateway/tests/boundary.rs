@@ -54,6 +54,30 @@ fn must_not_skip() -> bool {
     std::env::var("COLUMBUS_TEST_REQUIRE_ENGINE").is_ok_and(|v| v == "1")
 }
 
+/// CI says tests that need the network must have it.
+fn must_have_network() -> bool {
+    std::env::var("COLUMBUS_TEST_REQUIRE_NETWORK").is_ok_and(|v| v == "1")
+}
+
+/// The question the script's `udp` attempt asks (the address of
+/// example.com, of the name server at 1.1.1.1), asked from here, outside
+/// the sandbox: whether an answer comes back at all on this computer.
+fn udp_is_answered_outside_the_sandbox() -> bool {
+    const QUESTION: &[u8] = &[
+        0x12, 0x34, 0x01, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0, 7, b'e', b'x', b'a', b'm', b'p',
+        b'l', b'e', 3, b'c', b'o', b'm', 0, 0, 1, 0, 1,
+    ];
+    let Ok(s) = std::net::UdpSocket::bind("0.0.0.0:0") else {
+        return false;
+    };
+    let _ = s.set_read_timeout(Some(std::time::Duration::from_secs(4)));
+    if s.send_to(QUESTION, "1.1.1.1:53").is_err() {
+        return false;
+    }
+    let mut answer = [0u8; 512];
+    s.recv_from(&mut answer).is_ok()
+}
+
 /// Ten roads around Austin in EPSG:3081, eight in district 14.
 fn make_fixture(py: &str, folder: &Path) {
     let script = r#"
@@ -240,8 +264,16 @@ def write(path):
         f.write("written by a script")
 
 def udp():
+    # A real question to a public name server, and a wait for its answer.
+    # What counts is whether anything gets out and back, not whether the
+    # send call complains: inside AppContainer on Windows it does not (the
+    # packet is dropped on its way), so there "refused" is a wait that ends
+    # with no answer. (The test asks the same question from outside the
+    # sandbox, to know an answer was there to be had.)
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    s.sendto(b"x", ("1.1.1.1", 53))
+    s.settimeout(4)
+    s.sendto(bytes.fromhex("123401000001000000000000076578616d706c6503636f6d0000010001"), ("1.1.1.1", 53))
+    s.recvfrom(512)
 
 def ways_out(who, gateway):
     # What it was started with: nothing of the gateway's own may be in it.
@@ -500,6 +532,25 @@ async fn a_script_cannot_cross_the_boundary() {
         }
     }
     assert!(stdout.contains("child exit 0"), "{stdout}");
+    // Where the send call itself is not refused (AppContainer on Windows
+    // drops the packet on its way), "refused" above is a wait that ended
+    // with no answer. That shows the sandbox only if an answer does come
+    // back outside it, so the same question is asked from here; where tests
+    // must have the network (CI), it must be answered.
+    if cfg!(windows) {
+        let answered = udp_is_answered_outside_the_sandbox();
+        if must_have_network() {
+            assert!(
+                answered,
+                "outside the sandbox this computer got no answer over UDP from 1.1.1.1 either, \
+                 so the script's wait in vain shows nothing about the sandbox"
+            );
+        } else if !answered {
+            eprintln!(
+                "note: no UDP answer outside the sandbox either; the UDP check showed nothing here"
+            );
+        }
+    }
     // What a script is for still works.
     for l in [
         "inputs: ok",
