@@ -448,7 +448,9 @@ fn a_program_is_added_only_from_a_folder_of_its_own_and_the_person_is_told_what_
             .join("System32")
             .join("cmd.exe")
     } else {
-        PathBuf::from("/usr/bin/env")
+        // The shell: a file in /bin on a Mac, and on Linux a link to one
+        // in /usr/bin (the command looks at where the program really is).
+        PathBuf::from("/bin/sh")
     };
     let o = toolbox_at_home(
         &env,
