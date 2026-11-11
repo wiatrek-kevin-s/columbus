@@ -3,7 +3,7 @@
 // parts, moved here: the app opens on a question now.)
 import { h, put, icon, invoke, store, button, savePrefs, showError } from "../core.js";
 import { openEditor } from "./connections.js";
-import { workMode } from "./settings.js";
+import { workMode, COPILOT_LINE } from "./settings.js";
 
 const STEPS = ["ai", "engine", "connection"];
 
@@ -93,7 +93,9 @@ export function firstSteps(s, again) {
       need ? h("span", { class: "where", id: "fr-ai-need" }, need, !chat.model && svc && svc.allowed ? [" ", h("a", { href: "#/settings/ai" }, "Open Settings › Assistant")] : null) : null,
       h("span", { class: "where", id: "fr-ai-about" }, svc ? svc.about : "", " ",
         takesKey ? "The key is kept in your computer's credential store, never in a file, and this app can never read it back. " : "",
-        "You can also use Columbus from Claude desktop and other AI apps without any of this."));
+        // GitHub Copilot is asked for by name and is not in the list.
+        h("span", { id: "fr-ai-copilot" }, COPILOT_LINE, " Claude desktop and other AI apps can use Columbus the same way, without any of this: see ",
+          h("a", { href: "#/settings/ai/copilot" }, "Use Columbus from another AI app"), ".")));
   }
   checks.append(h("li", {}, mark("ai"), ai));
 

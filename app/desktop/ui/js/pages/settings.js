@@ -164,7 +164,7 @@ let sheet = null;
 let sheetClosed = null;
 
 /** Open the settings sheet (or show one of its parts in it). */
-export function openSheet(sub, onClosed) {
+export function openSheet(sub, onClosed, hint) {
   const part = SECTIONS.find(([k]) => k === sub);
   if (!sheet) {
     sheet = h("dialog", { class: "settings", id: "settings", "aria-labelledby": "settings-title" });
@@ -197,7 +197,7 @@ export function openSheet(sub, onClosed) {
   }
   // A screen reader starts at the sheet's title, not its close button.
   title.focus({ preventScroll: true });
-  if (part) ({ ai, privacy, keyboard, environments, org, git: (b) => gitServers.part(b, () => { changed = true; }) })[part[0]](body);
+  if (part) ({ ai: (b) => ai(b, hint), privacy, keyboard, environments, org, git: (b) => gitServers.part(b, () => { changed = true; }) })[part[0]](body);
   else overview(body, foot);
 }
 
@@ -325,9 +325,17 @@ function serviceDialog(st, old, done) {
   name.focus();
 }
 
+// GitHub Copilot is asked for by name, and is not an AI service the chat
+// can use: the line says so where the services are chosen (here and in
+// the first run), and points at the part for other AI apps.
+export const COPILOT_LINE = "GitHub Copilot cannot be chosen here: it uses Columbus as an AI app, with its own models and your Copilot subscription.";
+const COPILOT_APP = "copilot-vscode";
+
 // How to connect other AI apps to Columbus (REQ-50): the file to change
 // and the exact entry, with this computer's own path to the server.
 function otherApps() {
+  // The app the person came for, when a pointer brought them here.
+  let wanted = null;
   const pick = h("select", { id: "apps-pick", "aria-label": "AI app" });
   const file = h("p", { id: "apps-file", class: "small wrap-any" });
   const entry = el("pre", "box", "");
@@ -374,12 +382,23 @@ function otherApps() {
     missing.hidden = !!r.server;
     approvals.textContent = r.approvals;
     pick.replaceChildren(...apps.map((a) => h("option", { value: a.id }, a.name)));
+    if (wanted && apps.some((a) => a.id === wanted)) pick.value = wanted;
     draw();
   }).catch((e) => { file.textContent = String(e); });
-  return h("section", { class: "card", id: "other-apps" }, sec("Use Columbus from another AI app"), box);
+  const section = h("section", { class: "card", id: "other-apps" }, sec("Use Columbus from another AI app"), box);
+  // Bring this part into view, opened on one app.
+  section.point = (id) => {
+    wanted = id;
+    if (apps.some((a) => a.id === id)) { pick.value = id; draw(); }
+    section.scrollIntoView({ block: "start" });
+    pick.focus({ preventScroll: true });
+  };
+  return section;
 }
 
-async function ai(body) {
+// `hint` is what follows `#/settings/ai/` in the address: `copilot` opens
+// the part for other AI apps on GitHub Copilot.
+async function ai(body, hint) {
   const error = h("p", { id: "service-error", class: "error-text", role: "alert", hidden: true });
   const service = h("select", { id: "service" });
   const about = h("p", { id: "service-about", class: "small muted" });
@@ -415,14 +434,18 @@ async function ai(body) {
   const add = button("Add another service", "sm", null, { id: "service-add" });
   const noStore = h("p", { id: "services-nostore", class: "small muted pad", hidden: true });
   const orgLine = h("p", { id: "service-org", class: "small muted", hidden: true });
+  const others = otherApps();
+  // Where a person looks for GitHub Copilot: it is not in the list above.
+  const copilot = h("p", { id: "service-copilot", class: "small muted" }, COPILOT_LINE, " See ",
+    h("a", { href: "#/settings/ai/copilot", id: "service-copilot-link", onclick: (e) => { e.preventDefault(); others.point(COPILOT_APP); } }, "Use Columbus from another AI app"), ".");
   body.append(error,
     h("section", { class: "card" }, sec("AI service"),
       h("div", { class: "bd stack" },
         h("p", { class: "small muted" }, "The AI the app's chat talks to. Whichever you choose, your messages and what your assistant reads from your data are sent to it; with one on this computer, they stay here. A key is kept in your computer's credential store, never in a file, and this window can set or remove it but never read it back."),
         h("label", { class: "field", for: "service" }, "Service for new chats", service),
-        about, running, orgLine, keyForm, prefs)),
+        copilot, about, running, orgLine, keyForm, prefs)),
     h("section", { class: "card", id: "services-card" }, sec("Other services", null, h("span", { class: "more" }, add)), h("div", { class: "bd flush" }, added, noneAdded, noStore)),
-    otherApps());
+    others);
 
   let s = null;
   let st = null;
@@ -550,6 +573,8 @@ async function ai(body) {
   });
   add.addEventListener("click", () => serviceDialog(st, null, async (n) => { await refresh(); toast(`Added ${n}. Choose it above to use it for new chats.`); }));
   await refresh();
+  // (After the first draw: what is above has its height by now.)
+  if (hint === "copilot") others.point(COPILOT_APP);
 }
 
 // ---------- The first view: what a person changes ----------

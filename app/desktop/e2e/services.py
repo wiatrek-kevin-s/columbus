@@ -281,6 +281,21 @@ def save_key(d, key):
     reads_right(d, "#settings")
 
 
+def copilot_line(d, where):
+    """The line that says where GitHub Copilot is, with its pointer."""
+    text = d.find_element(By.ID, where).text
+    assert "GitHub Copilot cannot be chosen here: it uses Columbus as an AI app" in text and "Use Columbus from another AI app" in text, text
+
+
+def opened_on_copilot(d):
+    """Settings > Assistant shows the part for other AI apps, opened on GitHub Copilot."""
+    Wait(d, 20).until(lambda drv: drv.execute_script(
+        "const p = document.getElementById('apps-pick'); return !!p && p.value === 'copilot-vscode' && !!document.getElementById('apps-entry').textContent"))
+    Wait(d, 10).until(lambda drv: drv.execute_script(
+        "const r = document.getElementById('other-apps').getBoundingClientRect(); return r.top >= 0 && r.top < window.innerHeight"))
+    assert "mcp-config.json" in d.find_element(By.ID, "apps-file").text and d.execute_script("return document.activeElement.id") == "apps-pick"
+
+
 def change_added(d, service_id):
     """Open the form of a service the person added."""
     d.find_element(By.CSS_SELECTOR, f"#services-added li[data-id='{service_id}'] button:not(.danger)").click()
@@ -466,8 +481,15 @@ def main():
         assert LOCAL_MODEL in d.find_element(By.ID, "fr-ai-about").text, d.find_element(By.ID, "fr-ai-about").text
         choose(d, "fr-service", "ollama")
         wait.until(lambda drv: "Ollama must be running" in drv.find_element(By.ID, "fr-ai-about").text)
+        # GitHub Copilot is asked for by name and is not in the list: the row
+        # says why, and its pointer opens the part for other AI apps on Copilot.
+        copilot_line(d, "fr-ai-copilot")
         assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
         d.save_screenshot(str(OUT / "services-first-run.png"))
+        d.find_element(By.CSS_SELECTOR, "#fr-ai-copilot a").click()
+        opened_on_copilot(d)
+        close_settings(d)
+        wait.until(EC.presence_of_element_located((By.ID, "fr-service")))
         # OpenAI, with its key.
         choose(d, "fr-service", "openai")
         key = wait.until(EC.presence_of_element_located((By.ID, "fr-key")))
@@ -815,6 +837,17 @@ def main():
         Wait(d, 15).until(lambda drv: not drv.find_elements(By.ID, "svc-dialog"))
         Wait(d, 10).until(lambda drv: f"{here}/gw/v1" in drv.find_element(By.CSS_SELECTOR, "#services-added li[data-id='my-gateway']").text)
         choose_service(d, "openai")
+
+        step("GitHub Copilot is not in the list of services: the line under it says where it is")
+        close_settings(d)
+        open_assistant(d)
+        assert d.execute_script("return document.getElementById('apps-pick').value") == "claude-desktop", "opened without the pointer, the first app"
+        copilot_line(d, "service-copilot")
+        assert d.execute_script("return document.getElementById('service-copilot').previousElementSibling.contains(document.getElementById('service'))"), "the line is under the list of services"
+        d.find_element(By.ID, "service-copilot-link").click()
+        opened_on_copilot(d)
+        assert d.execute_script("return location.hash") == "#/settings/ai"
+        assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
 
         step("How to connect other AI apps: this computer's path, each app's own file and entry, Copy")
         apps = [o.get_attribute("value") for o in Select(d.find_element(By.ID, "apps-pick")).options]
