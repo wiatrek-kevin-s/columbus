@@ -19,7 +19,8 @@ Two sessions of the app:
    licence, publisher and address before anything is downloaded; a
    download that is not the pinned file is refused and leaves nothing;
    Install downloads, checks, unpacks and lists, and says how many tools
-   are ready;
+   are ready (a read of the list that fails after a newer one was drawn
+   does not show its error over it);
    the tools are found by words and one opens in the panel on the right;
    the assistant finds one and runs it without being asked to approve, and
    its result is a layer on the chat's map; Table on its result card
@@ -373,6 +374,21 @@ def main():
         program = root / "toolboxes" / "geolibre" / "bin" / "geolibre"
         assert program.exists() and os.access(program, os.X_OK), "the program is in the toolbox's own folder"
         assert (root / "toolboxes" / "geolibre" / "toolbox.yaml").exists()
+
+        step("A read of the list that fails after a newer one was drawn does not show its error over it")
+        # The window gets the focus twice, so the list is read twice. The
+        # answer to the first read is kept back until the second is drawn,
+        # and is then given to the page as a failure (made up here: reading
+        # the list does not fail by itself).
+        assert not shown(d, "#tbx-error")
+        guard.hold(d, "toolboxes_state")
+        d.execute_script("window.dispatchEvent(new Event('focus'))")
+        wait.until(guard.held)
+        d.execute_script("window.dispatchEvent(new Event('focus'))")
+        wait.until(guard.newer)
+        guard.release(d, fail="the list of toolboxes could not be read (a failure made up by this test)")
+        assert not shown(d, "#tbx-error"), f"a read that failed late showed its error over the newer list: {text(d, '#tbx-error')}"
+        assert "In use" in text(d, "#toolboxes li[data-id='geolibre']")
 
         step("Its tools are found by words: name, summary, toolbox and category")
         wait.until(lambda drv: shown(drv, "#tbx-q"))

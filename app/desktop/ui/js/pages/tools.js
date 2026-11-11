@@ -8,6 +8,8 @@ import { toolboxSection } from "./toolboxes.js";
 
 let tools = null;
 let reviewing = null;
+// Reads of the list begun so far (see `refresh`).
+let reads = 0;
 
 // Tools and skills are pages inside Workflows.
 const BACK = { href: "#/tools", label: "Tools" };
@@ -117,20 +119,31 @@ export async function render(main) {
       installed.append(li);
     }
   };
+  // Only the read begun last is kept and drawn: one begun before a tool was
+  // installed, declined or removed can end after the one begun since (the
+  // list is also read whenever the window gets the focus), and would put
+  // back what is gone. Counted for the whole module, as `tools` is.
   const refresh = async () => {
+    const mine = ++reads;
     try {
-      tools = await invoke("settings_tools");
+      const now = await invoke("settings_tools");
+      if (mine !== reads) return;
+      tools = now;
       store.set("tools", tools);
       draw();
       showError(err, null);
-    } catch (e) { showError(err, e); }
+    } catch (e) { if (mine === reads) showError(err, e); }
   };
+  // The same for the switches: only the read begun last is drawn.
+  let switchReads = 0;
   const drawSwitch = async () => {
+    const mine = ++switchReads;
     try {
       const st = await invoke("settings_state");
+      if (mine !== switchReads) return;
       sw.replaceChildren(switchRow("allow_personal_tools", st, async () => { await drawSwitch(); await refresh(); }),
         switchRow("allow_shared_tools", st, async () => { await drawSwitch(); }));
-    } catch (e) { sw.replaceChildren(el("p", "error-text", String(e))); }
+    } catch (e) { if (mine === switchReads) sw.replaceChildren(el("p", "error-text", String(e))); }
   };
   async function decline(id) {
     try {

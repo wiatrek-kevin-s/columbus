@@ -100,7 +100,11 @@ export function toolboxSection() {
       draw();
       showError(error, null);
       if (!find.hidden) search(); else { hits.replaceChildren(); more.textContent = ""; }
-    } catch (e) { showError(error, e); }
+    } catch (e) {
+      // Nor is an older read's failure shown over what a newer one drew.
+      if (closed || mine !== reads) return;
+      showError(error, e);
+    }
   };
 
   async function remove(t, btn) {
