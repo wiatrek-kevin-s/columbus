@@ -3,8 +3,10 @@
 //! a Forgejo is connected by pasting a token into the app.
 //!
 //! * The list of servers, without tokens, is `git-servers.yaml` in the
-//!   app's settings (F-18): `id`, `kind`, `url`, `user`, and optionally the
-//!   company's `certificate` file for the server.
+//!   app's settings (F-18): `id`, `kind`, `url`, `user`, and nothing else.
+//!   Where a server needs the organization's own certificate file, the
+//!   file's path is kept with the app's data, beside the projects' sync
+//!   records (`sync/server-certificates.json`).
 //! * A token is kept only in the operating system's credential store, the
 //!   way the app keeps its AI key (service `columbus-app`, account
 //!   `git-server:<id>`). It is never written to a file, a log, an error or
@@ -19,7 +21,7 @@
 //! The assistant has no part in this: nothing here is a tool, and only the
 //! main window's own pages may call these commands.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -39,7 +41,8 @@ const HEAD: &str = "# Git servers connected in the Columbus app (Settings > Git 
 /// The most servers kept.
 const MAX_SERVERS: usize = 20;
 
-/// One connected server, as `git-servers.yaml` keeps it (F-18).
+/// One connected server, as `git-servers.yaml` keeps it (F-18): these four
+/// fields, and nothing else.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Entry {
@@ -49,10 +52,6 @@ pub(crate) struct Entry {
     pub url: String,
     /// The account's login on the server, as it answered when connected.
     pub user: String,
-    /// The company's certificate file (.pem) for this server, if it needs
-    /// one beyond the system's trust store.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub certificate: Option<String>,
 }
 
 fn id_ok(id: &str) -> bool {
@@ -111,6 +110,69 @@ pub(crate) fn to_text(entries: &[Entry]) -> Result<String, String> {
 
 fn save(app: &AppHandle, entries: &[Entry]) -> Result<(), String> {
     write_atomic(&file(app)?, &to_text(entries)?)
+}
+
+/// The organization's own certificate file (.pem) for a server that needs
+/// one beyond the system's trust store. Only the file's path is kept, by
+/// server id, with the app's data: it is this computer's, not part of the
+/// list of servers (F-18).
+mod certificates {
+    use super::*;
+
+    const FILE: &str = "server-certificates.json";
+
+    fn file(app: &AppHandle) -> Result<PathBuf, String> {
+        Ok(super::super::data_dir(app)?.join(FILE))
+    }
+
+    pub(crate) fn parse(text: &str) -> Result<BTreeMap<String, String>, String> {
+        let map: BTreeMap<String, String> =
+            serde_json::from_str(text).map_err(|e| format!("{FILE} cannot be read: {e}"))?;
+        for (id, path) in &map {
+            if !id_ok(id) || path.len() > 4096 || !Path::new(path).is_absolute() {
+                return Err(format!(
+                    "{FILE}: {id:?} does not name a server and a file's full path"
+                ));
+            }
+        }
+        Ok(map)
+    }
+
+    pub(crate) fn to_text(map: &BTreeMap<String, String>) -> Result<String, String> {
+        serde_json::to_string_pretty(map)
+            .map(|t| format!("{t}\n"))
+            .map_err(|e| e.to_string())
+    }
+
+    /// Every server's certificate file. None is kept until one is given.
+    pub(crate) fn load(app: &AppHandle) -> Result<BTreeMap<String, String>, String> {
+        let path = file(app)?;
+        match std::fs::symlink_metadata(&path) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(BTreeMap::new()),
+            Err(e) => Err(format!("{}: {e}", path.display())),
+            Ok(m) if !m.is_file() || m.len() > 256 * 1024 => {
+                Err(format!("{} is not a plain, small file", path.display()))
+            }
+            Ok(_) => parse(
+                &std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?,
+            ),
+        }
+    }
+
+    /// Keep (or, with `None`, forget) a server's certificate file.
+    pub(crate) fn set(app: &AppHandle, id: &str, path: Option<&str>) -> Result<(), String> {
+        // A list that cannot be read is started again: what is kept here
+        // can always be given again when a server is connected.
+        let mut map = load(app).unwrap_or_default();
+        let changed = match path {
+            Some(p) => map.insert(id.to_string(), p.to_string()).as_deref() != Some(p),
+            None => map.remove(id).is_some(),
+        };
+        if !changed {
+            return Ok(());
+        }
+        write_atomic(&file(app)?, &to_text(&map)?)
+    }
 }
 
 /// Where tokens are kept: the operating system's credential store.
@@ -278,12 +340,9 @@ pub(crate) fn open(app: &AppHandle, id: &str) -> Result<(Entry, Server), String>
             address.host
         )
     })?;
-    let server = Server::new(
-        &address,
-        &token,
-        entry.certificate.as_deref().map(Path::new),
-    )
-    .map_err(|e| e.to_string())?;
+    let certificate = certificates::load(app)?.remove(id);
+    let server = Server::new(&address, &token, certificate.as_deref().map(Path::new))
+        .map_err(|e| e.to_string())?;
     Ok((entry, server))
 }
 
@@ -310,7 +369,7 @@ pub struct ServerView {
     problem: Option<String>,
 }
 
-fn view(e: &Entry) -> ServerView {
+fn view(e: &Entry, certificate: Option<String>) -> ServerView {
     let host = Address::parse(e.kind, &e.url)
         .map(|a| a.host)
         .unwrap_or_default();
@@ -321,7 +380,7 @@ fn view(e: &Entry) -> ServerView {
         url: e.url.clone(),
         host,
         user: e.user.clone(),
-        certificate: e.certificate.clone(),
+        certificate,
     }
 }
 
@@ -344,9 +403,14 @@ pub struct ServersState {
 pub async fn git_servers_state(app: AppHandle) -> Result<ServersState, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let why_not = allowed().err();
-        let (servers, problem) = match load(&app) {
-            Ok(list) => (list.iter().map(view).collect(), None),
-            Err(e) => (Vec::new(), Some(e)),
+        let (servers, problem) = match (load(&app), certificates::load(&app)) {
+            (Ok(list), Ok(certs)) => (
+                list.iter()
+                    .map(|e| view(e, certs.get(&e.id).cloned()))
+                    .collect(),
+                None,
+            ),
+            (Err(e), _) | (_, Err(e)) => (Vec::new(), Some(e)),
         };
         Ok(ServersState {
             allowed: why_not.is_none(),
@@ -479,21 +543,24 @@ pub async fn git_server_connect(app: AppHandle, form: ConnectForm) -> Result<Ser
             kind: address.kind,
             url: address.url.clone(),
             user: me.login.clone(),
-            certificate: certificate.map(|c| c.display().to_string()),
         };
+        let certificate = certificate.map(|c| c.display().to_string());
         tokens::set(&entry.id, &token)?;
         match at {
             Some(i) => list[i] = entry.clone(),
             None => list.push(entry.clone()),
         }
-        if let Err(e) = save(&app, &list) {
+        let kept = certificates::set(&app, &entry.id, certificate.as_deref())
+            .and_then(|()| save(&app, &list));
+        if let Err(e) = kept {
             // Not listed, so not kept either.
             if at.is_none() {
                 let _ = tokens::delete(&entry.id);
+                let _ = certificates::set(&app, &entry.id, None);
             }
             return Err(e);
         }
-        Ok(view(&entry))
+        Ok(view(&entry, certificate))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -516,7 +583,8 @@ pub async fn git_server_remove(app: AppHandle, id: String) -> Result<(), String>
         // still kept.
         tokens::delete(&id)?;
         list.retain(|e| e.id != id);
-        save(&app, &list)
+        save(&app, &list)?;
+        certificates::set(&app, &id, None)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -561,13 +629,12 @@ mod tests {
             kind,
             url: url.into(),
             user: "ana".into(),
-            certificate: None,
         }
     }
 
     #[test]
     fn the_list_is_written_and_read_back_and_holds_no_token() {
-        let mut list = vec![
+        let list = vec![
             entry("github", Kind::GitHub, "https://github.com"),
             entry(
                 "git-example-org",
@@ -575,7 +642,6 @@ mod tests {
                 "https://git.example.org/gitea",
             ),
         ];
-        list[1].certificate = Some("/etc/ssl/company-ca.pem".into());
         let text = to_text(&list).unwrap();
         assert!(
             text.starts_with("# Git servers connected in the Columbus app"),
@@ -585,10 +651,8 @@ mod tests {
             text.contains("kind: github") && text.contains("kind: gitea"),
             "{text}"
         );
-        assert!(
-            text.contains("user: ana") && text.contains("certificate: /etc/ssl/company-ca.pem")
-        );
-        // F-18's four fields, and the optional certificate: nothing else.
+        assert!(text.contains("user: ana"), "{text}");
+        // F-18's four fields: nothing else.
         for line in text.lines().filter(|l| !l.starts_with('#')) {
             let key = line
                 .trim_start_matches("- ")
@@ -596,16 +660,17 @@ mod tests {
                 .split(':')
                 .next()
                 .unwrap();
-            assert!(
-                ["id", "kind", "url", "user", "certificate"].contains(&key),
-                "{line}"
-            );
+            assert!(["id", "kind", "url", "user"].contains(&key), "{line}");
         }
         assert_eq!(parse(&text).unwrap(), list);
         assert_eq!(parse(&to_text(&[]).unwrap()).unwrap(), vec![]);
         assert_eq!(parse("").unwrap(), vec![]);
         // Unknown keys (a token someone pasted in, say) are refused, and so
         // is an address that is not https.
+        assert!(parse(
+            "- {id: x, kind: gitea, url: 'https://a.example', user: u, certificate: /a.pem}\n"
+        )
+        .is_err());
         assert!(
             parse("- {id: x, kind: gitea, url: 'https://a.example', user: u, token: abc}\n")
                 .is_err()
@@ -615,6 +680,25 @@ mod tests {
             parse("- {id: 'Bad Id', kind: gitea, url: 'https://a.example', user: u}\n").is_err()
         );
         assert!(parse("- {id: x, kind: gitlab, url: 'https://a.example', user: u}\n").is_err());
+    }
+
+    #[test]
+    fn a_servers_certificate_file_is_kept_by_its_id_as_a_full_path() {
+        let full = if cfg!(windows) {
+            "C:\\ProgramData\\company-ca.pem"
+        } else {
+            "/etc/ssl/company-ca.pem"
+        };
+        let mut map = BTreeMap::new();
+        map.insert("git-example-org".to_string(), full.to_string());
+        let text = certificates::to_text(&map).unwrap();
+        assert_eq!(certificates::parse(&text).unwrap(), map);
+        assert_eq!(certificates::parse("{}").unwrap(), BTreeMap::new());
+        // Not a server's id, not a full path, not a list of this kind.
+        let quoted = serde_json::to_string(full).unwrap();
+        assert!(certificates::parse(&format!("{{\"Bad Id\": {quoted}}}")).is_err());
+        assert!(certificates::parse("{\"x\": \"company-ca.pem\"}").is_err());
+        assert!(certificates::parse("[]").is_err());
     }
 
     #[test]

@@ -349,6 +349,12 @@ def main():
         # The GitHub token page, for github.com: built by the app, not by a page.
         got, err = invoke(d, "git_server_token_page", {"kind": "github", "url": "https://evil.example/x"})
         assert got == "https://github.com/settings/personal-access-tokens/new?name=Columbus&contents=write", (got, err)
+        # A file that is not a certificate is refused before anything is sent.
+        not_one = root / "not-a-certificate.pem"
+        not_one.write_text("just words\n")
+        got, err = invoke(d, "git_server_connect", {"form": {"kind": "gitea", "url": gitea.url, "token": TOKEN, "certificate": str(not_one)}})
+        assert got is None and "holds no certificate" in err and MARK not in err, (got, err)
+        assert gitea.state()["seen"] == [], "nothing was sent"
         # And the Gitea stand-in (Settings > Applications is its token page).
         click(d, By.ID, "git-connect")
         wait.until(EC.visibility_of_element_located((By.ID, "git-token")))
@@ -362,6 +368,7 @@ def main():
         wait.until(lambda drv: len(drv.find_elements(By.CSS_SELECTOR, "#git-servers li")) == 2, text(d, "git-form-error"))
         kept = yaml.safe_load(servers_file.read_text())
         assert [(s["id"], s["kind"], s["url"]) for s in kept] == [("127-0-0-1", "github", github.url), ("127-0-0-1-2", "gitea", gitea.url)], kept
+        assert all(sorted(s) == ["id", "kind", "url", "user"] for s in kept), "the list keeps its four fields (F-18)"
         # Gitea was asked its version first, without the token.
         seen = gitea.state()["seen"]
         assert (seen[0]["path"], seen[0]["token"]) == ("/version", "none"), seen[:2]
