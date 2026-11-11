@@ -196,7 +196,12 @@ impl Prose {
     fn at(&self, i: usize) -> bool {
         match self {
             Prose::All => true,
-            Prose::Parts(parts) => parts.iter().any(|(from, to)| (*from..*to).contains(&i)),
+            Prose::Parts(parts) => {
+                // The parts stand in order and apart: the one that could
+                // hold `i` is the last that starts at or before it.
+                let after = parts.partition_point(|(from, _)| *from <= i);
+                after > 0 && i < parts[after - 1].1
+            }
         }
     }
 }
@@ -602,9 +607,10 @@ fn prefixed(line: &str, prefix: &str, min: usize, body: fn(u8) -> bool) -> bool 
     while let Some(i) = line[from..].find(prefix) {
         let start = from + i;
         let after = start + prefix.len();
+        // (Only where a word starts is what follows read: the runs read
+        // then stand apart, so the line is read once.)
         let at_word_start = start == 0 || !word_char(bytes[start - 1]);
-        let run = bytes[after..].iter().take_while(|b| body(**b)).count();
-        if at_word_start && run >= min {
+        if at_word_start && bytes[after..].iter().take_while(|b| body(**b)).count() >= min {
             return true;
         }
         from = after;
@@ -619,21 +625,48 @@ fn github_token(line: &str) -> bool {
         || prefixed(line, "github_pat_", 40, word_char)
 }
 
+/// A run of characters after a token's well-known start: how long it is,
+/// and whether a letter and a digit are in it.
+#[derive(Debug, Clone, Copy)]
+struct Run {
+    len: usize,
+    mixed: bool,
+}
+
 /// The run of characters `body` accepts after each `prefix` that starts a
-/// word in `line`.
+/// word in `line`. A prefix inside the run of the one before it shares
+/// that run's end, so the line is read once however many there are.
 fn runs_after<'a>(
     line: &'a str,
     prefix: &'a str,
     body: fn(u8) -> bool,
-) -> impl Iterator<Item = &'a str> + 'a {
+) -> impl Iterator<Item = Run> + 'a {
     let bytes = line.as_bytes();
+    // The run last read: from where to where, and where its last letter
+    // and its last digit stand.
+    let (mut from, mut end) = (0, 0);
+    let (mut letter, mut digit) = (None, None);
     line.match_indices(prefix).filter_map(move |(start, _)| {
         if start > 0 && word_char(bytes[start - 1]) {
             return None;
         }
         let after = start + prefix.len();
-        let run = bytes[after..].iter().take_while(|b| body(**b)).count();
-        Some(&line[after..after + run])
+        if !(from..=end).contains(&after) {
+            (from, end, letter, digit) = (after, after, None, None);
+            while end < bytes.len() && body(bytes[end]) {
+                if bytes[end].is_ascii_alphabetic() {
+                    letter = Some(end);
+                } else if bytes[end].is_ascii_digit() {
+                    digit = Some(end);
+                }
+                end += 1;
+            }
+        }
+        let within = |at: Option<usize>| at.is_some_and(|at| at >= after);
+        Some(Run {
+            len: end - after,
+            mixed: within(letter) && within(digit),
+        })
     })
 }
 
@@ -644,17 +677,17 @@ fn has_letter_and_digit(v: &str) -> bool {
 /// A token by its well-known start (besides GitHub's, above).
 fn known_token(line: &str) -> Option<&'static str> {
     let dashed = |b: u8| word_char(b) || b == b'-';
-    if runs_after(line, "sk-ant-", dashed).any(|r| r.len() >= 20 && has_letter_and_digit(r)) {
+    if runs_after(line, "sk-ant-", dashed).any(|r| r.len >= 20 && r.mixed) {
         return Some("an Anthropic API key");
     }
-    if runs_after(line, "sk-", dashed).any(|r| r.len() >= 20 && has_letter_and_digit(r)) {
+    if runs_after(line, "sk-", dashed).any(|r| r.len >= 20 && r.mixed) {
         return Some("an API key (it starts with sk-)");
     }
-    if runs_after(line, "glpat-", dashed).any(|r| r.len() >= 20) {
+    if runs_after(line, "glpat-", dashed).any(|r| r.len >= 20) {
         return Some("a GitLab token");
     }
     for kind in ["xoxa-", "xoxb-", "xoxp-", "xoxr-", "xoxs-"] {
-        if runs_after(line, kind, dashed).any(|r| r.len() >= 10 && has_letter_and_digit(r)) {
+        if runs_after(line, kind, dashed).any(|r| r.len >= 10 && r.mixed) {
             return Some("a Slack token");
         }
     }
@@ -664,16 +697,19 @@ fn known_token(line: &str) -> Option<&'static str> {
     for kind in ["AKIA", "ASIA"] {
         let found = line.match_indices(kind).any(|(start, _)| {
             let bytes = line.as_bytes();
+            // (Only where a word starts is what follows read.)
+            if start > 0 && word_char(bytes[start - 1]) {
+                return false;
+            }
             let after = start + kind.len();
             let run = bytes[after..].iter().take_while(|b| capitals(**b)).count();
-            let ends = bytes.get(after + run).is_none_or(|b| !word_char(*b));
-            (start == 0 || !word_char(bytes[start - 1])) && run == 16 && ends
+            run == 16 && bytes.get(after + run).is_none_or(|b| !word_char(*b))
         });
         if found {
             return Some("an AWS access key");
         }
     }
-    if runs_after(line, "AIza", dashed).any(|r| r.len() == 35) {
+    if runs_after(line, "AIza", dashed).any(|r| r.len == 35) {
         return Some("a Google API key");
     }
     None
@@ -682,6 +718,19 @@ fn known_token(line: &str) -> Option<&'static str> {
 fn jwt(line: &str) -> bool {
     let b64 = |b: u8| b.is_ascii_alphanumeric() || b == b'-' || b == b'_';
     let bytes = line.as_bytes();
+    // The runs last read (a token has three): an `eyJ` inside one of them
+    // shares its end, so the line is read once however many there are.
+    let mut read = [(1, 0); 4];
+    let mut oldest = 0;
+    let mut run_at = |at: usize| -> usize {
+        if let Some((_, end)) = read.iter().find(|(from, end)| (*from..=*end).contains(&at)) {
+            return end - at;
+        }
+        let run = bytes[at..].iter().take_while(|b| b64(**b)).count();
+        read[oldest] = (at, at + run);
+        oldest = (oldest + 1) % read.len();
+        run
+    };
     let mut from = 0;
     while let Some(i) = line[from..].find("eyJ") {
         let start = from + i;
@@ -692,7 +741,7 @@ fn jwt(line: &str) -> bool {
         let mut at = start;
         let mut parts = 0;
         loop {
-            let run = bytes[at..].iter().take_while(|b| b64(**b)).count();
+            let run = run_at(at);
             if run < 10 {
                 break;
             }
@@ -1116,19 +1165,114 @@ fn field_of_something(v: &str) -> bool {
     fields.len() > 1 && fields.iter().all(|f| identifier(f))
 }
 
-/// Whether the text before `at` leaves a string open, counted roughly: an
-/// odd number of quotes of one kind.
-fn in_a_string(line: &str, at: usize) -> bool {
-    let before = &line[..at];
-    before.matches('"').count() % 2 == 1 || before.matches('\'').count() % 2 == 1
+/// The quotes of a line up to the place last asked about, so that asking
+/// about one name after another reads the line once, not once for each.
+#[derive(Debug, Default)]
+struct Quotes {
+    at: usize,
+    double: usize,
+    single: usize,
+}
+
+impl Quotes {
+    /// Whether the text before `at` leaves a string open, counted roughly:
+    /// an odd number of quotes of one kind.
+    fn open_before(&mut self, line: &str, at: usize) -> bool {
+        if at < self.at {
+            *self = Quotes::default();
+        }
+        for b in &line.as_bytes()[self.at..at] {
+            match b {
+                b'"' => self.double += 1,
+                b'\'' => self.single += 1,
+                _ => {}
+            }
+        }
+        self.at = at;
+        self.double % 2 == 1 || self.single % 2 == 1
+    }
+}
+
+/// Where the next character of some kind stands on a line, remembered
+/// from one question to the next: asked from one place after another
+/// inside the same stretch, it reads the line once, not once for each.
+#[derive(Debug)]
+struct Next<P> {
+    is: P,
+    /// The stretch last read: from where, and where the character stood
+    /// (the line's end when there was none).
+    read: Option<(usize, usize)>,
+}
+
+impl<P: Fn(char) -> bool> Next<P> {
+    fn new(is: P) -> Next<P> {
+        Next { is, read: None }
+    }
+
+    /// Where the next such character stands at or after `at`: the line's
+    /// end when there is none.
+    fn after(&mut self, line: &str, at: usize) -> usize {
+        if let Some((from, stop)) = self.read {
+            if (from..=stop).contains(&at) {
+                return stop;
+            }
+        }
+        let stop = line[at..].find(&self.is).map_or(line.len(), |i| at + i);
+        self.read = Some((at, stop));
+        stop
+    }
+}
+
+/// How many names in one run of text (no blank, quote or separator in it)
+/// are looked at as names given a value. A setting has one such name, or a
+/// few (`a=b=c`); a line made of thousands of them would take the search a
+/// time that grows with the square of its length.
+const RUN_NAMES: usize = 16;
+
+/// What ends a value with no quotes around it.
+fn ends_a_value(c: char) -> bool {
+    c.is_whitespace() || matches!(c, ';' | ',' | '&' | '"' | '\'' | ')' | '`' | '|' | '<')
+}
+
+/// Where unquoted values stop on a line, remembered from one name to the
+/// next: the names of one run of text share its end.
+#[derive(Debug)]
+struct Runs {
+    stops: Next<fn(char) -> bool>,
+    /// Where the run last looked at stops, and how many names in it were
+    /// looked at.
+    stop: usize,
+    names: usize,
+}
+
+impl Runs {
+    fn new() -> Runs {
+        Runs {
+            stops: Next::new(ends_a_value),
+            stop: usize::MAX,
+            names: 0,
+        }
+    }
+
+    /// Where the unquoted value that starts at `at` stops: at a blank, a
+    /// quote or a separator, or at the line's end. `None` once
+    /// [`RUN_NAMES`] names of the same run have been looked at.
+    fn stop(&mut self, line: &str, at: usize) -> Option<usize> {
+        let stop = self.stops.after(line, at);
+        if stop != self.stop {
+            (self.stop, self.names) = (stop, 0);
+        }
+        self.names += 1;
+        (self.names <= RUN_NAMES).then_some(stop)
+    }
 }
 
 /// The value with no quotes around it that starts at or after `at`,
 /// without what a note puts around a value to set it off (`**…**`,
 /// `` `…` ``) and without the `**` that closes the name's own emphasis
 /// (`**Password:** …`). `None` where a quoted value starts: that is the
-/// other rule's.
-fn bare_value(line: &str, mut at: usize) -> Option<&str> {
+/// other rule's. `runs` remembers where values stop ([`Runs`]).
+fn bare_value<'a>(line: &'a str, mut at: usize, runs: &mut Runs) -> Option<&'a str> {
     let bytes = line.as_bytes();
     let blank = |b: u8| b == b' ' || b == b'\t';
     while at < bytes.len() && blank(bytes[at]) {
@@ -1150,12 +1294,8 @@ fn bare_value(line: &str, mut at: usize) -> Option<&str> {
         // command: more than one word, which is no password.)
         return Some(&code[..code.find('`')?]);
     }
-    let stop = rest
-        .find(|c: char| {
-            c.is_whitespace() || matches!(c, ';' | ',' | '&' | '"' | '\'' | ')' | '`' | '|' | '<')
-        })
-        .unwrap_or(rest.len());
-    let mut value = &rest[..stop];
+    let stop = runs.stop(line, at)?;
+    let mut value = &line[at..stop];
     // `**value**`. One `*` in front and none behind is something else (a
     // YAML alias), and is left on, which makes the value a placeholder.
     let lead = value.bytes().take_while(|b| *b == b'*').count();
@@ -1183,8 +1323,8 @@ fn typed_in_bare(value: &str) -> bool {
 /// Whether a bare word at the name that starts at `start` is a variable,
 /// not a value: it is in a line of code, outside its strings, comments and
 /// docstrings.
-fn a_variable(line: &str, start: usize, value: &str, prose: &Prose) -> bool {
-    identifier(value) && !prose.at(start) && !in_a_string(line, start)
+fn a_variable(line: &str, start: usize, value: &str, prose: &Prose, quotes: &mut Quotes) -> bool {
+    identifier(value) && !prose.at(start) && !quotes.open_before(line, start)
 }
 
 /// `name = value` or `name: value` with no quotes, `name` one that holds a
@@ -1195,11 +1335,12 @@ fn a_variable(line: &str, start: usize, value: &str, prose: &Prose) -> bool {
 /// is not code: in a language where a bare word is a variable, only a
 /// value inside a string, a comment or a docstring counts.
 fn unquoted_password(line: &str, given: &[Given], prose: &Prose) -> bool {
+    let (mut runs, mut quotes) = (Runs::new(), Quotes::default());
     given.iter().filter(|g| g.holds != Holds::Key).any(|g| {
-        bare_value(line, g.after).is_some_and(|v| {
+        bare_value(line, g.after, &mut runs).is_some_and(|v| {
             typed_in_bare(v)
                 && !(g.holds == Holds::Pass && a_measure(v))
-                && !a_variable(line, g.start, v, prose)
+                && !a_variable(line, g.start, v, prose, &mut quotes)
         })
     })
 }
@@ -1213,8 +1354,8 @@ const SETS: &[&str] = &[
 /// in a sentence: it is first on its line (after a list or comment sign,
 /// or a word such as `export`), is a flag (`--token=…`), or comes straight
 /// after a bracket, a quote or a sign that stands between settings (`&`,
-/// `;`, `,`, `?`).
-fn begins_a_setting(line: &str, start: usize) -> bool {
+/// `;`, `,`, `?`). `indent` is how much blank space the line starts with.
+fn begins_a_setting(line: &str, start: usize, indent: usize) -> bool {
     let bytes = line.as_bytes();
     if bytes[start] == b'-' {
         return true;
@@ -1249,9 +1390,12 @@ fn begins_a_setting(line: &str, start: usize) -> bool {
     ) {
         return true;
     }
-    let word = before.rsplit(char::is_whitespace).next().unwrap_or("");
-    SETS.contains(&word.to_ascii_lowercase().as_str())
-        && before[..before.len() - word.len()].trim().is_empty()
+    // A word such as `export`, first on its line.
+    SETS.iter().any(|word| {
+        before.len().checked_sub(word.len()).is_some_and(|at| {
+            at <= indent && before.as_bytes()[at..].eq_ignore_ascii_case(word.as_bytes())
+        })
+    })
 }
 
 /// A token or a key that is a path to one: `/run/secrets/x`,
@@ -1294,16 +1438,18 @@ fn typed_in_bare_key(value: &str) -> bool {
 /// value counts when it is sixteen characters or more with a letter and a
 /// digit, and is not a placeholder, a path, an address or code.
 fn unquoted_key(line: &str, given: &[Given], prose: &Prose) -> bool {
+    let indent = line.len() - line.trim_start().len();
+    let (mut runs, mut quotes) = (Runs::new(), Quotes::default());
     given
         .iter()
-        .filter(|g| g.holds == Holds::Key && begins_a_setting(line, g.start))
+        .filter(|g| g.holds == Holds::Key && begins_a_setting(line, g.start, indent))
         .any(|g| {
-            bare_value(line, g.after).is_some_and(|v| {
+            bare_value(line, g.after, &mut runs).is_some_and(|v| {
                 typed_in_bare_key(v)
                     && !v.contains(['(', '[', ']', '{', '}', '`'])
                     && !v.contains("::")
                     && !field_of_something(v)
-                    && !a_variable(line, g.start, v, prose)
+                    && !a_variable(line, g.start, v, prose, &mut quotes)
             })
         })
 }
@@ -1314,6 +1460,7 @@ fn unquoted_key(line: &str, given: &[Given], prose: &Prose) -> bool {
 fn said_in_words(line: &str, prose: &Prose) -> bool {
     let lower = line.to_ascii_lowercase();
     let bytes = lower.as_bytes();
+    let mut quotes = Quotes::default();
     for name in ["password", "passwd", "passphrase", "pwd"] {
         for (i, _) in lower.match_indices(name) {
             // Past the marks that close the name's emphasis, then the verb.
@@ -1346,7 +1493,7 @@ fn said_in_words(line: &str, prose: &Prose) -> bool {
                 continue;
             }
             let value = word.trim_matches(['"', '\'', '`', '*']);
-            if typed_in_bare(value) && !a_variable(line, i, value, prose) {
+            if typed_in_bare(value) && !a_variable(line, i, value, prose, &mut quotes) {
                 return true;
             }
         }
@@ -2690,34 +2837,71 @@ const SECRET_PARTS: &[&str] = &[
 ];
 
 /// An address with a long mixed token, key or secret among its parts:
-/// `https://host/path?f=json&token=…`.
+/// `https://host/path?f=json&token=…`. Every address on the line is looked
+/// at, also one that stands inside another's parts (`…?next=https://…`).
+/// Addresses in one stretch of text share its end and its parts, which
+/// are judged once.
 fn url_with_secret(line: &str) -> bool {
-    let mut rest = line;
-    while let Some(i) = rest.find("://") {
-        rest = &rest[i + 3..];
-        let end = rest
-            .find(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '<' | '>' | '`'))
-            .unwrap_or(rest.len());
-        let address = &rest[..end];
-        let Some((_, query)) = address.split_once('?') else {
+    let mut ends =
+        Next::new(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '<' | '>' | '`'));
+    let mut asks = Next::new(|c: char| c == '?');
+    let mut parts = Next::new(|c: char| matches!(c, '&' | ';' | '#'));
+    let mut gives = Next::new(|c: char| c == '=');
+    // The part from `start` up to `end`: `name=value`, with a name that
+    // carries a secret and a value that reads as one. Of the values that
+    // end at one place (one address inside another's part, and so on),
+    // only the first few are read: see [`RUN_NAMES`].
+    let (mut ended, mut read) = (usize::MAX, 0);
+    let mut secret = |start: usize, end: usize| -> bool {
+        let eq = gives.after(line, start);
+        // (No such name is longer than this.)
+        if eq >= end || eq - start > 40 {
+            return false;
+        }
+        let name: String = line[start..eq]
+            .to_lowercase()
+            .chars()
+            .filter(|c| *c != '-' && *c != '_')
+            .collect();
+        if !SECRET_PARTS.contains(&name.as_str()) {
+            return false;
+        }
+        if end != ended {
+            (ended, read) = (end, 0);
+        }
+        read += 1;
+        let value = &line[eq + 1..end];
+        read <= RUN_NAMES
+            && value.chars().count() >= 16
+            && has_letter_and_digit(value)
+            && !placeholder(value)
+    };
+    // Up to where the parts of the stretch that ends at `.1` are judged
+    // already: from its first `&` on.
+    let mut judged: Option<(usize, usize)> = None;
+    let mut from = 0;
+    while let Some(i) = line[from..].find("://") {
+        from += i + 3;
+        let end = ends.after(line, from);
+        let query = asks.after(line, from);
+        if query >= end {
             continue;
-        };
-        for part in query.split(['&', ';', '#']) {
-            let Some((name, value)) = part.split_once('=') else {
-                continue;
-            };
-            let name: String = name
-                .to_lowercase()
-                .chars()
-                .filter(|c| *c != '-' && *c != '_')
-                .collect();
-            if SECRET_PARTS.contains(&name.as_str())
-                && value.chars().count() >= 16
-                && has_letter_and_digit(value)
-                && !placeholder(value)
-            {
+        }
+        let mut start = query + 1;
+        loop {
+            let stop = parts.after(line, start).min(end);
+            if secret(start, stop) {
                 return true;
             }
+            // The parts after this one were judged for an address before
+            // this one, in the same stretch.
+            if stop >= end || judged.is_some_and(|(first, of)| of == end && stop >= first) {
+                break;
+            }
+            start = stop + 1;
+        }
+        if judged.is_none_or(|(_, of)| of != end) {
+            judged = Some((parts.after(line, query + 1).min(end), end));
         }
     }
     false
@@ -4083,6 +4267,74 @@ mod tests {
             2 * cases.len(),
             wrong.join("\n")
         );
+    }
+
+    /// A file may be one long line (a page saved by a program, or one
+    /// made to be slow): the search reads it in a time that grows with its
+    /// length, not with the square of it. Each of these lines took from
+    /// many seconds to minutes before; a second or two each is a wide
+    /// margin for a slow machine.
+    #[test]
+    fn a_long_line_is_searched_in_time_that_grows_with_its_length() {
+        for unit in [
+            "pw:",
+            "password=",
+            "PWD=",
+            "token:",
+            "export token:",
+            "${PW:-",
+            // (Put together here, so that this file's own lines are not
+            // taken for a password written out.)
+            concat!("pw=", "abc123 "),
+            concat!("the password is ", "abc123 "),
+            "sk-",
+            "xoxb-",
+            "AKIA",
+            "github_pat_",
+            "eyJ-",
+            "://a:b@",
+            "https://h/p?token=",
+            "GIS(",
+            "getenv(\"PW\") or ",
+        ] {
+            let line = unit.repeat(100_000 / unit.len());
+            for path in ["a.py", "a.md"] {
+                let started = std::time::Instant::now();
+                let _ = find(path, line.as_bytes(), &[]);
+                let took = started.elapsed();
+                assert!(
+                    took < std::time::Duration::from_secs(5),
+                    "a 100 KB line of {unit:?} in {path} took {took:?}"
+                );
+            }
+        }
+    }
+
+    /// The one thing that bound costs: in a run of text with no blank,
+    /// quote or separator in it, only the first sixteen names are looked
+    /// at as names given a value. A setting is found as before, also at
+    /// the end of a long line of settings.
+    #[test]
+    fn only_the_first_names_of_one_unbroken_run_are_looked_at() {
+        let run = |names: usize| format!("{}pw={PW}\n", "pw=/x:".repeat(names));
+        assert!(hit_in("conf.ini", &run(15)).is_some());
+        assert!(hit_in("conf.ini", &run(16)).is_none());
+        // Apart, each is a run of its own.
+        let apart = format!("{}pw={PW}\n", "pw=/x; ".repeat(400));
+        assert!(hit_in("conf.ini", &apart).is_some());
+        // The same for the parts of addresses that stand inside one
+        // another (the `%` makes each value but the last a stand-in).
+        let parts = |n: usize| {
+            format!(
+                "https://h/p?{}key={}\n",
+                "key=%https://h/p?".repeat(n),
+                mixed(24)
+            )
+        };
+        assert!(hit_in("a.md", &parts(15)).is_some());
+        assert!(hit_in("a.md", &parts(16)).is_none());
+        let apart = format!("https://h/p?{}key={}\n", "key=x&".repeat(400), mixed(24));
+        assert!(hit_in("a.md", &apart).is_some());
     }
 
     #[test]
