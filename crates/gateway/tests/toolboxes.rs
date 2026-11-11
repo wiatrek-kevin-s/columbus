@@ -1089,8 +1089,11 @@ async fn misbehaving_tools_are_confined() {
             .trim()
             .to_string()
     };
+    // The same folder: on Windows one of the two may be spelled with the
+    // long-path prefix (`\\?\C:\…`) and the other without.
+    let plain = |s: String| s.strip_prefix(r"\\?\").map(str::to_string).unwrap_or(s);
     assert!(
-        !line("cwd: ").is_empty() && line("cwd: ") == line("run_dir: "),
+        !line("cwd: ").is_empty() && plain(line("cwd: ")) == plain(line("run_dir: ")),
         "{text}"
     );
 
