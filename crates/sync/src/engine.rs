@@ -445,6 +445,16 @@ impl<H: Host> Round<'_, H> {
                 }
             }
             (None, Ok(None)) => fsx::kind(self.root, path)? == Kind::Nothing,
+            // A link or a folder has the name, or is on the way to it.
+            (_, Err(Error::Refused(why))) => {
+                self.skipped.push(Skipped {
+                    path: path.to_string(),
+                    why: format!("it could not be written here: {why}"),
+                    on_server: true,
+                });
+                false
+            }
+            (_, Err(e)) => return Err(e),
             // Changed, made or removed here since the folder was read.
             _ => false,
         };

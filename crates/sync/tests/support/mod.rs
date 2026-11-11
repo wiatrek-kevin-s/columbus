@@ -347,6 +347,9 @@ pub struct MemoryHost {
     /// How many sends were asked for, and how many changed the repository.
     pub asked: Arc<AtomicUsize>,
     pub landed: Arc<AtomicUsize>,
+    /// For every send that landed: each path it replaced or removed, with
+    /// the id of the version it took away.
+    pub replaced: Arc<Mutex<Vec<(String, String)>>>,
 }
 
 impl MemoryHost {
@@ -358,6 +361,7 @@ impl MemoryHost {
             before_send: Arc::default(),
             asked: Arc::default(),
             landed: Arc::default(),
+            replaced: Arc::default(),
         }
     }
 
@@ -429,6 +433,15 @@ impl Host for MemoryHost {
         let id = r.commit_tree(&tree, &parents, message, &self.who);
         r.branches.insert(self.branch.clone(), id.clone());
         self.landed.fetch_add(1, Ordering::SeqCst);
+        self.replaced
+            .lock()
+            .unwrap()
+            .extend(changes.iter().filter_map(|c| match c {
+                Change::Update { path, old, .. } | Change::Delete { path, old } => {
+                    Some((path.clone(), old.clone()))
+                }
+                Change::Create { .. } => None,
+            }));
         Ok(id)
     }
 

@@ -40,6 +40,7 @@ pub use engine::{
     Removed, Report, Side, What,
 };
 pub use host::{Change, Commit, EntryKind, Host, SendError, Tip, TreeEntry};
+pub use scan::MAX_FILES;
 pub use secrets::Finding;
 pub use state::{Conflict, ConflictKind, Link, Record, State, Synced};
 pub use trash::{Keep, Kept};

@@ -113,6 +113,34 @@ pub(crate) fn plan(
         }
     }
 
+    // Something in the folder that does not sync (a link, say) where the
+    // server has a file, or a folder of files: the server's are left alone
+    // too, so nothing is ever written onto or through it.
+    for mine in &local.skipped {
+        if local.files.contains_key(&mine.path) {
+            // A file too large to send: the conflict rule covers it.
+            continue;
+        }
+        let name = mine.path.trim_end_matches('/');
+        let inside = format!("{name}/");
+        let hit: Vec<&str> = theirs
+            .keys()
+            .copied()
+            .filter(|p| *p == name || p.starts_with(&inside))
+            .collect();
+        for p in hit {
+            theirs.remove(p);
+            if blocked.insert(p.to_string()) {
+                skip(
+                    &mut out,
+                    p,
+                    format!("{name} in the folder here is in the way: {}", mine.why),
+                    true,
+                );
+            }
+        }
+    }
+
     // Names that differ only by letter case cannot share a folder on
     // Windows or macOS: neither syncs.
     let mut by_case: BTreeMap<String, BTreeSet<&str>> = BTreeMap::new();
