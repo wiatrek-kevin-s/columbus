@@ -527,7 +527,8 @@ pub async fn git_server_remove(app: AppHandle, id: String) -> Result<(), String>
 /// taken from a page. Gives the address opened, to show beside the link.
 #[tauri::command]
 pub async fn git_server_token_page(kind: String, url: Option<String>) -> Result<String, String> {
-    test_setup();
+    // With sync off, nothing of it is offered.
+    allowed()?;
     let page = address_of(&kind, url.as_deref())?.token_page();
     crate::settings::open_browser(&page)
         .map_err(|e| format!("Your browser could not be opened ({e}). The page is {page}"))?;
@@ -538,6 +539,7 @@ pub async fn git_server_token_page(kind: String, url: Option<String>) -> Result<
 #[tauri::command]
 pub async fn git_server_pick_certificate(app: AppHandle) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
+    allowed()?;
     let picked = app
         .dialog()
         .file()

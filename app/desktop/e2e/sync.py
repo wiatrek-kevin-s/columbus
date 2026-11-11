@@ -298,11 +298,13 @@ def main():
             assert not shown(d, gone), f"{gone} is offered with sync off"
         # The page is not what holds the line: the app's own code refuses.
         for cmd, args in [("git_server_connect", {"form": {"kind": "gitea", "url": gitea.url, "token": TOKEN}}),
+                          ("git_server_token_page", {"kind": "gitea", "url": gitea.url}),
                           ("sync_check", {"project": "roads-qc"}), ("sync_now", {"project": "roads-qc", "note": None}),
                           ("sync_link", {"form": {"project": "roads-qc", "server": "x", "repo": "r", "create": True}})]:
             got, err = invoke(d, cmd, args)
             assert got is None and err and "allow_sync" in err, (cmd, got, err)
         assert gitea.state()["seen"] == [] and github.state()["seen"] == [], "nothing was asked of any server"
+        assert opened() == [], "and no page was opened"
 
         step("policy: sync.hosts naming another host refuses this one, naming the key")
         policy.write_text(POLICY.format(sync="allow_sync: true\nsync: { hosts: [git.example.org] }\n"))
