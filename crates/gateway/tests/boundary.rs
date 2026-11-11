@@ -234,6 +234,10 @@ def udp():
     s.sendto(b"x", ("1.1.1.1", 53))
 
 def ways_out(who, gateway):
+    # What it was started with: nothing of the gateway's own may be in it.
+    # (PATH is long on some systems and is the person's own: its length only.)
+    env = [(k, v if k.upper() != "PATH" else "%d characters" % len(v)) for k, v in os.environ.items()]
+    print(who + "environment: " + json.dumps(sorted(env)), flush=True)
     attempt(who + "list_connections", lambda: print(os.listdir(P["connections"])))
     attempt(who + "read_connection", lambda: print(read(P["connection_file"])))
     attempt(who + "read_policy", lambda: print(read(P["policy"])))
@@ -438,6 +442,25 @@ async fn a_script_cannot_cross_the_boundary() {
                 "{l}\n\nall of it:\n{stdout}"
             );
         }
+        // Its own environment holds nothing of the gateway's: no setting
+        // (where the policy and the connections are) and no secret.
+        let started_with: Vec<(String, String)> = serde_json::from_str(
+            line(&format!("{who}environment"))
+                .split_once(": ")
+                .unwrap()
+                .1,
+        )
+        .unwrap();
+        let ours: Vec<&str> = started_with
+            .iter()
+            .map(|(k, _)| k.as_str())
+            .filter(|k| k.to_uppercase().starts_with("COLUMBUS_"))
+            .collect();
+        assert_eq!(ours, ["COLUMBUS_RUN_DIR"], "{who}: {started_with:?}");
+        assert!(
+            !started_with.iter().any(|(_, v)| v.contains(SECRET)),
+            "{who}: {started_with:?}"
+        );
         if cfg!(target_os = "linux") {
             // Refused by the sandbox itself, not by a network that is down.
             for name in ["tcp_loopback", "tcp_public", "udp"] {
