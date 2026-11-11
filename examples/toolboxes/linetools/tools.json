@@ -1,0 +1,37 @@
+{
+  "tools": [
+    {
+      "id": "densify",
+      "name": "Densify lines",
+      "summary": "Adds vertices along lines so that no segment is longer than a spacing.",
+      "description": "Each line keeps its attributes. The spacing is in the units of the layer's coordinate system, so give a layer in a projected one.",
+      "category": "Lines",
+      "args": ["densify", "--in={lines}", "--out={densified}", "--spacing={spacing}"],
+      "params": [
+        {"name": "lines", "role": "input", "kind": "vector", "required": true,
+         "description": "The line layer to densify."},
+        {"name": "densified", "role": "output", "kind": "vector", "ext": "gpkg", "required": true,
+         "description": "The densified lines."},
+        {"name": "spacing", "role": "value", "type": "number", "required": true,
+         "description": "Longest segment allowed, in the layer's units."}
+      ]
+    },
+    {
+      "id": "length_report",
+      "name": "Length report",
+      "summary": "Writes a table of total line length by the values of a field.",
+      "category": "Lines",
+      "args": ["report", "--in={lines}", "--by={field}", "--units={units}", "--csv={report}"],
+      "params": [
+        {"name": "lines", "role": "input", "kind": "vector", "required": true,
+         "description": "The line layer to measure."},
+        {"name": "field", "role": "value", "type": "string", "required": true,
+         "description": "The field to group by."},
+        {"name": "units", "role": "value", "type": "enum", "options": ["m", "km", "ft", "mi"], "default": "m", "required": false,
+         "description": "Units of the lengths reported."},
+        {"name": "report", "role": "output", "kind": "table", "ext": "csv", "required": true,
+         "description": "One row per value of the field, with its total length."}
+      ]
+    }
+  ]
+}

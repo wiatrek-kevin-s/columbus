@@ -2134,7 +2134,7 @@ impl Gateway {
     }
 
     #[tool(
-        description = "Find the right tool for a job by describing it in plain words. Returns tool names with one-line summaries; call describe_tool for the full description and arguments.",
+        description = "Find the right tool for a job by describing it in plain words. Returns tool names with one-line summaries; call describe_tool for the full description and arguments. A name with a dot (<provider>.<tool>: a connected server's tool, one of the person's own, or one of an installed toolbox's many GIS tools) is run with run_tool.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn search_tools(

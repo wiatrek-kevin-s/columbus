@@ -150,8 +150,14 @@ impl Env {
 
 fn setup(py: &str, policy: &str) -> Env {
     let dir = tempfile::tempdir().unwrap();
-    // The real path: the sandbox matches real paths (/var is /private/var on a Mac).
-    let root = dir.path().canonicalize().unwrap();
+    // The real path where links are common (/var is /private/var on a Mac):
+    // the commands record a program by its real path. Windows paths are
+    // left as they are (a resolved one gains a \\?\ prefix).
+    let root = if cfg!(unix) {
+        dir.path().canonicalize().unwrap()
+    } else {
+        dir.path().to_path_buf()
+    };
     make_fixture(py, &root);
     std::fs::create_dir_all(root.join("connections")).unwrap();
     let q = |p: PathBuf| serde_json::to_string(&p.display().to_string()).unwrap();
@@ -372,6 +378,10 @@ async fn toolbox_tools_are_found_described_and_run() {
         return;
     };
     let env = setup(&py, "allow_toolboxes: true\n");
+    env.policy(&format!(
+        "allow_toolboxes: true\nexports:\n  - {{ id: share, path: {}, granted: true }}\n",
+        serde_json::to_string(&env.root.join("share").display().to_string()).unwrap()
+    ));
     if !can_confine() {
         // A toolbox's program is never run outside the sandbox, not even
         // to list its tools.
@@ -450,6 +460,29 @@ async fn toolbox_tools_are_found_described_and_run() {
         "{}",
         shown.stdout
     );
+
+    // A runner from before 1.8.1 is not accepted (earlier ones held AGPL code).
+    let old = env.root.join("programs").join(exe_name("runner-old"));
+    std::fs::write(&old, standin()).unwrap();
+    make_executable(&old);
+    let o = toolbox(
+        &env,
+        &[
+            "add",
+            old.to_str().unwrap(),
+            "--id",
+            "oldone",
+            "--kind",
+            "geolibre",
+            "--yes",
+        ],
+    );
+    assert!(
+        !o.ok && o.stderr.contains("GeoLibre 1.7.3") && o.stderr.contains("1.8.1 or later"),
+        "{}",
+        o.stderr
+    );
+    assert!(!env.toolboxes().join("oldone").exists());
 
     let c = start(&env).await;
     // whoami and list_providers say the toolbox is there, and how to use it.
@@ -666,6 +699,16 @@ async fn toolbox_tools_are_found_described_and_run() {
         buffered["result"]["layer"]["handle"].is_string(),
         "{buffered}"
     );
+    // It is exported like any layer, under the export rules.
+    std::fs::create_dir_all(env.root.join("share")).unwrap();
+    let x = ok(&call(
+        &c,
+        "export_output",
+        json!({"handle": copy, "folder": "share", "name": "roads copy"}),
+    )
+    .await);
+    assert_eq!(x["result"]["status"], "exported", "{x}");
+    assert!(env.root.join("share").join("roads copy.gpkg").is_file());
     // Provenance: the toolbox (version and hash), the tool, the arguments, the input.
     let prov = r["provenance"].as_str().unwrap();
     let rec: Value = serde_json::from_str(
@@ -1035,9 +1078,8 @@ async fn misbehaving_tools_are_confined() {
     ] {
         assert!(!text.contains(no), "{no} in {text}");
     }
-    assert_eq!(
-        text.contains(" HOME ") || text.contains("env: HOME "),
-        false,
+    assert!(
+        !(text.contains(" HOME ") || text.contains("env: HOME ")),
         "{text}"
     );
     let line = |k: &str| {
@@ -1492,6 +1534,9 @@ async fn the_catalogue_installs_only_what_matches_its_pin() {
         o.stderr
     );
     nothing_left(&env, "geolibre");
+    // A program already on this computer can still be added then.
+    add_standin(&env, "byhand");
+    assert!(toolbox(&env, &["remove", "byhand"]).ok);
     env.policy("");
     let o = toolbox(&env, &["install", "geolibre", "--yes"]);
     assert!(

@@ -128,7 +128,16 @@ impl Staging {
             std::fs::rename(&dest, &old)
                 .map_err(|e| format!("could not replace {}: {e}", dest.display()))?;
         }
-        if let Err(e) = std::fs::rename(&self.0, &dest) {
+        // A new program file may be held for a moment by a virus scanner.
+        let mut moved = std::fs::rename(&self.0, &dest);
+        for _ in 0..10 {
+            if moved.is_ok() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(300));
+            moved = std::fs::rename(&self.0, &dest);
+        }
+        if let Err(e) = moved {
             if had {
                 let _ = std::fs::rename(&old, &dest);
             }
@@ -261,8 +270,12 @@ fn done_words(tb: &Toolbox, listing: &Listing) -> String {
     }
     if listing.unreadable > 0 {
         s.push_str(&format!(
-            " {} entries of its list could not be read.",
-            listing.unreadable
+            " {} of its list could not be read.",
+            if listing.unreadable == 1 {
+                "One entry".to_string()
+            } else {
+                format!("{} entries", listing.unreadable)
+            }
         ));
     }
     s.push_str(" Your assistant can use them from its next request, as ");
@@ -384,11 +397,14 @@ async fn install_inner(
     download(dl, &archive, say).await?;
     say.step(json!({"step": "check"}));
     say.line("The download matches the pinned hash. Unpacking...");
-    let exe = if cfg!(windows) {
-        format!("{id}.exe")
-    } else {
-        id.to_string()
-    };
+    // The program keeps its own file name; where it goes is Columbus's choice.
+    let exe = dl.program.rsplit('/').next().unwrap_or("").to_string();
+    if !crate::export_tools::valid_name(&exe) {
+        return Err(format!(
+            "the catalogue names a program Columbus will not write ({})",
+            dl.program
+        ));
+    }
     let bin = staging.0.join(tbx::BIN);
     std::fs::create_dir(&bin).map_err(|e| format!("{}: {e}", bin.display()))?;
     let mut wanted = vec![Wanted {
@@ -1511,6 +1527,47 @@ mod tests {
         assert_eq!(pax_path(b"garbage"), None);
         assert_eq!(tar_number(b"0000144\0").unwrap(), 100);
         assert_eq!(tar_number(&[0x80, 0, 0, 0, 0, 0, 1, 0]).unwrap(), 256);
+    }
+
+    /// With the publisher's real archive on disk (never fetched or run by a
+    /// test): its hash is the pinned one, and it unpacks to the program and
+    /// the two notices. `COLUMBUS_TEST_GEOLIBRE_ARCHIVE=<the archive for
+    /// this system> cargo test -p columbus-mcp --bin columbus-mcp -- --ignored real_archive`
+    #[test]
+    #[ignore = "needs the real GeoLibre archive on disk (COLUMBUS_TEST_GEOLIBRE_ARCHIVE)"]
+    fn the_real_archive_matches_its_pin_and_unpacks() {
+        let Some(archive) = std::env::var_os("COLUMBUS_TEST_GEOLIBRE_ARCHIVE") else {
+            panic!("set COLUMBUS_TEST_GEOLIBRE_ARCHIVE to the archive for this system");
+        };
+        let archive = PathBuf::from(archive);
+        let entry = tbx::builtin_catalogue().remove(0);
+        let dl = entry.for_this_system().expect("a build for this system");
+        let (sha, bytes) = sha256_file(&archive).unwrap();
+        assert_eq!((sha.as_str(), bytes), (dl.sha256.as_str(), dl.bytes));
+        let d = tempfile::tempdir().unwrap();
+        let mut wanted = vec![Wanted {
+            entry: dl.program.clone(),
+            to: d.path().join("program"),
+            cap: MAX_PROGRAM,
+            required: true,
+        }];
+        for (i, k) in dl.keep.iter().enumerate() {
+            wanted.push(Wanted {
+                entry: k.clone(),
+                to: d.path().join(format!("kept-{i}")),
+                cap: MAX_NOTICE,
+                required: true,
+            });
+        }
+        unpack(&archive, dl.packing, &wanted).unwrap();
+        let size = |n: &str| std::fs::metadata(d.path().join(n)).unwrap().len();
+        assert!(size("program") > 10 * 1024 * 1024, "{}", size("program"));
+        assert!(size("kept-0") > 500 && size("kept-1") > 500);
+        println!(
+            "program {} bytes, sha256 {}",
+            size("program"),
+            sha256_file(&d.path().join("program")).unwrap().0
+        );
     }
 
     #[test]

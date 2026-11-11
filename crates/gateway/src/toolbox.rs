@@ -335,7 +335,9 @@ struct Seen {
 /// the whole program (tens of megabytes) and parses a thousand tools, so
 /// finding and describing tools reuse it while the files look the same;
 /// running one always checks again.
-static CHECKED: Mutex<Option<HashMap<PathBuf, (Seen, Arc<Ready>)>>> = Mutex::new(None);
+static CHECKED: Mutex<Option<Checked>> = Mutex::new(None);
+
+type Checked = HashMap<PathBuf, (Seen, Arc<Ready>)>;
 
 fn seen(dir: &Path, tb: &Toolbox) -> Seen {
     let folder = dir.join(&tb.id);
@@ -830,7 +832,7 @@ impl Gateway {
                     plan.given.insert(p.name.clone(), v.clone());
                     let handles: Option<Vec<String>> = match v {
                         Value::Array(a) if !a.is_empty() => {
-                            a.iter().map(|x| handle_of(x)).collect::<Option<Vec<_>>>()
+                            a.iter().map(&handle_of).collect::<Option<Vec<_>>>()
                         }
                         other => handle_of(other).map(|h| vec![h]),
                     };

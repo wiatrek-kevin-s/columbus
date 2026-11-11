@@ -123,7 +123,7 @@ impl Kind {
         match s.trim().to_ascii_lowercase().as_str() {
             "geolibre" => Ok(Kind::Geolibre),
             "described" => Ok(Kind::Described),
-            "qgis" => Err("the qgis kind is not in this version of Columbus (QGIS's own description of its tools could not be checked when it was built); describe the QGIS tools you need in a tools.json and add them with kind described".into()),
+            "qgis" => Err("the qgis kind is not in this version of Columbus; a program with a description file (tools.json) can be added with kind described".into()),
             other => Err(format!("kind must be geolibre or described, not {other:?}")),
         }
     }
@@ -2096,7 +2096,7 @@ pub fn count_words(n: usize) -> String {
     let s = n.to_string();
     let mut out = String::new();
     for (i, c) in s.chars().enumerate() {
-        if i > 0 && (s.len() - i) % 3 == 0 {
+        if i > 0 && (s.len() - i).is_multiple_of(3) {
             out.push(',');
         }
         out.push(c);

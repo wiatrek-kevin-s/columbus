@@ -537,7 +537,13 @@ fn main() -> ExitCode {
             }
         }
         "version" | "--version" | "-V" => {
-            println!("geolibre-cli {VERSION}");
+            // A copy named "…-old" plays a runner from before 1.8.1, which
+            // Columbus must not accept.
+            let old = std::env::current_exe().is_ok_and(|p| {
+                p.file_stem()
+                    .is_some_and(|s| s.to_string_lossy().ends_with("-old"))
+            });
+            println!("geolibre-cli {}", if old { "1.7.3" } else { VERSION });
             ExitCode::SUCCESS
         }
         tool => match run_tool(tool, &parse_args(&argv[1..])) {

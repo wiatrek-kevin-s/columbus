@@ -438,6 +438,10 @@ and their outputs carry the inputs' labels and checks. Prefer an installed tool 
 over writing a new script, and read its `describe_tool` (inputs' geometry, CRS and fields,
 units, `not_for`) before calling it.
 
+Toolboxes the person installed (`whoami` names them; kind `toolbox`) hold many more GIS
+tools: find one with `search_tools`, read it with `describe_tool`, run it with `run_tool`
+as `<toolbox>.<tool>` (inputs are `ws://` handles; no approval). Check its results yourself.
+
 When the person asks to save a script as a tool ("add the script we just made as a tool"),
 or the same script keeps being written, use `propose_tool`. Read
 [references/designing-tools.md](references/designing-tools.md) (also `columbus_guide {"name": "designing-tools"}` from the server) first: the code is a
