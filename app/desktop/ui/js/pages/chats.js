@@ -2,7 +2,7 @@
 // apps. A chat is the panel; its session's map fills the window behind it,
 // and its files open in the side sheet. Everything the model, the server
 // or a file says is shown as text, never as markup.
-import { $, el, h, icon, iconButton, menuButton, fitSelect, invoke, listen, store, button, redraw, placeHead, sec, when, ago, shortWhen, era, size, plural, timeLeft, clientName, toast, emptyState, askConfirm, askText, openSide, closeSide, openOutputs, closeOutputs, outputsOpen, setOutputsFull, setOutputsHead, insets, onLayout, savePrefs, numbered } from "../core.js";
+import { $, el, h, put, icon, iconButton, menuButton, fitSelect, invoke, listen, store, button, redraw, placeHead, sec, when, ago, shortWhen, era, size, plural, timeLeft, clientName, toast, emptyState, askConfirm, askText, openSide, closeSide, openOutputs, closeOutputs, outputsOpen, setOutputsFull, setOutputsHead, insets, onLayout, savePrefs, numbered } from "../core.js";
 import { openWebLayerEditor, onChange as onWebLayersChange } from "./maplayers.js";
 import { setupState, notices, firstSteps } from "./start.js";
 
@@ -1436,8 +1436,11 @@ async function showSaved(main, id) {
     title.title = title.textContent;
     // Where it ran: its project, the AI service and model it started on, and when.
     const ran = [meta.service_name || (meta.model ? "Anthropic" : null), meta.model ? nameOf(meta.model) : null].filter(Boolean).join(", ");
-    sub.replaceChildren(...(meta.project ? [h("a", { href: `#/projects/${encodeURIComponent(meta.project)}` }, projectName(meta.project)), " · "] : []),
-      ran ? h("span", { id: "saved-service" }, ran) : null, ran ? " · " : null, when(lines[0]?.ts));
+    // (A chat saved before these were written down says when it was, and
+    // nothing in their place.)
+    sub.replaceChildren();
+    put(sub, meta.project ? [h("a", { href: `#/projects/${encodeURIComponent(meta.project)}` }, projectName(meta.project)), " · "] : null,
+      ran ? [h("span", { id: "saved-service" }, ran), " · "] : null, when(lines[0]?.ts));
     const r = new Renderer(logEl, false, (pid) => map.files(pid), (handle) => map.table(handle));
     for (const l of lines) r.event(l);
     r.finish();

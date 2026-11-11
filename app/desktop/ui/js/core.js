@@ -17,7 +17,20 @@ export function el(tag, cls, text) {
   return e;
 }
 
-/** An element with children (nodes or strings, as text). */
+/** Put children in `e`: nodes, or strings as text, alone or in a list. What
+ * is not there (null, undefined, false) is left out. Use this, not
+ * `e.append` or `e.replaceChildren`, wherever a child may be missing: those
+ * two write a missing child into the page as the word "null" or
+ * "undefined". Returns `e`. */
+export function put(e, ...kids) {
+  for (const k of kids.flat()) {
+    if (k == null || k === false) continue;
+    e.append(k instanceof Node ? k : document.createTextNode(String(k)));
+  }
+  return e;
+}
+
+/** An element with children (nodes or strings, as text; see `put`). */
 export function h(tag, attrs, ...kids) {
   const e = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs || {})) {
@@ -28,11 +41,7 @@ export function h(tag, attrs, ...kids) {
     else if (k === "dataset") Object.assign(e.dataset, v);
     else e.setAttribute(k, v === true ? "" : String(v));
   }
-  for (const k of kids.flat()) {
-    if (k == null || k === false) continue;
-    e.append(k instanceof Node ? k : document.createTextNode(String(k)));
-  }
-  return e;
+  return put(e, ...kids);
 }
 
 export function button(label, cls, onclick, attrs = {}) {

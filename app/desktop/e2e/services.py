@@ -8,7 +8,12 @@ request format, told apart by the address a request goes to:
 answered as a stream) and `/chat/completions` (OpenAI Chat Completions).
 No real service is contacted, and the keys here are made up.
 
-The script chooses a service in the first run and saves its key; chats on
+The script first takes the first run's AI row through each state it has
+(a service that needs a key with none saved, one on this computer, one the
+organization's list refuses, one with its key saved, and the app's reads
+failing), and Settings > Assistant with it: in none does anything read as a
+value that was not there (the word "null" or "undefined"). Then it
+chooses a service in the first run and saves its key; chats on
 OpenAI (a tool call, an approval, the answer), changes the model in the
 chat, and checks the chat shows and keeps its service while Settings moves
 on to Google Gemini (its key, its own list of models, a typed model id);
@@ -184,6 +189,27 @@ def no_key_on_the_page(d):
             assert key not in text and key[8:] not in text, f"the {name} key is in {where}"
 
 
+def reads_right(d, within):
+    """Nothing in this part of the window reads as a value that was not
+    there: no text, title, label, placeholder or field says "null",
+    "undefined" or "NaN", alone or inside a sentence. (The words here are
+    all the app's own. `Element.append(null)` writes the word "null".)"""
+    bad = guard.stray(d, within, words=True) + guard.stray(d)
+    assert not bad, bad
+
+
+def ai_row(d):
+    """The parts of the first run's AI row, in order: an element by its tag
+    and id, a bare piece of text by what it says."""
+    return d.execute_script(
+        "return [...document.querySelector('#first-steps .checks > li .text').childNodes]"
+        ".map(n => n.nodeType === 3 ? 'text: ' + n.data : n.tagName.toLowerCase() + (n.id ? '#' + n.id : ''))")
+
+
+def first_steps(d):
+    return d.execute_script("const e = document.getElementById('first-steps'); return e ? e.textContent : ''")
+
+
 def choose(d, select_id, value):
     """Choose an option of a select as a person does: with the select in
     hand first. (WebKit sends `change` only when the choice differs from the
@@ -225,6 +251,7 @@ def open_assistant(d):
     d.execute_script("location.hash = '#/settings/ai'")
     Wait(d, 20).until(lambda drv: drv.execute_script(
         "const s = document.getElementById('service'); return !!s && s.options.length >= 7 && !!document.getElementById('apps-entry').textContent"))
+    reads_right(d, "#settings")
 
 
 def close_settings(d):
@@ -239,6 +266,7 @@ def choose_service(d, service):
     Wait(d, 15).until(lambda drv: settings_json(drv)[1]["service"] == service)
     Wait(d, 10).until(lambda drv: drv.execute_script("return document.getElementById('service').value") == service)
     time.sleep(0.4)
+    reads_right(d, "#settings")
 
 
 def save_key(d, key):
@@ -247,6 +275,7 @@ def save_key(d, key):
     d.find_element(By.CSS_SELECTOR, "#key-form button[type=submit]").click()
     Wait(d, 15).until(lambda drv: f"ending in {key[-4:]}" in drv.find_element(By.ID, "key-state").text)
     assert d.find_element(By.ID, "key").get_attribute("value") == "", "the key does not stay in the field"
+    reads_right(d, "#settings")
 
 
 def write_policy(root, hosts=None):
@@ -287,7 +316,122 @@ def main():
                COLUMBUS_APPROVALS_BROWSER="none", XDG_CONFIG_HOME=str(root / "config"),
                XDG_DATA_HOME=str(root / "data"), COLUMBUS_UI_DIR=str(REPO / "app/ui/dist"))
     env.pop("COLUMBUS_APP_API_KEY", None)
-    step("the app, with no AI set up")
+
+    step("the app, with nothing set up at all: no AI, no data")
+    (root / "no-connections").mkdir()
+    bare = dict(env, COLUMBUS_CONNECTIONS=str(root / "no-connections"),
+                XDG_CONFIG_HOME=str(root / "config-first"), XDG_DATA_HOME=str(root / "data-first"))
+    d, driver_proc = guard.driver(bare, APP)
+    try:
+        wait = Wait(d, 60)
+        d.set_window_size(1400, 900)
+        guard.ready(d, wait)
+
+        step("The first run's AI row, a service that needs a key and has none: the key's field, and nothing more to say")
+        wait.until(EC.presence_of_element_located((By.ID, "fr-service")))
+        assert d.find_element(By.ID, "fr-key").get_attribute("aria-label") == "API key for Anthropic"
+        # (This is how every new install on Windows or a Mac begins.)
+        assert ai_row(d) == ["b", "form#fr-ai-form", "p#fr-ai-error", "span#fr-ai-about"], ai_row(d)
+        reads_right(d, "#first-steps")
+        assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
+        d.save_screenshot(str(OUT / "services-first-run-no-key.png"))
+        open_assistant(d)
+        assert "No key saved for Anthropic yet" in d.find_element(By.ID, "key-state").text
+        assert "None added." in d.find_element(By.ID, "services-none").text
+        close_settings(d)
+
+        step("The first run's AI row, a service on this computer: no key field, and what is still missing")
+        choose(d, "fr-service", "ollama")
+        wait.until(lambda drv: "Ollama must be running" in drv.find_element(By.ID, "fr-ai-about").text)
+        assert not d.find_elements(By.ID, "fr-key"), "a service that takes no key shows no key field"
+        assert ai_row(d) == ["b", "form#fr-ai-form", "p#fr-ai-error", "span#fr-ai-need", "span#fr-ai-about"], ai_row(d)
+        assert "Choose its model in Settings › Assistant" in d.find_element(By.ID, "fr-ai-need").text
+        reads_right(d, "#first-steps")
+        # One that takes a key only if it asks for one.
+        choose(d, "fr-service", "lmstudio")
+        wait.until(lambda drv: drv.find_elements(By.ID, "fr-key")
+                   and drv.find_element(By.ID, "fr-key").get_attribute("aria-label") == "API key for LM Studio on this computer")
+        assert ai_row(d) == ["b", "form#fr-ai-form", "p#fr-ai-error", "span#fr-ai-need", "span#fr-ai-about"], ai_row(d)
+        reads_right(d, "#first-steps")
+        open_assistant(d)
+        assert "(only if it asks for one)" in d.find_element(By.CSS_SELECTOR, "label[for=key]").text
+        assert "No model chosen yet" in d.find_element(By.ID, "model").text
+        close_settings(d)
+
+        step("The first run's AI row, the organization's list refusing the service: its sentence, in the row")
+        choose(d, "fr-service", "openai")
+        wait.until(lambda drv: "platform.openai.com" in drv.find_element(By.ID, "fr-ai-about").text)
+        assert ai_row(d) == ["b", "form#fr-ai-form", "p#fr-ai-error", "span#fr-ai-about"], ai_row(d)
+        reads_right(d, "#first-steps")
+        write_policy(root, ["api.anthropic.com"])
+        new_chat(d, ready=False)
+        refused = "Your organization's rules do not let the app's chat use OpenAI: its address, api.openai.com, is not on the list of AI services allowed (assistant.hosts: api.anthropic.com)."
+        wait.until(lambda drv: drv.find_elements(By.ID, "fr-ai-need") and drv.find_element(By.ID, "fr-ai-need").text == refused)
+        assert ai_row(d) == ["b", "form#fr-ai-form", "p#fr-ai-error", "span#fr-ai-need", "span#fr-ai-about"], ai_row(d)
+        assert Select(d.find_element(By.ID, "fr-service")).first_selected_option.text == "OpenAI (not allowed by your organization)"
+        reads_right(d, "#first-steps")
+        # Another that is not listed is refused when it is chosen, in words.
+        choose(d, "fr-service", "gemini")
+        wait.until(lambda drv: "do not let the app's chat use Google Gemini" in drv.find_element(By.ID, "fr-ai-error").text)
+        assert d.execute_script("return document.getElementById('fr-service').value") == "openai"
+        reads_right(d, "#first-steps")
+        d.save_screenshot(str(OUT / "services-first-run-refused.png"))
+        open_assistant(d)
+        assert "allows the app's chat these services only: api.anthropic.com (assistant.hosts)" in d.find_element(By.ID, "service-org").text
+        close_settings(d)
+        write_policy(root)
+
+        step("The first run's AI row, a key saved: the service is connected, and the row says so")
+        new_chat(d, ready=False)
+        wait.until(lambda drv: drv.find_elements(By.ID, "fr-key") and not drv.find_elements(By.ID, "fr-ai-need"))
+        d.find_element(By.ID, "fr-key").send_keys(KEYS["openai"])
+        d.find_element(By.CSS_SELECTOR, "#fr-ai-form button[type=submit]").click()
+        # (No data is added yet, so the first steps stay, under the question.)
+        wait.until(lambda drv: "OpenAI is connected for the chat." in first_steps(drv))
+        wait.until(EC.visibility_of_element_located((By.ID, "text")))
+        assert ai_row(d) == ["b", "span"], ai_row(d)
+        reads_right(d, "#first-steps")
+        assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
+        no_key_on_the_page(d)
+        d.save_screenshot(str(OUT / "services-first-run-connected.png"))
+        open_assistant(d)
+        assert f"ending in {KEYS['openai'][-4:]}" in d.find_element(By.ID, "key-state").text
+        close_settings(d)
+
+        step("The first run when the app cannot be read: each row says what it can, and nothing reads as a missing value")
+        # How the assistant works is not known: its cards are left out.
+        guard.answers(d, "settings_state", "fail")
+        new_chat(d)
+        wait.until(lambda drv: drv.find_elements(By.ID, "first-steps") and not drv.find_elements(By.ID, "fr-mode")
+                   and "OpenAI is connected for the chat." in first_steps(drv))
+        reads_right(d, "#first-steps")
+        guard.answers(d, "settings_state", None)
+        # The AI's settings are not known: the row points to Settings.
+        guard.answers(d, "chat_settings", "fail")
+        new_chat(d, ready=False)
+        wait.until(lambda drv: "Set it up in Settings › Assistant." in first_steps(drv) and drv.find_elements(By.ID, "fr-mode"))
+        assert ai_row(d) == ["b", "span"], ai_row(d)
+        reads_right(d, "#first-steps")
+        # An AI is set up, and Columbus's server is not found.
+        guard.answers(d, "chat_settings", {"server_found": False})
+        new_chat(d, ready=False)
+        wait.until(lambda drv: "An AI is set up, but Columbus's server was not found." in first_steps(drv))
+        assert ai_row(d) == ["b", "span"], ai_row(d)
+        reads_right(d, "#first-steps")
+        guard.answers(d, "chat_settings", None)
+        # The check of the engine is not answered.
+        guard.answers(d, "engine_check", "fail")
+        new_chat(d)
+        wait.until(lambda drv: "Columbus's server was not found" in first_steps(drv) and "OpenAI is connected for the chat." in first_steps(drv))
+        reads_right(d, "#first-steps")
+        guard.answers(d, "engine_check", None)
+        new_chat(d)
+        wait.until(lambda drv: "Found Columbus's server and its Python engine." in first_steps(drv))
+        reads_right(d, "#first-steps")
+    finally:
+        guard.stop(d, driver_proc)
+
+    step("the app, with data and no AI set up")
     d, driver_proc = guard.driver(env, APP)
     try:
         wait = Wait(d, 60)
@@ -527,6 +671,16 @@ def main():
         d.execute_script(f"location.hash = '#/chats/c/{first_chat.stem}'")
         Wait(d, 20).until(lambda drv: drv.find_elements(By.ID, "saved-service") and "OpenAI, GPT-6.1 Sol" in drv.find_element(By.ID, "saved-service").text)
         assert "From here on: GPT-6 Astra, thinking high." in d.find_element(By.ID, "saved-log").text
+        # A chat saved before the service and the model were written down
+        # says when it was, and nothing in place of what it does not know.
+        (first_chat.parent / "c-older-chat-0001.jsonl").write_text(
+            json.dumps({"kind": "meta", "id": "c-older-chat-0001", "session": "s-old", "ts": "2026-11-05T10:00:00Z"}) + "\n"
+            + json.dumps({"kind": "you", "text": "An older question.", "ts": "2026-11-05T10:00:01Z"}) + "\n")
+        d.execute_script("location.hash = '#/chats/c/c-older-chat-0001'")
+        Wait(d, 20).until(lambda drv: drv.find_elements(By.ID, "saved-log") and "An older question." in drv.find_element(By.ID, "saved-log").text)
+        head = d.execute_script("return document.querySelector('.chathead .sub').textContent")
+        assert not d.find_elements(By.ID, "saved-service") and "2026" in head and "·" not in head, head
+        reads_right(d, ".chatcol[aria-label='Saved chat']")
 
         step("Activity names the app's own chat")
         d.execute_script("location.hash = '#/activity'")
