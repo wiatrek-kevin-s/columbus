@@ -445,6 +445,28 @@ def main():
         wait.until(lambda drv: drv.find_elements(By.CSS_SELECTOR, "#toolboxes li[data-id='geolibre']"))
         remove = d.find_element(By.XPATH, "//ul[@id='toolboxes']/li[@data-id='geolibre']//button[normalize-space()='Remove']")
         d.execute_script("arguments[0].scrollIntoView({block: 'center'})", remove)
+        # A read of the list that began before the removal and ends after it
+        # must not put the toolbox back (CI met this: the window got the
+        # focus as Remove was clicked, and reading a changed program's state
+        # means hashing it, which outlasted the removal). So the program is
+        # made big enough that reading its state takes a few seconds, one
+        # such read is begun (the window "gets the focus"), and Remove is
+        # clicked at once.
+        read_ms = lambda: d.execute_async_script(
+            "const done = arguments[arguments.length - 1], t = performance.now();"
+            "window.__TAURI__.core.invoke('toolboxes_state').then(() => done(performance.now() - t), (e) => done(-1));")
+        slow = 0
+        for mb in (64, 128, 256):
+            with open(program, "ab") as f:
+                f.write(b"\0" * (mb << 20))
+            slow = read_ms()
+            if slow >= 2500:
+                break
+        print(f"reading a changed program's state took {slow:.0f} ms")
+        with open(program, "ab") as f:
+            f.write(b"\0")  # changed again: the next read hashes it again
+        remove = d.find_element(By.XPATH, "//ul[@id='toolboxes']/li[@data-id='geolibre']//button[normalize-space()='Remove']")
+        d.execute_script("arguments[0].scrollIntoView({block: 'center'}); window.dispatchEvent(new Event('focus'));", remove)
         remove.click()
         try:
             wait.until(lambda drv: not drv.find_elements(By.CSS_SELECTOR, "#toolboxes li"))
@@ -456,6 +478,10 @@ def main():
             buttons = d.execute_script("return [...document.querySelectorAll('#toolboxes li button')].map((b) => b.textContent.trim() + (b.disabled ? ' (waiting)' : ''))")
             raise AssertionError(f"the toolbox is still listed after Remove ({e.__class__.__name__}). Its buttons: {buttons!r}. On the page: {page!r}. Left in its folder: {left!r}") from e
         wait.until(lambda drv: "Removed geolibre" in text(drv, "#tbx-notice"))
+        # By now the read begun before the removal has ended too, with the
+        # toolbox still in its answer.
+        time.sleep(slow / 1000 + 1.5)
+        assert not d.find_elements(By.CSS_SELECTOR, "#toolboxes li"), "a read that began before the removal and ended after it put the toolbox back in the list"
         assert not (root / "toolboxes" / "geolibre").exists(), "the toolbox's folder is gone"
         assert not shown(d, "#tbx-find"), "no toolbox, nothing to search"
         named(d)

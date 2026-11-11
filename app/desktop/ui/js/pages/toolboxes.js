@@ -86,10 +86,17 @@ export function toolboxSection() {
     }
   };
 
+  // Only the read begun last is drawn. Reading a toolbox's state can take a
+  // moment (a changed program is hashed), so a read begun before something
+  // changed can end after the one begun since; drawn, it would put back
+  // what is gone (a toolbox just removed, listed again).
+  let reads = 0;
   const refresh = async () => {
+    const mine = ++reads;
     try {
-      st = await invoke("toolboxes_state");
-      if (closed) return;
+      const now = await invoke("toolboxes_state");
+      if (closed || mine !== reads) return;
+      st = now;
       draw();
       showError(error, null);
       if (!find.hidden) search(); else { hits.replaceChildren(); more.textContent = ""; }
