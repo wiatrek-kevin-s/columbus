@@ -1469,7 +1469,8 @@ impl Gateway {
                 + Self::workflow_router()
                 + Self::env_router()
                 + Self::snapshot_router()
-                + Self::project_db_router(),
+                + Self::project_db_router()
+                + Self::project_files_router(),
         }
     }
 
@@ -2190,6 +2191,10 @@ impl Gateway {
                 if !self.state.policy().tool_allowed(&t.name) {
                     continue;
                 }
+                // Not offered while organization policy turns it off.
+                if t.name == "project_files" && !self.state.policy().allow_project_files {
+                    continue;
+                }
                 let desc = t.description.as_deref().unwrap_or("").to_string();
                 candidates.push((
                     format!("{} {}", t.name.replace('_', " "), desc),
@@ -2423,6 +2428,9 @@ impl Gateway {
                 ))
             }
         };
+        if tool.name == "project_files" && !self.state.policy().allow_project_files {
+            return Err(self.deny(&ctx, rec, crate::project_files::POLICY_OFF));
+        }
         self.audit(&ctx, rec)?;
         let mut description = tool.description.as_deref().unwrap_or("").to_string();
         if tool.name == "run_python" {

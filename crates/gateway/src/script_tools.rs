@@ -65,6 +65,12 @@ use crate::server::{
 /// would honour `# coding: utf-7` and decode a comment into code.
 const RUN_TEXT: &str = "import sys, types; p = sys.argv[1]; t = open(p, encoding='utf-8', newline='').read(); m = types.ModuleType('__main__'); m.__file__ = p; m.__builtins__ = __builtins__; sys.modules['__main__'] = m; sys.argv = [p]; exec(compile(t, p, 'exec', dont_inherit=True), m.__dict__)";
 
+/// Put before [`RUN_TEXT`] for a script from the project's files: the
+/// script's own folder (the run folder, where its helper files were
+/// copied) goes first on the import path.
+const RUN_BESIDE: &str =
+    "import os, sys; sys.path.insert(0, os.path.dirname(os.path.abspath(sys.argv[1]))); ";
+
 /// What the audit line and provenance of a run that needed no approval
 /// carry as its approval: the policy rule that allowed it (D-16, F-15).
 pub(crate) const NO_APPROVAL: &str = "scripts.approval: none";
@@ -122,8 +128,17 @@ pub struct RunPythonArgs {
     /// to its path), every regular file it writes in out/ becomes a
     /// workspace output, and what it prints comes back. No network; it can
     /// write only its run folder. geopandas, shapely, pyproj, rasterio and
-    /// pandas are there when the engine has them; ArcPy is not.
-    pub code: String,
+    /// pandas are there when the engine has them; ArcPy is not. Give this
+    /// or `script`, not both.
+    #[serde(default)]
+    pub code: Option<String>,
+    /// In place of `code`: a script kept in the project's files, by its
+    /// path there (scripts/widths.py; see project_files). Its text is read
+    /// as it is now and run exactly as `code` would be; the other .py files
+    /// of its own folder are put beside it, so it can import them. Needs a
+    /// chat in a project and policy allow_project_files.
+    #[serde(default)]
+    pub script: Option<String>,
     /// Workspace layers to give the script, as name -> ws:// handle. Names
     /// use letters, digits, `_` and `-`.
     #[serde(default)]
@@ -487,7 +502,7 @@ const MAX_LINE: usize = 200;
 /// breaks a line at a lone CR that a browser shows as one line), other
 /// control characters but tab and newline, bidirectional and invisible
 /// formatting characters (Trojan Source), and lines too long to see whole.
-fn shown_as_run(code: &str) -> Result<(), String> {
+pub(crate) fn shown_as_run(code: &str) -> Result<(), String> {
     columbus_shared::tools::coding_line(code)?;
     for (i, line) in code.split('\n').enumerate() {
         let n = i + 1;
@@ -793,12 +808,21 @@ impl Gateway {
         run: &Path,
         timeout: Duration,
         python: &Path,
+        beside: bool,
     ) -> Result<Ran, String> {
         let python = python.to_string_lossy().into_owned();
         let script = run.join("script.py").display().to_string();
+        // A script from the project's files imports the helpers copied
+        // beside it: its own folder goes first on the import path, as
+        // Python does for a script it is given (-I leaves it out).
+        let runner = if beside {
+            format!("{RUN_BESIDE}{RUN_TEXT}")
+        } else {
+            RUN_TEXT.to_string()
+        };
         // -X utf8 because -I ignores PYTHONIOENCODING. The script is run
         // from its UTF-8 text (RUN_TEXT), never decoded by Python itself.
-        let args: Vec<String> = ["-I", "-B", "-X", "utf8", "-c", RUN_TEXT, &script]
+        let args: Vec<String> = ["-I", "-B", "-X", "utf8", "-c", &runner, &script]
             .iter()
             .map(|s| s.to_string())
             .collect();
@@ -979,7 +1003,7 @@ async fn wait_for(
 #[tool_router(router = script_router, vis = "pub(crate)")]
 impl Gateway {
     #[tool(
-        description = "Run a Python script on workspace layers, for what the GIS tools cannot do. It runs in a sandbox: no network, it can write only its own run folder, and it is stopped at the time limit. Whether the person is asked first is the organization's choice (whoami: policy.script_approval, and describe_tool says what is in force now): they read the full code and approve every run (each), may allow that exact code for the session (session), or are not asked for a sandboxed run (none). A run that leaves the sandbox always asks: an environment with network, or a trusted one. Inputs (name -> ws:// handle) are copied to in/<name>.<ext> and listed in inputs.json; every file it writes in out/ comes back as a workspace output carrying the inputs' data labels; stdout and stderr come back (64 KB each). Needs organization policy to allow scripts (whoami: scripts_allowed). By default it runs in the engine's Python, which has no ArcPy; pass environment to run in one the person registered (whoami: environments), under the same rules. A trusted environment (experimental; where policy allows it, for example for ArcPy) runs unconfined as the person, approved every run, and its outputs carry the session's data labels plus environment:<id>.",
+        description = "Run a Python script on workspace layers, for what the GIS tools cannot do. It runs in a sandbox: no network, it can write only its own run folder, and it is stopped at the time limit. Whether the person is asked first is the organization's choice (whoami: policy.script_approval, and describe_tool says what is in force now): they read the full code and approve every run (each), may allow that exact code for the session (session), or are not asked for a sandboxed run (none). A run that leaves the sandbox always asks: an environment with network, or a trusted one. Give code, or script: the path of a script kept in the project's files (scripts/widths.py; see project_files), which runs the same way with the other .py files of its folder beside it to import. Inputs (name -> ws:// handle) are copied to in/<name>.<ext> and listed in inputs.json; every file it writes in out/ comes back as a workspace output carrying the inputs' data labels; stdout and stderr come back (64 KB each). Needs organization policy to allow scripts (whoami: scripts_allowed). By default it runs in the engine's Python, which has no ArcPy; pass environment to run in one the person registered (whoami: environments), under the same rules. A trusted environment (experimental; where policy allows it, for example for ArcPy) runs unconfined as the person, approved every run, and its outputs carry the session's data labels plus environment:<id>.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -991,10 +1015,19 @@ impl Gateway {
         Parameters(args): Parameters<RunPythonArgs>,
         ctx: RequestContext<RoleServer>,
     ) -> Result<Json<Output<Value>>, String> {
-        let code_sha256 = columbus_shared::canon::sha256_hex(args.code.as_bytes());
-        let request = json!({"code_sha256": code_sha256, "code_bytes": args.code.len(),
-            "inputs": args.inputs, "timeout_seconds": args.timeout_seconds,
-            "environment": args.environment});
+        // The call, for the audit line: the code by its hash, or the
+        // project's script by its path (its text's hash is in the answer
+        // and in provenance).
+        let request = match (&args.code, &args.script) {
+            (_, Some(path)) => json!({"script": path, "inputs": args.inputs,
+                "timeout_seconds": args.timeout_seconds, "environment": args.environment}),
+            (code, None) => {
+                let code = code.as_deref().unwrap_or("");
+                json!({"code_sha256": columbus_shared::canon::sha256_hex(code.as_bytes()),
+                    "code_bytes": code.len(), "inputs": args.inputs,
+                    "timeout_seconds": args.timeout_seconds, "environment": args.environment})
+            }
+        };
         let mut rec = self.gate(&ctx, "run_python", &request)?;
         // F-8: the environment's id, or null for the engine's Python.
         rec.environment = Some(args.environment.clone());
@@ -1008,23 +1041,57 @@ impl Gateway {
                 "organization policy does not allow scripts (allow_scripts is off), so run_python cannot run code here; use the GIS tools (query_features, vector_op, raster_op, verify) instead",
             ));
         }
-        if args.code.trim().is_empty() {
-            return Err(self.deny(&ctx, rec, "code is empty"));
+        // The text that runs: given, or read now from the project's files
+        // through the same safe path as project_files (D-19).
+        let from_project = match (&args.code, &args.script) {
+            (Some(_), Some(_)) => {
+                return Err(self.deny(&ctx, rec, "give code or script, not both"));
+            }
+            (_, Some(path)) => match self.project_script(policy, path, MAX_CODE) {
+                Ok(s) => {
+                    rec.dataset = Some(format!("project:{}/{}", s.project, s.path));
+                    Some(s)
+                }
+                Err(e) => return Err(self.deny(&ctx, rec, e)),
+            },
+            (_, None) => None,
+        };
+        let code: &str = match &from_project {
+            Some(s) => &s.text,
+            None => args.code.as_deref().unwrap_or(""),
+        };
+        let code_sha256 = columbus_shared::canon::sha256_hex(code.as_bytes());
+        if code.trim().is_empty() {
+            return Err(self.deny(
+                &ctx,
+                rec,
+                if from_project.is_some() {
+                    "the script is empty"
+                } else {
+                    "code is empty (give code, or script: a path in the project's files)"
+                },
+            ));
         }
-        if args.code.len() > MAX_CODE {
+        if code.len() > MAX_CODE {
             return Err(self.deny(
                 &ctx,
                 rec,
                 format!(
                     "code is {} bytes; scripts may be at most {} KB",
-                    args.code.len(),
+                    code.len(),
                     MAX_CODE / 1024
                 ),
             ));
         }
-        if let Err(why) = shown_as_run(&args.code) {
+        if let Err(why) = shown_as_run(code) {
             return Err(self.deny(&ctx, rec, why));
         }
+        // The helper files that go beside a project's script, by content.
+        let helpers: Vec<Value> = from_project
+            .iter()
+            .flat_map(|s| &s.helpers)
+            .map(|h| json!({"name": h.name, "sha256": h.sha256, "lines": h.text.lines().count()}))
+            .collect();
         // A registered environment as confirmed, or the engine.
         let senv = match args.environment.as_deref() {
             None => None,
@@ -1110,8 +1177,8 @@ impl Gateway {
         rec.labels = labels.iter().cloned().collect();
 
         // What the person reads when this run asks them.
-        let lines = args.code.lines().count();
-        let digest = columbus_shared::canon::sha256_hex(args.code.as_bytes());
+        let lines = code.lines().count();
+        let digest = code_sha256.clone();
         let where_runs = match &senv {
             None => String::new(),
             Some(se) if se.trusted() => format!(
@@ -1161,8 +1228,12 @@ impl Gateway {
         // session, bound to this exact code and environment (as confirmed)
         // in this Columbus session.
         let session_ok = rule == columbus_shared::policy::ScriptApproval::Session && inside;
-        let session_scope = [json!({"session_script": code_sha256,
+        let mut session_scope = [json!({"session_script": code_sha256,
             "environment": senv.as_ref().map(|e| json!({"id": e.env.id, "confirmed": e.env.confirmation_hash()}))})];
+        if !helpers.is_empty() {
+            // A changed helper is changed code: it asks again.
+            session_scope[0]["helpers"] = json!(helpers);
+        }
         let session_words = format!(
             "\"Allow this script for the session\" runs this exact code (sha256 {}){} again with any inputs, without asking, until this chat or AI app connection ends; any change to the code asks again",
             &digest[..12],
@@ -1170,10 +1241,26 @@ impl Gateway {
                 .map(|e| format!(" in environment {}", e.env.id))
                 .unwrap_or_else(|| " in the engine's Python".into())
         );
+        // Where the text came from, when it is the project's.
+        let from_file = match &from_project {
+            None => String::new(),
+            Some(s) if s.helpers.is_empty() => format!(" from the project's file {}", s.path),
+            Some(s) => format!(
+                " from the project's file {}, with {} helper file{} from its folder ({})",
+                s.path,
+                s.helpers.len(),
+                if s.helpers.len() == 1 { "" } else { "s" },
+                s.helpers
+                    .iter()
+                    .map(|h| h.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        };
         let summary = format!(
-            "Run a Python script ({lines} line{}, {} bytes, sha256 {}){where_runs} on {}; {reach}; stopped after {timeout} s.{} {}",
+            "Run a Python script ({lines} line{}, {} bytes, sha256 {}){from_file}{where_runs} on {}; {reach}; stopped after {timeout} s.{} {}",
             if lines == 1 { "" } else { "s" },
-            args.code.len(),
+            code.len(),
             &digest[..12],
             if inputs.is_empty() {
                 "no inputs".to_string()
@@ -1205,11 +1292,16 @@ impl Gateway {
             .map(|i| json!({"name": i.name, "handle": i.handle, "sha256": i.sha256}))
             .collect();
         // Bound to the environment as confirmed, too.
-        let bound = json!({"code_sha256": code_sha256, "inputs": bound_inputs, "timeout_seconds": timeout,
+        let mut bound = json!({"code_sha256": code_sha256, "inputs": bound_inputs, "timeout_seconds": timeout,
             "environment": senv.as_ref().map(|e| json!({"id": e.env.id, "confirmed": e.env.confirmation_hash()}))});
+        if !helpers.is_empty() {
+            bound["helpers"] = json!(helpers);
+        }
         let detail = json!({
-            "code": args.code,
+            "code": code,
             "code_sha256": code_sha256,
+            "script": from_project.as_ref().map(|s| &s.path),
+            "helpers": helpers,
             "lines": lines,
             "files": inputs.iter().map(|i| json!({"name": format!("{} ({})", i.name, i.handle), "rows": i.meta.rows})).collect::<Vec<_>>(),
             "labels": from,
@@ -1231,7 +1323,7 @@ impl Gateway {
             // approval here (`ScriptEnv::session_allow_possible`, or the
             // engine); a trusted run is always asked on its own.
             every_time: !session_ok,
-            code: Some(&args.code),
+            code: Some(code),
             standing: session_ok.then_some(&session_scope[..]),
             always_covers: session_ok.then_some(session_words),
             script_session: session_ok,
@@ -1322,7 +1414,16 @@ impl Gateway {
                 .unwrap_or_default()
                 .as_bytes(),
         )
-        .and_then(|_| crate::export_tools::write_new(&run.join("script.py"), args.code.as_bytes()));
+        .and_then(|_| crate::export_tools::write_new(&run.join("script.py"), code.as_bytes()))
+        .and_then(|_| {
+            // The helpers kept beside a project's script, beside it here.
+            from_project
+                .iter()
+                .flat_map(|s| &s.helpers)
+                .try_for_each(|h| {
+                    crate::export_tools::write_new(&run.join(&h.name), h.text.as_bytes())
+                })
+        });
         if let Err(e) = written {
             cleanup(&run);
             return Err(self.deny(&ctx, rec, format!("could not write the script: {e}")));
@@ -1365,6 +1466,7 @@ impl Gateway {
                 &run,
                 Duration::from_secs(timeout),
                 &python,
+                from_project.is_some(),
             )
             .await
         {
@@ -1409,6 +1511,20 @@ impl Gateway {
                 },
                 Some("Read stderr, fix the code and run it again"),
             ));
+        }
+        if let Some(s) = from_project.as_ref().filter(|s| !s.skipped.is_empty()) {
+            checks.push(Check {
+                id: "script.helper_skipped".into(),
+                severity: Severity::Warn,
+                message: format!(
+                    "{} .py file(s) beside {} were not put beside the script, so it cannot import them: {}",
+                    s.skipped.len(),
+                    s.path,
+                    s.skipped.join("; ")
+                ),
+                detail: Some(json!({"skipped": s.skipped})),
+                fix: Some("Helper files are plain text .py files with names Python can import (letters, digits, _), at most 20 and 1 MB in all, directly in the script's own folder".into()),
+            });
         }
         for (which, c) in [("stdout", &ran.stdout), ("stderr", &ran.stderr)] {
             if c.truncated() {
@@ -1542,7 +1658,10 @@ impl Gateway {
             "client": client_name(&ctx),
             "inputs": input_records,
             "steps": [{"tool": "run_python", "engine": "python-script",
-                "script": {"code": args.code, "code_sha256": code_sha256, "lines": lines},
+                "script": {"code": code, "code_sha256": code_sha256, "lines": lines,
+                    "project": from_project.as_ref().map(|s| &s.project),
+                    "path": from_project.as_ref().map(|s| &s.path),
+                    "helpers": helpers},
                 "timeout_seconds": timeout, "seconds": ran.seconds,
                 "exit_code": ran.exit_code, "timed_out": ran.timed_out,
                 "approval": rec.approval,
