@@ -55,7 +55,8 @@ export async function part(body, saved = () => {}) {
 
   const draw = () => {
     off.hidden = st.allowed;
-    off.replaceChildren(h("div", {}, h("b", {}, st.why_not || "Sync is turned off."), " No server can be connected, and no project syncs."));
+    off.replaceChildren(h("div", {}, h("b", {}, st.why_not || "Sync is turned off."), " No server can be connected, and no project syncs. The switch for it, Allow sync, is in ",
+      h("a", { href: "#/settings/org", id: "git-off-switch" }, "Settings › Organization rules"), "."));
     // With sync off, nothing is offered.
     card.hidden = !st.allowed;
     foot.hidden = !st.allowed;
@@ -90,8 +91,18 @@ export async function part(body, saved = () => {}) {
     foot.replaceChildren("The list of servers, without tokens, is kept in ", h("code", {}, st.file), ". ",
       st.hosts.length ? `Your organization allows these servers only: ${st.hosts.join(", ")} (sync.hosts).` : "");
   };
+  // Only the read begun last is drawn: one begun before a server was
+  // connected or removed can end after the one begun since, and would put
+  // back the list as it was.
+  let reads = 0;
   const refresh = async () => {
-    try { st = await invoke("git_servers_state"); draw(); } catch (e) { showError(error, e); }
+    const mine = ++reads;
+    try {
+      const now = await invoke("git_servers_state");
+      if (mine !== reads) return;
+      st = now;
+      draw();
+    } catch (e) { if (mine === reads) showError(error, e); }
   };
 
   const openConnect = () => {

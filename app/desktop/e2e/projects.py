@@ -4,9 +4,10 @@ A project is made from the Projects page (name, instructions, only one of
 the person's connections, an export folder), its file is written where the
 server reads it, its Files section opens its folder and lists a file the
 assistant wrote there (through a real Columbus session in the project) with
-its size and when it changed, a chat started in it says so, the Chats page
-and the Projects list show it, and deleting it removes its file (its chats
-and its files are kept).
+its size and when it changed, a read of the folder that ends after a newer
+one does not put the older list back, a chat started in it says so, the
+Chats page and the Projects list show it, and deleting it removes its file
+(its chats and its files are kept).
 
     dbus-run-session -- xvfb-run -a python app/desktop/e2e/projects.py \\
         target/debug/columbus-mcp app/desktop/src-tauri/target/debug/columbus-desktop
@@ -124,6 +125,22 @@ def main():
         assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
         d.execute_script("document.getElementById('pj-files').scrollIntoView({block: 'center'})")
         d.save_screenshot(str(OUT / "projects-files.png"))
+
+        step("A read of the folder that ends after a newer one does not put the older list back")
+        # Check again is pressed (the answer to that read is kept back), a
+        # file is put in the folder, and Check again is pressed once more.
+        guard.hold(d, "project_files")
+        click(d, By.ID, "pj-files-refresh")
+        wait.until(guard.held)
+        (files / "plan.md").write_text("# Plan\n")
+        click(d, By.ID, "pj-files-refresh")
+        added = "#pj-file-list li.file[data-path='plan.md']"
+        wait.until(lambda drv: drv.find_elements(By.CSS_SELECTOR, added))
+        # Now the first read ends: it was made before the file was there.
+        older = guard.release(d)
+        assert [x["path"] for x in older["files"]] == ["notes.md", "scripts/widths.py"], older
+        assert d.find_elements(By.CSS_SELECTOR, added), "a read that ended late put back the list from before plan.md was added"
+        assert "Files (3)" in text(d, "pj-files"), text(d, "pj-files")
 
         step("A chat in the project says so")
         wait.until(EC.element_to_be_clickable((By.ID, "pj-chat"))).click()
