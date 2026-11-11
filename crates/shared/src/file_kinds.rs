@@ -2,9 +2,9 @@
 //! agree (final review of part 3, R-103).
 //!
 //! * The assistant's project files ([`crate::project_files`]): names it
-//!   neither reads nor writes (passwords, keys, connection files), and
-//!   kinds it never writes (data, archives, files the system runs when they
-//!   are opened).
+//!   neither reads nor writes (passwords, keys, connection files, map
+//!   documents), and kinds it never writes (data, archives, files the
+//!   system runs when they are opened).
 //! * Sync (`columbus-sync`): what never goes to a Git server and is never
 //!   fetched from one.
 //!
@@ -24,6 +24,10 @@ pub enum Kind {
     Passwords,
     /// A connection file, which can hold a password: `*.sde`, `*.dsn` …
     Connection,
+    /// A map document or a layer file, which can hold a saved connection
+    /// (a server, a user, sometimes its password): `*.aprx`, `*.mxd`,
+    /// `*.lyrx`, `*.qgs` …
+    MapDocument,
     /// A file the system runs or follows when the person opens it:
     /// `*.bat`, `*.lnk`, `*.rdp` …
     Runs,
@@ -38,12 +42,13 @@ pub enum Kind {
 }
 
 impl Kind {
-    /// A password, a key or a connection file: the assistant never gets
-    /// one (D-16, B1), whoever put it in the folder.
+    /// A password, a key, a connection file, or a map document that can
+    /// hold a saved connection: the assistant never gets one (D-16, B1),
+    /// whoever put it in the folder.
     pub fn is_secret(self) -> bool {
         matches!(
             self,
-            Kind::EnvFile | Kind::Key | Kind::Passwords | Kind::Connection
+            Kind::EnvFile | Kind::Key | Kind::Passwords | Kind::Connection | Kind::MapDocument
         )
     }
 
@@ -66,11 +71,19 @@ pub enum FolderKind {
     Geodatabase,
 }
 
-/// Files that hold passwords, by their whole name.
+/// Files that hold passwords or tokens, by their whole name: Git's, the
+/// `.netrc` and PostgreSQL's password files, a cloud's `credentials`, and
+/// the files where npm, Python's package tools, MySQL, Docker and a web
+/// server keep theirs.
 const PASSWORD_NAMES: &[&str] = &[
+    ".dockercfg",
     ".git-credentials",
+    ".htpasswd",
+    ".my.cnf",
     ".netrc",
+    ".npmrc",
     ".pgpass",
+    ".pypirc",
     "_netrc",
     "credentials",
     "pgpass.conf",
@@ -85,6 +98,15 @@ const KEY_ENDINGS: &[&str] = &["jks", "kdbx", "key", "keystore", "p12", "pem", "
 /// Connection files: ArcGIS (`sde`, `ags`, `acs`), Office and ODBC (`odc`,
 /// `dsn`, `udl`). They name a server and can hold its password.
 const CONNECTION_ENDINGS: &[&str] = &["acs", "ags", "dsn", "odc", "sde", "udl"];
+
+/// Map documents and layer files: ArcGIS Pro (`aprx`, its template
+/// `aptx`, `mapx`, `pagx`, `lyrx`), ArcMap, ArcScene and ArcGlobe (`mxd`,
+/// `mxt`, `sxd`, `3dd`, `lyr`), QGIS (`qgs`, `qgz`, `qlr`). Each layer in
+/// one says where its data is, and for a database or a service that is a
+/// saved connection: a server, a user, sometimes the password.
+const MAP_DOCUMENT_ENDINGS: &[&str] = &[
+    "3dd", "aprx", "aptx", "lyr", "lyrx", "mapx", "mxd", "mxt", "pagx", "qgs", "qgz", "qlr", "sxd",
+];
 
 /// File types an operating system runs or follows when the person opens
 /// them (a double-click in Explorer or Finder): programs and installers,
@@ -156,11 +178,15 @@ const RUNS_WHEN_OPENED: &[&str] = &[
     "themepack",
     "url",
     "website",
-    // Office: files that fetch or run when Excel, Word or Access opens them.
+    // Office: files that fetch or run when Excel, Word, PowerPoint or
+    // Access opens them, and documents, templates and add-ins that carry
+    // macros. (`xlsm`, a workbook with macros, is among the tables.)
     "accda",
     "accde",
     "ade",
     "adp",
+    "docm",
+    "dotm",
     "dqy",
     "iqy",
     "mad",
@@ -177,10 +203,18 @@ const RUNS_WHEN_OPENED: &[&str] = &[
     "mde",
     "mdz",
     "oqy",
+    "potm",
+    "ppam",
+    "ppsm",
+    "pptm",
     "rqy",
+    "sldm",
     "slk",
     "wll",
+    "xla",
+    "xlam",
     "xll",
+    "xltm",
     // Java.
     "jar",
     "jnlp",
@@ -209,10 +243,13 @@ const RUNS_WHEN_OPENED: &[&str] = &[
 
 /// Geodata: GeoPackage, the parts of a shapefile, GeoJSON and its line
 /// forms, FlatGeobuf, KML, GPX, GML, MapInfo and CAD drawings, rasters and
-/// grids, point clouds, Esri's packages and mobile geodatabases.
+/// grids (also as text: `asc`, `xyz`), point clouds, OpenStreetMap
+/// extracts, tile sets, Esri's packages and mobile geodatabases, and the
+/// files of a file geodatabase found outside their `.gdb` folder.
 const GEODATA_ENDINGS: &[&str] = &[
     "aih",
     "ain",
+    "asc",
     "atx",
     "cpg",
     "dbf",
@@ -224,6 +261,9 @@ const GEODATA_ENDINGS: &[&str] = &[
     "fbn",
     "fbx",
     "fgb",
+    "gdbindexes",
+    "gdbtable",
+    "gdbtablx",
     "geodatabase",
     "geojson",
     "geojsonl",
@@ -248,13 +288,17 @@ const GEODATA_ENDINGS: &[&str] = &[
     "laz",
     "lpk",
     "lpkx",
+    "mbtiles",
     "mif",
     "mmpk",
     "mpk",
     "mpkx",
     "mxs",
     "nc",
+    "osm",
     "ovr",
+    "pbf",
+    "pmtiles",
     "ppkx",
     "prj",
     "qix",
@@ -266,6 +310,7 @@ const GEODATA_ENDINGS: &[&str] = &[
     "shx",
     "sid",
     "slpk",
+    "spx",
     "tif",
     "tiff",
     "topojson",
@@ -273,6 +318,7 @@ const GEODATA_ENDINGS: &[&str] = &[
     "tpkx",
     "vrt",
     "vtpk",
+    "xyz",
 ];
 
 /// Tables and databases: delimited text, spreadsheets, column files,
@@ -373,6 +419,9 @@ pub fn kind_of(name: &str) -> Option<Kind> {
     if CONNECTION_ENDINGS.contains(&ext) {
         return Some(Kind::Connection);
     }
+    if MAP_DOCUMENT_ENDINGS.contains(&ext) {
+        return Some(Kind::MapDocument);
+    }
     if runs_when_opened(&lower).is_some() {
         return Some(Kind::Runs);
     }
@@ -402,9 +451,10 @@ pub fn folder_kind(name: &str) -> Option<FolderKind> {
 /// them.
 pub fn examples() -> Vec<(String, Kind)> {
     let mut out: Vec<(String, Kind)> = Vec::new();
-    let lists: [(&[&str], Kind); 6] = [
+    let lists: [(&[&str], Kind); 7] = [
         (KEY_ENDINGS, Kind::Key),
         (CONNECTION_ENDINGS, Kind::Connection),
+        (MAP_DOCUMENT_ENDINGS, Kind::MapDocument),
         (RUNS_WHEN_OPENED, Kind::Runs),
         (GEODATA_ENDINGS, Kind::Geodata),
         (TABLE_ENDINGS, Kind::Table),
@@ -472,6 +522,19 @@ mod tests {
             "a.tif",
             "roads.gpkg-wal",
             "roads.sqlite-journal",
+            // The re-check's (R-105): tile sets, grids and points as text,
+            // OpenStreetMap extracts, a file geodatabase's loose files.
+            "tiles.mbtiles",
+            "tiles.pmtiles",
+            "dem.asc",
+            "points.xyz",
+            "town.osm",
+            "town.osm.pbf",
+            "a00000009.gdbtable",
+            "a00000009.gdbtablx",
+            "a00000009.gdbindexes",
+            "a00000009.spx",
+            "a00000009.FDO_UUID.atx",
         ] {
             assert!(kind_of(name).is_some_and(Kind::is_data), "{name}");
         }
@@ -499,7 +562,30 @@ mod tests {
             "x.key",
             "x.pfx",
             "x.p12",
+            // Other tools' password and token files (R-105).
+            ".npmrc",
+            ".pypirc",
+            ".my.cnf",
+            ".htpasswd",
+            ".dockercfg",
         ] {
+            assert!(kind_of(name).is_some_and(Kind::is_secret), "{name}");
+        }
+        // Map documents and layer files, which can hold a saved connection
+        // (R-105).
+        for name in [
+            "County.aprx",
+            "roads.mxd",
+            "Roads.MXD",
+            "roads.mapx",
+            "roads.lyrx",
+            "roads.lyr",
+            "county.qgs",
+            "county.qgz",
+            "roads.qlr",
+            "layout.pagx",
+        ] {
+            assert_eq!(kind_of(name), Some(Kind::MapDocument), "{name}");
             assert!(kind_of(name).is_some_and(Kind::is_secret), "{name}");
         }
         // Files that run when opened.
@@ -516,6 +602,13 @@ mod tests {
             "a.app",
             "a.workflow",
             "a.command",
+            // Office files that carry macros (R-105).
+            "a.docm",
+            "a.dotm",
+            "a.pptm",
+            "a.ppam",
+            "a.xlam",
+            "a.xltm",
         ] {
             assert_eq!(kind_of(name), Some(Kind::Runs), "{name}");
             assert!(runs_when_opened(name).is_some(), "{name}");
@@ -524,6 +617,8 @@ mod tests {
             runs_when_opened("Panel.{21EC2020-3AEA-1069-A2DD-08002B30309D}").as_deref(),
             Some("{21ec2020-3aea-1069-a2dd-08002b30309d}")
         );
+        // A workbook with macros stays what it was: a table.
+        assert_eq!(kind_of("book.xlsm"), Some(Kind::Table));
     }
 
     #[test]
@@ -549,6 +644,14 @@ mod tests {
             "data.csv.md",
             "zip.py",
             "Makefile",
+            // Whole names only: another file that merely ends so is not one.
+            "notes.npmrc",
+            "x.pypirc",
+            "npmrc",
+            "report.docx",
+            "slides.pptx",
+            "style.qml",
+            "legend.sld",
         ] {
             assert_eq!(kind_of(name), None, "{name}");
             assert_eq!(runs_when_opened(name), None, "{name}");

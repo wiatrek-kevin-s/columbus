@@ -22,9 +22,10 @@
 //!   text the assistant writes, never for workspace layers: data still
 //!   leaves the workspace only through `export_output`.
 //! * **Not passwords, not programs.** Names that look like password, key or
-//!   connection files are neither read nor written; file types the system
-//!   runs when opened are not written; `columbus-project.yaml` at the top
-//!   (the shared settings sync writes) is read-only.
+//!   connection files, and map documents and layer files (which can hold a
+//!   saved connection), are neither read nor written; file types the
+//!   system runs when opened are not written; `columbus-project.yaml` at
+//!   the top (the shared settings sync writes) is read-only.
 //! * **No secrets to the assistant.** A file whose text looks like it holds
 //!   a password, a key or a token (the scan that stops a sync,
 //!   `columbus_shared::secrets`) is not read to the assistant, not run and

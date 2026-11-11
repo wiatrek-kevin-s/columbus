@@ -295,7 +295,8 @@ fn add_question(program: &Path, shown: &str, tools: usize) -> String {
 /// Where a program sits, asked as soon as the person has chosen it: what
 /// its tools will be able to read once it is a toolbox, or why it cannot
 /// be added from there (its folder is not its own: the home folder,
-/// Desktop, Documents, Downloads, the top of a drive, a system folder).
+/// Desktop, Documents, Downloads, a folder of keys and sign-ins such as
+/// .ssh, the top of a drive, a system folder).
 /// The same rule `columbus-mcp toolbox add` holds to.
 #[tauri::command]
 pub async fn toolbox_program_check(program: String) -> Result<Value, String> {

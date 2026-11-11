@@ -28,7 +28,8 @@ What it walks through:
   assistant wrote after reading a source are not sent, are named on the
   page with why, and the stand-in never receives them; the held file goes
   only after Send it anyway, is held again once it changes, and has no such
-  choice where the organization's flow rules deny it;
+  choice where the organization's flow rules deny it; Show on it offers
+  Send it anyway in the same dialog, where the list does (R-105);
 * the same start on the Gitea stand-in, where an arriving change to the
   shared settings is declined;
 * the token: in no file under the test's folders, in no line the app
@@ -450,7 +451,9 @@ def main():
         what = text(d, "sync-what")
         for words in ["with the project's name and instructions (the file columbus-project.yaml in it",
                       "every changed file in it is sent, except these", "data files", "CSV", "password, key and connection files",
+                      "map documents and layer files (they can hold a saved connection)",
                       "programs and shortcuts", "outputs", "5 MB",
+                      "Data is known by a file's name: a table saved as .txt or .json is not recognized as data.",
                       "a few other things (links, a .git folder, a Python environment or its cache, files the system makes, names another system cannot hold)",
                       "in a chat that had read one of your sources", "held back until you choose Send it anyway",
                       "looks like it holds a password or a token, nothing is sent", "listed here, with why, before anything goes"]:
@@ -477,10 +480,27 @@ def main():
         def held_button(label):
             return d.find_elements(By.XPATH, f"//ul[@id='sync-held']//button[normalize-space()='{label}']")
 
-        # It can be looked at before it is sent.
-        click(d, By.XPATH, "//ul[@id='sync-held']//button[normalize-space()='Show']")
-        wait.until(lambda drv: "parcel 4471" in text(drv, "sync-preview-right"))
-        click(d, By.XPATH, "//dialog[@id='sync-preview-dialog']//button[normalize-space()='Close']")
+        def show_held():
+            """Open Show on the held file and wait for its text."""
+            click(d, By.XPATH, "//ul[@id='sync-held']//button[normalize-space()='Show']")
+            wait.until(lambda drv: "parcel 4471" in text(drv, "sync-preview-right"))
+
+        def in_preview(label):
+            return d.find_elements(By.XPATH, f"//dialog[@id='sync-preview-dialog']//button[normalize-space()='{label}']")
+
+        # It can be looked at before it is sent, and sent from where it is
+        # looked at (R-105): the dialog offers Send it anyway too, says why
+        # the file is held and that nothing is sent yet, and Close leaves
+        # everything as it was.
+        show_held()
+        assert in_preview("Send it anyway") and in_preview("Close"), "the dialog offers Send it anyway beside Close"
+        said = text(d, "sync-preview-held")
+        assert "it may hold data read from roads-prod" in said and "Nothing is sent until you press Sync" in said, said
+        assert not guard.unnamed(d), guard.unnamed(d)
+        d.save_screenshot(str(OUT / "sync-held-show.png"))
+        in_preview("Close")[0].click()
+        wait.until(lambda drv: not drv.find_elements(By.ID, "sync-preview-dialog"))
+        assert "1 held back" in text(d, "sync-status") and held_button("Send it anyway"), "Close chooses nothing"
         # Where the organization's flow rules deny that source's data going
         # to a Git server, there is no choice, on the page or in the app.
         policy.write_text(POLICY.format(
@@ -488,6 +508,12 @@ def main():
         check(d, wait, "1 held back")
         assert "your organization's rules do not let data from roads-prod go to this server" in text(d, "sync-held"), text(d, "sync-held")
         assert not held_button("Send it anyway"), "a denied file is offered Send it anyway"
+        # Nor in the dialog: it offers the choice only where the list does.
+        show_held()
+        assert not in_preview("Send it anyway") and not d.find_elements(By.ID, "sync-preview-held"), "a denied file is offered Send it anyway in the dialog"
+        assert not guard.unnamed(d), guard.unnamed(d)
+        in_preview("Close")[0].click()
+        wait.until(lambda drv: not drv.find_elements(By.ID, "sync-preview-dialog"))
         got, err = invoke(d, "sync_send_anyway", {"project": "roads-qc", "path": "scripts/summary.py", "send": True})
         assert got is None and "do not allow it to be sent" in err, (got, err)
         policy.write_text(POLICY.format(sync="allow_sync: true\n"))
@@ -510,9 +536,24 @@ def main():
         report = sync(d, wait)
         assert "held back and not sent" in report and "Sent" not in report, report
         assert not github.received(STAYS)
+        # Chosen again, this time from the dialog that shows the file: it
+        # does what the list's button does. The dialog closes, the file is
+        # among what a sync sends, with why it was held, and nothing has
+        # been sent.
         wait.until(lambda drv: held_button("Send it anyway"))
-        held_button("Send it anyway")[0].click()
+        show_held()
+        in_preview("Send it anyway")[0].click()
+        wait.until(lambda drv: not drv.find_elements(By.ID, "sync-preview-dialog"), "the dialog closes once the choice is made")
         wait.until(lambda drv: status_settled(drv) and "1 changed here" in text(drv, "sync-status"), text(d, "sync-error"))
+        here = text(d, "sync-here")
+        assert "scripts/summary.py" in here and "may hold data read from roads-prod; you chose to send it" in here, here
+        assert not held_button("Send it anyway") and not github.received(STAYS), "choosing in the dialog sends nothing"
+        # A file that is not held has no such button in its dialog.
+        click(d, By.XPATH, "//ul[@id='sync-here']//button[normalize-space()='Show']")
+        wait.until(lambda drv: "parcel 4471" in text(drv, "sync-preview-right"))
+        assert not in_preview("Send it anyway"), "a file that is not held is offered Send it anyway"
+        in_preview("Close")[0].click()
+        wait.until(lambda drv: not drv.find_elements(By.ID, "sync-preview-dialog"))
         report = sync(d, wait, "The summary script, which I looked at")
         assert "Sent 1 change" in report and "held back" not in report, report
         assert github.files("roads-qc")["scripts/summary.py"].startswith(f"# {STAYS} in the held file"), "the file the person chose was sent"
