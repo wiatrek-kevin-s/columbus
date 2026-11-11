@@ -28,7 +28,7 @@ The parts of Columbus 0.15.0 and where they live. The [technical reference](refe
 | **Shared rules** | [`crates/shared`](../crates/shared) | Policy, access, SQL checking, approvals, audit chain, and what is kept on disk: personal tools, toolboxes, workflows, projects and their files |
 | **Broker and flows** | [`crates/broker`](../crates/broker), [`crates/flow`](../crates/flow) | Connected MCP servers, their manifests, and data-flow rules |
 | **Sandbox** | [`crates/confine`](../crates/confine) | Confinement for scripts, toolbox tools, the person's tools and connected servers (Seatbelt on macOS, AppContainer and job objects on Windows, Landlock and seccomp on Linux) |
-| **Chat** | [`crates/chat`](../crates/chat) | The app's own chat with the Anthropic API |
+| **Chat** | [`crates/chat`](../crates/chat) | The app's own chat with the AI service the person chose: one loop that speaks three request formats (Anthropic Messages, OpenAI Responses, OpenAI Chat Completions), with a Columbus session's tools as its only tools |
 | **Sync** | [`crates/sync`](../crates/sync) | A project's files synced with GitHub or Gitea through the server's web API, from the app, on the person's click; no Git program or library |
 | **GIS engine** | [`workers/python`](../workers/python) | geopandas, pyogrio, shapely, pyproj, rasterio and DuckDB, as a worker the gateway drives |
 | **Desktop app** | [`app/desktop`](../app/desktop) | Tauri 2 (Rust) with a plain HTML/JS interface |
