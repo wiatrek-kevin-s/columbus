@@ -448,9 +448,12 @@ def main():
         assert d.execute_script("return document.getElementById('sync-skipped').open"), "a held file is not left folded away"
         # The page says exactly what is sent and what is not.
         what = text(d, "sync-what")
-        for words in ["every changed file in it is sent, except these", "data files", "CSV", "password, key and connection files",
-                      "programs and shortcuts", "outputs", "5 MB", "held back until you choose Send it anyway",
-                      "looks like it holds a password or a token, nothing is sent", "before anything goes"]:
+        for words in ["with the project's name and instructions (the file columbus-project.yaml in it",
+                      "every changed file in it is sent, except these", "data files", "CSV", "password, key and connection files",
+                      "programs and shortcuts", "outputs", "5 MB",
+                      "a few other things (links, a .git folder, a Python environment or its cache, files the system makes, names another system cannot hold)",
+                      "in a chat that had read one of your sources", "held back until you choose Send it anyway",
+                      "looks like it holds a password or a token, nothing is sent", "listed here, with why, before anything goes"]:
             assert words in what, (words, what)
         assert "stay out of it" not in what
         assert github.state()["repos"]["ana/roads-qc"]["branches"] == {}, "a check sends nothing"
