@@ -603,14 +603,30 @@ export function clientName(c) {
   const known = {
     "claude-ai": "Claude desktop",
     "claude-code": "Claude Code",
-    // The app's own chat (the name its session gives itself), and the
-    // app's own settings pages.
+    // Columbus's own parts, by the names they write in the audit log: the
+    // app's chat (the name its session gives itself); its Settings and Data
+    // pages (a connection tested, notes drafted); its pages that read
+    // through Columbus (the Registry, a project's databases); its
+    // Documentation page (suggested notes, imports); a shared file opened
+    // in it; a workflow run by itself; the map and table beside a chat
+    // (a layer or rows read to draw them); the approvals page in the
+    // browser (what it reads, and a decision made there); and the server
+    // itself (settings read again, a run's results opened).
     "Columbus app": "Columbus's own chat",
     "columbus-chat": "Columbus's own chat",
     "columbus-app (settings)": "Columbus's Settings",
+    "columbus-app-page": "Columbus's own pages",
+    "columbus-app-documents": "Columbus's Documentation page",
+    "columbus-app-share": "Columbus's shared files",
+    "columbus-runner": "Columbus's workflow runs",
+    "companion-window (view)": "Columbus's map and table",
+    "companion-window (approve)": "Columbus's approvals page",
+    "approvals-page": "Columbus's approvals page",
+    columbus: "Columbus itself",
     "Visual Studio Code": "VS Code",
     "github-copilot": "GitHub Copilot",
     cursor: "Cursor",
   };
-  return known[c] || c;
+  // (Its own names only: a client may call itself anything, "constructor" included.)
+  return Object.prototype.hasOwnProperty.call(known, c) ? known[c] : c;
 }

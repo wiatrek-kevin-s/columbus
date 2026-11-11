@@ -464,7 +464,7 @@ The sidebar has, from the top: the Columbus mark and name, with a button that fo
 - **Documentation**: four tabs. **My notes** (the person's notes, with Mark reviewed), **Organization's pack** (the organization's context pack, read only), **Proposals** and **Import**. A note or a pack entry opens to read in the panel on the right.
 - **Workflows**: what cannot run until the person reads it (proposed workflows and tools), what runs by itself (scheduled workflows), and what runs when asked (other workflows, and installed tools). It links to **Tools**.
 - **Tools**: toolboxes (installed ones, Add tools, and a search over their tools; see [Toolboxes](#toolboxes)), then the person's own tools. **Skills** (the bundled skills, read only) is a page inside it.
-- **Activity**: one page. **Waiting for you** (requests across sessions, and workflows and tools to read), then **History** (the audit log in plain words with the line as written under it, quick views, filters and Verify, and the exports).
+- **Activity**: one page. **Waiting for you** (requests across sessions, and workflows and tools to read), then **History** (the audit log in plain words with the line as written under it, quick views, filters and Verify, and the exports). A line says which app made the call. Columbus's own parts are named in plain words, and the filter by app gives the name the log holds after each: **Columbus's own chat** (`Columbus app`), **Columbus's Settings** (`columbus-app (settings)`: a connection tested, notes drafted), **Columbus's own pages** (`columbus-app-page`: the Registry, a project's databases, the check of the notes), **Columbus's Documentation page** (`columbus-app-documents`), **Columbus's shared files** (`columbus-app-share`), **Columbus's workflow runs** (`columbus-runner`), **Columbus's map and table** (`companion-window (view)`: a layer or rows read to draw them), **Columbus's approvals page** (`companion-window (approve)` and `approvals-page`: the page in the browser, and a decision made there) and **Columbus itself** (`columbus`: settings read again, a run's results opened).
 
 **Settings** is one sheet over the page that is open, not a page of its own. When something was saved in it, the page under it is brought up to date as the sheet closes (a page the person has typed or chosen something on is left as it is). The AI service, model and thinking level set here are for new chats: a chat that has started keeps its service to its end, and the model and level it runs on, which are the ones its boxes show. Its first view holds how the assistant works (**Work freely on copies** or **Ask me before each script**, with the mode in force), the assistant (the AI service and its key, the model and thinking level for new chats), Python (where scripts run, other environments), the map (street background, light or dark appearance), this computer (where things are kept, whose policy is in force) and sync (the Git servers that are connected). Parts open inside it: **Assistant** (the AI service, its key and model, other services, how to connect other AI apps, the GIS engine), **Python environments**, **Privacy and files**, **Keyboard shortcuts**, **Git servers** ([Sync with GitHub and Gitea](#sync-with-github-and-gitea)) and **Organization rules** (the policy in force and its switches). The Workflows page says when schedules are not available on the system. The window offers only what works: the placeholders for parts Columbus has no backend for (Accounts and services, Work account and Agent app, organization and imported skills) were removed from it, and those features are still not built. Nothing in the window shows made-up data. Light and dark themes follow the system or the person's choice; the window is at least 1024 × 680. Earlier addresses still open the page that took their place (`#/connections` shows Data).
 
@@ -731,7 +731,7 @@ The build makes two programs: `columbus-mcp.exe` and `columbus-confine.exe`, the
 
 Any AI app that speaks MCP can use Columbus, with its own model and its own subscription. Add an entry for `columbus-mcp` to the app's own settings file, with the program's full path. The Columbus app shows each entry with this computer's own path, ready to copy (Settings › Assistant › **Use Columbus from another AI app**). The files below are as read on 2026-11-11; several of them changed during 2026.
 
-In VS Code with GitHub Copilot, and in the Copilot CLI (`~/.copilot/mcp-config.json`, or `.mcp.json` at the top of a workspace):
+GitHub Copilot in VS Code and the Copilot CLI read the same file (`~/.copilot/mcp-config.json`), so one entry serves both:
 
 ```json
 {
@@ -740,27 +740,28 @@ In VS Code with GitHub Copilot, and in the Copilot CLI (`~/.copilot/mcp-config.j
       "type": "stdio",
       "command": "C:\\path\\to\\columbus-mcp.exe",
       "args": [],
-      "env": { "COLUMBUS_PYTHON": "C:\\path\\to\\python.exe" },
       "tools": ["*"]
     }
   }
 }
 ```
 
+Where the GIS engine's Python is not in the folder the server looks in by itself, an entry also names it, after `args`: `"env": { "COLUMBUS_PYTHON": "C:\\path\\to\\python.exe" }` (in Codex's file, `env = { COLUMBUS_PYTHON = '…' }`). The app's page writes that line only then; otherwise an entry has no `env`.
+
 | App | File | Entry |
 | --- | --- | --- |
-| Claude desktop | `claude_desktop_config.json` (Windows `%APPDATA%\Claude\`, macOS `~/Library/Application Support/Claude/`), or the `.mcpb` file from a release, installed by a double-click | under `mcpServers`: `command`, `args`, `env`. Restart the app |
-| GitHub Copilot in VS Code | `~/.copilot/mcp-config.json`, or `.mcp.json` at the top of a workspace | as above (`"type": "stdio"`). The older `.vscode/mcp.json` is still read; there the entry goes under `servers` in place of `mcpServers`. On Copilot Business or Enterprise the organization must have turned on the policy "MCP servers in Copilot" |
-| GitHub Copilot CLI | `~/.copilot/mcp-config.json` | as above with `"type": "local"`, or `copilot mcp add columbus -- <path>` |
-| Visual Studio (2022 17.14 or later, 2026) | `%USERPROFILE%\.mcp.json`, or `.mcp.json` in a solution's folder | under `servers`: `"type": "stdio"`, `command`, `args`, `env` |
+| Claude desktop | `claude_desktop_config.json` (Windows `%APPDATA%\Claude\`, macOS `~/Library/Application Support/Claude/`), or the `.mcpb` file from a release, installed by a double-click | under `mcpServers`: `command`, `args`. Restart the app |
+| GitHub Copilot in VS Code | `~/.copilot/mcp-config.json`, or `.mcp.json` at the top of a workspace | as above (`"type": "stdio"`). The older `.vscode/mcp.json` is still read; there the entry goes under `servers` in place of `mcpServers`, without the `tools` line. On Copilot Business or Enterprise the organization must have turned on the policy "MCP servers in Copilot" |
+| GitHub Copilot CLI | `~/.copilot/mcp-config.json`, the file Copilot in VS Code reads | the same entry, as above (for `type` the CLI takes `"stdio"` or `"local"`, and `"local"` is what it assumes where none is written), or `copilot mcp add columbus -- <path>` |
+| Visual Studio (2022 17.14 or later, 2026) | `%USERPROFILE%\.mcp.json`, or `.mcp.json` in a solution's folder | under `servers`: `"type": "stdio"`, `command`, `args` |
 | JetBrains IDEs with GitHub Copilot | the `mcp.json` the Copilot plugin opens (Copilot icon, Open Chat, Agent mode, the tools icon, Add MCP Tools) | under `servers`: `command`, `args` |
-| Cursor | `~/.cursor/mcp.json`, or `.cursor/mcp.json` in a project | under `mcpServers`: `"type": "stdio"`, `command`, `args`, `env` |
+| Cursor | `~/.cursor/mcp.json`, or `.cursor/mcp.json` in a project | under `mcpServers`: `"type": "stdio"`, `command`, `args` |
 | Codex and ChatGPT desktop | `~/.codex/config.toml` | `[mcp_servers.columbus]` with `command = "<path>"` and `args = []`, or `codex mcp add columbus -- <path>`. Codex reads this file; OpenAI's documentation says the ChatGPT desktop app shares it. Columbus has not been tried with either |
-| Gemini CLI | `~/.gemini/settings.json`, or `.gemini/settings.json` in a project | under `mcpServers`: `command`, `args`, `env`, or `gemini mcp add -s user columbus <path>` |
-| Claude Code | `.mcp.json` at the top of a project | under `mcpServers`, or `claude mcp add --transport stdio columbus -- <path>` |
-| LM Studio | `~/.lmstudio/mcp.json` | under `mcpServers`: `command`, `args`, `env` |
+| Gemini CLI | `~/.gemini/settings.json`, or `.gemini/settings.json` in a project | under `mcpServers`: `command`, `args`, or `gemini mcp add -s user columbus <path>` |
+| Claude Code | `.mcp.json` at the top of a project | under `mcpServers`: `command`, `args`, or `claude mcp add --transport stdio columbus -- <path>` |
+| LM Studio | `~/.lmstudio/mcp.json` | under `mcpServers`: `command`, `args` |
 
-`env` is needed only where the GIS engine's Python is not in the folder the server looks in by itself. How approvals reach the person is the same for every app ([Connected MCP servers](#connected-mcp-servers)): Columbus asks in the app's own prompt, and when the app cannot ask, opens its local approvals page in the browser. Which of these apps show the prompt themselves was not checked for each one here.
+How approvals reach the person is the same for every app ([Connected MCP servers](#connected-mcp-servers)): Columbus asks in the app's own prompt, and when the app cannot ask, opens its local approvals page in the browser. Which of these apps show the prompt themselves was not checked for each one here.
 
 ### Where it looks
 

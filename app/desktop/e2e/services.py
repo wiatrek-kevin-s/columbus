@@ -682,10 +682,26 @@ def main():
         assert not d.find_elements(By.ID, "saved-service") and "2026" in head and "·" not in head, head
         reads_right(d, ".chatcol[aria-label='Saved chat']")
 
-        step("Activity names the app's own chat")
+        step("Activity names the app's own chat, and the map beside it, in plain words")
         d.execute_script("location.hash = '#/activity'")
         Wait(d, 30).until(lambda drv: "Columbus's own chat" in drv.execute_script("return document.querySelector('main').textContent"))
         assert "Columbus app ·" not in d.execute_script("return document.querySelector('main').textContent")
+        # No line names one of Columbus's own programs as the log writes it.
+        rows = d.execute_script("return document.getElementById('audit-rows').textContent")
+        for program in ("companion-window", "columbus-app", "columbus-runner", "columbus-chat", "approvals-page"):
+            assert program not in rows, f"the audit log's lines name a program, {program}: {rows}"
+        # The filter offers each by its plain name, with the log's own after
+        # it; the map and table beside the first chat read its layer to draw it.
+        d.find_element(By.ID, "audit-filter").click()
+        Wait(d, 10).until(lambda drv: drv.find_element(By.ID, "audit-client").is_displayed())
+        offered = dict(d.execute_script("return [...document.getElementById('audit-client').options].map(o => [o.value, o.textContent])"))
+        assert offered["Columbus app"] == "Columbus's own chat (Columbus app)", offered
+        assert offered["companion-window (view)"] == "Columbus's map and table (companion-window (view))", offered
+        choose(d, "audit-client", "companion-window (view)")
+        Wait(d, 10).until(lambda drv: (lambda t: "Columbus's map and table" in t and "Columbus's own chat" not in t)(
+            drv.execute_script("return document.getElementById('audit-rows').textContent")))
+        assert "companion-window" not in d.execute_script("return document.getElementById('audit-rows').textContent")
+        assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
 
         step("Removing the added service removes its key too")
         open_assistant(d)
@@ -716,20 +732,26 @@ def main():
             choose(d, "apps-pick", app)
             time.sleep(0.2)
             entries[app] = (d.find_element(By.ID, "apps-file").text, d.find_element(By.ID, "apps-entry").text,
-                            d.find_element(By.ID, "apps-command").get_attribute("textContent"))
+                            d.find_element(By.ID, "apps-command").get_attribute("textContent"),
+                            d.find_element(By.ID, "apps-notes").get_attribute("textContent"))
             assert str(GATEWAY) in entries[app][1], f"{app}: the entry holds this computer's path to columbus-mcp"
-        assert json.loads(entries["claude-desktop"][1]) == {"mcpServers": {"columbus": {"command": str(GATEWAY), "args": [], "env": {}}}}
+            # Nothing belongs in the environment here (the server finds its engine): the entry has no line for it.
+            assert "env" not in entries[app][1], f"{app}: {entries[app][1]}"
+            reads_right(d, "#other-apps")
+        assert json.loads(entries["claude-desktop"][1]) == {"mcpServers": {"columbus": {"command": str(GATEWAY), "args": []}}}
         assert entries["claude-desktop"][0].endswith("claude_desktop_config.json")
-        assert json.loads(entries["copilot-vscode"][1])["mcpServers"]["columbus"] == {"type": "stdio", "command": str(GATEWAY), "args": [], "env": {}, "tools": ["*"]}
+        assert json.loads(entries["copilot-vscode"][1])["mcpServers"]["columbus"] == {"type": "stdio", "command": str(GATEWAY), "args": [], "tools": ["*"]}
         assert "mcp-config.json" in entries["copilot-vscode"][0] and ".mcp.json" in entries["copilot-vscode"][0]
-        assert json.loads(entries["copilot-cli"][1])["mcpServers"]["columbus"]["type"] == "local"
-        assert json.loads(entries["visual-studio"][1]) == {"servers": {"columbus": {"type": "stdio", "command": str(GATEWAY), "args": [], "env": {}}}}
+        # The Copilot CLI reads the file Copilot in VS Code reads: the same entry, and each says so.
+        assert entries["copilot-cli"][1] == entries["copilot-vscode"][1] and entries["copilot-vscode"][0].startswith(entries["copilot-cli"][0])
+        assert "one entry serves both" in entries["copilot-cli"][3] and "one entry serves both" in entries["copilot-vscode"][3]
+        assert json.loads(entries["visual-studio"][1]) == {"servers": {"columbus": {"type": "stdio", "command": str(GATEWAY), "args": []}}}
         assert json.loads(entries["jetbrains"][1]) == {"servers": {"columbus": {"command": str(GATEWAY), "args": []}}}
-        assert json.loads(entries["cursor"][1])["mcpServers"]["columbus"]["type"] == "stdio" and ".cursor" in entries["cursor"][0]
+        assert json.loads(entries["cursor"][1])["mcpServers"]["columbus"] == {"type": "stdio", "command": str(GATEWAY), "args": []} and ".cursor" in entries["cursor"][0]
         assert entries["codex"][1] == f"[mcp_servers.columbus]\ncommand = '{GATEWAY}'\nargs = []" and entries["codex"][0].endswith("config.toml")
-        assert json.loads(entries["gemini-cli"][1])["mcpServers"]["columbus"]["command"] == str(GATEWAY) and "settings.json" in entries["gemini-cli"][0]
+        assert json.loads(entries["gemini-cli"][1]) == {"mcpServers": {"columbus": {"command": str(GATEWAY), "args": []}}} and "settings.json" in entries["gemini-cli"][0]
         assert entries["claude-code"][2] == f"claude mcp add --transport stdio columbus -- {GATEWAY}"
-        assert json.loads(entries["lm-studio"][1])["mcpServers"]["columbus"]["command"] == str(GATEWAY) and "mcp.json" in entries["lm-studio"][0]
+        assert json.loads(entries["lm-studio"][1]) == json.loads(entries["claude-desktop"][1]) and "mcp.json" in entries["lm-studio"][0]
         approvals = d.find_element(By.ID, "apps-approvals").text
         assert "opens its local approvals page in your browser" in approvals and "45 seconds" in approvals, approvals
         # Copy puts the entry on the clipboard: pasted back, it is the entry.
