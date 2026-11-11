@@ -65,11 +65,11 @@ fn engine() -> &'static str {
     "import geopandas, pyogrio, pyproj, shapely; assert hasattr(shapely, 'has_m')"
 }
 
+/// Whether this machine can set the sandbox up. Where CI says tests must
+/// not skip, a machine that cannot fails the test here, on every system
+/// (the one check in `support`).
 fn can_confine() -> bool {
-    Command::new(env!("CARGO_BIN_EXE_columbus-confine"))
-        .args(["--check", "A"])
-        .output()
-        .is_ok_and(|o| o.status.success())
+    support::can_confine(std::path::Path::new(env!("CARGO_BIN_EXE_columbus-confine")))
 }
 
 fn example(name: &str) -> PathBuf {

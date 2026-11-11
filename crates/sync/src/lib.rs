@@ -15,8 +15,10 @@
 //! * [`resolve`] settles a file that needs a look, as the person chose.
 //!
 //! What never syncs is decided in [`paths`] (refused paths, the ignore
-//! list, files over 5 MB) and [`secrets`] (a sync stops before sending
-//! anything that looks like a token or a key). The token is given to
+//! list, files over 5 MB), [`labels`] (a file that may hold data read
+//! from a source is held until the person chooses to send it) and
+//! [`secrets`] (a sync stops before sending anything that looks like a
+//! password, a token or a key). The token is given to
 //! [`remote::Server`] by the caller, is sent only to that server's host,
 //! and is never written, logged or put in an error by this crate.
 
@@ -26,6 +28,7 @@ pub mod engine;
 mod fsx;
 pub mod hash;
 pub mod host;
+pub mod labels;
 pub mod paths;
 mod plan;
 pub mod remote;
@@ -40,6 +43,7 @@ pub use engine::{
     Removed, Report, Side, What,
 };
 pub use host::{Change, Commit, EntryKind, Host, SendError, Tip, TreeEntry};
+pub use labels::{DataLabels, Held};
 pub use scan::MAX_FILES;
 pub use secrets::Finding;
 pub use state::{Conflict, ConflictKind, Link, Record, State, Synced};

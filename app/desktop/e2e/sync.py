@@ -14,7 +14,8 @@ What it walks through:
   message naming the key;
 * Settings > Git servers: the link to the server's token page, a wrong
   token, connecting (the account's name is shown), git-servers.yaml
-  without a token;
+  without a token; each server is asked what it is before the token is
+  sent to it;
 * a project's Sync section, on the GitHub stand-in: link to a new private
   repository, add a file, Sync, change the file on the server, Check for
   changes, What changed (before and after), Sync, a conflict settled each
@@ -23,6 +24,11 @@ What it walks through:
   columbus-project.yaml (shown, and applied only when accepted), a narrowed
   policy, Disconnect, and linking again by picking the repository from the
   list;
+* what stays here (R-103): a CSV, a connection file (.dsn) and a file the
+  assistant wrote after reading a source are not sent, are named on the
+  page with why, and the stand-in never receives them; the held file goes
+  only after Send it anyway, is held again once it changes, and has no such
+  choice where the organization's flow rules deny it;
 * the same start on the Gitea stand-in, where an arriving change to the
   shared settings is declined;
 * the token: in no file under the test's folders, in no line the app
@@ -72,6 +78,8 @@ APP_ID = "org.columbus-gis.desktop"
 # Made up for this run. The mark is in nothing else, so it can be searched for.
 MARK = "zq7k"
 TOKEN = f"{MARK}made{secrets.token_hex(12)}up"
+# In the files that must stay on this computer, and in nothing else.
+STAYS = "wv3x-stays-here"
 TODAY = datetime.date.today().isoformat()
 
 POLICY = "connection_types: [gpkg]\n{sync}"
@@ -157,6 +165,14 @@ class Server:
 
     def log(self, repo, branch="main"):
         return self.state()["repos"][f"ana/{repo}"]["branches"][branch]["log"]
+
+    def received(self, text):
+        """Whether the server was ever given `text`, in a file or in a path."""
+        req = urllib.request.Request(f"{self.test}/received", data=json.dumps({"text": text}).encode(),
+                                     headers={"content-type": "application/json"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            got = json.load(r)
+        return got["in_a_file"] or got["in_a_path"]
 
     def commit(self, repo, put=None, delete=None, message="A colleague's change", who="Cy"):
         body = json.dumps({"repo": repo, "put": put or {}, "delete": delete or [], "message": message, "who": who}).encode()
@@ -348,6 +364,10 @@ def main():
         said = text(d, "git-form-error")
         assert "did not accept the token" in said and MARK not in said, said
         assert not servers_file.exists(), "a server whose token was refused is not kept"
+        # R-104: the GitHub Enterprise Server was asked what it is first,
+        # without the token; only then was it asked whose token this is.
+        seen = github.state()["seen"]
+        assert [(r["path"], r["token"]) for r in seen] == [("/meta", "none"), ("/user", "other")], seen
         # The right token.
         box = d.find_element(By.ID, "git-token")
         box.clear()
@@ -402,20 +422,118 @@ def main():
         (files / "outputs").mkdir()
         (files / "outputs" / "result.csv").write_text("a,b\n1,2\n")
         (files / ".env").write_text("PGPASSWORD=never-synced\n")
+        # R-103: a table, a connection file, and a script the assistant
+        # wrote in a chat that had read a source (the server records that
+        # beside the files folder). None of the three may leave.
+        (files / "data").mkdir()
+        (files / "data" / "codes.csv").write_text(f"code,owner\n7,{STAYS} in the csv\n")
+        (files / "prod.dsn").write_text(f"[ODBC]\nSERVER=db.corp.example\nDESCRIPTION={STAYS} in the dsn\n")
+        (files / "scripts" / "summary.py").write_text(f"# {STAYS} in the held file\nprint('parcel 4471')\n")
+        labels = root / "projects" / "roads-qc" / "files-labels.json"
+        labels.write_text(json.dumps({"scripts/summary.py": ["connection:roads-prod"]}))
         check(d, wait, "2 changed here")
         here = text(d, "sync-here")
         assert "scripts/widths.py" in here and "columbus-project.yaml" in here, here
         assert "outputs/" in text(d, "sync-skipped") and ".env" in text(d, "sync-skipped"), text(d, "sync-skipped")
+        # The three are named under Not syncing, each with why, and are not
+        # among what a sync sends.
+        for kept in ["codes.csv", "prod.dsn", "summary.py"]:
+            assert kept not in here, f"{kept} is listed as a change a sync sends: {here}"
+        not_syncing = text(d, "sync-skipped")
+        assert "data/codes.csv: tables and databases are on the ignore list" in not_syncing, not_syncing
+        assert "prod.dsn: connection files are on the ignore list" in not_syncing, not_syncing
+        held = text(d, "sync-held")
+        assert "scripts/summary.py" in held and "it may hold data read from roads-prod" in held, held
+        assert "1 held back (it may hold data)" in text(d, "sync-status"), text(d, "sync-status")
+        assert d.execute_script("return document.getElementById('sync-skipped').open"), "a held file is not left folded away"
+        # The page says exactly what is sent and what is not.
+        what = text(d, "sync-what")
+        for words in ["with the project's name and instructions (the file columbus-project.yaml in it",
+                      "every changed file in it is sent, except these", "data files", "CSV", "password, key and connection files",
+                      "programs and shortcuts", "outputs", "5 MB",
+                      "a few other things (links, a .git folder, a Python environment or its cache, files the system makes, names another system cannot hold)",
+                      "in a chat that had read one of your sources", "held back until you choose Send it anyway",
+                      "looks like it holds a password or a token, nothing is sent", "listed here, with why, before anything goes"]:
+            assert words in what, (words, what)
+        assert "stay out of it" not in what
         assert github.state()["repos"]["ana/roads-qc"]["branches"] == {}, "a check sends nothing"
         assert not guard.unnamed(d), guard.unnamed(d)
         d.save_screenshot(str(OUT / "sync-changes.png"))
         report = sync(d, wait, "First version of the widths check")
         assert "Sent 2 changes" in report, report
+        assert "1 file was held back and not sent" in report and "scripts/summary.py" in report, report
         on_server = github.files("roads-qc")
         assert on_server["scripts/widths.py"] == "print('widths, v1')\n", on_server
         assert sorted(on_server) == ["columbus-project.yaml", "scripts/widths.py"], "data, keys and outputs stayed here"
+        assert not github.received(STAYS), "the server was given a file that must stay here"
+        for name in ["codes.csv", "prod.dsn", "summary.py", ".env", "result.csv"]:
+            assert not github.received(name), f"the server was given {name}"
         assert "Roads QC" in on_server["columbus-project.yaml"] and "miles" in on_server["columbus-project.yaml"]
         assert {c["message"] for c in github.log("roads-qc")} == {"First version of the widths check"}
+        assert "1 held back" in text(d, "sync-status") and "changed here" not in text(d, "sync-status"), text(d, "sync-status")
+
+        step("a held file: Show, Send it anyway, Don't send; held again once it changes; no choice where the rules deny it")
+
+        def held_button(label):
+            return d.find_elements(By.XPATH, f"//ul[@id='sync-held']//button[normalize-space()='{label}']")
+
+        # It can be looked at before it is sent.
+        click(d, By.XPATH, "//ul[@id='sync-held']//button[normalize-space()='Show']")
+        wait.until(lambda drv: "parcel 4471" in text(drv, "sync-preview-right"))
+        click(d, By.XPATH, "//dialog[@id='sync-preview-dialog']//button[normalize-space()='Close']")
+        # Where the organization's flow rules deny that source's data going
+        # to a Git server, there is no choice, on the page or in the app.
+        policy.write_text(POLICY.format(
+            sync="allow_sync: true\nflows:\n  - {from: ['connection:roads-prod'], to: ['git:*'], action: deny}\n"))
+        check(d, wait, "1 held back")
+        assert "your organization's rules do not let data from roads-prod go to this server" in text(d, "sync-held"), text(d, "sync-held")
+        assert not held_button("Send it anyway"), "a denied file is offered Send it anyway"
+        got, err = invoke(d, "sync_send_anyway", {"project": "roads-qc", "path": "scripts/summary.py", "send": True})
+        assert got is None and "do not allow it to be sent" in err, (got, err)
+        policy.write_text(POLICY.format(sync="allow_sync: true\n"))
+        check(d, wait, "1 held back")
+        # A file that is not held cannot be released this way either.
+        got, err = invoke(d, "sync_send_anyway", {"project": "roads-qc", "path": "data/codes.csv", "send": True})
+        assert got is None and "not among the held files" in err, (got, err)
+        # Send it anyway: it is now among what a sync sends, and says why it
+        # was held. Nothing has been sent yet.
+        assert not guard.unnamed(d), guard.unnamed(d)
+        d.save_screenshot(str(OUT / "sync-held.png"))
+        held_button("Send it anyway")[0].click()
+        wait.until(lambda drv: status_settled(drv) and "1 changed here" in text(drv, "sync-status"), text(d, "sync-error"))
+        here = text(d, "sync-here")
+        assert "scripts/summary.py" in here and "may hold data read from roads-prod; you chose to send it" in here, here
+        assert not github.received(STAYS), "choosing sends nothing"
+        # Taken back, and chosen again.
+        click(d, By.XPATH, "//ul[@id='sync-here']//button[normalize-space()=\"Don't send\"]")
+        wait.until(lambda drv: status_settled(drv) and "1 held back" in text(drv, "sync-status"), text(d, "sync-error"))
+        report = sync(d, wait)
+        assert "held back and not sent" in report and "Sent" not in report, report
+        assert not github.received(STAYS)
+        wait.until(lambda drv: held_button("Send it anyway"))
+        held_button("Send it anyway")[0].click()
+        wait.until(lambda drv: status_settled(drv) and "1 changed here" in text(drv, "sync-status"), text(d, "sync-error"))
+        report = sync(d, wait, "The summary script, which I looked at")
+        assert "Sent 1 change" in report and "held back" not in report, report
+        assert github.files("roads-qc")["scripts/summary.py"].startswith(f"# {STAYS} in the held file"), "the file the person chose was sent"
+        assert not github.received("in the csv") and not github.received("in the dsn"), "only the chosen file went"
+        assert "Everything is in sync" in text(d, "sync-status"), text(d, "sync-status")
+        # The file changes: the choice was for what it held, so it is held
+        # again, and the new text stays here.
+        (files / "scripts" / "summary.py").write_text("print('parcel 4472, a new row the person has not seen')\n")
+        check(d, wait, "1 held back")
+        assert "scripts/summary.py" in text(d, "sync-held") and held_button("Send it anyway")
+        report = sync(d, wait)
+        assert "held back and not sent" in report, report
+        assert not github.received("parcel 4472"), "a changed file went without being chosen again"
+        # The record gone and the file as the server has it: nothing is held.
+        labels.unlink()
+        (files / "scripts" / "summary.py").write_text(f"# {STAYS} in the held file\nprint('parcel 4471')\n")
+        check(d, wait, "Everything is in sync")
+        (files / "scripts" / "summary.py").unlink()
+        check(d, wait, "1 changed here")
+        sync(d, wait, "The summary script is not needed")
+        assert sorted(github.files("roads-qc")) == ["columbus-project.yaml", "scripts/widths.py"]
         assert "Everything is in sync" in text(d, "sync-status"), text(d, "sync-status")
 
         step("the file changes on the server: Check for changes, What changed, Sync")
@@ -641,10 +759,13 @@ def main():
         for s in (github, gitea):
             seen = s.state()["seen"]
             assert seen and all(r["host"].startswith(f"{host}:") for r in seen)
-            # Every request carried the token, but for Gitea's version (asked
-            # without one) and the one try with the wrong token, above.
+            # Every request carried the token, but for what each server is
+            # asked first without one (Gitea its version, the GitHub
+            # Enterprise Server what it is) and the one try with the wrong
+            # token, above.
             rest = [(r["path"], r["token"]) for r in seen if r["token"] != "ours"]
-            assert all(r in [("/version", "none"), ("/user", "other")] for r in rest), rest[:3]
+            assert all(r in [("/version", "none"), ("/meta", "none"), ("/user", "other")] for r in rest), rest[:3]
+            assert (seen[0]["path"], seen[0]["token"]) == (("/meta" if s is github else "/version"), "none"), seen[:2]
             assert rest.count(("/user", "other")) == (1 if s is github else 0), rest
             assert not any(r["forced"] for r in seen), "nothing was ever forced"
             assert all(r["agent"].startswith("columbus-sync/") for r in seen), seen[0]["agent"]

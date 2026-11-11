@@ -1,7 +1,8 @@
 //! GitHub and GitHub Enterprise Server, through the REST API (version
 //! 2022-11-28, which every supported GitHub Enterprise Server also has).
 //!
-//! Reading: `GET /user`, `/user/repos`, `/repos/{o}/{r}`, its `/branches`,
+//! Reading: `GET /meta` (a GitHub Enterprise Server, asked what it is
+//! without the token), `/user`, `/user/repos`, `/repos/{o}/{r}`, its `/branches`,
 //! `/git/ref/heads/{branch}`, `/git/trees/{commit}?recursive=1`,
 //! `/git/blobs/{id}` and `/commits`.
 //!
@@ -33,6 +34,40 @@ const INLINE_MAX: usize = 256 * 1024;
 /// One tree call carries at most this much text, and this many paths.
 const TREE_BYTES: usize = 2 * 1024 * 1024;
 const TREE_PATHS: usize = 400;
+
+/// Whether the address is a GitHub Enterprise Server's, asked without the
+/// token (`GET /meta`), so that a mistyped address never receives it
+/// (R-104). A GitHub Enterprise Server names itself in whatever it
+/// answers: `/meta` says its `installed_version`; one that makes everyone
+/// sign in first (private mode) refuses, and its refusal carries GitHub's
+/// headers (`X-GitHub-Enterprise-Version`, `X-GitHub-Request-Id`) and the
+/// address of GitHub's documentation. Anything else is not one.
+pub(super) async fn check_server(http: &Http) -> Result<(), Error> {
+    let reply = http.call(Method::GET, &["meta"], &[], None, false).await?;
+    let header = |name: &str| reply.headers.contains_key(name);
+    let body: Value = serde_json::from_slice(&reply.body).unwrap_or(Value::Null);
+    let says_github = header("x-github-enterprise-version")
+        || header("x-github-request-id")
+        || header("x-github-media-type")
+        || reply
+            .headers
+            .get("server")
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|s| s.eq_ignore_ascii_case("github.com"))
+        || body.get("installed_version").is_some()
+        || body.get("verifiable_password_authentication").is_some()
+        || body["documentation_url"]
+            .as_str()
+            .is_some_and(|u| u.contains("docs.github.com") || u.contains("developer.github.com"));
+    if says_github {
+        Ok(())
+    } else {
+        Err(Error::NotFound(format!(
+            "{} did not answer as a GitHub Enterprise Server does. Check the address (for github.com itself choose GitHub; for a server under a path, include the path). Your token was not sent.",
+            http.host
+        )))
+    }
+}
 
 pub(super) async fn whoami(http: &Http) -> Result<Account, Error> {
     let reply = http.get(&["user"], &[]).await?;

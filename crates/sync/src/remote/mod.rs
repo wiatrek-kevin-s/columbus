@@ -228,13 +228,17 @@ impl Server {
         self
     }
 
-    /// Whether the server is one Columbus can sync with. For Gitea and
-    /// Forgejo this asks the server its version, without the token, and
-    /// refuses one older than 1.20 with a message naming it (A-9). So a
-    /// wrong address is found before the token is sent anywhere.
+    /// Whether the server is one Columbus can sync with, asked without the
+    /// token, so that a wrong address is found before the token is sent
+    /// anywhere. Gitea and Forgejo are asked their version, and one older
+    /// than 1.20 is refused with a message naming it (A-9). A GitHub
+    /// Enterprise Server is asked what it is (`/api/v3/meta`). GitHub
+    /// itself is one fixed address (`api.github.com`), so there is nothing
+    /// to ask.
     pub async fn check(&self) -> Result<(), Error> {
         match self.http.kind {
-            Kind::GitHub => Ok(()),
+            Kind::GitHub if self.http.host == "github.com" => Ok(()),
+            Kind::GitHub => github::check_server(&self.http).await,
             Kind::Gitea => gitea::check_version(&self.http).await,
         }
     }

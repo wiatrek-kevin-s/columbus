@@ -2,7 +2,7 @@
 // plain words and in full before you approve it, which is confirmed at the
 // keyboard in the app's own code; their schedules; Run now; and every run's
 // report. Your workflows are yours alone: nothing here is shared.
-import { $, h, el, icon, invoke, store, button, pageHead, placeHead, sec, menuButton, showError, when, shortWhen, plural, numbered, emptyState } from "../core.js";
+import { $, h, el, icon, invoke, store, button, pageHead, placeHead, sec, menuButton, showError, when, shortWhen, plural, numbered, emptyState, CANNOT_CONFIRM, cannotConfirm } from "../core.js";
 import { switchRow } from "./settings.js";
 import { shareOut, shareIn, importedText } from "./share.js";
 import { markdown } from "./chats.js";
@@ -369,7 +369,9 @@ export async function render(main, rest) {
     showError($("wf-review-error"), null);
     const inst = $("wf-review-install");
     inst.disabled = !state.allowed;
-    inst.title = state.allowed ? `Approve it (asks for ${store.info ? store.info.confirm_with : "confirmation"})` : "Workflows are turned off in your organization's settings";
+    inst.title = !state.allowed ? "Workflows are turned off in your organization's settings"
+      : cannotConfirm(store.info) ? `Approve it. ${CANNOT_CONFIRM}, so a workflow cannot be approved here.`
+        : `Approve it (asks for ${store.info ? store.info.confirm_with : "confirmation"})`;
     inst.onclick = () => install(after);
     $("wf-review-decline").onclick = () => reviewing && decline(reviewing.id, after);
     d.showModal();

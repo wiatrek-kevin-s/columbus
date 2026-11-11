@@ -29,18 +29,19 @@ use windows_sys::Win32::Foundation::{
 use windows_sys::Win32::Security::Authorization::{
     ConvertStringSecurityDescriptorToSecurityDescriptorW, ConvertStringSidToSidW,
     GetEffectiveRightsFromAclW, GetNamedSecurityInfoW, SetEntriesInAclW, SetNamedSecurityInfoW,
-    EXPLICIT_ACCESS_W, GRANT_ACCESS, NO_MULTIPLE_TRUSTEE, SE_FILE_OBJECT, TRUSTEE_IS_SID,
-    TRUSTEE_IS_WELL_KNOWN_GROUP, TRUSTEE_W,
+    EXPLICIT_ACCESS_W, GRANT_ACCESS, NO_MULTIPLE_TRUSTEE, REVOKE_ACCESS, SE_FILE_OBJECT,
+    TRUSTEE_IS_SID, TRUSTEE_IS_WELL_KNOWN_GROUP, TRUSTEE_W,
 };
 use windows_sys::Win32::Security::Isolation::{
     CreateAppContainerProfile, DeriveAppContainerSidFromAppContainerName,
 };
 use windows_sys::Win32::Security::{
-    AddMandatoryAce, CreateRestrictedToken, CreateWellKnownSid, FreeSid, GetLengthSid,
-    InitializeAcl, SetTokenInformation, TokenIntegrityLevel, WinCapabilityInternetClientSid, ACL,
-    ACL_REVISION, CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION, DISABLE_MAX_PRIVILEGE,
-    LABEL_SECURITY_INFORMATION, OBJECT_INHERIT_ACE, PSECURITY_DESCRIPTOR, PSID,
-    SECURITY_ATTRIBUTES, SECURITY_CAPABILITIES, SECURITY_MAX_SID_SIZE, SID_AND_ATTRIBUTES,
+    AclSizeInformation, AddMandatoryAce, CreateRestrictedToken, CreateWellKnownSid, EqualSid,
+    FreeSid, GetAce, GetAclInformation, GetLengthSid, InitializeAcl, SetTokenInformation,
+    TokenIntegrityLevel, WinCapabilityInternetClientSid, ACCESS_ALLOWED_ACE, ACE_HEADER, ACL,
+    ACL_REVISION, ACL_SIZE_INFORMATION, CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION,
+    DISABLE_MAX_PRIVILEGE, LABEL_SECURITY_INFORMATION, OBJECT_INHERIT_ACE, PSECURITY_DESCRIPTOR,
+    PSID, SECURITY_ATTRIBUTES, SECURITY_CAPABILITIES, SECURITY_MAX_SID_SIZE, SID_AND_ATTRIBUTES,
     SUB_CONTAINERS_AND_OBJECTS_INHERIT, TOKEN_ADJUST_DEFAULT, TOKEN_ASSIGN_PRIMARY,
     TOKEN_DUPLICATE, TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
 };
@@ -319,6 +320,142 @@ fn grant(path: &Path, sid: PSID, access: u32) -> Result<(), Error> {
     };
     unsafe { LocalFree(sd as HLOCAL) };
     result
+}
+
+/// How many entries of the list `dacl` allow `sid` something: those made
+/// for it on the object itself, and those the object has from its folder.
+/// The list is only read.
+///
+/// # Safety
+/// `dacl` is null or a list Windows gave (`GetNamedSecurityInfoW`) that
+/// has not been freed, and `sid` is a valid SID.
+unsafe fn entries_for(dacl: *const ACL, sid: PSID) -> u32 {
+    // (`ACCESS_ALLOWED_ACE_TYPE`.)
+    const ALLOWED: u8 = 0;
+    if dacl.is_null() {
+        return 0;
+    }
+    let mut info: ACL_SIZE_INFORMATION = std::mem::zeroed();
+    let read = GetAclInformation(
+        dacl,
+        &mut info as *mut ACL_SIZE_INFORMATION as *mut core::ffi::c_void,
+        std::mem::size_of::<ACL_SIZE_INFORMATION>() as u32,
+        AclSizeInformation,
+    );
+    if read == 0 {
+        return 0;
+    }
+    let mut found = 0;
+    for i in 0..info.AceCount {
+        let mut ace: *mut core::ffi::c_void = null_mut();
+        if GetAce(dacl, i, &mut ace) == 0 || ace.is_null() {
+            continue;
+        }
+        if (*(ace as *const ACE_HEADER)).AceType != ALLOWED {
+            continue;
+        }
+        // An entry that allows: its header, the rights, then the SID.
+        let whose = std::ptr::addr_of!((*(ace as *const ACCESS_ALLOWED_ACE)).SidStart) as PSID;
+        if EqualSid(whose, sid) != 0 {
+            found += 1;
+        }
+    }
+    found
+}
+
+/// Take back what [`grant`] gave `sid` on `path` (and, for a folder, on
+/// everything in it): the mirror of the grant. The entries made for `sid`
+/// are removed and nothing else is changed; a path with no entry for
+/// `sid` is not written to at all.
+fn revoke(path: &Path, sid: PSID) -> Result<(), Error> {
+    let wpath = wide(path);
+    let mut dacl: *mut ACL = null_mut();
+    let mut sd: PSECURITY_DESCRIPTOR = null_mut();
+    let r = unsafe {
+        GetNamedSecurityInfoW(
+            wpath.as_ptr(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            null_mut(),
+            null_mut(),
+            &mut dacl,
+            null_mut(),
+            &mut sd,
+        )
+    };
+    if r != 0 {
+        return Err(Error::Setup(format!(
+            "reading the permissions of {}: error {r}",
+            path.display()
+        )));
+    }
+    let result = if unsafe { entries_for(dacl, sid) } == 0 {
+        Ok(())
+    } else {
+        // REVOKE_ACCESS removes every entry that allows `sid` something;
+        // the rights and the inheritance named here are not looked at.
+        let ea = EXPLICIT_ACCESS_W {
+            grfAccessPermissions: 0,
+            grfAccessMode: REVOKE_ACCESS,
+            grfInheritance: 0,
+            Trustee: trustee(sid),
+        };
+        let mut new_dacl: *mut ACL = null_mut();
+        let r = unsafe { SetEntriesInAclW(1, &ea, dacl, &mut new_dacl) };
+        if r != 0 {
+            Err(Error::Setup(format!("SetEntriesInAcl: error {r}")))
+        } else {
+            let r = unsafe {
+                SetNamedSecurityInfoW(
+                    wpath.as_ptr(),
+                    SE_FILE_OBJECT,
+                    DACL_SECURITY_INFORMATION,
+                    null_mut(),
+                    null_mut(),
+                    new_dacl,
+                    null(),
+                )
+            };
+            unsafe { LocalFree(new_dacl as HLOCAL) };
+            if r != 0 {
+                Err(Error::Setup(format!(
+                    "taking back access to {}: error {r}",
+                    path.display()
+                )))
+            } else {
+                Ok(())
+            }
+        }
+    };
+    unsafe { LocalFree(sd as HLOCAL) };
+    result
+}
+
+/// Take back the permissions the profile `name` was given on `paths` when
+/// programs were launched under it (see [`launch`]: the read-only folders,
+/// the program's own folder among them). For when what ran under that
+/// profile is removed for good. Paths that are gone are passed over; every
+/// path is tried, and the first failure is the one reported.
+pub fn forget(name: &str, paths: &[PathBuf]) -> Result<(), Error> {
+    // The profile's SID follows from its name alone: no profile is made
+    // here, and one that never was is no error.
+    let wname = wide(format!("columbus.{name}"));
+    let mut sid: PSID = null_mut();
+    let hr = unsafe { DeriveAppContainerSidFromAppContainerName(wname.as_ptr(), &mut sid) };
+    if hr < 0 {
+        return Err(Error::Setup(format!(
+            "DeriveAppContainerSidFromAppContainerName: HRESULT {hr:#x}"
+        )));
+    }
+    let sid = Sid::Free(sid);
+    let _setup = SetupLock::take();
+    let mut failed = None;
+    for p in paths.iter().filter(|p| p.exists()) {
+        if let Err(e) = revoke(p, sid.ptr()) {
+            failed.get_or_insert(e);
+        }
+    }
+    failed.map_or(Ok(()), Err)
 }
 
 /// Label `path` (inherited by everything in it) low integrity, so a level C
@@ -731,7 +868,73 @@ pub fn launch(spec: &Spec, program: &str, args: &[String]) -> Result<i32, Error>
 
 #[cfg(test)]
 mod tests {
-    use super::quote_arg;
+    use super::*;
+
+    /// How many entries of `path`'s permissions allow `sid` something.
+    fn entries(path: &Path, sid: PSID) -> u32 {
+        let wpath = wide(path);
+        let mut dacl: *mut ACL = null_mut();
+        let mut sd: PSECURITY_DESCRIPTOR = null_mut();
+        let r = unsafe {
+            GetNamedSecurityInfoW(
+                wpath.as_ptr(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                null_mut(),
+                null_mut(),
+                &mut dacl,
+                null_mut(),
+                &mut sd,
+            )
+        };
+        assert_eq!(r, 0, "reading the permissions of {}", path.display());
+        let n = unsafe { entries_for(dacl, sid) };
+        unsafe { LocalFree(sd as HLOCAL) };
+        n
+    }
+
+    /// The read permission a launch writes onto a program's folder is
+    /// taken back by `forget`, from the folder and from what is in it, and
+    /// the person's own access is as it was (R-104).
+    #[test]
+    fn what_a_launch_granted_on_a_folder_is_taken_back() {
+        let d = tempfile::tempdir().unwrap();
+        let folder = d.path().join("linetool");
+        std::fs::create_dir_all(folder.join("data")).unwrap();
+        let program = folder.join("linetool.exe");
+        let inner = folder.join("data").join("grid.txt");
+        std::fs::write(&program, b"program").unwrap();
+        std::fs::write(&inner, b"grid").unwrap();
+        let name = "test.forget";
+        let container = app_container(name).unwrap();
+        let all = [folder.clone(), program.clone(), inner.clone()];
+        for p in &all {
+            assert_eq!(entries(p, container.ptr()), 0, "{}", p.display());
+        }
+        // What a launch does for a program's folder.
+        grant(
+            &folder,
+            container.ptr(),
+            FILE_GENERIC_READ | FILE_GENERIC_EXECUTE,
+        )
+        .unwrap();
+        for p in &all {
+            assert!(entries(p, container.ptr()) > 0, "{}", p.display());
+        }
+        // Taken back, from the folder and from everything in it. A path
+        // that is gone is passed over.
+        forget(name, &[folder.clone(), d.path().join("gone")]).unwrap();
+        for p in &all {
+            assert_eq!(entries(p, container.ptr()), 0, "{}", p.display());
+        }
+        // The person's own access is untouched, and twice is fine, as is a
+        // profile that never launched anything.
+        std::fs::write(&program, b"changed").unwrap();
+        assert_eq!(std::fs::read(&program).unwrap(), b"changed");
+        assert_eq!(std::fs::read(&inner).unwrap(), b"grid");
+        forget(name, std::slice::from_ref(&folder)).unwrap();
+        forget("test.never-launched", &[folder]).unwrap();
+    }
 
     #[test]
     fn quoting_matches_the_c_runtime() {

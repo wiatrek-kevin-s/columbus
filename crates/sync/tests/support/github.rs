@@ -6,6 +6,12 @@
 //! The endpoints Columbus uses, with the answers and refusals GitHub
 //! documents for them:
 //!
+//! * `GET /meta`, which a GitHub Enterprise Server answers without a
+//!   token (its `installed_version`), or refuses like everything else when
+//!   it is in private mode; and the `X-GitHub-Enterprise-Version` header
+//!   such a server puts on every API answer. (These two are written from
+//!   how GitHub Enterprise Server is known to answer, not re-read from its
+//!   documentation: docs.github.com could not be reached on 2026-11-11.)
 //! * `GET /user`, `GET|POST /user/repos`, `GET /repos/{o}/{r}`,
 //!   `GET /repos/{o}/{r}/branches`, `GET /repos/{o}/{r}/commits`;
 //! * the Git database: `GET /git/ref/heads/{branch}`,
@@ -89,8 +95,24 @@ fn commit_json(id: &str, repo: &Repo) -> Value {
     })
 }
 
-/// Answer one request to the API under `prefix`.
+/// The version this stand-in says it is, as a GitHub Enterprise Server.
+const ENTERPRISE_VERSION: &str = "3.14.2";
+
+/// Answer one request to the API under `prefix`. Under a prefix it is a
+/// GitHub Enterprise Server, which names its version in a header of every
+/// API answer (`X-GitHub-Enterprise-Version`).
 pub async fn respond(world: Shared, prefix: &str, req: Request) -> Response {
+    let mut response = respond_as_github(world, prefix, req).await;
+    if !prefix.is_empty() {
+        response.headers_mut().insert(
+            "x-github-enterprise-version",
+            axum::http::HeaderValue::from_static(ENTERPRISE_VERSION),
+        );
+    }
+    response
+}
+
+async fn respond_as_github(world: Shared, prefix: &str, req: Request) -> Response {
     let method = req.method().to_string();
     let (headers, path, query, body) = match arrive(&world, prefix, req).await {
         Ok(x) => x,
@@ -105,7 +127,20 @@ pub async fn respond(world: Shared, prefix: &str, req: Request) -> Response {
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
         .map(str::to_string);
-    let Some(login) = token.as_ref().and_then(|t| w.tokens.get(t).cloned()) else {
+    let known = token.as_ref().and_then(|t| w.tokens.get(t).cloned());
+    // What the server is, which a GitHub Enterprise Server says without a
+    // token (`GET /meta`), unless everyone must sign in first (private
+    // mode): then it refuses, as it refuses every request without one.
+    if method == "GET" && path.trim_matches('/') == "meta" {
+        if known.is_none() && w.knobs.private_mode {
+            return error(401, "Must authenticate to access this API.");
+        }
+        return answer(
+            200,
+            json!({"verifiable_password_authentication": true, "installed_version": ENTERPRISE_VERSION}),
+        );
+    }
+    let Some(login) = known else {
         return error(401, "Bad credentials");
     };
     let may_write = !token

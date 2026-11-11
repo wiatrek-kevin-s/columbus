@@ -1449,7 +1449,7 @@ async function showSession(main, session) {
       for (const l of lines) {
         const t = new Date(l.ts);
         const bits = [describe(l.tool, { dataset: l.dataset, connection: l.connection, reason: l.reason })];
-        if (l.rows != null) bits.push(`${Number(l.rows).toLocaleString()} rows`);
+        if (l.rows != null) bits.push(plural(Number(l.rows), "row"));
         const dec = l.decision === "allowed" ? null : l.decision;
         acts.append(h("li", {}, h("span", { class: "t" }, isNaN(+t) ? "" : t.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })),
           h("span", { class: "d" }, bits.join(" · "), dec ? " " : null, dec ? el("span", `badge ${dec === "denied" || dec === "error" ? "fail" : "warn"}`, dec.replace(/_/g, " ")) : null,

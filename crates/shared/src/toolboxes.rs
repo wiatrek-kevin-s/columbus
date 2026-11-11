@@ -489,6 +489,259 @@ pub fn program_inside(dir: &Path, tb: &Toolbox) -> bool {
     program.starts_with(&folder) || real(program).starts_with(real(folder))
 }
 
+// ---------- where a program the person adds may sit ----------
+
+/// The places whose files are not a toolbox's to read. A toolbox's tools
+/// can read every file in the program's own folder (the sandbox opens that
+/// folder to them), so a program the person adds must sit in a folder of
+/// its own, not in one of these.
+#[derive(Debug, Clone, Default)]
+pub struct WidePlaces {
+    /// The person's home folder, by each path it is known by (as the
+    /// system names it, and with links followed).
+    pub homes: Vec<PathBuf>,
+    /// Folders the system keeps for itself or for everyone: a program
+    /// directly in one is refused.
+    pub system: Vec<PathBuf>,
+    /// Folders that are the system's all the way down.
+    pub system_trees: Vec<PathBuf>,
+    /// Columbus's own folders (its settings, its connections).
+    pub columbus: Vec<PathBuf>,
+}
+
+/// The person's own top folders, by the names they have on disk on
+/// Windows and macOS (and on most Linux desktops).
+const PERSONAL: &[&str] = &[
+    "desktop",
+    "documents",
+    "downloads",
+    "pictures",
+    "music",
+    "videos",
+    "movies",
+];
+
+impl WidePlaces {
+    /// As they are on this computer.
+    pub fn here() -> WidePlaces {
+        let dirs = |names: &[&str]| names.iter().map(PathBuf::from).collect::<Vec<_>>();
+        let (mut system, system_trees) = if cfg!(windows) {
+            let named = [
+                "ProgramFiles",
+                "ProgramFiles(x86)",
+                "ProgramW6432",
+                "ProgramData",
+                "PUBLIC",
+                "APPDATA",
+                "LOCALAPPDATA",
+            ];
+            (
+                named
+                    .iter()
+                    .filter_map(|v| crate::paths::env_path(v))
+                    .collect(),
+                vec![crate::paths::env_path("SystemRoot")
+                    .unwrap_or_else(|| PathBuf::from(r"C:\Windows"))],
+            )
+        } else {
+            (
+                dirs(&[
+                    "/bin",
+                    "/sbin",
+                    "/usr",
+                    "/usr/bin",
+                    "/usr/sbin",
+                    "/usr/lib",
+                    "/usr/libexec",
+                    "/usr/local",
+                    "/usr/local/bin",
+                    "/usr/local/sbin",
+                    "/lib",
+                    "/lib64",
+                    "/etc",
+                    "/opt",
+                    "/opt/homebrew/bin",
+                    "/snap/bin",
+                    "/var",
+                    "/tmp",
+                    "/var/tmp",
+                    "/private/etc",
+                    "/private/tmp",
+                    "/private/var/tmp",
+                    "/home",
+                    "/Users",
+                    "/Applications",
+                    "/Library",
+                ]),
+                dirs(&["/System", "/proc", "/sys", "/dev"]),
+            )
+        };
+        system.push(std::env::temp_dir());
+        let (org, settings, data) = crate::paths::platform_dirs();
+        // Each place as it is named and as it really is: a program's path
+        // is compared with links followed (on a Mac /tmp is /private/tmp,
+        // and a home folder may be a link), and on Windows with short
+        // names written out.
+        let both = |places: Vec<PathBuf>| -> Vec<PathBuf> {
+            let mut out = Vec::new();
+            for p in places {
+                if let Ok(real) = p.canonicalize() {
+                    if path_key(&real) != path_key(&p) {
+                        out.push(real);
+                    }
+                }
+                out.push(p);
+            }
+            out
+        };
+        WidePlaces {
+            homes: both(
+                std::env::home_dir()
+                    .filter(|h| h.is_absolute())
+                    .into_iter()
+                    .collect(),
+            ),
+            system: both(system),
+            system_trees: both(system_trees),
+            columbus: both(vec![org, settings, data, crate::paths::connections_dir()]),
+        }
+    }
+}
+
+/// A path's parts for comparing: letter case aside (Windows and macOS do
+/// not tell `Downloads` from `downloads`), and a Windows path the long way
+/// (`\\?\C:\…`) the same as the short.
+fn path_key(p: &Path) -> Vec<String> {
+    use std::path::Component as C;
+    p.components()
+        .filter_map(|c| match c {
+            C::Prefix(pre) => {
+                let s = pre.as_os_str().to_string_lossy().to_lowercase();
+                let s = s
+                    .strip_prefix(r"\\?\unc\")
+                    .map(|r| format!(r"\\{r}"))
+                    .unwrap_or(s);
+                Some(s.strip_prefix(r"\\?\").unwrap_or(&s).to_string())
+            }
+            C::RootDir => Some("/".into()),
+            C::CurDir => None,
+            C::ParentDir => Some("..".into()),
+            C::Normal(n) => Some(n.to_string_lossy().to_lowercase()),
+        })
+        .collect()
+}
+
+/// What the folder with the parts `key` is to the home folder `home`, when
+/// it is one of the person's own wide places.
+fn in_home(key: &[String], home: &Path) -> Option<String> {
+    let home_key = path_key(home);
+    // `inner` is `outer` or inside it.
+    let within = |inner: &[String], outer: &[String]| inner.starts_with(outer);
+    if key == home_key {
+        return Some("your home folder".into());
+    }
+    if within(&home_key, key) {
+        return Some("a folder that holds your home folder".into());
+    }
+    let name = key.last().map(String::as_str).unwrap_or("");
+    let personal = |n: &str| PERSONAL.contains(&n);
+    let said = |n: &str| {
+        let mut c = n.chars();
+        let first = c.next().map(|f| f.to_uppercase().to_string());
+        format!("your {}{} folder", first.unwrap_or_default(), c.as_str())
+    };
+    // Directly in the home folder: Desktop, Documents, Downloads…, or a
+    // OneDrive folder (where Windows often keeps the first two).
+    if key.len() == home_key.len() + 1 && within(key, &home_key) {
+        if personal(name) {
+            return Some(said(name));
+        }
+        if name.starts_with("onedrive") {
+            return Some("your OneDrive folder".into());
+        }
+    }
+    if key.len() == home_key.len() + 2
+        && within(key, &home_key)
+        && key[home_key.len()].starts_with("onedrive")
+        && personal(name)
+    {
+        return Some(format!("{} in OneDrive", said(name)));
+    }
+    if key == path_key(&home.join("Library/Mobile Documents/com~apple~CloudDocs")) {
+        return Some("your iCloud Drive folder".into());
+    }
+    None
+}
+
+/// What the folder `folder` is, when it is one a toolbox's program may not
+/// be added from.
+fn wide_folder(folder: &Path, places: &WidePlaces) -> Option<String> {
+    let key = path_key(folder);
+    let is = |other: &Path| path_key(other) == key;
+    // `inner` is `outer` or inside it.
+    let within = |inner: &[String], outer: &[String]| inner.starts_with(outer);
+    if folder.parent().is_none() || key.last().is_some_and(|l| l == "/") {
+        return Some("the top of a drive".into());
+    }
+    if let Some(what) = places.homes.iter().find_map(|home| in_home(&key, home)) {
+        return Some(what);
+    }
+    if places.system.iter().any(|s| is(s))
+        || places
+            .system_trees
+            .iter()
+            .any(|t| within(&key, &path_key(t)))
+    {
+        return Some("a folder the system keeps for itself or for every program".into());
+    }
+    if places.columbus.iter().any(|c| {
+        let c = path_key(c);
+        !c.is_empty() && (within(&key, &c) || within(&c, &key))
+    }) {
+        return Some("one of Columbus's own folders".into());
+    }
+    None
+}
+
+/// Why a program may not be added as a toolbox from the folder it sits in,
+/// in words for the person; `None` when the folder is fine. `program` is
+/// the program's full path.
+pub fn program_folder_problem_in(program: &Path, places: &WidePlaces) -> Option<String> {
+    let folder = program.parent()?;
+    // The folder as it is given, then as it really is (links followed; on
+    // Windows, short names written out): a place may be known by either.
+    // The disk is asked only when the name alone does not settle it.
+    let what = wide_folder(folder, places).or_else(|| {
+        let real = folder.canonicalize().ok()?;
+        wide_folder(&real, places)
+    })?;
+    Some(format!(
+        "{} is directly in {what} ({}). A toolbox's tools can read every file in the program's folder, so the program needs a folder of its own: make a new folder that holds only the program and what it needs, move it there, and add it from there",
+        program.display(),
+        folder.display()
+    ))
+}
+
+/// The same, for the places of this computer.
+pub fn program_folder_problem(program: &Path) -> Option<String> {
+    program_folder_problem_in(program, &WidePlaces::here())
+}
+
+/// What the person is told a toolbox's tools will be able to read, before
+/// they confirm: the program's own folder, and the folders they named.
+pub fn reads_words(program: &Path, reads: &[String]) -> String {
+    let folder = program
+        .parent()
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+    let more = if reads.is_empty() {
+        String::new()
+    } else {
+        format!(", and in {}", reads.join(", "))
+    };
+    format!("Its tools will be able to read every file in the program's folder, {folder}{more}. Keep nothing there that they should not read")
+}
+
 /// Remove a toolbox: its folder goes (with the program, when Columbus
 /// installed it there). A program the person added from elsewhere is left
 /// where it is. Returns whether the program went with it.
@@ -2121,6 +2374,218 @@ pub fn count_words(n: usize) -> String {
         out.push(c);
     }
     out
+}
+
+#[cfg(test)]
+mod program_folder_tests {
+    use super::*;
+
+    /// A made-up computer, with the separators of the system the test runs
+    /// on: a home folder, two system folders, Columbus's settings.
+    fn places(root: &Path) -> WidePlaces {
+        WidePlaces {
+            homes: vec![root.join("Users").join("ana")],
+            system: vec![root.join("Program Files"), root.join("tmp")],
+            system_trees: vec![root.join("Windows")],
+            columbus: vec![root
+                .join("Users")
+                .join("ana")
+                .join("AppData")
+                .join("Columbus")],
+        }
+    }
+
+    #[test]
+    fn a_program_must_sit_in_a_folder_of_its_own() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path();
+        let p = places(root);
+        let home = root.join("Users").join("ana");
+        let exe = |folder: PathBuf| folder.join("linetool.exe");
+        for (folder, what) in [
+            (home.clone(), "your home folder"),
+            (home.join("Desktop"), "your Desktop folder"),
+            (home.join("Documents"), "your Documents folder"),
+            (home.join("Downloads"), "your Downloads folder"),
+            (home.join("downloads"), "your Downloads folder"),
+            (home.join("DOWNLOADS"), "your Downloads folder"),
+            (home.join("Pictures"), "your Pictures folder"),
+            (home.join("OneDrive"), "your OneDrive folder"),
+            (home.join("OneDrive - County"), "your OneDrive folder"),
+            (
+                home.join("OneDrive").join("Documents"),
+                "your Documents folder in OneDrive",
+            ),
+            (
+                home.join("OneDrive - County").join("Desktop"),
+                "your Desktop folder in OneDrive",
+            ),
+            (root.join("Users"), "a folder that holds your home folder"),
+            (root.to_path_buf(), "a folder that holds your home folder"),
+            (root.join("Program Files"), "the system keeps"),
+            (root.join("tmp"), "the system keeps"),
+            (root.join("Windows"), "the system keeps"),
+            (root.join("Windows").join("System32"), "the system keeps"),
+            (
+                home.join("AppData").join("Columbus"),
+                "one of Columbus's own folders",
+            ),
+            (
+                home.join("AppData").join("Columbus").join("connections"),
+                "one of Columbus's own folders",
+            ),
+            (home.join("AppData"), "one of Columbus's own folders"),
+        ] {
+            let program = exe(folder.clone());
+            let why = program_folder_problem_in(&program, &p)
+                .unwrap_or_else(|| panic!("{} was allowed", program.display()));
+            assert!(why.contains(what), "{}: {why}", folder.display());
+            // The words: where it is, why that matters, what to do.
+            assert!(
+                why.contains(&program.display().to_string())
+                    && why.contains(&folder.display().to_string())
+                    && why.contains("can read every file in the program's folder")
+                    && why.contains("a folder of its own"),
+                "{why}"
+            );
+        }
+        // A folder of its own, wherever it is.
+        for folder in [
+            home.join("Tools").join("linetool"),
+            home.join("Documents").join("GIS tools"),
+            home.join("Downloads").join("linetool-1.2"),
+            home.join("OneDrive").join("Tools"),
+            root.join("Program Files").join("LineTool"),
+            root.join("tmp").join("run-1"),
+            root.join("Tools"),
+        ] {
+            assert_eq!(
+                program_folder_problem_in(&exe(folder.clone()), &p),
+                None,
+                "{}",
+                folder.display()
+            );
+        }
+    }
+
+    #[test]
+    fn the_top_of_a_drive_and_this_computers_own_places() {
+        let top = if cfg!(windows) {
+            PathBuf::from(r"C:\linetool.exe")
+        } else {
+            PathBuf::from("/linetool")
+        };
+        let why = program_folder_problem_in(&top, &WidePlaces::default()).unwrap();
+        assert!(why.contains("the top of a drive"), "{why}");
+        // The real places of the computer the test runs on.
+        let here = WidePlaces::here();
+        assert!(!here.homes.is_empty(), "this computer has a home folder");
+        let in_temp = std::env::temp_dir().join("linetool");
+        assert!(program_folder_problem(&in_temp).is_some());
+        let own = std::env::temp_dir()
+            .join("columbus-linetool")
+            .join("linetool");
+        assert_eq!(program_folder_problem(&own), None);
+        for home in &here.homes {
+            assert!(program_folder_problem(&home.join("linetool")).is_some());
+            assert!(program_folder_problem(&home.join("Downloads").join("linetool")).is_some());
+        }
+        // A place is known by its real path too: the folder for temporary
+        // files with links followed (on a Mac it is behind /private), and
+        // a home folder reached through a link.
+        if let Ok(real_temp) = std::env::temp_dir().canonicalize() {
+            assert!(program_folder_problem(&real_temp.join("linetool")).is_some());
+        }
+        if cfg!(unix) {
+            for p in [
+                "/usr/bin/env",
+                "/usr/local/bin/tool",
+                "/opt/tool",
+                "/etc/tool",
+            ] {
+                let why = program_folder_problem(Path::new(p)).unwrap_or_else(|| panic!("{p}"));
+                assert!(why.contains("the system keeps"), "{why}");
+            }
+        }
+        // (Compiled everywhere, so that it cannot rot; run on Windows.)
+        if cfg!(windows) {
+            for p in [
+                r"C:\Windows\System32\tool.exe",
+                r"C:\Windows\tool.exe",
+                r"\\?\C:\Windows\tool.exe",
+                r"\\fileserver\tools\tool.exe",
+            ] {
+                assert!(program_folder_problem(Path::new(p)).is_some(), "{p}");
+            }
+            assert_eq!(
+                path_key(Path::new(r"\\?\C:\Users\Ana")),
+                path_key(Path::new(r"c:\users\ana"))
+            );
+        }
+    }
+
+    /// A home folder that is a link, and a program named through the link
+    /// or by its real path: the same folder either way.
+    #[cfg(unix)]
+    #[test]
+    fn a_place_reached_through_a_link_is_the_same_place() {
+        let d = tempfile::tempdir().unwrap();
+        let real_home = d.path().canonicalize().unwrap().join("disk2").join("ana");
+        std::fs::create_dir_all(real_home.join("Downloads")).unwrap();
+        std::fs::create_dir_all(real_home.join("Tools").join("linetool")).unwrap();
+        let link = d.path().join("home-ana");
+        std::os::unix::fs::symlink(&real_home, &link).unwrap();
+        // The system names the home folder by the link.
+        let places = WidePlaces {
+            homes: vec![link.clone(), real_home.clone()],
+            ..WidePlaces::default()
+        };
+        for program in [
+            link.join("Downloads").join("linetool"),
+            real_home.join("Downloads").join("linetool"),
+            link.join("linetool"),
+            real_home.join("linetool"),
+        ] {
+            assert!(
+                program_folder_problem_in(&program, &places).is_some(),
+                "{}",
+                program.display()
+            );
+        }
+        // The home folder known by its real path alone, and a program
+        // named through the link: the folder is looked at as it really is.
+        // (On a real computer the home folder is known by both.)
+        let by_real = WidePlaces {
+            homes: vec![real_home.clone()],
+            ..WidePlaces::default()
+        };
+        assert!(
+            program_folder_problem_in(&link.join("Downloads").join("linetool"), &by_real).is_some()
+        );
+        for program in [
+            link.join("Tools").join("linetool").join("linetool"),
+            real_home.join("Tools").join("linetool").join("linetool"),
+        ] {
+            assert_eq!(program_folder_problem_in(&program, &places), None);
+        }
+    }
+
+    #[test]
+    fn what_a_toolbox_will_read_is_said_in_full() {
+        let program = Path::new("tools").join("linetool").join("linetool");
+        let folder = Path::new("tools").join("linetool").display().to_string();
+        let w = reads_words(&program, &[]);
+        assert!(
+            w.contains("will be able to read every file in the program's folder")
+                && w.contains(&folder),
+            "{w}"
+        );
+        let w = reads_words(&program, &["/data/grids".into()]);
+        assert!(
+            w.contains(&folder) && w.contains("and in /data/grids"),
+            "{w}"
+        );
+    }
 }
 
 #[cfg(test)]

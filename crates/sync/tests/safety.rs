@@ -87,6 +87,39 @@ const IGNORED: &[(&str, &str)] = &[
     ("cloud.laz", "geodata"),
     ("bundle.zip", "archives"),
     ("outputs/report.csv", "outputs"),
+    // R-103: data formats Columbus reads as layers or tables.
+    ("codes.csv", "tables"),
+    ("codes.tsv", "tables"),
+    ("book.xlsx", "tables"),
+    ("old.xls", "tables"),
+    ("big.parquet", "tables"),
+    ("cache.sqlite", "tables"),
+    ("cache.duckdb", "tables"),
+    ("access.mdb", "tables"),
+    ("roads.geojson", "geodata"),
+    ("roads.fgb", "geodata"),
+    ("places.kml", "geodata"),
+    ("places.kmz", "geodata"),
+    ("track.gpx", "geodata"),
+    ("parcels.gml", "geodata"),
+    // R-103: the names the assistant is kept from.
+    (".pgpass", "password"),
+    (".netrc", "password"),
+    ("aws/credentials", "password"),
+    ("id_rsa", "keys"),
+    ("store.jks", "keys"),
+    ("vault.kdbx", "keys"),
+    ("putty.ppk", "keys"),
+    ("prod.dsn", "connection"),
+    ("prod.udl", "connection"),
+    ("cube.odc", "connection"),
+    // R-104: files the system runs or follows when they are opened.
+    ("open me.bat", "runs or follows"),
+    ("tool.pyw", "runs or follows"),
+    ("office.rdp", "runs or follows"),
+    ("query.iqy", "runs or follows"),
+    ("sheet.slk", "runs or follows"),
+    ("Tool.app/Contents/Info.plist", "runs or follows"),
 ];
 
 #[tokio::test]
@@ -130,20 +163,20 @@ async fn files_over_5_mb_are_skipped_and_named_on_both_sides() {
     );
     let (mut ana, mut ben) = (Person::new("ana"), Person::new("ben"));
     let big = vec![b'x'; MAX_FILE as usize + 1];
-    ana.write("big.csv", &big);
-    ana.write("edge.csv", vec![b'y'; MAX_FILE as usize]);
-    ana.write("small.csv", "a,b\n");
+    ana.write("big.txt", &big);
+    ana.write("edge.txt", vec![b'y'; MAX_FILE as usize]);
+    ana.write("small.txt", "a,b\n");
     let c = ana.check(&host_a).await;
     assert_eq!(c.here.len(), 2);
-    assert!(why(&c.skipped, "big.csv").contains("5 MB"));
+    assert!(why(&c.skipped, "big.txt").contains("5 MB"));
     let rep = ana.sync(&host_a).await;
-    assert!(why(&rep.skipped, "big.csv").contains("5 MB"));
+    assert!(why(&rep.skipped, "big.txt").contains("5 MB"));
     {
         let r = r.lock().unwrap();
         let files = r.files("main");
-        assert_eq!(files.keys().collect::<Vec<_>>(), ["edge.csv", "small.csv"]);
+        assert_eq!(files.keys().collect::<Vec<_>>(), ["edge.txt", "small.txt"]);
         assert_eq!(
-            files["edge.csv"].len() as u64,
+            files["edge.txt"].len() as u64,
             MAX_FILE,
             "5 MB exactly still syncs"
         );
@@ -156,22 +189,22 @@ async fn files_over_5_mb_are_skipped_and_named_on_both_sides() {
     let rep = ben.sync(&host_b).await;
     assert!(why(&rep.skipped, "huge.bin").contains("5 MB"));
     assert!(ben.read("huge.bin").is_none());
-    assert_eq!(rep.got, ["edge.csv", "small.csv"]);
+    assert_eq!(rep.got, ["edge.txt", "small.txt"]);
 
     // A synced file that grows past 5 MB here is no longer sent; if the
     // server's then changes, both versions are kept like any conflict.
-    ben.write("small.csv", &big);
+    ben.write("small.txt", &big);
     let rep = ben.sync(&host_b).await;
     assert!(rep.sent.is_empty());
-    assert!(why(&rep.skipped, "small.csv").contains("5 MB"));
+    assert!(why(&rep.skipped, "small.txt").contains("5 MB"));
     ana.sync(&host_a).await;
-    ana.write("small.csv", "a,b\n1,2\n");
+    ana.write("small.txt", "a,b\n1,2\n");
     ana.sync(&host_a).await;
     let rep = ben.sync(&host_b).await;
     assert_eq!(rep.conflicts.len(), 1);
-    assert_eq!(ben.text("small.csv"), "a,b\n1,2\n");
+    assert_eq!(ben.text("small.txt"), "a,b\n1,2\n");
     assert_eq!(
-        ben.read(&format!("small (my copy {TODAY}).csv"))
+        ben.read(&format!("small (my copy {TODAY}).txt"))
             .unwrap()
             .len(),
         big.len()
@@ -266,6 +299,7 @@ async fn the_linked_servers_own_token_never_travels_inside_a_file() {
         keep: &keep,
         today: TODAY,
         never_send: &never,
+        labels: &ana.labels,
     };
     let rep = columbus_sync::sync(&ana.root, &host, &mut ana.state, &opts)
         .await
@@ -448,7 +482,10 @@ async fn links_submodules_and_git_lfs_on_the_server_are_skipped_and_named() {
             .unwrap()
             .permissions()
             .mode();
-        assert!(mode & 0o100 != 0, "a program on the server is one here");
+        assert!(
+            mode & 0o111 == 0,
+            "a file that arrives is never given the run permission (R-104)"
+        );
     }
     // The pointer is not asked for again, and stays named.
     let c = ben.check(&host).await;
@@ -464,6 +501,158 @@ async fn links_submodules_and_git_lfs_on_the_server_are_skipped_and_named() {
         assert!(tree.contains_key(p), "{p} is still on the server");
     }
     assert_eq!(tree["run.sh"].mode, "100755", "still a program");
+}
+
+/// Files that run when opened (R-104): sync never sets the run permission
+/// on a file that arrives, and never takes the server's mark away when the
+/// person changes such a file here.
+#[tokio::test]
+async fn a_file_that_arrives_is_never_made_a_program_here() {
+    let r = repo();
+    let host = MemoryHost::new(r.clone(), "Ben");
+    let raw = |path: &str, bytes: &[u8]| Edit::Raw {
+        path: path.into(),
+        mode: "100755".into(),
+        bytes: bytes.to_vec(),
+    };
+    r.lock().unwrap().commit(
+        "main",
+        &[
+            raw("tools/run.sh", b"#!/bin/sh\necho from the server\n"),
+            raw("tools/build", b"#!/bin/sh\necho build\n"),
+            put("notes.md", b"notes\n"),
+        ],
+        "programs",
+        "Cy",
+    );
+    let mut ben = Person::new("ben");
+    let rep = ben.sync(&host).await;
+    assert_eq!(rep.got, ["notes.md", "tools/build", "tools/run.sh"]);
+    let runs = |p: &Person, rel: &str| {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::metadata(p.path(rel)).unwrap().permissions().mode() & 0o111 != 0
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (p, rel);
+            false
+        }
+    };
+    for rel in ["tools/run.sh", "tools/build", "notes.md"] {
+        assert!(!runs(&ben, rel), "{rel} arrived as a program");
+    }
+    // The person changes one here and syncs: the server's mark stays as it
+    // was (a colleague with Git still has a program), and the file here is
+    // still not one.
+    ben.write("tools/run.sh", "#!/bin/sh\necho changed by Ben\n");
+    let rep = ben.sync(&host).await;
+    assert_eq!(rep.sent.len(), 1);
+    {
+        let r = r.lock().unwrap();
+        let tree = r.tree_at(r.head("main").unwrap());
+        assert_eq!(tree["tools/run.sh"].mode, "100755", "still a program there");
+        assert_eq!(tree["tools/build"].mode, "100755");
+        assert_eq!(tree["notes.md"].mode, "100644");
+    }
+    assert!(!runs(&ben, "tools/run.sh"));
+    // A newer version from the server replaces it: again not a program,
+    // even where the person had marked their own copy as one.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(
+            ben.path("tools/build"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+    }
+    r.lock().unwrap().commit(
+        "main",
+        &[raw("tools/build", b"#!/bin/sh\necho a new build\n")],
+        "newer",
+        "Cy",
+    );
+    let rep = ben.sync(&host).await;
+    assert_eq!(rep.got, ["tools/build"]);
+    assert_eq!(ben.text("tools/build"), "#!/bin/sh\necho a new build\n");
+    assert!(
+        !runs(&ben, "tools/build"),
+        "what arrived was not looked at yet"
+    );
+    // A file the person made and marked themselves is sent with its mark
+    // (from a Mac or Linux).
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        ben.write("mine.sh", "#!/bin/sh\necho mine\n");
+        std::fs::set_permissions(ben.path("mine.sh"), std::fs::Permissions::from_mode(0o755))
+            .unwrap();
+        ben.sync(&host).await;
+        let r = r.lock().unwrap();
+        assert_eq!(r.tree_at(r.head("main").unwrap())["mine.sh"].mode, "100755");
+    }
+}
+
+/// A file of a kind the system runs or follows when it is opened, on the
+/// server (a colleague committed it with Git): never written here, named
+/// with why, and left alone there.
+#[tokio::test]
+async fn files_that_run_when_opened_are_not_fetched_and_not_sent() {
+    let r = repo();
+    let host = MemoryHost::new(r.clone(), "Ben");
+    let theirs = [
+        "open me.bat",
+        "Invoice.pdf.lnk",
+        "tool.pyw",
+        "office.rdp",
+        "query.iqy",
+        "sheet.slk",
+        "start.command",
+        "Tool.app/Contents/Info.plist",
+        "Tool.app/Contents/MacOS/tool",
+        "do/Daily.workflow/Contents/document.wflow",
+    ];
+    let mut edits: Vec<Edit> = theirs.iter().map(|p| put(p, b"from the server")).collect();
+    edits.push(put("scripts/widths.py", b"print(1)\n"));
+    r.lock()
+        .unwrap()
+        .commit("main", &edits, "with programs", "Cy");
+    let mut ben = Person::new("ben");
+    let c = ben.check(&host).await;
+    assert_eq!(
+        c.server.iter().map(|i| i.path.as_str()).collect::<Vec<_>>(),
+        ["scripts/widths.py"]
+    );
+    let rep = ben.sync(&host).await;
+    assert_eq!(rep.got, ["scripts/widths.py"]);
+    assert_eq!(
+        ben.files().keys().collect::<Vec<_>>(),
+        ["scripts/widths.py"]
+    );
+    for p in theirs {
+        let w = why(&rep.skipped, p);
+        assert!(w.contains("runs or follows when it is opened"), "{p}: {w}");
+    }
+    assert!(!ben.path("Tool.app").exists() && !ben.path("do").exists());
+    // Ben's own files of those kinds are not sent, and the server's are not
+    // deleted because Ben has none.
+    ben.write("mine.bat", "echo mine\r\n");
+    ben.write("Mine.app/Contents/Info.plist", "<plist/>");
+    ben.write("scripts/widths.py", "print(2)\n");
+    let rep = ben.sync(&host).await;
+    assert_eq!(
+        rep.sent.iter().map(|i| i.path.as_str()).collect::<Vec<_>>(),
+        ["scripts/widths.py"]
+    );
+    assert!(why(&rep.skipped, "mine.bat").contains("runs or follows"));
+    assert!(why(&rep.skipped, "Mine.app/").contains("runs or follows"));
+    let files = r.lock().unwrap().files("main");
+    assert!(!files.contains_key("mine.bat") && !files.contains_key("Mine.app/Contents/Info.plist"));
+    for p in theirs {
+        assert_eq!(files[p], b"from the server", "{p} is still on the server");
+    }
 }
 
 #[tokio::test]
@@ -507,7 +696,7 @@ async fn a_folder_with_far_too_many_files_is_refused() {
     for i in 0..=columbus_sync::MAX_FILES {
         std::fs::write(dir.join(format!("{i}.txt")), b"").unwrap();
     }
-    let err = columbus_sync::check(&ana.root, &host, &ana.state)
+    let err = columbus_sync::check(&ana.root, &host, &ana.state, &ana.labels)
         .await
         .unwrap_err();
     assert!(err.to_string().contains("more than 20000 files"), "{err}");

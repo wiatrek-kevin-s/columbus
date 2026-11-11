@@ -122,6 +122,8 @@ def main():
         assert rows[0].startswith("notes.md") and rows[1] == "scripts/" and rows[2].startswith("widths.py"), rows
         assert "Files (2)" in text(d, "pj-files") and "2 files" in text(d, "pj-files"), text(d, "pj-files")
         assert "Your assistant can list, read and write" in text(d, "pj-files")
+        # R-104: the card says that a file with a secret in it is kept from the assistant.
+        assert "looks like it holds a password, a key or a token is not read to your assistant and not run" in text(d, "pj-files"), text(d, "pj-files")
         assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
         d.execute_script("document.getElementById('pj-files').scrollIntoView({block: 'center'})")
         d.save_screenshot(str(OUT / "projects-files.png"))

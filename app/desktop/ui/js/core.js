@@ -156,6 +156,13 @@ export function iconButton(name, label, onclick, attrs = {}) {
 
 // ---------- Text helpers ----------
 
+/** Where the app has no way to confirm who is at the keyboard (no Touch
+ * ID, no Windows Hello): how a button that would otherwise ask begins what
+ * it says. The words Organization rules uses for the same case. */
+export const CANNOT_CONFIRM = "On this system the app cannot confirm it is you (there is no Touch ID or Windows Hello)";
+/** Whether that is so, from what the app says of itself (`info.confirm_with`). */
+export const cannotConfirm = (info) => !!info && info.confirm_with === "not available on this system";
+
 export function plural(n, one, many) {
   return `${n.toLocaleString()} ${n === 1 ? one : many || `${one}s`}`;
 }

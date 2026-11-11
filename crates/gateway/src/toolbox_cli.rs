@@ -1071,6 +1071,12 @@ async fn add_inner(
             ));
         }
     }
+    // Its folder becomes readable by its tools: it must be a folder of
+    // its own, not the person's home, Desktop, Documents or Downloads, the
+    // top of a drive or a system folder.
+    if let Some(why) = tbx::program_folder_problem(&program) {
+        return Err(format!("{why}. Nothing was added"));
+    }
     let mut reads = Vec::new();
     for r in &a.reads {
         let r = real_path(r)?;
@@ -1104,10 +1110,6 @@ async fn add_inner(
     };
     let (sha256, bytes) =
         sha256_file(&program).map_err(|e| format!("{}: {e}", program.display()))?;
-    let folder = program
-        .parent()
-        .map(|p| p.display().to_string())
-        .unwrap_or_default();
     let mut tb = Toolbox {
         id: id.to_string(),
         name: a.name.clone().unwrap_or_else(|| id.to_string()),
@@ -1136,10 +1138,8 @@ async fn add_inner(
     if let Some((_, n)) = &description {
         say.line(format!("  Tools:    {n}, from the description file"));
     }
-    say.line(format!(
-        "  Its tools will run in the sandbox: no network; they write only their own run folder, and can read the copies they are given and everything in the program's own folder ({folder}){}.",
-        if tb.reads.is_empty() { String::new() } else { format!(" and in {}", tb.reads.join(", ")) }
-    ));
+    say.line("  Its tools will run in the sandbox: no network; they write only their own run folder, and read the copies they are given.");
+    say.line(format!("  {}.", tbx::reads_words(&program, &tb.reads)));
     say.line("  Your assistant may then run them without asking. Columbus checks that the program is the one you added, not what it does: add only programs you trust.");
     if !a.yes {
         let typed = crate::review_cli::confirm_typed(&format!(
@@ -1319,6 +1319,16 @@ fn remove(id: &str) -> Result<()> {
     let dir = tbx::toolboxes_dir();
     let tb = tbx::load(&dir, id).ok();
     let gone = tbx::remove(&dir, id).map_err(|e| anyhow!(e))?;
+    // On Windows, running its tools wrote a read permission for this
+    // toolbox's sandbox onto the program's folder and the folders it was
+    // given to read: taken back now, the mirror of that grant. (On macOS
+    // and Linux nothing was written onto a folder.)
+    let taken_back = tb.as_ref().map(|tb| {
+        columbus_confine::forget(
+            &crate::toolbox::sandbox_name(&tb.id),
+            &crate::toolbox::read_folders(tb),
+        )
+    });
     // Recorded where the person's other actions are, when that can be.
     if let Ok(state) = State::load(crate::config::Paths::from_env()) {
         record(
@@ -1341,6 +1351,26 @@ fn remove(id: &str) -> Result<()> {
             }
         }
     );
+    match (&tb, taken_back) {
+        (Some(t), Some(Ok(()))) if cfg!(windows) && !gone => println!(
+            "The permission its tools had to read the program's folder ({}) was taken back.",
+            crate::toolbox::read_folders(t)
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        (Some(t), Some(Err(e))) => println!(
+            "note: Windows did not take back the permission its tools had to read {}: {e}. It shows in the folder's Properties, under Security, as \"Columbus {}\" (or as an unknown account), and can be removed there.",
+            crate::toolbox::read_folders(t)
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", "),
+            crate::toolbox::sandbox_name(&t.id)
+        ),
+        _ => {}
+    }
     Ok(())
 }
 

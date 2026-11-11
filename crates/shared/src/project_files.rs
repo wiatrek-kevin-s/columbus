@@ -11,6 +11,8 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::file_kinds::{self, Kind};
+
 /// The folder's name inside the project's own folder.
 pub const FOLDER: &str = "files";
 /// The largest text file the assistant reads or writes.
@@ -32,66 +34,46 @@ pub const SETTINGS_FILE: &str = "columbus-project.yaml";
 /// own name (`.columbus` is refused).
 pub const TEMPORARY_PREFIX: &str = ".columbus-tmp-";
 
+/// The record of which data labels each file carries (`path` to the
+/// labels of the chat that wrote it, such as `connection:roads-prod`):
+/// beside the files folder, in the project's own folder, so it never
+/// syncs. The server writes it; sync reads it, to hold a file that may
+/// quote data until the person chooses to send it.
+pub const LABELS_FILE: &str = "files-labels.json";
+
+/// The data labels each file carries, by its path in the folder.
+pub type Labels = std::collections::BTreeMap<String, std::collections::BTreeSet<String>>;
+
+/// Read the labels record in `folder` (the project's own folder,
+/// `projects/<id>`). No record: no file carries a label. A record that is
+/// there but does not read is an error, never "no labels".
+pub fn load_labels(folder: &Path) -> Result<Labels, String> {
+    let path = folder.join(LABELS_FILE);
+    match std::fs::symlink_metadata(&path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Labels::new()),
+        Ok(m) if m.is_file() && m.len() <= 4 * 1024 * 1024 => {}
+        _ => {
+            return Err(format!(
+                "the record of where this project's files came from ({LABELS_FILE}) is not a plain file, so the files are not used until the person removes it"
+            ))
+        }
+    }
+    std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|t| serde_json::from_str::<Labels>(&t).ok())
+        .ok_or_else(|| {
+            format!(
+                "the record of where this project's files came from ({LABELS_FILE}) does not read, so the files are not used until the person removes it"
+            )
+        })
+}
+
 /// Windows' device names: a file may not be called one, whatever follows
 /// the first dot.
 const DEVICE_NAMES: &[&str] = &[
     "CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$", "COM0", "COM1", "COM2", "COM3", "COM4",
     "COM5", "COM6", "COM7", "COM8", "COM9", "COM¹", "COM²", "COM³", "LPT0", "LPT1", "LPT2", "LPT3",
     "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9", "LPT¹", "LPT²", "LPT³",
-];
-
-/// File types an operating system runs or follows when the person opens
-/// them from the folder (a double-click in Explorer or Finder). The
-/// assistant may not write these: the folder is for scripts Columbus runs
-/// in its sandbox and for notes, not for programs the person starts by
-/// accident. Reading one the person put there is fine.
-const RUNS_WHEN_OPENED: &[&str] = &[
-    "bat",
-    "cmd",
-    "com",
-    "exe",
-    "pif",
-    "scr",
-    "msi",
-    "msp",
-    "mst",
-    "cpl",
-    "msc",
-    "hta",
-    "vbs",
-    "vbe",
-    "js",
-    "jse",
-    "wsf",
-    "wsh",
-    "wsc",
-    "sct",
-    "ps1xml",
-    "reg",
-    "lnk",
-    "url",
-    "scf",
-    "inf",
-    "jar",
-    "jnlp",
-    "chm",
-    "hlp",
-    "application",
-    "appref-ms",
-    "library-ms",
-    "search-ms",
-    "website",
-    "desktop",
-    "command",
-    "app",
-    "action",
-    "workflow",
-    "terminal",
-    "inetloc",
-    "webloc",
-    "fileloc",
-    "dll",
-    "sys",
 ];
 
 /// Where a project's files are: `<projects>/<id>/files`.
@@ -200,49 +182,26 @@ pub fn parts(path: &str) -> Result<Vec<String>, String> {
     Ok(parts)
 }
 
-fn extension(name: &str) -> String {
-    name.rsplit_once('.')
-        .map(|(_, e)| e.to_lowercase())
-        .unwrap_or_default()
-}
-
-/// A name that looks like a password, key or connection file. The
-/// assistant never gets a password or a connection file (D-16, B1), so it
-/// neither reads nor writes these, whoever put them in the folder.
+/// A name that looks like a password, key or connection file
+/// ([`file_kinds`], the table shared with sync). The assistant never gets a
+/// password or a connection file (D-16, B1), so it neither reads nor writes
+/// these, whoever put them in the folder.
 pub fn kept_from_assistant(name: &str) -> Option<&'static str> {
-    let lower = name.to_lowercase();
-    let secret = lower.starts_with(".env")
-        || matches!(
-            lower.as_str(),
-            ".netrc"
-                | "_netrc"
-                | ".pgpass"
-                | "pgpass.conf"
-                | "credentials"
-                | "id_rsa"
-                | "id_ed25519"
-        )
-        || matches!(
-            extension(name).as_str(),
-            "pem" | "key" | "pfx" | "p12" | "jks" | "keystore" | "kdbx" | "ppk"
-        );
-    if secret {
-        return Some(
+    match file_kinds::kind_of(name)? {
+        Kind::EnvFile | Kind::Key | Kind::Passwords => Some(
             "it looks like a password or key file, which the assistant never reads or writes",
-        );
+        ),
+        Kind::Connection => Some("it looks like a connection file, which the assistant never reads or writes (connections stay with Columbus)"),
+        _ => None,
     }
-    if matches!(
-        extension(name).as_str(),
-        "sde" | "ags" | "odc" | "dsn" | "udl"
-    ) {
-        return Some("it looks like a connection file, which the assistant never reads or writes (connections stay with Columbus)");
-    }
-    None
 }
 
 /// Why the assistant may not write a file of this name, if it may not:
-/// the project's shared settings (sync writes them), a password, key or
-/// connection file, or a type the system runs when it is opened.
+/// the project's shared settings (sync writes them), or one of the kinds
+/// that never sync ([`file_kinds`]): a password, key or connection file,
+/// a type the system runs when it is opened (as the file's own name or a
+/// folder's on the way: `Tool.app/…`), data, an archive, a file the system
+/// makes for itself. Data leaves a chat only through an export (D-19).
 pub fn write_problem(parts: &[String]) -> Option<String> {
     let name = parts.last()?;
     if parts.len() == 1 && name.eq_ignore_ascii_case(SETTINGS_FILE) {
@@ -250,16 +209,35 @@ pub fn write_problem(parts: &[String]) -> Option<String> {
             "{SETTINGS_FILE} holds the project's shared settings and is written when the project syncs; the assistant may read it, not change it"
         ));
     }
+    const NOT_THOSE: &str =
+        "the assistant writes scripts Columbus runs in its sandbox (.py) and notes, not those";
+    for folder in &parts[..parts.len() - 1] {
+        if let Some(ext) = file_kinds::runs_when_opened(folder) {
+            return Some(format!(
+                "{folder} is a folder of a kind the system runs or follows when it is opened (.{ext}); {NOT_THOSE}"
+            ));
+        }
+    }
     if let Some(why) = kept_from_assistant(name) {
         return Some(why.into());
     }
-    let ext = extension(name);
-    if RUNS_WHEN_OPENED.contains(&ext.as_str()) {
-        return Some(format!(
-            "a .{ext} file is one the system runs or follows when it is opened; the assistant writes scripts Columbus runs in its sandbox (.py) and notes, not those"
-        ));
+    let ext = file_kinds::extension(name);
+    match file_kinds::kind_of(name)? {
+        Kind::Runs => Some(format!(
+            "a .{ext} file is one the system runs or follows when it is opened; {NOT_THOSE}"
+        )),
+        Kind::Geodata | Kind::Table => Some(format!(
+            "a .{ext} file is data, and a project's files are for scripts and notes: results leave a chat only through an export (export_output)"
+        )),
+        Kind::Archive => Some(format!(
+            "a .{ext} file is an archive, and a project's files are for scripts and notes the person can read"
+        )),
+        Kind::System => Some(format!(
+            "{name} is a file the system makes for itself; the assistant does not write it"
+        )),
+        // Told apart above.
+        Kind::EnvFile | Kind::Key | Kind::Passwords | Kind::Connection => None,
     }
-    None
 }
 
 /// One file in the folder.
@@ -465,12 +443,14 @@ mod tests {
         for ok in [
             "scripts/widths.py",
             "notes.md",
-            "data/codes.csv",
+            "data/codes.md",
+            "settings.json",
             "query.sql",
             "style.qml",
             "docs/columbus-project.yaml",
             "run.sh",
             "tool.ps1",
+            "outputs/notes.txt",
         ] {
             assert_eq!(write_problem(&p(ok)), None, "{ok}");
         }
@@ -490,14 +470,71 @@ mod tests {
             (".env.local", "password or key"),
             ("certs/server.pem", "password or key"),
             ("id_rsa", "password or key"),
+            (".pgpass", "password or key"),
+            ("home/.netrc", "password or key"),
             ("prod.sde", "connection file"),
             ("server.AGS", "connection file"),
+            ("prod.dsn", "connection file"),
+            // Files that run when they are opened (R-104): more kinds, and
+            // every part of the path, not only the file's own name.
+            ("tool.pyw", "runs or follows"),
+            ("tool.pyz", "runs or follows"),
+            ("tool.PYZW", "runs or follows"),
+            ("office.rdp", "runs or follows"),
+            ("query.iqy", "runs or follows"),
+            ("sheet.slk", "runs or follows"),
+            ("a.app/x.py", "runs or follows"),
+            ("Tool.app/Contents/Info.plist", "runs or follows"),
+            ("do/Daily.workflow/document.md", "runs or follows"),
+            (
+                "Panel.{21EC2020-3AEA-1069-A2DD-08002B30309D}/x.md",
+                "runs or follows",
+            ),
+            // Data (R-103): results leave a chat only through an export.
+            ("data/codes.csv", "only through an export"),
+            ("codes.TSV", "only through an export"),
+            ("roads.geojson", "only through an export"),
+            ("roads.gpkg", "only through an export"),
+            ("book.xlsx", "only through an export"),
+            ("big.parquet", "only through an export"),
+            ("places.kml", "only through an export"),
+            ("bundle.zip", "archive"),
+            ("desktop.ini", "the system makes"),
         ] {
             let e = write_problem(&p(bad)).unwrap_or_else(|| panic!("{bad} was allowed"));
             assert!(e.contains(why), "{bad}: {e}");
         }
         assert!(kept_from_assistant("notes.md").is_none());
         assert!(kept_from_assistant("keys.txt").is_none());
+        // Data and files that run are not written, and can be read when the
+        // person put them there: only passwords, keys and connection files
+        // are kept from the assistant altogether.
+        for readable in ["codes.csv", "open me.bat", "bundle.zip", "roads.geojson"] {
+            assert!(kept_from_assistant(readable).is_none(), "{readable}");
+        }
+    }
+
+    /// Every entry of the table shared with sync
+    /// ([`crate::file_kinds`]): the assistant writes none of them, and
+    /// neither reads nor writes the ones that hold secrets.
+    #[test]
+    fn the_assistant_writes_nothing_that_never_syncs() {
+        for (name, kind) in crate::file_kinds::examples() {
+            for path in [name.clone(), format!("a/{name}")] {
+                // A name the path rules refuse is refused before this
+                // (`.git-credentials`: names that start with .git).
+                let refused = match parts(&path) {
+                    Err(_) => true,
+                    Ok(p) => write_problem(&p).is_some(),
+                };
+                assert!(refused, "{path} ({kind:?}) may be written");
+            }
+            assert_eq!(
+                kept_from_assistant(&name).is_some(),
+                kind.is_secret(),
+                "{name} ({kind:?})"
+            );
+        }
     }
 
     #[test]

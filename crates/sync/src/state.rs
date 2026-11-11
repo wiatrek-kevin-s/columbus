@@ -2,7 +2,7 @@
 //! repository and the state it was last synced in. It is kept in the app's
 //! data, never in the folder that syncs, and it holds no secret.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -81,16 +81,38 @@ pub struct State {
     /// pointer seen there: they are never fetched, and not asked for again.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub lfs: BTreeMap<String, String>,
+    /// Files the person chose to send although they may hold data
+    /// ([`crate::labels`]): each path with what the file held when they
+    /// chose ([`crate::hash::content_hash`]). A file that has changed since
+    /// is held again.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub released: BTreeMap<String, String>,
+    /// The data labels that came with a copy sync itself made of a
+    /// labelled file (the person's version of a file changed on both
+    /// sides): the copy's path, and the labels of the file it was.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub carried: BTreeMap<String, BTreeSet<String>>,
 }
 
 impl State {
     /// The paths of the copies kept for files that need a look: they stay
     /// out of sync until the person has chosen.
-    pub fn held(&self) -> std::collections::BTreeSet<String> {
+    pub fn held(&self) -> BTreeSet<String> {
         self.conflicts
             .iter()
             .filter_map(|c| c.copy.clone())
             .collect()
+    }
+
+    /// The person chose **Send it anyway** for `path`, as it was when it
+    /// held `hash`. Only that content goes: a changed file is held again.
+    pub fn send_anyway(&mut self, path: &str, hash: &str) {
+        self.released.insert(path.to_string(), hash.to_string());
+    }
+
+    /// The person took that choice back: `path` is held again.
+    pub fn hold_again(&mut self, path: &str) {
+        self.released.remove(path);
     }
 }
 

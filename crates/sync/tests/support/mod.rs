@@ -475,6 +475,9 @@ pub struct Person {
     pub root: PathBuf,
     pub kept: PathBuf,
     pub state: State,
+    /// The data labels of the folder's files (none, unless a test sets
+    /// them).
+    pub labels: columbus_sync::DataLabels,
 }
 
 impl Person {
@@ -489,7 +492,14 @@ impl Person {
             kept,
             dir,
             state: State::default(),
+            labels: columbus_sync::DataLabels::none(),
         }
+    }
+
+    /// The person's own folder, which holds `files/` and, beside it, the
+    /// record of data labels.
+    pub fn project(&self) -> &Path {
+        self.dir.path()
     }
 
     pub fn path(&self, rel: &str) -> PathBuf {
@@ -537,7 +547,7 @@ impl Person {
     }
 
     pub async fn check<H: Host>(&self, host: &H) -> Changes {
-        columbus_sync::check(&self.root, host, &self.state)
+        columbus_sync::check(&self.root, host, &self.state, &self.labels)
             .await
             .expect("check")
     }
@@ -562,6 +572,7 @@ impl Person {
             keep: &keep,
             today: TODAY,
             never_send: &[],
+            labels: &self.labels,
         };
         columbus_sync::sync(&self.root, host, &mut self.state, &opts).await
     }

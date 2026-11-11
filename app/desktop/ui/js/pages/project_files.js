@@ -67,7 +67,7 @@ export function filesCard(p) {
       }
       parts.push(ul);
       parts.push(h("p", { class: "pad small muted" }, `${plural(files.length, "file")}, ${size(r.total_bytes)} in all${r.more ? " (the first 1,000 are listed)" : ""}. `,
-        r.allowed ? "Your assistant can list, read and write the text files here, and run a script from here in the sandbox. Data stays out: results leave a chat only through an export." : ""));
+        r.allowed ? "Your assistant can list, read and write the text files here, and run a script from here in the sandbox. Data stays out: results leave a chat only through an export. A file that looks like it holds a password, a key or a token is not read to your assistant and not run: it is told which lines, never what is on them." : ""));
     }
     const skipped = r.skipped || [];
     if (skipped.length) {

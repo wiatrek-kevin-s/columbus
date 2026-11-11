@@ -264,6 +264,61 @@ fn install(
     run_steps(app, server, engine, &["install", id, "--yes", "--json"], id)
 }
 
+/// A program's path as the sandbox will see it, and as `columbus-mcp
+/// toolbox add` records it: with links followed on a Mac and Linux, and
+/// simply absolute on Windows.
+fn real_program(program: &Path) -> PathBuf {
+    if cfg!(unix) {
+        program
+            .canonicalize()
+            .unwrap_or_else(|_| program.to_path_buf())
+    } else {
+        std::path::absolute(program).unwrap_or_else(|_| program.to_path_buf())
+    }
+}
+
+/// What the person is asked before a program on this computer becomes a
+/// toolbox: what is added, and, first of what follows from it, which
+/// folder its tools will be able to read (R-104).
+fn add_question(program: &Path, shown: &str, tools: usize) -> String {
+    let folder = program
+        .parent()
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+    format!(
+        "add the toolbox \"{shown}\" ({tools} tool{}) from the program {}. Its tools will be able to read every file in the program's folder, {folder}, and your assistant may then run them on copies of your data without asking",
+        if tools == 1 { "" } else { "s" },
+        program.display()
+    )
+}
+
+/// Where a program sits, asked as soon as the person has chosen it: what
+/// its tools will be able to read once it is a toolbox, or why it cannot
+/// be added from there (its folder is not its own: the home folder,
+/// Desktop, Documents, Downloads, the top of a drive, a system folder).
+/// The same rule `columbus-mcp toolbox add` holds to.
+#[tauri::command]
+pub async fn toolbox_program_check(program: String) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || program_check(&program))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn program_check(program: &str) -> Result<Value, String> {
+    let given = Path::new(program.trim());
+    if !given.is_absolute() || !given.is_file() {
+        return Err("Choose the program's file (its full path).".to_string());
+    }
+    let real = real_program(given);
+    if let Some(why) = tbx::program_folder_problem(&real) {
+        return Err(format!("{why}."));
+    }
+    Ok(json!({
+        "folder": real.parent().map(|p| p.display().to_string()),
+        "reads": format!("{}.", tbx::reads_words(&real, &[])),
+    }))
+}
+
 /// Add a program already on this computer, with its description file, as
 /// a toolbox, once the person confirms.
 #[tauri::command]
@@ -316,6 +371,12 @@ fn add(
     if !program_path.is_absolute() || !program_path.is_file() {
         return Err("Choose the program's file (its full path).".into());
     }
+    // Its folder becomes readable by its tools: refused, before anything is
+    // asked, unless the folder is the program's own.
+    let real = real_program(program_path);
+    if let Some(why) = tbx::program_folder_problem(&real) {
+        return Err(format!("{why}."));
+    }
     let tools_path = Path::new(tools);
     if !tools_path.is_absolute() || !tools_path.is_file() {
         return Err(
@@ -331,11 +392,7 @@ fn add(
     let listed = tbx::parse_described(&bytes)?;
     let shown = if name.is_empty() { id } else { name };
     let _busy = Busy::take()?;
-    confirm(&format!(
-        "add the program {program} as the toolbox \"{shown}\" ({} tool{}), which your assistant may then run on copies of your data without asking",
-        listed.len(),
-        if listed.len() == 1 { "" } else { "s" }
-    ))?;
+    confirm(&add_question(&real, shown, listed.len()))?;
     let mut args = vec![
         "add",
         program,
@@ -513,6 +570,67 @@ pub async fn toolbox_pick(app: AppHandle, kind: String) -> Result<Option<String>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The confirmation names the folder that becomes readable, before the
+    /// rest (Windows Hello shows only the start of a long text).
+    #[test]
+    fn the_question_names_the_folder_its_tools_will_read() {
+        let folder = Path::new("Tools").join("linetool");
+        let program = folder.join("linetool.exe");
+        let q = add_question(&program, "County line tools", 3);
+        let reads = format!(
+            "Its tools will be able to read every file in the program's folder, {}",
+            folder.display()
+        );
+        assert!(q.contains(&reads), "{q}");
+        assert!(
+            q.starts_with("add the toolbox \"County line tools\" (3 tools) from the program "),
+            "{q}"
+        );
+        assert!(
+            q.find(&reads).unwrap() < q.find("without asking").unwrap(),
+            "the folder comes before the rest: {q}"
+        );
+        assert!(add_question(&program, "x", 1).contains("(1 tool) "));
+    }
+
+    /// A program is added only from a folder of its own: the app holds to
+    /// the rule the command holds to.
+    #[test]
+    fn a_program_in_a_folder_that_is_not_its_own_is_refused_before_anything_is_asked() {
+        // Directly in the folder for temporary files: not a folder of its own.
+        let loose = std::env::temp_dir().join(format!("columbus-loose-{}", std::process::id()));
+        std::fs::write(&loose, b"x").unwrap();
+        let e = program_check(&loose.display().to_string()).unwrap_err();
+        let _ = std::fs::remove_file(&loose);
+        assert!(
+            e.contains("is directly in")
+                && e.contains("can read every file in the program's folder")
+                && e.contains("a folder of its own"),
+            "{e}"
+        );
+        // In a folder of its own: the words on what its tools will read.
+        let own = std::env::temp_dir().join(format!("columbus-own-{}", std::process::id()));
+        std::fs::create_dir_all(&own).unwrap();
+        let program = own.join("linetool");
+        std::fs::write(&program, b"x").unwrap();
+        let checked = program_check(&program.display().to_string());
+        let real = real_program(&program);
+        // Not a file, not a full path.
+        let folder_given = program_check(&own.display().to_string());
+        let _ = std::fs::remove_dir_all(&own);
+        let v = checked.unwrap();
+        let folder = real.parent().unwrap().display().to_string();
+        assert_eq!(v["folder"], folder);
+        assert!(
+            v["reads"].as_str().unwrap().contains(&format!(
+                "Its tools will be able to read every file in the program's folder, {folder}"
+            )),
+            "{v}"
+        );
+        assert!(folder_given.is_err());
+        assert!(program_check("linetool").is_err());
+    }
 
     #[test]
     fn the_reason_is_the_commands_own_words() {

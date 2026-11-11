@@ -86,8 +86,16 @@ def main():
         assert "DROP" not in f.read_text()
 
         step("A project attaches it")
+        # A second group, with one dataset: "1 dataset", not "1 datasets" (R-104).
+        import yaml
+        one = yaml.safe_load(f.read_text())
+        one.update(id="county-lines", name="County lines", datasets=one["datasets"][1:])
+        (root / "data-groups" / "county-lines.yaml").write_text(yaml.safe_dump(one))
         d.execute_script("location.hash = '#/projects/new'")
         wait.until(EC.visibility_of_element_located((By.ID, "pj-name"))).send_keys("Tract work")
+        wait.until(lambda drv: "County lines" in text(drv, "pj-groups"))
+        groups = text(d, "pj-groups")
+        assert "1 dataset · yours" in groups and "2 datasets · yours" in groups and "1 datasets" not in groups, groups
         click(d, By.ID, "pj-g-texas-tracts")
         click(d, By.ID, "pj-save")
         wait.until(lambda drv: drv.execute_script("return location.hash") == "#/projects/tract-work")

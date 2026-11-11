@@ -61,7 +61,8 @@ servers:
 # The most specific rule wins; deny beats approve at equal specificity.
 flows:
   - from: [connection:roads-prod, connection:assets-prod]
-    to:   ["*"]                 # any connected MCP server and any export folder
+    to:   ["*"]                 # every destination, among them connected servers, export folders, a
+                                # project's files and a Git server a project syncs with (git:<host>, git:*)
     action: deny
   - from: [connection:roads-prod]
     to:   [server:sharepoint]

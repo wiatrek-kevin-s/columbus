@@ -51,7 +51,7 @@ pub fn blob_id(bytes: &[u8], format: ObjectFormat) -> String {
 /// Whether `bytes` read as text: no NUL byte near the start (Git's own
 /// test). Line endings are compared loosely for text only.
 pub fn is_text(bytes: &[u8]) -> bool {
-    !bytes[..bytes.len().min(8000)].contains(&0)
+    columbus_shared::secrets::is_text(bytes)
 }
 
 /// What a file holds, as `sha256:<hex>`. For text, every CRLF counts as LF:

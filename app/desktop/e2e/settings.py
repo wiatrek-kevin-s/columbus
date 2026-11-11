@@ -76,7 +76,7 @@ tools:
 TOOL_PY = "def run(ctx):\n    return {}\n"
 
 
-def propose(root, tool_id, title):
+def propose(root, tool_id, title, made=None):
     """A proposal as propose_tool files it; returns the hash the person installs."""
     d = root / "tools" / "proposals" / tool_id
     d.mkdir(parents=True)
@@ -84,7 +84,7 @@ def propose(root, tool_id, title):
     (d / "plugin.yaml").write_text(y)
     (d / "tool.py").write_text(TOOL_PY)
     (d / "proposal.json").write_text(json.dumps({"proposed": "2026-11-05T10:00:00+00:00",
-                                                 "test": {"outputs": [{"kind": "file", "rows": None}], "checks": []}}))
+                                                 "test": {"outputs": made or [{"kind": "file", "rows": None}], "checks": []}}))
     return "sha256:" + hashlib.sha256(y.encode() + b"\0" + TOOL_PY.encode()).hexdigest()
 
 
@@ -180,7 +180,8 @@ gpd.GeoDataFrame({"RTE": ["IH0035", "US0183"], "district": [14, 12]}, geometry=[
     broken = root / "broken.gpkg"
     broken.write_bytes(b"not a GeoPackage")
 
-    count_hash = propose(root, "personal.count-rows", "Count rows")
+    # Its test run made a table of one row and a layer of twelve (R-104).
+    count_hash = propose(root, "personal.count-rows", "Count rows", [{"kind": "table", "rows": 1}, {"kind": "layer", "rows": 12}])
     propose(root, "personal.other-tool", "Other tool")
     # Two more, declined one after the other further down.
     propose(root, "personal.late-one", "Late tool one")
@@ -296,6 +297,14 @@ gpd.GeoDataFrame({"RTE": ["IH0035", "US0183"], "district": [14, 12]}, geometry=[
         assert len(d.find_elements(By.CSS_SELECTOR, "#review-code span.ln")) == 2
         assert "id: personal.count-rows" in d.find_element(By.ID, "review-manifest").text
         assert count_hash in d.find_element(By.ID, "review-name").text
+        # R-104: one row is "1 row"; and where the app cannot confirm who is
+        # at the keyboard, the Install button says so, in words.
+        made = d.find_element(By.ID, "review-test").text
+        assert "test run made table (1 row), layer (12 rows)" in made, made
+        tip = d.find_element(By.ID, "review-install").get_attribute("title")
+        assert "asks for not available" not in tip, tip
+        assert tip == ("Install it. On this system the app cannot confirm it is you (there is no Touch ID or Windows Hello), "
+                       "so install it in a terminal instead: columbus-mcp tools install personal.count-rows"), tip
         assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
         d.save_screenshot(str(OUT / "settings-tool-review.png"))
         click(d, By.ID, "review-install")
@@ -380,7 +389,31 @@ gpd.GeoDataFrame({"RTE": ["IH0035", "US0183"], "district": [14, 12]}, geometry=[
         words = d.find_element(By.ID, "work").text
         assert "Work freely on copies (recommended)" in words and "Ask me before each script" in words, words
         assert "cannot reach your connections, your passwords, your other files or the internet" in words, words
-        assert "still asks you before anything leaves the workspace or changes a source" in words, words
+        # R-104: the cards say what the first choice turns on besides
+        # scripts, that the second changes scripts only, and exactly what
+        # still asks when something leaves the workspace.
+        assert "Choosing this also turns on Python environments you register, your own tools, toolboxes, project files and sync" in words, words
+        assert "This changes scripts only: tools from a toolbox and your own installed tools still run without asking" in words, words
+        assert "Columbus asks you before it changes a source" in words, words
+        assert ("An export to a folder that is not pre-approved asks; an export to a pre-approved folder, and what your "
+                "assistant writes into a project's files, do not") in words, words
+        assert "before anything leaves the workspace" not in words, words
+        # R-104: on a Mac the card states the sandbox's one limit where it
+        # makes its promise. Not on this system; so the page is told it is
+        # on a Mac, and drawn again.
+        assert "On a Mac" not in words, words
+        d.execute_script("Object.defineProperty(navigator, 'platform', {get: () => 'MacIntel', configurable: true});")
+        click(d, By.ID, "settings-close")
+        nav(d, wait, "#/settings", "work-free")
+        wait.until(lambda drv: "Python scripts are off" in drv.find_element(By.ID, "work-state").text)
+        on_mac = d.find_element(By.ID, "work").text
+        assert ("On a Mac there is one limit: a script or a tool can read what your other running programs were started with. "
+                "Columbus's own passwords are not exposed this way; a token another program was started with can be.") in on_mac, on_mac
+        d.execute_script("delete navigator.platform;")
+        click(d, By.ID, "settings-close")
+        nav(d, wait, "#/settings", "work-free")
+        wait.until(lambda drv: "Python scripts are off" in drv.find_element(By.ID, "work-state").text)
+        assert "On a Mac" not in d.find_element(By.ID, "work").text
         assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
         d.save_screenshot(str(OUT / "settings-work-mode.png"))
         step("work freely on copies: on, after one confirmation, writes the seven settings")
