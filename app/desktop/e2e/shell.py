@@ -68,6 +68,22 @@ def click(d, how, what):
     e.click()
 
 
+# Columbus's own parts, as the audit log names them and as Activity says them.
+OWN_PARTS = {
+    "Columbus app": "Columbus's own chat",
+    "columbus-chat": "Columbus's own chat",
+    "columbus-app (settings)": "Columbus's Settings",
+    "columbus-app-page": "Columbus's own pages",
+    "columbus-app-documents": "Columbus's Documentation page",
+    "columbus-app-share": "Columbus's shared files",
+    "columbus-runner": "Columbus's workflow runs",
+    "companion-window (view)": "Columbus's map and table",
+    "companion-window (approve)": "Columbus's approvals page",
+    "approvals-page": "Columbus's approvals page",
+    "columbus": "Columbus itself",
+}
+
+
 def named(d):
     """Every control on show has a name a screen reader can say, and Tab
     reaches it (the 0.14 audit left accessibility, B10, to this window)."""
@@ -454,6 +470,22 @@ def main():
         wait.until(lambda drv: "holds" in text(drv, "#audit-verify-result"))
         named(d)
         d.save_screenshot(str(OUT / "shell-audit.png"))
+        step("The audit log names Columbus's own parts in plain words, each of them")
+        said = d.execute_async_script(
+            "const done = arguments[arguments.length - 1];"
+            "import('./js/core.js').then(m => done(arguments[0].map(c => m.clientName(c))), e => done(['could not read the names: ' + e]));",
+            list(OWN_PARTS) + ["claude-ai", "some-other-app", "constructor", ""])
+        assert said == list(OWN_PARTS.values()) + ["Claude desktop", "some-other-app", "constructor", "another AI app"], said
+        # In the lines: the map and table read the layer to draw it, and the
+        # decision was made on the approvals page in the browser.
+        d.execute_script("const s = document.getElementById('audit-tool'); s.value = ''; s.dispatchEvent(new Event('change'));")
+        wait.until(lambda drv: "whoami" in text(drv, "#audit-rows"))
+        lines = text(d, "#audit-rows")
+        assert "Columbus's map and table" in lines and "Columbus's approvals page" in lines, lines
+        assert "companion-window" not in lines and "approvals-page" not in lines, lines
+        offered = dict(d.execute_script("return [...document.getElementById('audit-client').options].map(o => [o.value, o.textContent])"))
+        assert offered["companion-window (view)"] == "Columbus's map and table (companion-window (view))", offered
+        assert offered["approvals-page"] == "Columbus's approvals page (approvals-page)", offered
         step("Decisions alone, then the exports it records (none: the export was declined)")
         click(d, By.CSS_SELECTOR, "#main .histhead button[data-view='decisions']")
         wait.until(lambda drv: "approval_decision" in text(drv, "#audit-rows") and "query_features" not in text(drv, "#audit-rows"))

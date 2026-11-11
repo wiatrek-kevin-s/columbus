@@ -928,10 +928,22 @@ fn toml_string(p: &str) -> String {
 /// Every app's entry for the server at `server`, with `env` beside it
 /// where the server would not find its GIS engine by itself.
 pub(crate) fn other_apps(server: &str, env: &[(String, String)]) -> Vec<OtherApp> {
-    let env_json = || J::O(env.iter().map(|(k, v)| (k.clone(), s(v))).collect());
     let all_tools = || J::A(vec![s("*")]);
-    // One server named columbus, under the key the app's file uses.
-    let entry = |top: &str, fields: Vec<(&str, J)>| {
+    // One server named columbus, under the key the app's file uses: its
+    // type where the app names one, the program, no arguments, then the
+    // environment only when something belongs in it (every one of these
+    // files takes an entry without it), then what the app adds after.
+    let entry = |top: &str, kind: Option<&str>, after: Vec<(&str, J)>| {
+        let mut fields: Vec<(&str, J)> = kind.map(|k| ("type", s(k))).into_iter().collect();
+        fields.push(("command", s(server)));
+        fields.push(("args", J::A(vec![])));
+        if !env.is_empty() {
+            fields.push((
+                "env",
+                J::O(env.iter().map(|(k, v)| (k.clone(), s(v))).collect()),
+            ));
+        }
+        fields.extend(after);
         pretty(&o(vec![(top, o(vec![("columbus", o(fields))]))]))
     };
     let home = if cfg!(windows) {
@@ -971,7 +983,7 @@ pub(crate) fn other_apps(server: &str, env: &[(String, String)]) -> Vec<OtherApp
             } else {
                 "~/.config/Claude/claude_desktop_config.json".into()
             },
-            entry: entry("mcpServers", vec![("command", s(server)), ("args", J::A(vec![])), ("env", env_json())]),
+            entry: entry("mcpServers", None, vec![]),
             command: None,
             notes: with_env(vec![
                 "Restart Claude desktop after you save the file.".into(),
@@ -982,9 +994,10 @@ pub(crate) fn other_apps(server: &str, env: &[(String, String)]) -> Vec<OtherApp
             id: "copilot-vscode",
             name: "GitHub Copilot in VS Code",
             file: format!("{} (every workspace), or .mcp.json at the top of one workspace", in_home(&[".copilot", "mcp-config.json"])),
-            entry: entry("mcpServers", vec![("type", s("stdio")), ("command", s(server)), ("args", J::A(vec![])), ("env", env_json()), ("tools", all_tools())]),
+            entry: entry("mcpServers", Some("stdio"), vec![("tools", all_tools())]),
             command: None,
             notes: with_env(vec![
+                "The Copilot CLI reads the same file: one entry serves both.".into(),
                 format!("The older file, .vscode{sep}mcp.json in a workspace, is still read. There the same entry goes under \"servers\" in place of \"mcpServers\", without the \"tools\" line."),
                 "On Copilot Business or Enterprise, your organization must have turned on the policy \"MCP servers in Copilot\".".into(),
             ]),
@@ -993,15 +1006,20 @@ pub(crate) fn other_apps(server: &str, env: &[(String, String)]) -> Vec<OtherApp
             id: "copilot-cli",
             name: "GitHub Copilot CLI",
             file: in_home(&[".copilot", "mcp-config.json"]),
-            entry: entry("mcpServers", vec![("type", s("local")), ("command", s(server)), ("args", J::A(vec![])), ("env", env_json()), ("tools", all_tools())]),
+            // The file is the one Copilot in VS Code reads, so the entry is
+            // the same one. (The CLI takes "local" or "stdio" for the type,
+            // "local" where none is written; VS Code's page writes "stdio".)
+            entry: entry("mcpServers", Some("stdio"), vec![("tools", all_tools())]),
             command: Some(format!("copilot mcp add columbus -- {word}")),
-            notes: with_env(vec![]),
+            notes: with_env(vec![
+                "Copilot in VS Code reads the same file: one entry serves both. The CLI also takes \"local\" in place of \"stdio\".".into(),
+            ]),
         },
         OtherApp {
             id: "visual-studio",
             name: "Visual Studio",
             file: "%USERPROFILE%\\.mcp.json (every solution), or .mcp.json in a solution's folder".into(),
-            entry: entry("servers", vec![("type", s("stdio")), ("command", s(server)), ("args", J::A(vec![])), ("env", env_json())]),
+            entry: entry("servers", Some("stdio"), vec![]),
             command: None,
             notes: with_env(vec!["Visual Studio 2022 version 17.14 or later, or Visual Studio 2026.".into()]),
         },
@@ -1009,7 +1027,7 @@ pub(crate) fn other_apps(server: &str, env: &[(String, String)]) -> Vec<OtherApp
             id: "jetbrains",
             name: "JetBrains IDEs (GitHub Copilot)",
             file: "the mcp.json the Copilot plugin opens: Copilot icon, Open Chat, Agent mode, the tools icon, Add MCP Tools".into(),
-            entry: entry("servers", vec![("command", s(server)), ("args", J::A(vec![]))]),
+            entry: entry("servers", None, vec![]),
             command: None,
             notes: with_env(vec![]),
         },
@@ -1017,7 +1035,7 @@ pub(crate) fn other_apps(server: &str, env: &[(String, String)]) -> Vec<OtherApp
             id: "cursor",
             name: "Cursor",
             file: format!("{} (every project), or .cursor{sep}mcp.json in one project", in_home(&[".cursor", "mcp.json"])),
-            entry: entry("mcpServers", vec![("type", s("stdio")), ("command", s(server)), ("args", J::A(vec![])), ("env", env_json())]),
+            entry: entry("mcpServers", Some("stdio"), vec![]),
             command: None,
             notes: with_env(vec![]),
         },
@@ -1035,7 +1053,7 @@ pub(crate) fn other_apps(server: &str, env: &[(String, String)]) -> Vec<OtherApp
             id: "gemini-cli",
             name: "Gemini CLI",
             file: format!("{} (yours), or .gemini{sep}settings.json in one project", in_home(&[".gemini", "settings.json"])),
-            entry: entry("mcpServers", vec![("command", s(server)), ("args", J::A(vec![])), ("env", env_json())]),
+            entry: entry("mcpServers", None, vec![]),
             command: Some(format!("gemini mcp add -s user columbus {word}")),
             notes: with_env(vec![]),
         },
@@ -1043,7 +1061,7 @@ pub(crate) fn other_apps(server: &str, env: &[(String, String)]) -> Vec<OtherApp
             id: "claude-code",
             name: "Claude Code",
             file: ".mcp.json at the top of a project (or use the command, which keeps it for you)".into(),
-            entry: entry("mcpServers", vec![("command", s(server)), ("args", J::A(vec![])), ("env", env_json())]),
+            entry: entry("mcpServers", None, vec![]),
             command: Some(format!("claude mcp add --transport stdio columbus -- {word}")),
             notes: with_env(vec![]),
         },
@@ -1051,7 +1069,7 @@ pub(crate) fn other_apps(server: &str, env: &[(String, String)]) -> Vec<OtherApp
             id: "lm-studio",
             name: "LM Studio",
             file: in_home(&[".lmstudio", "mcp.json"]),
-            entry: entry("mcpServers", vec![("command", s(server)), ("args", J::A(vec![])), ("env", env_json())]),
+            entry: entry("mcpServers", None, vec![]),
             command: None,
             notes: with_env(vec!["LM Studio reads the file again when it is saved.".into()]),
         },
@@ -1309,6 +1327,18 @@ mod tests {
                 "{}",
                 a.id
             );
+            // Nothing belongs in the environment here, so there is no line for it.
+            assert!(
+                v[top]["columbus"].get("env").is_none() && !a.entry.contains("env"),
+                "{}: {}",
+                a.id,
+                a.entry
+            );
+            assert!(
+                !a.notes.iter().any(|n| n.contains("COLUMBUS_PYTHON")),
+                "{}",
+                a.id
+            );
         }
         // As read on 2026-11-11: the type each app names, and its tools line.
         let entry = |id: &str| serde_json::from_str::<serde_json::Value>(&by(id).entry).unwrap();
@@ -1320,10 +1350,14 @@ mod tests {
             entry("copilot-vscode")["mcpServers"]["columbus"]["tools"],
             serde_json::json!(["*"])
         );
-        assert_eq!(
-            entry("copilot-cli")["mcpServers"]["columbus"]["type"],
-            "local"
-        );
+        // The Copilot CLI reads the file Copilot in VS Code reads: the
+        // entry is the same one, and each says so.
+        assert_eq!(by("copilot-cli").entry, by("copilot-vscode").entry);
+        assert!(by("copilot-vscode")
+            .file
+            .starts_with(&by("copilot-cli").file));
+        assert!(by("copilot-cli").notes[0].contains("VS Code reads the same file"));
+        assert!(by("copilot-vscode").notes[0].contains("Copilot CLI reads the same file"));
         assert_eq!(
             entry("visual-studio")["servers"]["columbus"]["type"],
             "stdio"
@@ -1356,7 +1390,7 @@ mod tests {
             ["{", "  \"mcpServers\": {", "    \"columbus\": {"]
         );
         assert!(lines[3].starts_with("      \"command\": "), "{}", lines[3]);
-        assert_eq!(lines[4], "      \"args\": [],");
+        assert_eq!(lines[4..], ["      \"args\": []", "    }", "  }", "}"]);
         assert!(by("copilot-vscode").entry.contains("\"tools\": [\"*\"]"));
         // Codex: TOML, the path as it is written on this system.
         let codex = by("codex");
@@ -1391,12 +1425,29 @@ mod tests {
             server,
             &[("COLUMBUS_PYTHON".into(), "/opt/gis/bin/python3".into())],
         );
-        let v: serde_json::Value = serde_json::from_str(&apps[0].entry).unwrap();
-        assert_eq!(
-            v["mcpServers"]["columbus"]["env"]["COLUMBUS_PYTHON"],
-            "/opt/gis/bin/python3"
-        );
-        assert!(apps[0].notes.iter().any(|n| n.contains("COLUMBUS_PYTHON")));
+        for a in apps.iter().filter(|a| a.id != "codex") {
+            let v: serde_json::Value = serde_json::from_str(&a.entry).unwrap();
+            let top = if ["visual-studio", "jetbrains"].contains(&a.id) {
+                "servers"
+            } else {
+                "mcpServers"
+            };
+            assert_eq!(
+                v[top]["columbus"]["env"],
+                serde_json::json!({"COLUMBUS_PYTHON": "/opt/gis/bin/python3"}),
+                "{}",
+                a.id
+            );
+            assert!(
+                a.notes.iter().any(|n| n.contains("COLUMBUS_PYTHON")),
+                "{}",
+                a.id
+            );
+        }
+        // After the arguments, before what the app adds of its own.
+        let lines: Vec<&str> = apps[1].entry.lines().map(str::trim).collect();
+        let at = |start: &str| lines.iter().position(|l| l.starts_with(start)).unwrap();
+        assert!(at("\"args\"") < at("\"env\"") && at("\"env\"") < at("\"tools\""));
         assert!(apps
             .iter()
             .find(|a| a.id == "codex")

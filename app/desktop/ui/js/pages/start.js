@@ -1,7 +1,7 @@
 // What a new chat shows before anything is asked: the first steps when
 // nothing is set up, and what changed that the person should know. (Home's
 // parts, moved here: the app opens on a question now.)
-import { h, icon, invoke, store, button, savePrefs, showError } from "../core.js";
+import { h, put, icon, invoke, store, button, savePrefs, showError } from "../core.js";
 import { openEditor } from "./connections.js";
 import { workMode } from "./settings.js";
 
@@ -88,7 +88,8 @@ export function firstSteps(s, again) {
       : chat.key_needed && !chat.has_key ? (chat.no_store || "")
         : !chat.model ? `${chat.service_name} is chosen. Choose its model in Settings › Assistant: Columbus has no list of what is on your computer.`
           : "";
-    ai.append(h("b", {}, "Connect an AI for the chat"), form, err1,
+    // (`put`, not `append`: with nothing missing there is no line to add.)
+    put(ai, h("b", {}, "Connect an AI for the chat"), form, err1,
       need ? h("span", { class: "where", id: "fr-ai-need" }, need, !chat.model && svc && svc.allowed ? [" ", h("a", { href: "#/settings/ai" }, "Open Settings › Assistant")] : null) : null,
       h("span", { class: "where", id: "fr-ai-about" }, svc ? svc.about : "", " ",
         takesKey ? "The key is kept in your computer's credential store, never in a file, and this app can never read it back. " : "",
@@ -108,9 +109,10 @@ export function firstSteps(s, again) {
       h("div", { class: "row" }, button("Check again", "sm", () => again()), skipped.has("engine") ? null : skip("engine")));
   }
   checks.append(h("li", {}, mark("engine"), eng));
-  // How the assistant works: freely on copies, or asking before each script.
+  // How the assistant works: freely on copies, or asking before each script
+  // (left out when the settings could not be read: there is nothing to show).
   const mode = s.st ? h("div", { class: "stack", id: "fr-mode" }, h("h3", {}, "How should your assistant work?"), workMode(s.st, () => again(), "fr-work", false)) : null;
-  box.append(checks, mode,
+  put(box, checks, mode,
     h("div", { class: "row welcome-foot" }, h("span", { class: "small muted grow" }, "Your assistant sees only what your connections allow; anything that changes data or leaves this computer asks you first."),
       button("Skip setup", "ghost sm", async () => { await savePrefs({ setup_done: true }); again(); }, { id: "fr-skip" })));
   return box;

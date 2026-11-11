@@ -26,6 +26,15 @@
   to a page's next read of one of the app's commands back, and hand it
   over later (as it is, or as a failure), to show that a read which ends
   after a newer one is not drawn over it.
+- `unnamed(d)`: the controls on show that a screen reader could not name,
+  and (through `stray`) anything in the window that reads as a value that
+  was not there: the word "null" or "undefined" written out. Every script
+  asks this of each page it visits.
+- `stray(d, within, words)`: the second of those alone; with `words`, for a
+  part of the window whose words are all the app's own, these words
+  anywhere in a sentence too.
+- `answers(d, cmd, how)`: have the page's reads of one command fail, or
+  come back with some fields changed, to show what a page draws then.
 """
 
 import atexit
@@ -259,10 +268,95 @@ def unnamed(d):
     cannot reach: in the dialog that is open, else in the whole window. A
     name is an aria-label, a label, the control's own text or its title; a
     placeholder alone is not one. (The script is shared with the map page's
-    tests: app/ui/e2e/a11y.py.)"""
+    tests: app/ui/e2e/a11y.py.) With them, anything in the window that reads
+    as a value that was not there (`stray`): a screen reader would say that
+    word too."""
     sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ui" / "e2e"))
     from a11y import UNNAMED
-    return d.execute_script(UNNAMED)
+    # And nothing in the window reads as a value that was not there: asked
+    # here, so that every page a script checks for names is checked for it.
+    return d.execute_script(UNNAMED) + stray(d)
+
+
+# A value that was not there, written out. `Element.append(null)` and
+# `replaceChildren(undefined)` do not skip what is missing, as the pages'
+# own `h()` does: they write the word "null" or "undefined" into the page.
+# A sentence built from a missing value says it too ("ending in undefined").
+_STRAY = """
+const [within, words] = arguments;
+const root = within ? document.querySelector(within) : document.documentElement;
+if (!root) return ['nothing matches ' + within];
+const whole = /^(null|undefined|NaN|\\[object [A-Za-z]+\\])$/;
+const inside = /(^|[^A-Za-z0-9_])(null|undefined|NaN)([^A-Za-z0-9_]|$)|\\[object [A-Za-z]+\\]/;
+const bad = (t) => (words ? inside : whole).test(t.trim());
+const where = (e) => {
+  const parts = [];
+  for (let x = e; x && x.nodeType === 1 && parts.length < 4; x = x.parentElement) {
+    parts.unshift(x.tagName.toLowerCase() + (x.id ? '#' + x.id : '') + (typeof x.className === 'string' && x.className.trim() ? '.' + x.className.trim().split(/\\s+/).join('.') : ''));
+    if (x.id) break;
+  }
+  return parts.join(' > ');
+};
+const out = [];
+const walk = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+for (let n = walk.nextNode(); n; n = walk.nextNode()) {
+  const p = n.parentElement;
+  if (!p || p.closest('script, style, template')) continue;
+  if (bad(n.data)) out.push('the text "' + n.data.trim().slice(0, 80) + '" in ' + where(p));
+}
+const said = ['title', 'aria-label', 'placeholder', 'alt'];
+for (const e of [root, ...root.querySelectorAll('*')]) {
+  if (e.nodeType !== 1) continue;
+  for (const a of said) {
+    const v = e.getAttribute(a);
+    if (v != null && bad(v)) out.push(a + '="' + v.slice(0, 80) + '" on ' + where(e));
+  }
+  // What a field was filled with (not a password, which no page is given).
+  if (e.matches('input:not([type=password]):not([type=checkbox]):not([type=radio]):not([type=hidden]), textarea') && bad(e.value)) out.push('the value "' + e.value.slice(0, 80) + '" in ' + where(e));
+}
+return out;
+"""
+
+
+def stray(d, within=None, words=False):
+    """What in the window (or in the part `within` selects) reads as a value
+    that was not there: a piece of text, a title, a label or a placeholder
+    that is the word "null", "undefined" or "NaN", or "[object Object]".
+    With `words`, any text that has one of these words in it: for a part of
+    the window whose words are all the app's own (not a chat, where a person
+    may well ask about null values)."""
+    return d.execute_script(_STRAY, within, words)
+
+
+# What a page draws when a read fails or says something else. Nothing of
+# the app is changed: the page's way to the app's commands is wrapped here,
+# in the page, as `hold` does it.
+_ANSWERS = """
+const [cmd, how] = arguments;
+const T = window.__TAURI__;
+if (!window.__answers) {
+  const real = T.core;
+  const changes = {};
+  const wrapped = Object.create(real);
+  Object.defineProperty(wrapped, 'invoke', { value: (c, ...rest) => {
+    const ch = changes[c];
+    if (ch === undefined) return real.invoke(c, ...rest);
+    if (ch === 'fail') return Promise.reject('The app did not answer (a test).');
+    return real.invoke(c, ...rest).then((r) => Object.assign({}, r, ch));
+  } });
+  window.__answers = { real, changes };
+  T.core = wrapped;
+}
+if (how === null) delete window.__answers.changes[cmd]; else window.__answers.changes[cmd] = how;
+if (!Object.keys(window.__answers.changes).length) { T.core = window.__answers.real; window.__answers = null; }
+"""
+
+
+def answers(d, cmd, how):
+    """From now on the page's reads of the command `cmd` fail (`how` is
+    "fail"), or come back with the fields in `how` (a dict) put over the
+    app's own answer; `None` puts the command back as it was."""
+    d.execute_script(_ANSWERS, cmd, how)
 
 
 # An older read that ends after a newer one. A page asks the app for

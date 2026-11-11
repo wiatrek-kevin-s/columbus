@@ -34,6 +34,12 @@ body:
         - Claude desktop
         - Another AI app (say which below)
         - The command line
+  - type: input
+    id: ai
+    attributes:
+      label: Which AI service or AI app (optional)
+      description: "In the app's own chat: the service chosen under Settings › Assistant (Anthropic, OpenAI, xAI, Google Gemini, OpenRouter, Ollama, LM Studio, or one you added) and the model, as the line under the message box names them. With another AI app: which app. Never its key."
+      placeholder: "Google Gemini, with the model the chat named"
   - type: textarea
     id: steps
     attributes:
