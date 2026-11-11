@@ -125,8 +125,8 @@ The app has a chat of its own, and you choose the AI it talks to. Open **Setting
 | xAI (Grok) | console.x.ai | Billed per use |
 | Google Gemini | aistudio.google.com | Billed under the Gemini API's terms |
 | OpenRouter | openrouter.ai | Billed per use. It passes your chat on to the company whose model you pick |
-| Ollama on this computer | No key | No bill. Ollama must be running, with a model pulled that can call tools |
-| LM Studio on this computer | A key only if you turned on its sign-in | No bill. Its local server must be running, with a model loaded that can call tools |
+| Ollama on this computer | No key | No bill. Ollama must be running, with a model pulled that can call tools and a context length of about 32,000 tokens or more |
+| LM Studio on this computer | A key only if you turned on its sign-in | No bill. Its local server must be running, with a model loaded that can call tools and a context length of about 32,000 tokens or more |
 
 With Ollama or LM Studio the model runs on your own Mac, and nothing is sent to an AI company. Small local models often call tools unreliably. **Any other service** that speaks one of three common request formats can be added with **Add another service**: Azure OpenAI, Mistral, DeepSeek, Groq, Together, Amazon Bedrock, or your organization's own gateway. You give it a name, its address, the format and how its key is sent. Adding one asks for Touch ID or your Mac password first, because it changes where your messages, and the rows your assistant reads, are sent.
 

@@ -875,8 +875,8 @@
           "expected": "no fix-now finding is open; the others are logged"
         }
       ],
-      "status": "todo",
-      "evidence": "Review run on commit 428cabd by a fresh subagent that built nothing (2026-11-11; its brief is docs/final-review.md applied to build-brief-3). It ran: the whole Rust suite (529 passed), the Python worker tests, the map page unit tests, all twelve desktop scripts and four map page scripts, fmt, both clippy runs, skills and link checks; a licence check of the 36 crates part 3 added (all MIT, Apache-2.0, Zlib or 0BSD) and a match of all 620 locked crates against RustSec's database (no vulnerability advisory applies; cargo audit itself could not be installed); a secret scan of the part-3 diff (stand-ins only); the five GeoLibre pins against the publisher's files, with two archives downloaded and hashed and the program's text read, never run. Its own negative tests through the real gateway on Linux: a script under scripts.approval none was refused every read outside its inputs (including /etc, /proc, the policy, connections, the audit log, other sessions), every socket family, signals, ptrace, namespaces, links and renames out of its folder; toolbox arguments, project file path tricks and toolbox command failures all behaved. Verdict: part 3 does what the owner asked and the boundary held against every attempt run. Twelve findings: one Fix now (sync sends data and password files the page says stay out: R-103), three Fix when convenient, eight Accept; the cheap ones are R-104; the rest are logged in docs/progress-log.md. No finding lets the assistant widen its own access. Not checked: anything at run time on Windows or macOS (code and CI logs read), the real GeoLibre program (H-3), a real GitHub or Gitea (H-4). Fixes and the re-check: see R-103 and R-104. Fixes merged as 4ed41ed. One re-check in another fresh subagent (2026-11-11, on 7077969, it built none of it and fixed nothing): R-103's fix-now part is fixed, seen by running; R-104 is fixed in seven of eight items; the secret scan is only partly fixed, which by this review's scale (a leaked password is data leaked) is a Fix-now finding: R-105. Its eight new findings and what was done with each are in docs/progress-log.md. This task is done when R-105 is."
+      "status": "done",
+      "evidence": "Review run on commit 428cabd by a fresh subagent that built nothing (2026-11-11; its brief is docs/final-review.md applied to build-brief-3). It ran: the whole Rust suite (529 passed), the Python worker tests, the map page unit tests, all twelve desktop scripts and four map page scripts, fmt, both clippy runs, skills and link checks; a licence check of the 36 crates part 3 added (all MIT, Apache-2.0, Zlib or 0BSD) and a match of all 620 locked crates against RustSec's database (no vulnerability advisory applies; cargo audit itself could not be installed); a secret scan of the part-3 diff (stand-ins only); the five GeoLibre pins against the publisher's files, with two archives downloaded and hashed and the program's text read, never run. Its own negative tests through the real gateway on Linux: a script under scripts.approval none was refused every read outside its inputs (including /etc, /proc, the policy, connections, the audit log, other sessions), every socket family, signals, ptrace, namespaces, links and renames out of its folder; toolbox arguments, project file path tricks and toolbox command failures all behaved. Verdict: part 3 does what the owner asked and the boundary held against every attempt run. Twelve findings: one Fix now (sync sends data and password files the page says stay out: R-103), three Fix when convenient, eight Accept; the cheap ones are R-104; the rest are logged in docs/progress-log.md. No finding lets the assistant widen its own access. Not checked: anything at run time on Windows or macOS (code and CI logs read), the real GeoLibre program (H-3), a real GitHub or Gitea (H-4). Fixes and the re-check: see R-103 and R-104. Fixes merged as 4ed41ed. One re-check in another fresh subagent (2026-11-11, on 7077969, it built none of it and fixed nothing): R-103's fix-now part is fixed, seen by running; R-104 is fixed in seven of eight items; the secret scan is only partly fixed, which by this review's scale (a leaked password is data leaked) is a Fix-now finding: R-105. Its eight new findings and what was done with each are in docs/progress-log.md. This task is done when R-105 is. R-105 is done (see there): the review, its fixes and its one re-check are complete."
     },
     {
       "id": "T-36",
@@ -963,8 +963,8 @@
           "expected": "HTTP to a host that is not this computer is refused; the key header goes only to the service's own address, in the form that service takes it"
         }
       ],
-      "status": "todo",
-      "evidence": ""
+      "status": "done",
+      "evidence": "Commits ab633d2, e540d5e, 2b09fe4, 992bec1 (merged as ef720b8). crates/chat is one loop over three request formats (messages.rs, responses.rs, completions.rs), with services.rs (the built-in services and the address rule), http.rs (key header, no redirects, retries, plain errors, key removal) and schema.rs. The six earlier tests in crates/gateway/tests/chat.rs are unchanged and pass. crates/gateway/tests/chat_services.rs (20 tests, later 29) drives a governed session through each format, plain and streamed, against stand-in services: tools, a declined approval, an export, a map snapshot as a picture, several calls in one step, a reply cut off; damaged calls not run, ids made unique, estimated token counts, the extra field sent back unchanged, no key on a page or in a file, 429 and 500, a redirect never followed, the address rule. A fault that existed before was confirmed and fixed in all three formats: Stop during the request after a tool step left tool calls without results. Linux: whole Rust suite 614 passed. CI: all 14 jobs passed on ef720b8 at the first run, and on every later head of pull request 28. Independent review (T-40), about 150 runs against its own stand-in services: redirects, proxies, 76 odd addresses, the key quoted back, untrusted answers, approvals and Stop all held; no Fix-now finding in this part. Not verified: any real AI service (no key of any service was used; H-6)."
     },
     {
       "id": "T-38",
@@ -992,8 +992,8 @@
           "expected": "all pass on Linux here and on Windows, macOS and Linux in CI"
         }
       ],
-      "status": "todo",
-      "evidence": ""
+      "status": "done",
+      "evidence": "Commits 8a82457, 68a659d, a8adf8a, d0d712c (merged as ef720b8); page faults fixed in 8490afb, c9b3021, 9cc6014 (merged as 6989e51). Policy assistant.hosts in crates/shared/src/policy.rs; app/desktop/src-tauri/src/assistant.rs (services, keys under ai-key:<id>, added services confirmed at the keyboard and recorded in the credential store); Settings, the first run and the chat's foot; the part for other AI apps. app/desktop/e2e/services.py: each kind of service against its stand-in, a key, a chat, a model change, an added service with and without the confirmation, removal, assistant.hosts refusing in Settings, at chat start and in a running chat, the other-apps entries with Copy; app/desktop/e2e/foot.py measures the chat's foot at four widths; guard.stray looks for stray words such as null on every page the scripts visit. Both scripts run in CI. The docs builder found two faults while taking pictures (the word null on the first run; the project's name cut in the chat's foot); both fixed with tests that failed before. CI: all 14 jobs passed on 6989e51 and 0059d8f. Not verified: the real credential store and the keyboard prompt on Windows and macOS (stand-ins on Linux)."
     },
     {
       "id": "T-39",
@@ -1009,8 +1009,8 @@
           "expected": "no doc says the chat needs Claude or an Anthropic key; the honest limits of D-22 are stated; pictures and alt texts match the app; the link check passes"
         }
       ],
-      "status": "todo",
-      "evidence": ""
+      "status": "done",
+      "evidence": "Commits 5dabbbb (pictures), e20fd54 (docs), merged as 1d1c4e3; wording corrected in 922a25f and in the record commit of R-107. README, both install guides, the app tour, capabilities, architecture, the 0.15.0 release notes and the manual checks (new optional check H-6, and a third short look) say what the chat does now. No doc says the chat needs Claude or an Anthropic key; none says a service met the real thing in this build (the review found that 'every service except Anthropic is untried' implied it for Anthropic; reworded). Pictures of the first run, Settings, Settings › Assistant, the chat's foot and Activity retaken from the app; the animation remade. Link check passes."
     },
     {
       "id": "T-40",
@@ -1026,8 +1026,8 @@
           "expected": "no Fix-now finding is open; the other findings are in the log"
         }
       ],
-      "status": "todo",
-      "evidence": ""
+      "status": "blocked",
+      "evidence": "Review run on 0059d8f by a fresh subagent that built none of it (2026-11-11; brief: the method of docs/final-review.md applied to the addendum of build-brief-3 and to R-105). It ran the whole Rust suite (623 passed), the Python worker's tests, all fourteen desktop scripts, the map page's, fmt and clippy, a release check of the app, about 150 runs of its own driver against its own stand-in services, its own script against the real app, and for the search 90 files with a made-up secret and 84 without. Verdict: the any-AI part has no Fix-now finding (where a key goes, redirects, the organization's limit, approvals, the caps and Stop held); the search for passwords has one Fix-now finding (14) besides the class already being built (16). Nineteen findings; all and what was done with each are in docs/progress-log.md. Fixed: 14, 15 in part, 16, 18, 19 as R-105's second part and R-106; 1, 2, 3, 4, 6, 7, 8, 10, 11, 12 as R-107. Blocked, not done: the one re-check of those fixes in another fresh subagent was not run. The owner asked on 2026-11-11 to finish now and to drop what is not needed; the fixes rest on the builders' tests, each of which failed before its fix, and on CI on three systems. Named in the hand-over, where the owner is offered the re-check."
     },
     {
       "id": "R-105",
@@ -1047,8 +1047,50 @@
           "expected": "all pass on Linux here and on Windows, macOS and Linux in CI; what the fresh check still gets through is logged"
         }
       ],
-      "status": "todo",
-      "evidence": ""
+      "status": "done",
+      "evidence": "First part: commits 412b35d, c114317, 223f5e9 (the search finds comments, docstrings, subscripts, notes' markup, XML and SQL forms, command lines; UTF-16 text), 56a4d38, 31e7ed2 (map documents, token files, more data formats and macro files stay on the computer), 4f43f08 (a program in a folder of keys is refused), 4fbdaee (Send it anyway in the dialog that shows a held file), d723553 (words); merged as 80dcbc4. Second part: 7ad7c55, 10762e0 (a password handed to a call by its place), b5d60ea (a long line is searched in time that grows with its length); merged as 4436f82. Failed before, pass now: secrets::tests::everyday_forms_stop_a_sync (66 of 72 forms were not found), the sync and gateway tests named in the commits. Measured by the builder over 58,180 ordinary files (20.95 million lines): 21 newly stopped lines, of which 2 false alarms. A fresh subagent (the review of T-40, part B) then tried the search with forms of its own through the real paths: of 90 files with a made-up secret 67 were stopped at 0059d8f (52 before R-105), and none of 84 clean files was stopped by the search; what still got through is the class of the second part and R-106. After the second part and R-106 the builder reports 87 of those 90 files found. CI: all 14 jobs passed on 80dcbc4 and later heads; the second part's CI is the pull request's last run."
+    },
+    {
+      "id": "R-106",
+      "title": "Review of T-40, finding 14 (Fix now) and its cheap neighbours (15, 18, 19): a real password that holds a sign such as $ or %, or a word such as password, is no longer taken for a stand-in; more everyday forms; more names stay on the computer; two false stops are let through",
+      "session": "S13",
+      "depends_on": [
+        "T-40"
+      ],
+      "done_by": "claude",
+      "acceptance": [
+        {
+          "how": "Claude adds a test with every line the review got through, and near-misses that must stay quiet",
+          "expected": "each line is stopped; true templates still pass"
+        },
+        {
+          "how": "Claude runs the tests of the crates changed, then CI",
+          "expected": "all pass on Linux here and on Windows, macOS and Linux in CI"
+        }
+      ],
+      "status": "done",
+      "evidence": "Commit 0ea0bf2 (merged as 4436f82). A stand-in is now a value that is a template (${…}, $NAME, %NAME%, {name}, <…>, alone or with only signs between), a value put together from parts, a mask, a hash, a pattern, or a stand-in word with no digit mix that reads as a real password; an address's password is judged after %xx is decoded. Tests: a_password_with_a_sign_or_a_word_of_a_stand_in_stops_a_sync (56 of 58 checks failed before), a_template_a_mask_or_a_word_that_says_so_is_a_stand_in, more_forms_from_the_review_stop_a_sync, near_misses_of_the_forms_from_the_review_do_not, the_kinds_the_review_named. The builder's runs: columbus-shared 166 tests, columbus-sync 97, the gateway's project_files 10, fmt and clippy clean; the review's own lists now: 82 of 95 secret lines and 87 of 90 secret files found, none of its 161 clean lines and files stopped; corpus (58,178 files): 12 newly stopped lines, none a false alarm in ordinary text after six classes were fixed. Left out and listed in the reference: user / password pairs in prose, a short wordless password, tokens after plain words; a password that is exactly $ and a name, or holds a name in braces, reads as a template. Not independently re-checked: see T-40."
+    },
+    {
+      "id": "R-107",
+      "title": "Review of T-40, the cheap set for any AI (findings 1, 2, 3, 4, 6, 7, 8, 10, 11, 12): a key never follows an address it was not saved for; Settings and the first run say where GitHub Copilot is; a workflow's AI review keeps to the organization's list; local models get the length limit they read and a model without tools is named; a message that got no answer is taken back; plain words when a local service is not running; a key made of words no longer garbles ordinary work; small hardening",
+      "session": "S13",
+      "depends_on": [
+        "T-40"
+      ],
+      "done_by": "claude",
+      "acceptance": [
+        {
+          "how": "Claude adds a test for each item that fails before its fix",
+          "expected": "each passes after; the six earlier Anthropic tests are unchanged"
+        },
+        {
+          "how": "Claude runs the tests of what changed, then CI",
+          "expected": "all pass on Linux here and on Windows, macOS and Linux in CI"
+        }
+      ],
+      "status": "done",
+      "evidence": "Commits c30cacd (finding 7: a message that got no answer is taken back), 483a60c (3), abbc980 (4), f48f656 (8, 10, 11 and a User-Agent header), 2ca9915 (12), 7676a5a (6), b57b9fa (1: the saved key is deleted whenever the confirmed record differs from what is being confirmed; the prompt shows the whole address), b383337 (2); merged as 06efb18. Each test failed against the earlier code (for finding 1: 'the key saved for the confirmed address was sent to the rewritten one'). The builder's runs at the end: gateway chat 6, chat_services 29, workflows 5; columbus-chat 55; desktop crate 50; desktop scripts services and foot; fmt and clippy clean. Dropped on the owner's instruction of 2026-11-11 to finish without what is not needed: plainer tool schemas on the second try, and the wording when a Mac's keychain prompt is declined (finding 13). Finding 9 (the settings file can move new chats to another service that has a key) is logged. Not independently re-checked: see T-40."
     }
   ]
 }

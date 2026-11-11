@@ -159,7 +159,9 @@ sync:
                               # e.g. [gitea.example.org]
 
 # The AI services the Columbus app's own chat may use. What the chat reads
-# is sent to the service it uses, so this names who may see those rows.
+# is sent to the service it uses, so this names who may see those rows. A
+# workflow's AI review keeps to it too: it uses Anthropic, so it runs only
+# if api.anthropic.com is listed (or the list is empty).
 # Unknown keys here are refused. (It does not limit which other AI app a
 # person connects to Columbus: this file's other rules govern what any of
 # them is given.)
