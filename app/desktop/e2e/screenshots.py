@@ -21,9 +21,19 @@ confirmation at the keyboard is the tests' stand-in, since Linux has no
 Touch ID or Windows Hello). That writes the policy's seven settings, so
 the second session shows the app as it is from then on: the chat, a
 workflow, the data, a project with its files and a chat that runs one of
-its scripts in the sandbox without asking, and the Tools page with
-Columbus's own catalogue. Nothing is downloaded or installed: no toolbox
-is shown that is not really there.
+its scripts in the sandbox without asking, the Tools page with
+Columbus's own catalogue, and Settings with its Assistant part. Nothing
+is downloaded or installed: no toolbox is shown that is not really there.
+
+The AI service. For the first run's picture the person picks a service
+from the list under "Connect an AI for the chat" (Ollama on this
+computer, which takes no key, so the row reads the same on every system),
+then goes back to Anthropic, which the stand-in speaks as. No real AI
+service is contacted and no real key is used: the chat's key is a made-up
+one from the environment, and keys are kept by the tests' stand-in for
+the credential store (COLUMBUS_APP_TEST_KEYS, debug builds only), since
+Linux has no store Columbus can use; so Settings › Assistant shows what
+Windows and macOS show, not the notice Linux gets in its place.
 
 The data: app/desktop/e2e/demo/austin.gpkg, a public extract (US Census
 TIGER/Line roads and blocks, NHTSA FARS fatal crashes; see
@@ -47,6 +57,7 @@ from urllib.parse import unquote
 
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.support.ui import Select
 
 import guard
 from guard import step
@@ -71,9 +82,12 @@ APP = Path(ARGS.app).resolve()
 ROOT = Path(ARGS.root)
 
 W, H = 1600, 1000
-# The hero's window: the chat with its map beside it, at about the size the
-# README shows it (900 pixels wide), so the words are readable.
-HERO = (1240, 760)
+# The hero's window: the chat with its map beside it, near the size the
+# README shows it (900 pixels wide), so the words are readable; and wide
+# enough that the chat's foot has room for the project, the AI service, the
+# model and the thinking level (under about 1340 pixels, with the panel at
+# the width it starts with, the project's name is cut short).
+HERO = (1360, 760)
 QUESTION = "Which fatal crashes from 2020 to 2023 happened within 150 feet of IH 35 in central Austin? Count them by year."
 EXPORT_ASK = "Export those crashes to the review folder for the safety team."
 CRASHES = "fars_fatal_crashes_2020_2023"
@@ -481,10 +495,11 @@ def layers_on(d, names=None):
 
 def app_env(srv=None):
     """The app's settings for a session; with `srv`, an AI is connected
-    (the stand-in). Confirmations at the keyboard are the tests' stand-in."""
+    (the stand-in). Confirmations at the keyboard are the tests' stand-in,
+    and so is the credential store that keeps the keys of AI services."""
     col = ROOT / "Columbus"
     env = dict(os.environ, HOME=str(ROOT),
-               COLUMBUS_SERVER=str(col / "columbus-mcp"), COLUMBUS_APP_TEST_CONFIRM="allow",
+               COLUMBUS_SERVER=str(col / "columbus-mcp"), COLUMBUS_APP_TEST_CONFIRM="allow", COLUMBUS_APP_TEST_KEYS="memory",
                COLUMBUS_POLICY=str(col / "policy.yaml"), COLUMBUS_CONNECTIONS=str(col / "connections"),
                COLUMBUS_WORKSPACES=str(col / "workspaces"), COLUMBUS_AUDIT_DIR=str(col / "audit"),
                COLUMBUS_LIVE_DIR=str(col / "live"), COLUMBUS_TOOLS=str(col / "tools"),
@@ -499,9 +514,25 @@ def app_env(srv=None):
     return env
 
 
+def choose(d, select_id, value):
+    """Choose an option of a select as a person does, with the select in
+    hand first (WebKit sends `change` only when the choice differs from the
+    one it noted when the select last took the focus)."""
+    d.execute_script("const s = document.getElementById(arguments[0]); s.blur(); s.focus();", select_id)
+    Select(d.find_element(By.ID, select_id)).select_by_value(value)
+
+
+def service_in_use(d):
+    """The AI service new chats use, as the app's settings have it."""
+    return d.execute_async_script("""
+        const done = arguments[arguments.length - 1];
+        window.__TAURI__.core.invoke('chat_settings').then((s) => done(s.service), () => done(null));""")
+
+
 def first_run(theme):
-    """A new computer: no connection, no AI. The first steps ask how the
-    assistant should work, and the person chooses Work freely on copies."""
+    """A new computer: no connection, no AI. The first steps offer the AI
+    services for the chat and ask how the assistant should work; the person
+    chooses Work freely on copies."""
     step(f"{theme}: the first run, and the choice")
     d, proc = guard.driver(app_env(), APP)
     s = Session(theme, None)
@@ -521,9 +552,22 @@ def first_run(theme):
         for line in ["allow_scripts: true", "approval: none", "allow_toolboxes: true", "allow_project_files: true", "allow_sync: true"]:
             if line not in policy:
                 sys.exit(f"the choice did not write {line!r} to the policy file:\n{policy}")
+        # The AI for the chat is a choice: here one that runs on this
+        # computer and takes no key. The row says what it needs.
+        choose(d, "fr-service", "ollama")
+        wait.until(lambda drv: "Ollama must be running" in drv.find_element(By.ID, "fr-ai-about").text
+                   and "On now: Work freely on copies." in drv.find_element(By.ID, "fr-work-state").text)
+        if service_in_use(d) != "ollama":
+            sys.exit("the first run did not keep the service that was picked")
+        d.execute_script("document.activeElement && document.activeElement.blur();")
         s.quiet()
         if theme == "light":
             s.shot("first-run", 250, size=(1280, 800))
+        # Back to the service the stand-in speaks as, for the next session.
+        choose(d, "fr-service", "anthropic")
+        wait.until(lambda drv: "console.anthropic.com" in drv.find_element(By.ID, "fr-ai-about").text)
+        if service_in_use(d) != "anthropic":
+            sys.exit("the first run did not go back to Anthropic")
     finally:
         guard.stop(d, proc)
 
@@ -549,6 +593,8 @@ def run(theme, facts, frames):
         # The app opens on a question in the middle of the window.
         box = wait.until(EC.visibility_of_element_located((By.ID, "text")))
         wait.until(lambda drv: drv.execute_script("return !!document.querySelector('.chat-empty .starters')"))
+        # The chat's foot names its AI service: the one the stand-in speaks as.
+        wait.until(lambda drv: drv.execute_script("return (document.getElementById('chat-service') || {}).textContent") == "Anthropic")
         time.sleep(2)
         if theme == "light":
             s.shot("start", 250, size=(1280, 800))
@@ -735,7 +781,19 @@ def run(theme, facts, frames):
             for page, name in [("#/activity", "activity"), ("#/settings", "settings")]:
                 d.execute_script("location.hash = arguments[0]", page)
                 time.sleep(1.5)
+                if name == "settings":
+                    # The sheet reads its parts from the app: drawn, each of them, before the picture.
+                    WebDriverWait(d, 20).until(lambda drv: drv.execute_script("""
+                        const m = document.getElementById('work-state'), s = document.getElementById('set-service-line');
+                        return !!m && /On now/.test(m.textContent) && !!s && /Anthropic/.test(s.textContent);"""))
                 s.shot(name, 250, size=(1280, 800))
+            # The Assistant part of Settings: the AI service for the chat,
+            # its key and its model, as the sheet opens.
+            d.execute_script("location.hash = '#/settings/ai'")
+            WebDriverWait(d, 20).until(lambda drv: drv.execute_script("""
+                const s = document.getElementById('service'), k = document.getElementById('key-state'), e = document.getElementById('apps-entry');
+                return !!s && s.value === 'anthropic' && !!k && /Key saved/.test(k.textContent) && !!e && /columbus-mcp/.test(e.textContent);"""))
+            s.shot("settings-assistant", 250, size=(1280, 800))
     finally:
         guard.stop(d, proc)
         srv.shutdown()
