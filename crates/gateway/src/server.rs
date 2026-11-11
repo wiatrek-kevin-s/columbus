@@ -362,6 +362,9 @@ pub struct PolicySummary {
     pub edits_allowed: bool,
     /// Personal tools (propose_tool, and tools the person installed) are on.
     pub personal_tools_allowed: bool,
+    /// Toolboxes (programs that describe their own tools, installed by the
+    /// person) are on; their tools are found with search_tools.
+    pub toolboxes_allowed: bool,
     /// Workflows (propose_workflow, and workflows the person approved) are on.
     pub workflows_allowed: bool,
     pub rows_returned_per_call: u64,
@@ -1958,6 +1961,8 @@ impl Gateway {
                 approval_tools,
             });
         }
+        // The toolboxes the person installed (toolbox.rs).
+        out.extend(self.toolbox_cards().await);
         out
     }
 
@@ -2055,6 +2060,7 @@ impl Gateway {
                 scripts_allowed: p.allow_scripts,
                 edits_allowed: p.allow_edits,
                 personal_tools_allowed: p.allow_personal_tools,
+                toolboxes_allowed: p.allow_toolboxes,
                 workflows_allowed: p.allow_workflows,
                 rows_returned_per_call: p.return_rows.unwrap_or(500).min(500),
                 rows_read_per_query: Some(limits.max_rows()),
@@ -2118,6 +2124,7 @@ impl Gateway {
                     notes.insert(0, why);
                 }
                 notes.extend(p.limits.ignored());
+                notes.extend(self.toolbox_notes().await);
                 notes.push("Changes the person makes in the Columbus app's Settings (connections, edits, scripts, personal tools, tools they install or remove) apply to this session within a second, from the next call: no restart is needed. Call whoami again to see them. When a change narrows what a connection allows, workspace files made from its data are removed, and every approval not yet used is withdrawn.".into());
                 notes
             },
@@ -2261,8 +2268,17 @@ impl Gateway {
             .filter(|(score, _)| words.is_empty() || *score > 0)
             .collect();
         scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.name.cmp(&b.1.name)));
+        // The tools of the toolboxes the person installed, best matches
+        // only (toolbox.rs).
+        let (cards, checks) = self
+            .toolbox_search(args.provider.as_deref(), &words, scored)
+            .await;
         self.audit(&ctx, rec)?;
-        Ok(out(scored.into_iter().map(|(_, c)| c).collect()))
+        Ok(Json(Output {
+            result: cards,
+            checks,
+            provenance: None,
+        }))
     }
 
     #[tool(
@@ -2276,6 +2292,12 @@ impl Gateway {
     ) -> Result<Json<Output<ToolDetail>>, String> {
         let rec = self.gate(&ctx, "describe_tool", &json!({"name": args.name}))?;
         if let Some((ns, tool_name)) = args.name.rsplit_once('.') {
+            // A tool of a toolbox the person installed (toolbox.rs).
+            if self.is_toolbox(ns) {
+                return self
+                    .describe_toolbox_tool(&ctx, rec, ns, tool_name, &args.name)
+                    .await;
+            }
             if let Some((host, pl)) = self.find_plugin(ns) {
                 if !self.state.policy().tool_allowed(&args.name) {
                     return Err(self.deny(&ctx, rec, Denied::Tool(args.name.clone())));
@@ -2614,7 +2636,7 @@ impl Gateway {
     }
 
     #[tool(
-        description = "List the providers available in this session: Columbus's own engines and any connected MCP servers (Drive, notes, vendor APIs), with each one's trust level, state and how many tools it enables, plus the data labels in force. Use it to plan which provider to use and whether a step will need approval.",
+        description = "List the providers available in this session: Columbus's own engines, any connected MCP servers (Drive, notes, vendor APIs) and the toolboxes the person installed (programs with many GIS tools, found with search_tools), with each one's trust level, state and how many tools it enables, plus the data labels in force. Use it to plan which provider to use and whether a step will need approval.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn list_providers(
@@ -2671,6 +2693,11 @@ impl Gateway {
         rec.provider = Some(ns.to_string());
         if !self.state.policy().tool_allowed(&args.name) {
             return Err(self.deny(&ctx, rec, Denied::Tool(args.name.clone())));
+        }
+        // A tool of a toolbox the person installed: confined at level A,
+        // no approval (toolbox.rs).
+        if self.is_toolbox(ns) {
+            return self.run_toolbox_tool(&ctx, rec, ns, tool, &args).await;
         }
         if let Some((host, pl)) = self.find_plugin(ns) {
             return self

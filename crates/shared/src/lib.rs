@@ -19,6 +19,7 @@ pub mod proof;
 pub mod sandbox;
 pub mod share;
 pub mod sqlcheck;
+pub mod toolboxes;
 pub mod tools;
 pub mod workflows;
 

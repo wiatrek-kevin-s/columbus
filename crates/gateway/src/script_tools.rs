@@ -1528,6 +1528,65 @@ impl Gateway {
     }
 }
 
+// ---------- shared with toolbox runs (R-22) ----------
+// A toolbox tool runs exactly as a script does: the same launcher
+// (`run_under`), the same cleared environment (`script_env`), the same
+// limits, and the same way out of the run folder. toolbox.rs takes them
+// from here, so the two cannot drift apart.
+
+/// Processes a confined run may have at once, itself included.
+pub(crate) const RUN_PROCESSES: u32 = PROCESSES;
+/// Bytes of stdout and of stderr a confined run gives back.
+pub(crate) const RUN_STREAM_CAP: usize = STREAM_CAP;
+/// Most input files a confined run is handed.
+pub(crate) const RUN_MAX_INPUTS: usize = MAX_INPUTS;
+
+impl Captured {
+    /// Whether the stream said more than is kept.
+    pub(crate) fn was_cut(&self) -> bool {
+        self.truncated()
+    }
+    /// How many bytes the stream said in all.
+    pub(crate) fn bytes(&self) -> u64 {
+        self.total
+    }
+}
+
+/// One file taken out of a run's `out/` folder: its name there, where it
+/// is now, the SHA-256 of the bytes copied and how many there were.
+pub(crate) struct TakenFile {
+    pub(crate) name: String,
+    pub(crate) path: PathBuf,
+    pub(crate) sha256: String,
+    pub(crate) bytes: u64,
+}
+
+/// [`collect_outputs`], for a toolbox run: the same plain-files-only walk,
+/// the same caps on how many and how large.
+pub(crate) fn take_run_outputs(
+    root: &Path,
+    out_dir: &Path,
+    results: &Path,
+    prefix: &str,
+) -> (Vec<TakenFile>, Vec<String>) {
+    let (taken, skipped) = collect_outputs(root, out_dir, results, prefix);
+    let taken = taken
+        .into_iter()
+        .map(|t| TakenFile {
+            name: t.name,
+            path: t.path,
+            sha256: t.sha256,
+            bytes: t.bytes,
+        })
+        .collect();
+    (taken, skipped)
+}
+
+/// The extension a copy of `p` gets: letters and digits only.
+pub(crate) fn copy_ext(p: &Path) -> String {
+    safe_ext(p)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
