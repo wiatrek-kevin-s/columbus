@@ -14,7 +14,8 @@ What it walks through:
   message naming the key;
 * Settings > Git servers: the link to the server's token page, a wrong
   token, connecting (the account's name is shown), git-servers.yaml
-  without a token;
+  without a token; each server is asked what it is before the token is
+  sent to it;
 * a project's Sync section, on the GitHub stand-in: link to a new private
   repository, add a file, Sync, change the file on the server, Check for
   changes, What changed (before and after), Sync, a conflict settled each
@@ -363,6 +364,10 @@ def main():
         said = text(d, "git-form-error")
         assert "did not accept the token" in said and MARK not in said, said
         assert not servers_file.exists(), "a server whose token was refused is not kept"
+        # R-104: the GitHub Enterprise Server was asked what it is first,
+        # without the token; only then was it asked whose token this is.
+        seen = github.state()["seen"]
+        assert [(r["path"], r["token"]) for r in seen] == [("/meta", "none"), ("/user", "other")], seen
         # The right token.
         box = d.find_element(By.ID, "git-token")
         box.clear()
@@ -751,10 +756,13 @@ def main():
         for s in (github, gitea):
             seen = s.state()["seen"]
             assert seen and all(r["host"].startswith(f"{host}:") for r in seen)
-            # Every request carried the token, but for Gitea's version (asked
-            # without one) and the one try with the wrong token, above.
+            # Every request carried the token, but for what each server is
+            # asked first without one (Gitea its version, the GitHub
+            # Enterprise Server what it is) and the one try with the wrong
+            # token, above.
             rest = [(r["path"], r["token"]) for r in seen if r["token"] != "ours"]
-            assert all(r in [("/version", "none"), ("/user", "other")] for r in rest), rest[:3]
+            assert all(r in [("/version", "none"), ("/meta", "none"), ("/user", "other")] for r in rest), rest[:3]
+            assert (seen[0]["path"], seen[0]["token"]) == (("/meta" if s is github else "/version"), "none"), seen[:2]
             assert rest.count(("/user", "other")) == (1 if s is github else 0), rest
             assert not any(r["forced"] for r in seen), "nothing was ever forced"
             assert all(r["agent"].startswith("columbus-sync/") for r in seen), seen[0]["agent"]

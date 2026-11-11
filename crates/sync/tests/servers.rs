@@ -43,6 +43,13 @@ async fn connecting_says_whose_token_it_is() {
                     Some(format!("Bearer {TOKEN}").as_str())
                 );
                 assert_eq!(user.api_version.as_deref(), Some("2022-11-28"));
+                // A GitHub Enterprise Server was asked what it is first,
+                // without the token (R-104).
+                assert_eq!(w.seen[0].path, "/meta");
+                assert_eq!(
+                    w.seen[0].auth, None,
+                    "no token before the server is known to be one"
+                );
             }
             Kind::Gitea => {
                 assert_eq!(
@@ -99,6 +106,108 @@ async fn a_wrong_token_is_said_plainly_and_never_repeated() {
             "nothing was sent"
         );
     }
+}
+
+/// GitHub Enterprise Server (R-104): the server is asked what it is
+/// without the token (`GET /api/v3/meta`), as Gitea is asked its version,
+/// so an address that is not a GitHub Enterprise Server's never receives
+/// the token.
+#[tokio::test]
+async fn a_github_enterprise_server_is_asked_what_it_is_before_the_token_is_sent() {
+    use std::sync::{Arc, Mutex};
+    // A mistyped address: some other web server answers there. It notes
+    // the Authorization header of everything it is sent.
+    type Sent = Vec<(String, Option<String>)>;
+    let sent: Arc<Mutex<Sent>> = Arc::default();
+    let log = sent.clone();
+    let other = http::serve(axum::Router::new().fallback(axum::routing::any(
+        move |req: axum::extract::Request| {
+            let log = log.clone();
+            async move {
+                let auth = req
+                    .headers()
+                    .get("authorization")
+                    .and_then(|v| v.to_str().ok())
+                    .map(str::to_string);
+                log.lock()
+                    .unwrap()
+                    .push((req.uri().path().to_string(), auth));
+                (
+                    axum::http::StatusCode::NOT_FOUND,
+                    "<html><body>Not found</body></html>",
+                )
+            }
+        },
+    )))
+    .await;
+    columbus_sync::remote::allow_loopback_http_for_tests();
+    let address = Address::parse(Kind::GitHub, &other.url()).unwrap();
+    let server = Server::new(&address, TOKEN, None).unwrap();
+    let err = server.check().await.unwrap_err();
+    assert!(matches!(err, Error::NotFound(_)), "{err:?}");
+    let said = err.to_string();
+    assert!(
+        said.contains("did not answer as a GitHub Enterprise Server does")
+            && said.contains("127.0.0.1")
+            && said.contains("Your token was not sent"),
+        "{said}"
+    );
+    assert!(!said.contains("zq7k"), "{said}");
+    {
+        let sent = sent.lock().unwrap();
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        assert_eq!(sent[0], ("/api/v3/meta".to_string(), None), "{sent:?}");
+    }
+    // The same for a Gitea addressed as a GitHub Enterprise Server.
+    let gitea = Lab::new(Kind::Gitea).await;
+    let address = Address::parse(Kind::GitHub, &gitea.running.url()).unwrap();
+    let err = Server::new(&address, TOKEN, None)
+        .unwrap()
+        .check()
+        .await
+        .unwrap_err();
+    assert!(matches!(err, Error::NotFound(_)), "{err:?}");
+    assert!(gitea
+        .world
+        .lock()
+        .unwrap()
+        .seen
+        .iter()
+        .all(|s| s.auth.is_none()));
+
+    // A GitHub Enterprise Server that answers /meta: known, then asked
+    // whose token it is.
+    let lab = Lab::new(Kind::GitHub).await;
+    lab.server().check().await.unwrap();
+    {
+        let w = lab.world.lock().unwrap();
+        assert_eq!(w.seen.len(), 1);
+        assert_eq!((w.seen[0].path.as_str(), &w.seen[0].auth), ("/meta", &None));
+    }
+    // One that makes everyone sign in first (private mode) refuses /meta
+    // without a token, and still names itself in the refusal: known too.
+    lab.world.lock().unwrap().knobs.private_mode = true;
+    let server = lab.server();
+    server.check().await.unwrap();
+    assert_eq!(server.whoami().await.unwrap().login, "ana");
+    {
+        let w = lab.world.lock().unwrap();
+        let with_token: Vec<&str> = w
+            .seen
+            .iter()
+            .filter(|s| s.auth.is_some())
+            .map(|s| s.path.as_str())
+            .collect();
+        assert_eq!(with_token, ["/user"], "the token went with /user only");
+    }
+    // A wrong token is refused by the server it was meant for, after it
+    // has said what it is.
+    let err = lab
+        .server_with("zq7k-wrong-token-9876543210")
+        .whoami()
+        .await
+        .unwrap_err();
+    assert!(matches!(err, Error::Token(_)), "{err:?}");
 }
 
 #[tokio::test]

@@ -57,6 +57,9 @@ pub struct Knobs {
     pub read_only: Vec<String>,
     /// Answer after this long (to test time limits).
     pub delay_ms: u64,
+    /// GitHub Enterprise Server: everyone must sign in first (private
+    /// mode), so a request without a token is refused, `/meta` included.
+    pub private_mode: bool,
 }
 
 /// Everything a stand-in server holds.
