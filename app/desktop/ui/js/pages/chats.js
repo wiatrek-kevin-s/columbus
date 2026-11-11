@@ -962,14 +962,19 @@ function buildLive() {
       await updateChip();
     }
   };
-  modelSel.addEventListener("change", () => { fitSelect(modelSel); onPick(); });
-  effortSel.addEventListener("change", () => { fitSelect(effortSel); onPick(); });
+  modelSel.addEventListener("change", () => { fitSelect(modelSel); sayPicks(); onPick(); });
+  effortSel.addEventListener("change", () => { fitSelect(effortSel); sayPicks(); onPick(); });
   // The message box with its send button; under it, quietly: where the
-  // chat works, and the model it uses.
+  // chat works, and the AI it uses. They are two groups: on one line where
+  // the column is wide enough for both whole, and where it is not (the
+  // panel on the right is open) the AI takes a line of its own, so nothing
+  // is cut to make room.
   const composer = h("form", { id: "composer" },
     h("label", { for: "text", class: "visually-hidden" }, "Message"),
     h("div", { class: "box" }, text, stop, send),
-    h("div", { class: "under", id: "chat-foot" }, sub, status, h("span", { class: "spacer" }), serviceName, modelSel, effortSel));
+    h("div", { class: "under", id: "chat-foot" },
+      h("span", { class: "place", id: "chat-place" }, sub, status),
+      h("span", { class: "ai", id: "chat-ai" }, serviceName, modelSel, effortSel)));
   const projectBox = h("details", { class: "project-note", id: "chat-project", hidden: true });
   const col = h("section", { class: "chatcol", "aria-label": "Chat" }, head, greeting, projectBox, tray, log, composer);
   view.append(col);
@@ -1100,9 +1105,11 @@ function drawSub() {
   const projects = store.projects?.projects || [];
   if (!live.started && !live.run) {
     // Before the first message, the project can still be chosen.
-    const pick = h("select", { id: "chat-project-pick", class: "pick", "aria-label": "Project for this chat", title: "A project gives a chat its instructions and narrows the connections it may use." },
+    const pick = h("select", { id: "chat-project-pick", class: "pick", "aria-label": "Project for this chat" },
       h("option", { value: "" }, "No project"), ...projects.map((p) => h("option", { value: p.id }, p.name)), h("option", { value: "+" }, "Projects…"));
     pick.value = live.project && projects.some((p) => p.id === live.project) ? live.project : "";
+    // (A long name is cut in the picker: pointed at, it is said whole.)
+    pick.title = `${pick.value ? `${projectName(pick.value)}. ` : ""}A project gives a chat its instructions and narrows the connections it may use.`;
     pick.addEventListener("change", () => {
       if (pick.value === "+") { pick.value = live.project || ""; location.hash = "#/projects"; return; }
       live.project = pick.value || null;
@@ -1113,10 +1120,13 @@ function drawSub() {
   } else {
     // Under the message box: the project this chat works in; a chat opened
     // from a workflow run says which, with a way back to its report.
+    // (Each says its name whole when pointed at: a very long one is cut
+    // where a line of its own cannot hold it.)
     const project = live.project
-      ? h("a", { href: `#/projects/${encodeURIComponent(live.project)}`, title: "This chat's project: its instructions and the connections it may use" }, projectName(live.project))
+      ? h("a", { href: `#/projects/${encodeURIComponent(live.project)}`, title: `${projectName(live.project)}. This chat's project: its instructions and the connections it may use.` }, projectName(live.project))
       : live.run ? null : h("a", { href: "#/projects", title: "Not in a project. Projects give a chat instructions and narrow the connections it may use." }, "No project");
-    const run = live.run ? h("a", { id: "chat-run", href: `#/workflows/${encodeURIComponent(live.run.workflow)}/${encodeURIComponent(live.run.run)}`, title: "The run this chat opened" }, `${live.run.name || live.run.workflow} run`) : null;
+    const runName = live.run ? `${live.run.name || live.run.workflow} run` : "";
+    const run = live.run ? h("a", { id: "chat-run", href: `#/workflows/${encodeURIComponent(live.run.workflow)}/${encodeURIComponent(live.run.run)}`, title: `${runName}. The run this chat opened.` }, runName) : null;
     sub.replaceChildren(...[project, project && run ? h("span", { class: "sep" }) : null, run].filter(Boolean));
   }
   // What the assistant is following, in plain sight.
@@ -1270,16 +1280,28 @@ async function updateChip() {
     fill($("chat-effort"), efforts, pick.effort, (e, l) => e ? `Thinking: ${l.replace(/ \(.*\)$/, "").toLowerCase()}` : "Thinking: default");
     // A service with one level has nothing to choose.
     $("chat-effort").hidden = efforts.length < 2;
-    const rows = store.info?.policy?.in_force?.return_rows;
     const name = v ? v.name : s.service_name;
+    live.shownName = name || "";
     $("chat-service").textContent = name || "";
     $("chat-service").title = modelNote(name);
-    $("chat-model").title = `${modelNote(name)} ${(models.find(([m]) => m === pick.model) || [0, ""])[1]}${rows ? ` It sees at most ${Number(rows).toLocaleString()} rows per call (your organization's policy).` : ""}`;
-    $("chat-effort").title = "How much the model thinks before it answers. Higher is slower, costs more and is more thorough.";
+    sayPicks();
     fitSelect($("chat-model"));
     fitSelect($("chat-effort"));
     drawSub();
   } catch { /* none */ }
+}
+
+// What the two pickers say when pointed at: the choice in full first (a
+// long model id is cut in the picker), then what it means. Said again when
+// the person chooses another.
+function sayPicks() {
+  const model = $("chat-model");
+  const effort = $("chat-effort");
+  if (!model || !effort) return;
+  const chosen = (sel) => (sel.selectedOptions[0] ? sel.selectedOptions[0].textContent : "");
+  const rows = store.info?.policy?.in_force?.return_rows;
+  model.title = `${chosen(model)}. ${modelNote(live.shownName)}${rows ? ` It sees at most ${Number(rows).toLocaleString()} rows per call (your organization's policy).` : ""}`;
+  effort.title = `${chosen(effort)}. How much the model thinks before it answers. Higher is slower, costs more and is more thorough.`;
 }
 
 // Events of the live chat, wherever the window is.

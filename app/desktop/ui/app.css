@@ -517,7 +517,10 @@ body.start.setup .welcome-foot { margin-bottom: -22px; }
 .ended { background: var(--fill); border-radius: 14px; padding: 10px 10px 10px 14px; font-size: 12.5px; line-height: 18px; color: var(--ink2); display: flex; gap: 10px; align-items: center; }
 .ended > span { flex: 1 1 auto; min-width: 0; }
 /* The message box: the words, the send button; under it, where and with what */
-#composer { margin: 2px auto 0; padding: 0 max(14px, calc((100% - var(--col)) / 2 - 8px)); width: 100%; display: grid; grid-template-columns: minmax(0, 1fr); flex: none; }
+/* (A block, not a grid: the line under the box takes a second line where
+   the column is narrow, and WebKit does not size a grid's row again when
+   the column's width changes under it, which left that line cut off.) */
+#composer { margin: 2px auto 0; padding: 0 max(14px, calc((100% - var(--col)) / 2 - 8px)); width: 100%; display: block; flex: none; }
 #composer .box { display: flex; align-items: flex-end; gap: 8px; padding: 7px 7px 7px 16px; border: 1px solid var(--line2); border-radius: 22px; background: var(--panel); }
 #composer .box:focus-within { border-color: var(--mute); }
 #composer textarea { flex: 1 1 auto; min-width: 0; padding: 4px 0; border: 0; border-radius: 0; resize: none; background: none; color: var(--ink); height: 28px; min-height: 28px; max-height: 180px; font-size: 14px; line-height: 20px; outline: none; overflow-y: auto; scrollbar-width: thin; }
@@ -526,19 +529,33 @@ body.start.setup .welcome-foot { margin-bottom: -22px; }
 #composer.no-text .sendbtn { background: var(--fill2); color: var(--mute); }
 .sendbtn:disabled { opacity: .5; cursor: default; }
 #composer #stop { border-radius: 14px; flex: none; }
-#composer .under { display: flex; align-items: center; gap: 6px; min-height: 40px; padding: 2px 6px 4px 8px; font-size: 12px; color: var(--mute); min-width: 0; }
+/* Under the box: where the chat works (its project, a run it opened, what
+   the assistant is doing now), then the AI it uses (the service, the model,
+   the thinking level). Where one line holds both whole they share it, the
+   AI at its far end. Where it does not (the panel on the right is open in a
+   window of ordinary size) the AI goes to a line of its own, and its
+   pickers to another if they must: nothing is cut to make room, and a name
+   is cut only where a whole line cannot hold it. */
+#composer .under { display: flex; flex-wrap: wrap; align-items: center; gap: 0 6px; min-height: 40px; padding: 2px 6px 4px 8px; font-size: 12px; color: var(--mute); min-width: 0; }
+#composer .under .place { display: flex; align-items: center; gap: 6px; flex: 1 1 auto; min-width: 0; min-height: 26px; }
+#composer .under .ai { display: flex; flex-wrap: wrap; align-items: center; gap: 0 6px; flex: 0 1 auto; min-width: 0; max-width: 100%; }
 #composer .under .sub { display: flex; align-items: center; gap: 8px; min-width: 0; white-space: nowrap; overflow: hidden; flex: 0 1 auto; }
-#composer .under select.pick { flex: none; }
-#composer .under .spacer { min-width: 0; }
+/* (The ellipsis shows where the system draws one in a picker: on Windows.) */
+#composer .under select.pick { flex: 0 1 auto; padding-left: 6px; text-overflow: ellipsis; }
+/* Before the first message the project is a picker, and the line is always
+   a wide one: a long name shows more of itself here than a picker's usual
+   width holds (the whole of it is in its title). */
+#composer .under #chat-project-pick { max-width: 240px; }
 #composer .under .sub a { text-decoration: none; color: var(--ink2); font-weight: 500; padding: 3px 6px; overflow: hidden; text-overflow: ellipsis; }
 #composer .under .sub a:hover { text-decoration: underline; }
 #composer .under .sep { width: 3px; height: 3px; border-radius: 50%; background: var(--faint); flex: none; }
 #composer #status { font-size: 12px; color: var(--mute); white-space: nowrap; padding-left: 6px; }
 #composer #status:empty { display: none; }
-#composer.busy select.pick { display: none; }
-/* The service a chat talks to, said quietly before its model. */
-#composer .under #chat-service { flex: none; white-space: nowrap; max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
-#composer.busy #chat-service { display: none; }
+/* While the assistant works, what it is doing stands where the AI was. */
+#composer.busy .under .ai { display: none; }
+/* The service a chat talks to, said quietly before its model. (Its left
+   padding is the project link's: on a line of its own it starts under it.) */
+#composer .under #chat-service { flex: 0 1 auto; min-width: 0; white-space: nowrap; max-width: 226px; padding-left: 6px; line-height: 26px; overflow: hidden; text-overflow: ellipsis; }
 #composer.busy #status::before { content: ""; display: inline-block; width: 8px; height: 8px; margin-right: 7px; border: 1.6px solid var(--line2); border-top-color: var(--ink); border-radius: 50%; animation: spin .8s linear infinite; vertical-align: -1px; }
 select.pick { min-width: 0; max-width: 168px; flex: 0 1 auto; height: 26px; padding: 0 22px 0 8px; border: 0; border-radius: 7px; background-color: transparent; background-position: right 3px center; color: var(--mute); font-size: 12px; font-weight: 400; }
 select.pick:hover:not(:disabled) { background-color: var(--fill); color: var(--ink); }
@@ -635,6 +652,10 @@ a.footline > svg.ic:last-child { margin-left: auto; }
   .grid2 { grid-template-columns: 1fr; }
   .outputs { position: absolute; right: 0; top: 0; bottom: 0; z-index: 8; width: min(var(--out-w), calc(100vw - 72px)); min-width: min(380px, calc(100vw - 72px)); max-width: none; box-shadow: var(--shadow); }
   body.out-full .outputs { position: relative; right: auto; width: auto; min-width: 0; box-shadow: none; }
+  /* The panel floats over the middle here. The message box and the line
+     under it keep clear of it (its width is the rule above), as long as
+     that leaves them 240 px: Send, the project and the AI stay in sight. */
+  body.out-open:not(.out-full) #composer { padding-right: max(14px, calc((100% - var(--col)) / 2 - 8px), min(calc(max(min(var(--out-w), 100vw - 72px), min(380px, 100vw - 72px)) + 12px), calc(100% - 254px))); }
 }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
 .small .block { display: block; }
