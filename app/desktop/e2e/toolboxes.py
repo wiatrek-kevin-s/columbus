@@ -22,8 +22,9 @@ Two sessions of the app:
    are ready;
    the tools are found by words and one opens in the panel on the right;
    the assistant finds one and runs it without being asked to approve, and
-   its result is a layer on the chat's map; a program changed after it
-   was installed is shown as off; Remove takes the toolbox away,
+   its result is a layer on the chat's map; Table on its result card
+   opens that result's rows, not a newer layer's; a program changed after
+   it was installed is shown as off; Remove takes the toolbox away,
    and the same chat's assistant is no longer offered its tools. Last, a
    program on this computer is added with its description file, listed,
    found and removed (the program itself stays where it is).
@@ -121,7 +122,11 @@ SCRIPT = [
     tool_use("t2", "query_features", {"connection": "tiger", "dataset": "tracts"}),
     "run_on_last",
     {"content": [{"type": "text", "text": "Copied the tracts with a toolbox tool."}], "stop_reason": "end_turn"},
-    # Second message, once the toolbox is removed: look again, and try it.
+    # Second message: a newer layer with one tract, so the Table of the
+    # tool's result card (two tracts) can be told from the newest layer's.
+    tool_use("t6", "query_features", {"connection": "tiger", "dataset": "tracts", "where": "NAME = 'B'"}),
+    {"content": [{"type": "text", "text": "Read tract B alone."}], "stop_reason": "end_turn"},
+    # Third message, once the toolbox is removed: look again, and try it.
     tool_use("t4", "search_tools", FIND),
     "run_again",
     {"content": [{"type": "text", "text": "That toolbox is no longer there."}], "stop_reason": "end_turn"},
@@ -428,6 +433,48 @@ def main():
         finally:
             d.switch_to.default_content()
         d.save_screenshot(str(OUT / "toolboxes-map.png"))
+
+        step("Table on the tool's result card opens that result's rows, not a newer layer's")
+        send(d, "Now read tract B alone.")
+        WebDriverWait(d, 120).until(lambda drv: "Read tract B alone." in drv.find_element(By.ID, "log").text)
+        WebDriverWait(d, 20).until(lambda drv: len(drv.find_elements(By.CSS_SELECTOR, "#log .result")) == 2)
+
+        def table_shown():
+            """The table sheet on the map: whose rows it shows, and how many
+            (None: the sheet is not open)."""
+            d.switch_to.frame(frame)
+            try:
+                return d.execute_script(
+                    "const t = document.querySelector('section.table'); if (!t) return null;"
+                    "const n = t.querySelector('.table-name');"
+                    "return [n ? n.textContent : '', t.querySelectorAll('tbody tr').length];")
+            finally:
+                d.switch_to.default_content()
+
+        assert table_shown() is None, "the map alone until the table is asked for"
+        cards = d.find_elements(By.CSS_SELECTOR, "#log .result")
+        # The tool copied the two tracts; the newer layer holds one. The
+        # tool's card first: the newest layer is the one the map has in
+        # front, so a card that named no result would open the newest.
+        for card, made_by, rows in [(cards[0], "geolibre-vector_copy-", 2), (cards[1], "tracts-p_", 1), (cards[0], "geolibre-vector_copy-", 2)]:
+            press = card.find_element(By.CSS_SELECTOR, ".result-table")
+            d.execute_script("arguments[0].scrollIntoView({block: 'center'})", press)
+            press.click()
+
+            def is_that_cards():
+                name, n = table_shown() or ["", -1]
+                return n == rows and made_by in name
+
+            try:
+                WebDriverWait(d, 30).until(lambda drv: is_that_cards())
+                # It stays that card's when the page reads its results again (every 2 s).
+                time.sleep(2.6)
+                assert is_that_cards()
+            except Exception:
+                d.save_screenshot(str(OUT / "toolboxes-table-failed.png"))
+                raise SystemExit(f"Table on a result card showed {table_shown()}, not the {rows} rows of {made_by}")
+        named(d)
+        d.save_screenshot(str(OUT / "toolboxes-table.png"))
         chat = d.execute_script("return location.hash")
 
         step("A program that changed since it was installed: the toolbox says so, and its tools are not listed")
