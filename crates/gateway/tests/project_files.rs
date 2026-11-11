@@ -794,7 +794,7 @@ async fn paths_and_files_the_rules_refuse_stay_refused() {
 
 // Made up for these tests, and put together here so that no line of this
 // file looks like a credential: none is real.
-const PASSWORD: &str = "Wint3r2026";
+const PASSWORD: &str = concat!("Wint3r", "2026");
 fn made_up_token() -> String {
     format!("gh{}_{}", "p", "0123456789abcdefghijABCDEFGHIJ012345")
 }
@@ -1077,6 +1077,94 @@ async fn everyday_forms_of_a_password_are_not_read_to_the_assistant_or_written_b
             format!("sdetable -o list -u gis -p {PASSWORD}\n"),
             "line 1 (a password written into the file (on a command line))",
         ),
+        // Handed to a well-known call by its place, with no name beside it.
+        (
+            "sign_in.py",
+            format!("from arcgis.gis import GIS\ngis = GIS(\"https://www.arcgis.com\", \"ana\", \"{PASSWORD}\")\n"),
+            "line 2 (a password written into the file (handed to a call that signs in))",
+        ),
+        (
+            "sign_in_long.py",
+            format!("gis = GIS(\n    \"https://gis.corp.example/portal\",\n    \"ana\",\n    \"{PASSWORD}\",\n)\n"),
+            "line 4 (a password written into the file (handed to a call that signs in))",
+        ),
+        (
+            "fetch.py",
+            format!("import requests\nr = requests.get(url, auth=(\"ana\", \"{PASSWORD}\"))\n"),
+            "line 2 (a password written into the file (handed to a call that signs in))",
+        ),
+        (
+            "env.py",
+            format!("import os\npassword = os.environ.get(\"PGPASSWORD\", \"{PASSWORD}\")\n"),
+            "line 2 (a password or key written into the file (a quoted value))",
+        ),
+        (
+            "load.sh",
+            format!("sqlplus gis/{PASSWORD}@orcl @load.sql\n"),
+            "line 1 (a password written into the file (an Oracle sign-in, user/password@database))",
+        ),
+        (
+            "pair.py",
+            format!("USER, PASSWORD = \"gis\", \"{PASSWORD}\"\n"),
+            "line 1 (a password or key written into the file (a quoted value))",
+        ),
+        // A password to fall back on, and more calls that take one by its
+        // place.
+        (
+            "tool.py",
+            format!("import arcpy\npassword = arcpy.GetParameterAsText(1) or \"{PASSWORD}\"\n"),
+            "line 2 (a password or key written into the file (a quoted value))",
+        ),
+        (
+            "env_named.py",
+            format!("import os\npassword = os.getenv(\"PGPASSWORD\", default=\"{PASSWORD}\")\n"),
+            "line 2 (a password or key written into the file (a quoted value))",
+        ),
+        (
+            "run.sh",
+            format!("export PGPASSWORD=\"${{PGPASSWORD:-{PASSWORD}}}\"\npsql -h db1 roads\n"),
+            "line 1 (a password written into the file)",
+        ),
+        (
+            "admin.py",
+            format!("arcpy.management.CreateDatabaseUser(sde, \"DATABASE_USER\", \"editor1\", \"{PASSWORD}\")\n"),
+            "line 1 (a password written into the file (handed to a call that signs in))",
+        ),
+        (
+            "mssql.py",
+            format!("import pymssql\nconn = pymssql.connect(\"db1\", \"gis\", \"{PASSWORD}\", \"roads\")\n"),
+            "line 2 (a password written into the file (handed to a call that signs in))",
+        ),
+        (
+            "nested.py",
+            format!("gis = GIS(url, \"ana\", os.environ.get(\"AGOL_PW\", \"{PASSWORD}\"))\n"),
+            "line 1 (a password or key written into the file (a quoted value))",
+        ),
+        // A real password with a sign or a word that stand-ins use, and
+        // the word in another language (the review after R-105's re-check).
+        (
+            "sign.py",
+            "password = \"Parc3l$View\"\n".to_string(),
+            "line 1 (a password or key written into the file (a quoted value))",
+        ),
+        (
+            "word.py",
+            "password = \"Password123!\"\n".to_string(),
+            "line 1 (a password or key written into the file (a quoted value))",
+        ),
+        (
+            "uri.py",
+            format!(
+                "engine = create_engine(\"postgresql://gis_reader:{}@db1.corp.example:5432/gis\")\n",
+                "Dra1nage%21Map"
+            ),
+            "line 1 (an address with a password in it)",
+        ),
+        (
+            "zugang.md",
+            format!("Benutzer: test_gis\nPasswort: {}\n", "Br0cken!Weg"),
+            "line 2 (a password written into the file)",
+        ),
     ];
     // What the person (or a colleague, through sync) put there.
     for (name, text, _) in &cases {
@@ -1085,7 +1173,7 @@ async fn everyday_forms_of_a_password_are_not_read_to_the_assistant_or_written_b
     let fine = [
         (
             "plain.py",
-            "\"\"\"Load the roads.\n\n    password: the database password, read from the environment\n\"\"\"\nimport os\n\n# ask Ana for the password; it is kept by Columbus, never here\npassword = os.environ[\"PGPASSWORD\"]\nos.environ[\"PGPASSWORD\"] = password\n",
+            "\"\"\"Load the roads.\n\n    password: the database password, read from the environment\n\"\"\"\nimport os\n\n# ask Ana for the password; it is kept by Columbus, never here\npassword = os.environ[\"PGPASSWORD\"]\nos.environ[\"PGPASSWORD\"] = password\ngis = GIS(url, username, password)\ngis = GIS(\"https://www.arcgis.com\", \"ana\", getpass.getpass())\nr = requests.get(url, auth=(user, pw))\nhost = os.environ.get(\"PGHOST\", \"db1.corp.example\")\npw = get_pw()\npassword = os.environ.get(\"PGPASSWORD\") or getpass.getpass()\nkey = os.environ.get(\"S3_KEY\", \"exports/2026/roads_north_v2.parquet\")\nftp.login(\"anonymous\", \"ana@county.gov\")\ny = np.exp(x/sigma2@w)\npassword = \"${DB_PASSWORD}\"\npassword = \"your-password-here\"\npwd = \"row_widths\"\ntoken_hash = \"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b\"\n",
         ),
         (
             "plain.md",
@@ -1161,6 +1249,13 @@ async fn a_password_in_a_comment_or_set_in_the_environment_keeps_a_script_from_r
         format!("# password: {PASSWORD}\nprint(open(__file__).read())\n"),
     )
     .unwrap();
+    // A sign-in with the password handed to the call by its place.
+    std::fs::create_dir_all(files_dir.join("portal")).unwrap();
+    std::fs::write(
+        files_dir.join("portal").join("sign_in.py"),
+        format!("GIS = print\ngis = GIS(\"https://www.arcgis.com\", \"ana\", \"{PASSWORD}\")\n"),
+    )
+    .unwrap();
     std::fs::write(
         files_dir.join("jobs").join("main.py"),
         "import geom\nfor name in ['comment_helper', 'environ_helper']:\n    try:\n        __import__(name)\n        print(name, 'came along')\n    except ImportError:\n        print(name, 'is not here')\nprint(geom.describe(2))\n",
@@ -1183,6 +1278,15 @@ async fn a_password_in_a_comment_or_set_in_the_environment_keeps_a_script_from_r
     assert!(
         e.contains("jobs/comment_main.py is not run")
             && e.contains("line 1 (a password written into the file)"),
+        "{e}"
+    );
+    assert!(!e.contains(PASSWORD), "{e}");
+    let e = err(&call(&c, "run_python", json!({"script": "portal/sign_in.py"})).await);
+    assert!(
+        e.contains("portal/sign_in.py is not run")
+            && e.contains(
+                "line 2 (a password written into the file (handed to a call that signs in))"
+            ),
         "{e}"
     );
     assert!(!e.contains(PASSWORD), "{e}");
