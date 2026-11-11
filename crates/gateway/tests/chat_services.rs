@@ -1570,6 +1570,72 @@ async fn a_refusal_inside_a_stream_is_told_apart_from_a_busy_service() {
     }
 }
 
+#[tokio::test]
+async fn a_chat_completions_stream_is_whole_when_the_service_says_done() {
+    let Some(py) = python() else { return };
+    use ai_stand_ins::event;
+    // A service that ends its stream with [DONE] and never says why: the
+    // reply is whole by its own word, and its tool call runs.
+    let piece = |delta: Value| {
+        event(
+            None,
+            &json!({"choices": [{"index": 0, "delta": delta, "finish_reason": null}]}),
+        )
+    };
+    let no_reason = piece(json!({"role": "assistant", "content": "Looking."}))
+        + &piece(
+            json!({"tool_calls": [{"index": 0, "id": "n1", "type": "function", "function": {"name": "whoami", "arguments": "{}"}}]}),
+        )
+        + "data: [DONE]\n\n";
+    // The same, but the arguments never finished: said to be over, and still not run.
+    let unfinished = piece(
+        json!({"tool_calls": [{"index": 0, "id": "n2", "type": "function", "function": {"name": "whoami", "arguments": "{\"a\": "}}]}),
+    ) + "data: [DONE]\n\n";
+    let mut run = Run::start(
+        &py,
+        Fmt::Chat,
+        true,
+        vec![
+            Next::Stream(no_reason),
+            Next::Stream(unfinished),
+            reply(say("Done.")),
+        ],
+    )
+    .await;
+    run.send("who am I?").await.unwrap();
+    run.assert_well_formed();
+    let finished = run.ui.finished();
+    assert_eq!(
+        finished.iter().map(|f| f.1).collect::<Vec<_>>(),
+        [true, false],
+        "{finished:?}"
+    );
+    assert!(finished[1].2.contains("arrived incomplete"), "{finished:?}");
+    assert_eq!(run.ui.texts(), ["Looking.", "Done."]);
+    // A model the service does not know is said as that, and does not use
+    // up the chat's one second try.
+    run.stand.push(Next::Status(400, vec![], json!({"error": {"message": "The model `gemini-3.8-flash` does not exist", "type": "invalid_request_error", "code": "model_not_found"}})));
+    let e = run.send("again").await.unwrap_err().to_string();
+    assert!(
+        e.starts_with("Google Gemini does not know the model gemini-3.8-flash"),
+        "{e}"
+    );
+    let asked = run.stand.requests().len();
+    run.stand.push(Next::Status(
+        400,
+        vec![],
+        json!({"error": {"message": "Unknown parameter: stream_options"}}),
+    ));
+    run.stand.push(reply(say("Without it.")));
+    run.send("again").await.unwrap();
+    assert_eq!(
+        run.stand.requests().len(),
+        asked + 2,
+        "the second try was still to be had"
+    );
+    run.close().await;
+}
+
 /// The fields each format can do without, as its requests carry them.
 fn optional_fields(fmt: Fmt) -> &'static [&'static str] {
     match fmt {
@@ -1967,6 +2033,9 @@ async fn a_services_own_list_of_models_is_taken_as_data() {
             json!("a-bare-string"),
             json!({"id": "models/gemini-3.8-flash"}),
             json!(null),
+            // The key handed back as a model's name is not shown as one.
+            json!({"id": KEY}),
+            json!({"id": format!("model-{}", &KEY[4..20])}),
         ];
         data.extend((0..2000).map(|n| json!({"id": format!("model-{n}")})));
         stand.inner.lock().unwrap().models = json!({"object": "list", "data": data});
@@ -1984,6 +2053,7 @@ async fn a_services_own_list_of_models_is_taken_as_data() {
             ]
         );
         assert!(got.iter().all(|id| services::model_id_ok(id)));
+        assert_no_key(&got.join(" "), "the list of models");
         // Nothing usable, and an answer that is not a list.
         stand.inner.lock().unwrap().models = json!({"data": [{"id": "not ok"}]});
         let e = columbus_chat::list_models(&stand.base, KEY, &service)

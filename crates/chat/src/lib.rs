@@ -960,6 +960,7 @@ impl Chat {
             if status == 400
                 && body.optional
                 && !no_credit
+                && !said.unknown_model(status)
                 && !self.tried_bare.swap(true, Ordering::SeqCst)
             {
                 self.bare.store(true, Ordering::SeqCst);

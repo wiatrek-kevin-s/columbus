@@ -493,6 +493,15 @@ impl Assemble for Assembly {
         self.finish.is_some()
     }
 
+    /// `[DONE]` is the service saying the reply is over, whether or not a
+    /// chunk gave the reason. (A tool call in it still runs only if its
+    /// arguments are one whole JSON object.)
+    fn end_said(&mut self) {
+        if self.started && self.finish.is_none() {
+            self.finish = Some("stop".to_string());
+        }
+    }
+
     fn whole(&mut self) -> Value {
         let mut message = Map::new();
         message.insert("role".into(), json!("assistant"));
@@ -887,6 +896,14 @@ mod tests {
         let mut s = Assembly::default();
         s.take(chunk(json!({"tool_calls": [{"index": 0, "id": "c", "function": {"name": "whoami", "arguments": "{\"a"}}]}), Value::Null)).unwrap();
         assert!(s.started() && !s.ended());
+        // Unless the service says so itself with [DONE], giving no reason.
+        s.end_said();
+        assert!(s.ended());
+        assert_eq!(s.whole()["choices"][0]["finish_reason"], "stop");
+        // [DONE] with nothing before it is no reply.
+        let mut s = Assembly::default();
+        s.end_said();
+        assert!(!s.ended() && !s.started());
     }
 
     #[test]

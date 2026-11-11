@@ -139,7 +139,11 @@ pub async fn list_models(address: &str, key: &str, service: &Service) -> Result<
     let mut out = Vec::new();
     for m in items {
         let id = m.as_str().or(m["id"].as_str()).or(m["name"].as_str());
-        let Some(id) = id.filter(|id| crate::services::model_id_ok(id)) else {
+        // A plain id, and never the key handed back as one.
+        let Some(id) = id
+            .filter(|id| crate::services::model_id_ok(id))
+            .filter(|id| matches!(scrub(id, net.key()), Cow::Borrowed(_)))
+        else {
             continue;
         };
         if seen.insert(id.to_string()) {
@@ -186,6 +190,7 @@ pub(crate) async fn read_sse(
                     let data = data.trim_start();
                     // How the Chat Completions format says a stream is over.
                     if data.trim_end() == "[DONE]" {
+                        s.end_said();
                         break 'read;
                     }
                     if let Ok(v) = serde_json::from_str::<Value>(data) {

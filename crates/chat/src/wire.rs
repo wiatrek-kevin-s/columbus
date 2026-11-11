@@ -100,6 +100,9 @@ pub(crate) trait Assemble: Send {
     fn ended(&self) -> bool {
         false
     }
+    /// The stream said in so many words that it is over (`data: [DONE]`,
+    /// in the Chat Completions format).
+    fn end_said(&mut self) {}
     /// The whole answer.
     fn whole(&mut self) -> Value;
 }

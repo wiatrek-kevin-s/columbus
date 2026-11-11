@@ -208,9 +208,13 @@ impl Wire for Responses {
             n - cached + cached / 10
         });
         let reason = answer["incomplete_details"]["reason"].as_str();
+        // Only a response that says it is complete (or says nothing of its
+        // state) is whole: one cut short, cancelled or still in progress
+        // runs no tool.
         let cut = match (answer["status"].as_str(), reason) {
             (_, Some("content_filter")) => Some(Stop::Filtered),
-            (Some("incomplete"), _) | (_, Some(_)) => Some(Stop::Length),
+            (Some(state), _) if state != "completed" => Some(Stop::Length),
+            (_, Some(_)) => Some(Stop::Length),
             _ => None,
         };
         let mut texts = Vec::new();
@@ -611,6 +615,17 @@ mod tests {
             w.history()[2],
             json!({"role": "assistant", "content": "Part of an answer"})
         );
+        // A response that is not complete, whatever it calls itself, runs nothing.
+        for state in ["cancelled", "in_progress", "queued"] {
+            let r = w
+                .reply(
+                    json!({"status": state, "output": [{"type": "function_call", "call_id": format!("x-{state}"), "name": "map_view", "arguments": "{}"}]}),
+                    &ask(&tools, "", false),
+                )
+                .unwrap();
+            assert!(r.calls.is_empty() && r.stop == Stop::Length, "{state}");
+        }
+        let before = w.history().len();
         // Nothing at all: still a turn.
         let r = w
             .reply(
@@ -619,7 +634,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(r.stop, Stop::End);
-        assert_eq!(w.history()[3]["content"], "(No answer.)");
+        assert_eq!(w.history()[before]["content"], "(No answer.)");
         // A refusal's words are the model's words.
         let r = w
             .reply(

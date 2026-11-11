@@ -52,11 +52,13 @@ GATEWAY = Path(sys.argv[1]).resolve()
 APP = Path(sys.argv[2]).resolve()
 OUT = Path(__file__).resolve().parent / "out"
 
-# Made up for this script: no service ever issued them.
+# Made up for this script: no service ever issued them. (No word in them:
+# a piece of a key eight characters long is taken out of whatever a service
+# sends, a model's name included.)
 KEYS = {
-    "openai": "tk-openai-7Qm2Xv9LpR4sWz81TnBc6Yd0HgEuJk5F",
-    "gemini": "tk-gemini-3Hc8Vb1NxK6mQw72RtLp9Zs4YdGfJe0A",
-    "anthropic": "tk-anthropic-5Wd0Zk3MvP8qLx64CnTr1Bs7YhGjFe2U",
+    "openai": "tk-o1-7Qm2Xv9LpR4sWz81TnBc6Yd0HgEuJk5F",
+    "gemini": "tk-g2-3Hc8Vb1NxK6mQw72RtLp9Zs4YdGfJe0A",
+    "anthropic": "tk-a3-5Wd0Zk3MvP8qLx64CnTr1Bs7YhGjFe2U",
     "gateway": "tk-gw-9Lp2Qs7x",
 }
 
