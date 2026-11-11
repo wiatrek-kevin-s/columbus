@@ -382,7 +382,7 @@ dependencies = [
  "anyhow",
  "apple-native-keyring-store",
  "axum",
- "base64 0.22.1",
+ "base64 0.23.1",
  "chrono",
  "columbus-broker",
  "columbus-chat",
@@ -448,7 +448,7 @@ name = "columbus-sync"
 version = "0.15.0"
 dependencies = [
  "axum",
- "base64 0.22.1",
+ "base64 0.23.1",
  "chrono",
  "columbus-flow",
  "columbus-shared",
