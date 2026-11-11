@@ -2072,3 +2072,493 @@ async fn a_services_own_list_of_models_is_taken_as_data() {
         assert!(e.contains("https://"), "{e}");
     }
 }
+
+// ---------- After the review of 2026-11-11 ----------
+
+/// A message the service did not answer is taken back: the next request
+/// holds the conversation without it, so two of the person's messages
+/// never stand in a row (a local model's template refuses that). What a
+/// tool step made before the failure stays, with the message that began
+/// it. The window was shown the message and the error, and keeps both.
+#[tokio::test]
+async fn a_message_that_failed_is_taken_back_in_every_format() {
+    let Some(py) = python() else { return };
+    for fmt in ALL {
+        // (Not a 400: that would be tried once more without the optional fields.)
+        let refuse = || {
+            Next::Status(
+                403,
+                vec![],
+                error_body(fmt, "permission_error", "this key may not use the model"),
+            )
+        };
+        let mut run = Run::start(&py, fmt, false, vec![refuse(), reply(say("Here now."))]).await;
+        let what = run.what();
+        let e = run.send("first question").await.unwrap_err();
+        assert!(e.to_string().contains("may not use"), "{what}: {e}");
+        assert!(
+            matches!(
+                run.ui.events.lock().unwrap().last(),
+                Some(Event::Error { .. })
+            ),
+            "{what}: the window is told"
+        );
+        run.send("second question").await.unwrap();
+        run.assert_well_formed();
+        let second = run.stand.requests().pop().unwrap();
+        assert_eq!(
+            conversation(fmt, &second).len(),
+            1,
+            "{what}: the request holds the message being asked, and no other: {second}"
+        );
+        let text = second.to_string();
+        assert!(
+            text.contains("second question") && !text.contains("first question"),
+            "{what}: {text}"
+        );
+        // A failure after a tool step: the step stays, call and result.
+        run.stand.push(reply(call("t1", "whoami", json!({}))));
+        run.stand.push(refuse());
+        run.stand.push(reply(say("Done.")));
+        assert!(run.send("who am I?").await.is_err(), "{what}");
+        run.send("and again?").await.unwrap();
+        run.assert_well_formed();
+        let last = run.stand.requests().pop().unwrap();
+        let kept = results(fmt, &last);
+        assert_eq!(
+            kept.len(),
+            1,
+            "{what}: the tool's result is still there: {last}"
+        );
+        assert_eq!(kept[0].0, "t1", "{what}");
+        let text = last.to_string();
+        for said in ["second question", "who am I?", "and again?"] {
+            assert!(
+                text.contains(said),
+                "{what}: {said} is in the conversation: {text}"
+            );
+        }
+        assert_eq!(
+            run.ui.texts().last().map(String::as_str),
+            Some("Done."),
+            "{what}"
+        );
+        run.close().await;
+    }
+}
+
+/// A port on this computer that nothing listens on.
+fn closed_port() -> u16 {
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    l.local_addr().unwrap().port()
+}
+
+/// A service on this computer that does not answer is not running: the
+/// person is told that, and to start it, not that their network is at
+/// fault. The same when its list of models is asked for.
+#[tokio::test]
+async fn a_service_on_this_computer_that_is_not_running_is_said_to_be_so() {
+    let Some(py) = python() else { return };
+    let said =
+        "is not running on this computer (nothing answers at its address). Start it and try again";
+    for (service, model, name) in [
+        (builtin("ollama").unwrap().service(), "llama3.3", "Ollama"),
+        (builtin("lmstudio").unwrap().service(), "qwen3", "LM Studio"),
+        (
+            own(Fmt::Chat, KeyHeader::Bearer, false),
+            "deployment-1",
+            "My gateway",
+        ),
+    ] {
+        let (_dir, root) = setup(&py);
+        let address = format!("http://127.0.0.1:{}/v1", closed_port());
+        let ui = TestUi::new(Answer::AllowOnce);
+        let mut chat = Chat::start_with(
+            config(&root, &py, &address, model),
+            service.clone(),
+            ui.clone(),
+            Cancel::default(),
+        )
+        .await
+        .unwrap();
+        let e = chat
+            .send("hello", &Cancel::default())
+            .await
+            .unwrap_err()
+            .to_string();
+        assert_eq!(e, format!("{name} {said}"));
+        assert!(
+            !e.contains("network") && !e.contains("offline"),
+            "nothing about the network: {e}"
+        );
+        assert!(
+            matches!(ui.events.lock().unwrap().last(), Some(Event::Error { text }) if *text == e)
+        );
+        chat.close().await;
+        let e = columbus_chat::list_models(&address, "", &service)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert_eq!(e, format!("{name} {said}"));
+    }
+}
+
+/// A key made of words (a gateway's, a local server's) does not get in the
+/// way of ordinary work: its words are everyday words, in what the model
+/// says and in the names and values of tool calls. Only the key itself is
+/// taken out of what is shown, and only a call whose value holds it is
+/// not run.
+#[tokio::test]
+async fn a_key_made_of_words_leaves_ordinary_words_alone() {
+    let Some(py) = python() else { return };
+    let key = "gis-connection-2026";
+    for fmt in ALL {
+        let (dir, root) = setup(&py);
+        let stand = StandIn::start(
+            fmt,
+            false,
+            vec![
+                reply(call(
+                    "w1",
+                    "query_features",
+                    json!({"connection": "tiger", "dataset": "tracts"}),
+                )),
+                // The key quoted whole in a value: not run. Then in its words.
+                reply(call(
+                    "w2",
+                    "query_features",
+                    json!({"connection": "tiger", "dataset": "tracts", "where": format!("NAME = '{key}'")}),
+                )),
+                reply(say(&format!(
+                    "The tracts of the tiger connection: 2 rows (connection-2026, gis-connection). Your key is {key}."
+                ))),
+            ],
+        )
+        .await;
+        let ui = TestUi::new(Answer::AllowOnce);
+        let mut cfg = config(&root, &py, &stand.base, "deployment-1");
+        cfg.api_key = key.into();
+        let mut chat = Chat::start_with(
+            cfg,
+            own(fmt, KeyHeader::Bearer, false),
+            ui.clone(),
+            Cancel::default(),
+        )
+        .await
+        .unwrap();
+        let what = fmt.name();
+        chat.send(
+            "Read the tracts of the tiger connection.",
+            &Cancel::default(),
+        )
+        .await
+        .unwrap();
+        let finished = ui.finished();
+        assert_eq!(finished.len(), 2, "{what}: {finished:?}");
+        assert!(
+            finished[0].1,
+            "{what}: a read whose arguments hold everyday words runs: {finished:?}"
+        );
+        assert!(
+            !finished[1].1 && finished[1].2.contains("carried the AI service's key"),
+            "{what}: a call that holds the key itself is not run: {finished:?}"
+        );
+        let shown = ui.shown();
+        assert!(
+            !shown.contains(key),
+            "{what}: the key itself is never shown: {shown}"
+        );
+        assert!(
+            shown.contains("the tiger connection: 2 rows (connection-2026, gis-connection). Your key is [key removed]."),
+            "{what}: its words are everyday words, and stay: {shown}"
+        );
+        assert!(
+            shown.contains("\"connection\":\"tiger\""),
+            "{what}: the call is shown as it was made: {shown}"
+        );
+        chat.close().await;
+        drop(dir);
+    }
+}
+
+/// A plain answer in the format's own shape, for a test to change before
+/// the stand-in sends it.
+fn raw(fmt: Fmt, said: &Said) -> Value {
+    ai_stand_ins::plain(fmt, said)
+}
+
+/// What a service sends beside its reply (a signature on a tool call, an
+/// encrypted reasoning item, a thinking block's signature) goes back with
+/// the conversation. A faulty service that sends megabytes of it cannot
+/// make the conversation grow: more than Columbus keeps is left out, and
+/// the tools still run and get their results.
+#[tokio::test]
+async fn what_a_service_sends_beside_its_reply_cannot_grow_the_conversation() {
+    let Some(py) = python() else { return };
+    let big = "S".repeat(3_000_000);
+    for fmt in ALL {
+        let bloated = |n: usize| {
+            let mut v = raw(fmt, &call(&format!("b{n}"), "whoami", json!({})));
+            match fmt {
+                Fmt::Messages => v["content"].as_array_mut().unwrap().insert(
+                    0,
+                    json!({"type": "thinking", "thinking": "", "signature": big}),
+                ),
+                Fmt::Responses => v["output"].as_array_mut().unwrap().insert(
+                    0,
+                    json!({"type": "reasoning", "id": format!("rs_{n}"), "summary": [], "encrypted_content": big}),
+                ),
+                Fmt::Chat => {
+                    v["choices"][0]["message"]["tool_calls"][0]["extra_content"] =
+                        json!({"google": {"thought_signature": big}})
+                }
+            }
+            Next::Raw(v)
+        };
+        let mut script: Vec<Next> = (0..4).map(bloated).collect();
+        script.push(reply(say("Done.")));
+        let mut run = Run::start(&py, fmt, false, script).await;
+        let what = run.what();
+        run.send("who am I, four times?").await.unwrap();
+        run.assert_well_formed();
+        let finished = run.ui.finished();
+        assert_eq!(finished.len(), 4, "{what}: {finished:?}");
+        assert!(finished.iter().all(|f| f.1), "{what}: {finished:?}");
+        let requests = run.stand.requests();
+        assert_eq!(requests.len(), 5, "{what}");
+        for (n, r) in requests.iter().enumerate() {
+            let size = r.to_string().len();
+            assert!(
+                size < 1_000_000,
+                "{what}: request {} holds {size} characters",
+                n + 1
+            );
+        }
+        // Every call still has its result in the last request.
+        assert_eq!(results(fmt, &requests[4]).len(), 4, "{what}");
+        run.close().await;
+    }
+}
+
+/// A plain answer may hold no more parts than a streamed one (a thousand):
+/// a faulty service cannot have ten thousand calls kept.
+#[tokio::test]
+async fn a_plain_answer_holds_no_more_parts_than_a_streamed_one() {
+    let Some(py) = python() else { return };
+    for fmt in ALL {
+        let many: Vec<(String, &str, Value)> = (0..1_001)
+            .map(|n| (format!("c{n}"), "whoami", json!({})))
+            .collect();
+        let many: Vec<(&str, &str, Value)> = many
+            .iter()
+            .map(|(id, name, args)| (id.as_str(), *name, args.clone()))
+            .collect();
+        let mut run = Run::start(
+            &py,
+            fmt,
+            false,
+            vec![Next::Raw(raw(fmt, &calls(&many))), reply(say("Hello."))],
+        )
+        .await;
+        let what = run.what();
+        let e = run.send("hello").await.unwrap_err().to_string();
+        assert_eq!(e, "the reply had too many parts", "{what}");
+        assert!(run.ui.finished().is_empty(), "{what}: nothing was run");
+        // The chat goes on.
+        run.send("hello again").await.unwrap();
+        run.assert_well_formed();
+        run.close().await;
+    }
+}
+
+/// Token counts no service would send (the largest number there is) are
+/// counts all the same: the cap stops the message, and nothing breaks.
+#[tokio::test]
+async fn token_counts_beyond_reason_stop_the_message_and_break_nothing() {
+    let Some(py) = python() else { return };
+    let most = u64::MAX;
+    for fmt in ALL {
+        let counted = |id: &str, n: u64| {
+            let mut v = raw(fmt, &call(id, "whoami", json!({})));
+            v["usage"] = match fmt {
+                Fmt::Messages => {
+                    json!({"input_tokens": n, "cache_creation_input_tokens": n, "cache_read_input_tokens": n, "output_tokens": 1})
+                }
+                Fmt::Responses => {
+                    json!({"input_tokens": n, "input_tokens_details": {"cached_tokens": 0}, "output_tokens": 1})
+                }
+                Fmt::Chat => json!({"prompt_tokens": n, "completion_tokens": 1}),
+            };
+            Next::Raw(v)
+        };
+        let mut run = Run::start(
+            &py,
+            fmt,
+            false,
+            vec![
+                counted("u1", 10),
+                counted("u2", most),
+                reply(say("Never asked for.")),
+            ],
+        )
+        .await;
+        let what = run.what();
+        run.send("who am I?").await.unwrap();
+        let statuses = run.ui.statuses();
+        assert!(
+            statuses
+                .iter()
+                .any(|s| s.starts_with("Stopped: this message has used about")),
+            "{what}: {statuses:?}"
+        );
+        assert_eq!(run.stand.requests().len(), 2, "{what}: not asked again");
+        run.close().await;
+    }
+}
+
+/// Every request says who is asking (`User-Agent: Columbus/<version>`):
+/// some gateways refuse a request that says nothing.
+#[tokio::test]
+async fn every_request_says_it_is_columbus() {
+    let Some(py) = python() else { return };
+    let us = concat!("Columbus/", env!("CARGO_PKG_VERSION"));
+    for fmt in ALL {
+        let mut run = Run::start(&py, fmt, false, vec![reply(say("Hello."))]).await;
+        let what = run.what();
+        run.send("hello").await.unwrap();
+        columbus_chat::list_models(&run.stand.base, KEY, &known(fmt).0)
+            .await
+            .unwrap();
+        let seen = run.stand.seen();
+        assert_eq!(seen.len(), 2, "{what}");
+        for s in &seen {
+            assert_eq!(
+                s.header("user-agent"),
+                Some(us),
+                "{what}: {} {}",
+                s.method,
+                s.path
+            );
+        }
+        run.close().await;
+    }
+}
+
+/// The services on this computer that Columbus knows.
+const LOCAL: [&str; 2] = ["ollama", "lmstudio"];
+
+/// Local models, the likeliest first failure: a service on this computer
+/// is sent the limit on a reply's length under the name it reads
+/// (`max_tokens`: Ollama reads no other). A service elsewhere keeps the
+/// name OpenAI uses now.
+#[tokio::test]
+async fn a_service_on_this_computer_is_sent_the_length_limit_under_the_name_it_reads() {
+    let Some(py) = python() else { return };
+    for id in LOCAL {
+        let service = builtin(id).unwrap().service();
+        let mut run = Run::start_as(
+            &py,
+            Fmt::Chat,
+            false,
+            vec![reply(say("Hello."))],
+            service,
+            "gemma3",
+            Answer::AllowOnce,
+        )
+        .await;
+        run.send("hello").await.unwrap();
+        let first = &run.stand.requests()[0];
+        assert_eq!(first["max_tokens"], 32_000, "{id}: {first}");
+        assert!(first.get("max_completion_tokens").is_none(), "{id}");
+        run.close().await;
+    }
+    let mut run = Run::start(&py, Fmt::Chat, false, vec![reply(say("Hello."))]).await;
+    run.send("hello").await.unwrap();
+    let first = &run.stand.requests()[0];
+    assert_eq!(first["max_completion_tokens"], 32_000);
+    assert!(first.get("max_tokens").is_none());
+    run.close().await;
+}
+
+/// What Ollama answers for a model that cannot call tools (its own words,
+/// from the review's run).
+fn no_tools() -> Value {
+    json!({"error": {"message": "registry.ollama.ai/library/gemma3:latest does not support tools", "type": "api_error", "param": null, "code": null}})
+}
+
+/// A model that cannot call tools is said to be that, with what to do, and
+/// the chat's one second try is not spent on it.
+#[tokio::test]
+async fn a_model_that_cannot_call_tools_is_named_and_the_second_try_is_kept() {
+    let Some(py) = python() else { return };
+    for id in LOCAL {
+        let service = builtin(id).unwrap().service();
+        let name = service.name.clone();
+        let mut run = Run::start_as(
+            &py,
+            Fmt::Chat,
+            false,
+            vec![
+                reply(say("Hello.")),
+                Next::Status(400, vec![], no_tools()),
+                Next::Status(
+                    400,
+                    vec![],
+                    error_body(
+                        Fmt::Chat,
+                        "invalid_request_error",
+                        "Unrecognized request argument supplied: stream_options",
+                    ),
+                ),
+                reply(say("Hello again.")),
+            ],
+            service,
+            "gemma3",
+            Answer::AllowOnce,
+        )
+        .await;
+        run.send("hello").await.unwrap();
+        // What the advice says about the first request's size stays true.
+        let bytes = run.stand.requests()[0].to_string().len();
+        println!("{id}: the first request is {bytes} bytes");
+        let kb = bytes / 1024;
+        assert!(
+            (45..=70).contains(&kb),
+            "{id}: the first request is {kb} KB"
+        );
+
+        let e = run.send("and the tracts?").await.unwrap_err().to_string();
+        assert_eq!(
+            e,
+            format!("{name} says the model gemma3 cannot call tools (registry.ollama.ai/library/gemma3:latest does not support tools). Choose a model that can call tools, and give it a context length of about 32,000 tokens or more: Columbus's first request alone is about 58 KB"),
+            "{id}"
+        );
+        assert_eq!(
+            run.stand.requests().len(),
+            2,
+            "{id}: not asked again without the optional fields"
+        );
+        assert!(
+            run.ui.statuses().is_empty(),
+            "{id}: {:?}",
+            run.ui.statuses()
+        );
+
+        // The one second try is still there for what it is for.
+        run.send("hello again").await.unwrap();
+        run.assert_well_formed();
+        let reqs = run.stand.requests();
+        assert_eq!(reqs.len(), 4, "{id}");
+        assert!(reqs[2].get("stream_options").is_some(), "{id}");
+        assert!(reqs[3].get("stream_options").is_none(), "{id}: {}", reqs[3]);
+        assert!(
+            run.ui
+                .statuses()
+                .iter()
+                .any(|s| s.contains("took the request without")),
+            "{id}: {:?}",
+            run.ui.statuses()
+        );
+        run.close().await;
+    }
+}

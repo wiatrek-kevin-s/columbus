@@ -8,7 +8,8 @@ use anyhow::{anyhow, bail, Result};
 use serde_json::{json, Value};
 
 use crate::wire::{
-    arguments_value, size, Ask, Assemble, Body, Call, Ids, Outcome, Reply, Stop, Wire, NO_PICTURE,
+    arguments_value, json_size, size, Ask, Assemble, Body, Call, Ids, Outcome, Reply, Stop, Wire,
+    MAX_EXTRA, MAX_PARTS, NO_PICTURE, TOO_MANY_PARTS,
 };
 use crate::{HISTORY_CHARS, MAX_OUTPUT_TOKENS};
 
@@ -84,6 +85,22 @@ impl Wire for Messages {
                 }
             }
         }
+        // Still too long: the turns before the latest keep their words and
+        // their calls alone. (The service asks for a turn's thinking back
+        // only while that turn's tools are being answered.)
+        if total > HISTORY_CHARS {
+            for m in self.history.iter_mut().take(last) {
+                if m["role"] != "assistant" {
+                    continue;
+                }
+                if let Some(blocks) = m["content"].as_array_mut() {
+                    *blocks = words_and_calls(blocks);
+                    if blocks.is_empty() {
+                        blocks.push(json!({"type": "text", "text": "(thinking only)"}));
+                    }
+                }
+            }
+        }
     }
 
     fn body(&self, ask: &Ask) -> Body {
@@ -138,12 +155,17 @@ impl Wire for Messages {
 
     fn reply(&mut self, answer: Value, _ask: &Ask) -> Result<Reply> {
         let u = &answer["usage"];
-        // Cached tokens count a tenth.
+        // Cached tokens count a tenth. (Added without overflow: a service
+        // can send any number.)
         let input_tokens = u["input_tokens"].as_u64().map(|n| {
-            n + u["cache_creation_input_tokens"].as_u64().unwrap_or(0)
-                + u["cache_read_input_tokens"].as_u64().unwrap_or(0) / 10
+            n.saturating_add(u["cache_creation_input_tokens"].as_u64().unwrap_or(0))
+                .saturating_add(u["cache_read_input_tokens"].as_u64().unwrap_or(0) / 10)
         });
         let mut content = answer["content"].as_array().cloned().unwrap_or_default();
+        // A plain answer may hold no more parts than a streamed one.
+        if content.len() > MAX_PARTS {
+            bail!(TOO_MANY_PARTS);
+        }
         let mut calls = Vec::new();
         for b in content.iter_mut().filter(|b| b["type"] == "tool_use") {
             let id = self.ids.take(b["id"].as_str().unwrap_or(""));
@@ -176,6 +198,12 @@ impl Wire for Messages {
         }
         if stop == Stop::Length && kept.iter().all(|b| b["type"] != "text") {
             kept.push(json!({"type": "text", "text": "(The reply reached its length limit.)"}));
+        }
+        // What a reply carries beside its words and its calls (thinking,
+        // signatures) goes back with every later request: more of it than
+        // a model's own thinking can come to is a fault, and is not kept.
+        if kept.iter().map(beside).sum::<usize>() > MAX_EXTRA {
+            kept = words_and_calls(&kept);
         }
         if kept.is_empty() {
             // A turn with nothing in it would be refused next time.
@@ -250,8 +278,8 @@ impl Assemble for Assembly {
             }
             "content_block_start" => {
                 let Some(i) = at(&v) else { return Ok(false) };
-                if i > 1000 {
-                    bail!("the reply had too many parts");
+                if i >= MAX_PARTS {
+                    bail!(TOO_MANY_PARTS);
                 }
                 while self.blocks.len() <= i {
                     self.blocks.push(Value::Null);
@@ -336,6 +364,31 @@ impl Assemble for Assembly {
         );
         m
     }
+}
+
+/// How much of a block is beside its words or its call.
+fn beside(b: &Value) -> usize {
+    let whole = json_size(b);
+    match b["type"].as_str() {
+        Some("text") => whole.saturating_sub(b["text"].as_str().map_or(0, str::len)),
+        Some("tool_use") => whole.saturating_sub(json_size(&b["input"])),
+        _ => whole,
+    }
+}
+
+/// A turn's words and calls alone: no thinking, and nothing else a block
+/// arrived with.
+fn words_and_calls(blocks: &[Value]) -> Vec<Value> {
+    blocks
+        .iter()
+        .filter_map(|b| match b["type"].as_str() {
+            Some("text") => Some(json!({"type": "text", "text": b["text"]})),
+            Some("tool_use") => Some(
+                json!({"type": "tool_use", "id": b["id"], "name": b["name"], "input": b["input"]}),
+            ),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Remove thinking from the assistant's earlier turns.
@@ -454,6 +507,107 @@ mod tests {
         assert_eq!(w.history()[2]["content"][0]["type"], "tool_result");
         w.user("three");
         assert_eq!(w.history().len(), 4);
+    }
+
+    #[test]
+    fn what_a_reply_carries_beside_its_words_and_calls_is_kept_up_to_a_size() {
+        let reply = |signature: usize| {
+            json!({"content": [
+                {"type": "thinking", "thinking": "plan", "signature": "s".repeat(signature)},
+                {"type": "text", "text": "Looking.", "citations": []},
+                {"type": "tool_use", "id": "a", "name": "whoami", "input": {}}],
+              "stop_reason": "tool_use"})
+        };
+        // A model's own thinking goes back as it came.
+        let mut w = Messages::new(true);
+        w.user("hello");
+        w.reply(reply(100_000), &ask("", false)).unwrap();
+        assert_eq!(w.history()[1]["content"][0]["type"], "thinking");
+        assert_eq!(w.history()[1]["content"][1]["citations"], json!([]));
+        // More than a model's thinking can come to is a fault: the words
+        // and the call are kept, and the call still gets its result.
+        let mut w = Messages::new(true);
+        w.user("hello");
+        let r = w.reply(reply(MAX_EXTRA + 1), &ask("", false)).unwrap();
+        assert_eq!(r.calls.len(), 1);
+        assert_eq!(
+            w.history()[1]["content"],
+            json!([{"type": "text", "text": "Looking."}, {"type": "tool_use", "id": "a", "name": "whoami", "input": {}}])
+        );
+        // A plain answer with more parts than a streamed one may hold.
+        let many: Vec<Value> = (0..=MAX_PARTS)
+            .map(|_| json!({"type": "text", "text": "x"}))
+            .collect();
+        let e = Messages::new(true)
+            .reply(
+                json!({"content": many, "stop_reason": "end_turn"}),
+                &ask("", false),
+            )
+            .unwrap_err();
+        assert_eq!(e.to_string(), TOO_MANY_PARTS);
+        // Counts no service would send are added without overflow.
+        let most = u64::MAX;
+        let r = Messages::new(true)
+            .reply(
+                json!({"content": [{"type": "text", "text": "x"}], "stop_reason": "end_turn",
+                    "usage": {"input_tokens": most, "cache_creation_input_tokens": most, "cache_read_input_tokens": most}}),
+                &ask("", false),
+            )
+            .unwrap();
+        assert_eq!(r.input_tokens, Some(most));
+    }
+
+    #[test]
+    fn a_long_conversation_keeps_only_the_latest_turns_thinking() {
+        let mut w = Messages::new(true);
+        let step = |w: &mut Messages, n: usize| {
+            let r = w
+                .reply(
+                    json!({"content": [
+                        {"type": "thinking", "thinking": "t".repeat(200_000), "signature": "sig"},
+                        {"type": "tool_use", "id": format!("c{n}"), "name": "whoami", "input": {}}],
+                      "stop_reason": "tool_use"}),
+                    &ask("", false),
+                )
+                .unwrap();
+            w.results(vec![Outcome {
+                id: r.calls[0].id.clone(),
+                name: "whoami".into(),
+                text: "{}".into(),
+                is_error: false,
+                images: vec![],
+            }]);
+        };
+        w.user("go");
+        for n in 0..4 {
+            step(&mut w, n);
+        }
+        assert!(size(w.history()) > HISTORY_CHARS);
+        w.trim();
+        let thinking = |m: &Value| {
+            m["content"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|b| b["type"] == "thinking")
+        };
+        let turns: Vec<&Value> = w
+            .history()
+            .iter()
+            .filter(|m| m["role"] == "assistant")
+            .collect();
+        assert_eq!(turns.len(), 4);
+        assert!(
+            turns[..3].iter().all(|m| !thinking(m)),
+            "the earlier turns keep their calls alone"
+        );
+        assert!(thinking(turns[3]), "the latest turn goes back as it came");
+        assert!(turns.iter().all(|m| m["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|b| b["type"] == "tool_use")));
+        assert!(size(w.history()) < HISTORY_CHARS);
     }
 
     #[test]

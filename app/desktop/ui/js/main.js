@@ -93,7 +93,7 @@ async function show(ev) {
         if ((!a || a === document.body) && !document.querySelector("dialog[open]") && $("nav-settings")) $("nav-settings").focus({ preventScroll: true });
         if (saved) refreshUnder();
       }, 60);
-    });
+    }, r.rest[1]);
     drawNav(r);
     return;
   }

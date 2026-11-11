@@ -111,10 +111,11 @@ pub(crate) trait Assemble: Send {
 pub(crate) trait Wire: Send + Sync {
     /// The person's message.
     fn user(&mut self, text: &str);
-    /// A reply was stopped before it came: if the person's message is the
-    /// last thing in the conversation, drop it. Tool results stay: their
-    /// calls are in the conversation, and a call without its result would
-    /// be refused by the service.
+    /// No reply came (the person stopped it, or the request failed): if
+    /// the person's message is the last thing in the conversation, drop
+    /// it, so the next request does not hold two of their messages in a
+    /// row. Tool results stay: their calls are in the conversation, and a
+    /// call without its result would be refused by the service.
     fn forget_unanswered(&mut self);
     /// Keep the conversation within the size Columbus sends.
     fn trim(&mut self);
@@ -162,6 +163,27 @@ pub(crate) const NO_PICTURE: &str =
 
 pub(crate) const INCOMPLETE: &str = "a tool call arrived incomplete, so it was not run";
 
+/// Most parts (content blocks, output items, tool calls) one reply may
+/// hold, streamed or plain.
+pub(crate) const MAX_PARTS: usize = 1000;
+
+pub(crate) const TOO_MANY_PARTS: &str = "the reply had too many parts";
+
+/// Most characters of JSON kept of what one reply carries beside its words
+/// and its tool calls: a thinking block and its signature, an encrypted
+/// reasoning item, the extra fields of a tool call (a thought signature).
+/// These go back to the service with the conversation, so a faulty service
+/// that sent megabytes of them would have every later request grow by as
+/// much. The largest a model's own thinking gets under the cap on a reply
+/// is well under half of this.
+pub(crate) const MAX_EXTRA: usize = 512 * 1024;
+
+/// Most characters of one tool call's arguments. A longer call is not run.
+pub(crate) const MAX_ARGUMENTS: usize = 1_000_000;
+
+pub(crate) const TOO_LONG: &str =
+    "a tool call's arguments were longer than Columbus takes, so it was not run";
+
 /// A failed or refused call's words, for a format whose tool results have
 /// no mark for failure: the words say it.
 pub(crate) fn error_text(text: &str) -> String {
@@ -203,6 +225,9 @@ pub(crate) fn arguments(text: &str) -> (Value, Option<String>) {
     if text.trim().is_empty() {
         return (json!({}), None);
     }
+    if text.len() > MAX_ARGUMENTS {
+        return (json!({}), Some(TOO_LONG.to_string()));
+    }
     match serde_json::from_str::<Value>(text) {
         Ok(v @ Value::Object(_)) => (v, None),
         _ => (json!({}), Some(INCOMPLETE.to_string())),
@@ -212,10 +237,16 @@ pub(crate) fn arguments(text: &str) -> (Value, Option<String>) {
 /// The arguments of a call that arrived as JSON already.
 pub(crate) fn arguments_value(v: &Value) -> (Value, Option<String>) {
     match v {
+        Value::Object(_) if json_size(v) > MAX_ARGUMENTS => (json!({}), Some(TOO_LONG.to_string())),
         Value::Object(_) => (v.clone(), None),
         Value::Null => (json!({}), None),
         _ => (json!({}), Some(INCOMPLETE.to_string())),
     }
+}
+
+/// How many characters of JSON `v` is.
+pub(crate) fn json_size(v: &Value) -> usize {
+    v.to_string().len()
 }
 
 /// How many characters of JSON the conversation holds.
@@ -300,6 +331,16 @@ mod tests {
         assert_eq!(arguments_value(&Value::Null), (json!({}), None));
         assert!(arguments_value(&json!("{}")).1.is_some());
         assert!(arguments_value(&json!([1])).1.is_some());
+        // Arguments longer than Columbus takes are not run either.
+        let long = format!("{{\"code\": \"{}\"}}", "x".repeat(MAX_ARGUMENTS));
+        assert_eq!(arguments(&long), (json!({}), Some(TOO_LONG.to_string())));
+        let long: Value = serde_json::from_str(&long).unwrap();
+        assert_eq!(
+            arguments_value(&long),
+            (json!({}), Some(TOO_LONG.to_string()))
+        );
+        let fits = json!({"code": "x".repeat(MAX_ARGUMENTS - 100)});
+        assert!(arguments(&fits.to_string()).1.is_none() && arguments_value(&fits).1.is_none());
     }
 
     #[test]

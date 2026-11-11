@@ -596,6 +596,74 @@ async fn a_review_that_is_not_whole_or_not_allowed_never_reads_as_an_all_clear()
     assert!(err(&r).contains("workflow_review"), "{}", err(&r));
     c.cancel().await.unwrap();
 
+    // The organization lists the AI services allowed, and Anthropic's is
+    // not among them: a review is one more use of an AI service. Nothing
+    // is sent, the run says why, and a new one is refused when proposed.
+    env.policy("allow_workflows: true\nassistant:\n  hosts: [\"*.openai.azure.com\", localhost]\n");
+    let (rec, n) = run_review(&env, 200, good.clone()).await;
+    assert_eq!(rec["review"]["status"], "did_not_run", "{rec}");
+    assert_eq!(
+        rec["review"]["reason"],
+        "organization policy does not allow an AI service at api.anthropic.com, where an AI review is sent (assistant.hosts)",
+        "{rec}"
+    );
+    assert_eq!(n, 0, "nothing was sent to the AI");
+    assert_eq!(rec["deliveries"][0]["status"], "done", "{rec}");
+    let c = start(&env).await;
+    let r = call(
+        &c,
+        "propose_workflow",
+        json!({"workflow": text.replace("crash-check", "crash-check-2")}),
+    )
+    .await;
+    assert_eq!(r.is_error, Some(true));
+    assert!(
+        err(&r).contains("it has an AI review, and organization policy does not allow an AI service at api.anthropic.com, where a review is sent (assistant.hosts)"),
+        "{}",
+        err(&r)
+    );
+    c.cancel().await.unwrap();
+    // Listed, the review runs as before.
+    env.policy("allow_workflows: true\nassistant:\n  hosts: [api.anthropic.com]\n");
+    let (rec, n) = run_review(&env, 200, good.clone()).await;
+    assert_eq!(rec["review"]["status"], "done", "{rec}");
+    assert_eq!(n, 1, "{rec}");
+
+    // No key where the review looks for one (the Anthropic key saved in
+    // the Columbus app): the run says a review needs that key, whichever
+    // service the chat uses. (Where there is a credential store the run
+    // would read the person's own, so this is run only where there is none.)
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        env.policy("allow_workflows: true\n");
+        let (base, seen) = ai_stand_in(200, good.clone()).await;
+        let vars = env.vars();
+        let w = env.workflows();
+        let rec = tokio::task::spawn_blocking(move || {
+            StdCommand::new(env!("CARGO_BIN_EXE_columbus-mcp"))
+                .args(["workflow", "run", "crash-check"])
+                .envs(vars)
+                .env("COLUMBUS_WORKFLOW_API_BASE", base.as_str())
+                .env_remove("COLUMBUS_WORKFLOW_API_KEY")
+                .output()
+                .unwrap();
+            let latest = wf::list_runs(&w, "crash-check", 1)[0]["run"]
+                .as_str()
+                .unwrap()
+                .to_string();
+            wf::read_run(&w, "crash-check", &latest).unwrap()
+        })
+        .await
+        .unwrap();
+        assert_eq!(rec.0["review"]["status"], "did_not_run", "{}", rec.0);
+        assert!(
+            rec.1.contains("AI review did not run:** an AI review needs an Anthropic API key, whichever AI service the app's chat uses; the Columbus app keeps it in the system's credential store, which this system does not have"),
+            "{}",
+            rec.1
+        );
+        assert_eq!(seen.lock().unwrap().len(), 0, "nothing was sent to the AI");
+    }
+
     // A flow rule forbids this connection's data going to the AI.
     env.policy("allow_workflows: true\nflows:\n  - { from: [\"connection:crashes\"], to: [\"ai:anthropic\"], action: deny }\n");
     let (rec, n) = run_review(&env, 200, good.clone()).await;

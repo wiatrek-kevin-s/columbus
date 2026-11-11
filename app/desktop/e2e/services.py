@@ -67,6 +67,9 @@ KEYS = {
     "gateway": "tk-gw-9Lp2Qs7x",
 }
 
+# What a service on this computer says its model must be able to do.
+LOCAL_MODEL = "a model that can call tools and a context length of about 32,000 tokens or more"
+
 # What "the model" does next, the same whatever the service: ("call", id,
 # tool, arguments), "export_last" (export the layer the last result made),
 # or ("say", words).
@@ -278,6 +281,27 @@ def save_key(d, key):
     reads_right(d, "#settings")
 
 
+def copilot_line(d, where):
+    """The line that says where GitHub Copilot is, with its pointer."""
+    text = d.find_element(By.ID, where).text
+    assert "GitHub Copilot cannot be chosen here: it uses Columbus as an AI app" in text and "Use Columbus from another AI app" in text, text
+
+
+def opened_on_copilot(d):
+    """Settings > Assistant shows the part for other AI apps, opened on GitHub Copilot."""
+    Wait(d, 20).until(lambda drv: drv.execute_script(
+        "const p = document.getElementById('apps-pick'); return !!p && p.value === 'copilot-vscode' && !!document.getElementById('apps-entry').textContent"))
+    Wait(d, 10).until(lambda drv: drv.execute_script(
+        "const r = document.getElementById('other-apps').getBoundingClientRect(); return r.top >= 0 && r.top < window.innerHeight"))
+    assert "mcp-config.json" in d.find_element(By.ID, "apps-file").text and d.execute_script("return document.activeElement.id") == "apps-pick"
+
+
+def change_added(d, service_id):
+    """Open the form of a service the person added."""
+    d.find_element(By.CSS_SELECTOR, f"#services-added li[data-id='{service_id}'] button:not(.danger)").click()
+    Wait(d, 10).until(EC.visibility_of_element_located((By.ID, "svc-address")))
+
+
 def write_policy(root, hosts=None):
     text = f"connection_types: [gpkg]\nexports:\n  - {{ id: outbox, path: {json.dumps(str(root / 'outbox'))} }}\n"
     if hosts is not None:
@@ -450,8 +474,22 @@ def main():
         wait.until(lambda drv: "Ollama must be running" in drv.find_element(By.ID, "fr-ai-about").text)
         assert not d.find_elements(By.ID, "fr-key"), "a service that takes no key shows no key field"
         assert "Choose its model in Settings › Assistant" in d.find_element(By.ID, "fr-ai-need").text
+        # And what its model must be able to do: the likeliest first failure.
+        assert LOCAL_MODEL in d.find_element(By.ID, "fr-ai-about").text, d.find_element(By.ID, "fr-ai-about").text
+        choose(d, "fr-service", "lmstudio")
+        wait.until(lambda drv: "LM Studio's local server must be running" in drv.find_element(By.ID, "fr-ai-about").text)
+        assert LOCAL_MODEL in d.find_element(By.ID, "fr-ai-about").text, d.find_element(By.ID, "fr-ai-about").text
+        choose(d, "fr-service", "ollama")
+        wait.until(lambda drv: "Ollama must be running" in drv.find_element(By.ID, "fr-ai-about").text)
+        # GitHub Copilot is asked for by name and is not in the list: the row
+        # says why, and its pointer opens the part for other AI apps on Copilot.
+        copilot_line(d, "fr-ai-copilot")
         assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
         d.save_screenshot(str(OUT / "services-first-run.png"))
+        d.find_element(By.CSS_SELECTOR, "#fr-ai-copilot a").click()
+        opened_on_copilot(d)
+        close_settings(d)
+        wait.until(EC.presence_of_element_located((By.ID, "fr-service")))
         # OpenAI, with its key.
         choose(d, "fr-service", "openai")
         key = wait.until(EC.presence_of_element_located((By.ID, "fr-key")))
@@ -598,6 +636,7 @@ def main():
         assert "Ollama on this computer needs no key." in d.find_element(By.ID, "key-state").text
         assert not d.find_element(By.ID, "key").is_displayed()
         assert "On this computer · OpenAI Chat Completions" in d.find_element(By.ID, "service-about").text
+        assert LOCAL_MODEL in d.find_element(By.ID, "service-about").text, d.find_element(By.ID, "service-about").text
         assert d.execute_script("return document.getElementById('model').value") == "", "Columbus has no list of what is on the computer"
         _, s = settings_json(d)
         assert s["ready"] is False and s["key_needed"] is False and s["model"] == "", s
@@ -613,6 +652,8 @@ def main():
         path, headers, body = SEEN[-1]
         assert path == "/chat/completions" and body["model"] == "llama3.3:70b"
         assert header(headers, "authorization") is None and header(headers, "x-api-key") is None, "a service that takes no key is sent none"
+        # The limit on a reply's length, under the name a local server reads.
+        assert body.get("max_tokens") == 32000 and "max_completion_tokens" not in body, sorted(body)
 
         step("Another service, added by its address and confirmed; a bad address is refused first")
         open_assistant(d)
@@ -722,7 +763,91 @@ def main():
         Wait(d, 15).until(lambda drv: drv.find_elements(By.CSS_SELECTOR, "#services-added li[data-id='my-gateway']"))
         choose_service(d, "my-gateway")
         assert "No key saved for My gateway" in d.find_element(By.ID, "key-state").text
+
+        step("A key does not follow an address rewritten in the settings file, even when the change is confirmed again")
+        # My gateway is at its address, confirmed, and gets a key: a chat uses it there.
+        save_key(d, KEYS["gateway"])
+        d.find_element(By.ID, "model-other").send_keys("deployment-1")
+        # (The sheet was scrolled down to the added services: bring the button clear of its header.)
+        save = d.find_element(By.CSS_SELECTOR, "#prefs-form button[type=submit]")
+        d.execute_script("arguments[0].scrollIntoView({block: 'center'})", save)
+        save.click()
+        Wait(d, 15).until(lambda drv: settings_json(drv)[1]["model"] == "deployment-1")
+        close_settings(d)
+        new_chat(d)
+        Wait(d, 10).until(lambda drv: chat_service(drv) == "My gateway")
+        SCRIPT[:] = [("say", "Hello from the gateway again.")]
+        send(d, "Hello", "Hello from the gateway again.")
+        path, headers, _ = SEEN[-1]
+        assert path == "/gw/v1/chat/completions" and header(headers, "authorization") == f"Bearer {KEYS['gateway']}", path
+        # Another program rewrites the settings file: the service points elsewhere now.
+        settings_file = next((root / "config").rglob("settings.json"))
+        saved = json.loads(settings_file.read_text())
+        assert saved["services"][0]["address"] == f"{here}/gw/v1", saved["services"]
+        saved["services"][0]["address"] = f"{here}/elsewhere/v1"
+        settings_file.write_text(json.dumps(saved))
+        # No chat starts on it. The sentence shows the address that was
+        # confirmed and the one in the file, and both ways out.
+        new_chat(d, ready=False)
+        before = len(SEEN)
+        refused = d.execute_async_script(
+            "const done = arguments[arguments.length - 1];"
+            "window.__TAURI__.core.invoke('chat_start', {project: null, run: null}).then(() => done('started'), e => done(String(e)));")
+        assert refused != "started" and len(SEEN) == before, refused
+        changed = (f"My gateway was changed outside this app, so it is not used. You confirmed the address {here}/gw/v1; "
+                   f"the settings file now gives {here}/elsewhere/v1. If you did not change it, remove it in Settings › Assistant. "
+                   "To use it as the file has it, choose Change there and confirm it; the key saved for it is deleted first, "
+                   "so it is never sent somewhere you did not save it for.")
+        assert refused == changed, refused
+        # Settings says the same beside the service, where Change and Remove are.
+        open_assistant(d)
+        row = d.find_element(By.CSS_SELECTOR, "#services-added li[data-id='my-gateway']")
+        assert [b.text for b in row.find_elements(By.TAG_NAME, "button")] == ["Change", "Remove"], row.text
+        assert changed in row.text, row.text
+        # The person follows it. Change says it again before anything is
+        # saved; Save is confirmed at the keyboard (allowed in this run).
+        change_added(d, "my-gateway")
+        assert d.find_element(By.ID, "svc-address").get_attribute("value") == f"{here}/elsewhere/v1"
+        assert d.find_element(By.ID, "svc-problem").text == changed
+        d.find_element(By.ID, "svc-save").click()
+        Wait(d, 15).until(lambda drv: not drv.find_elements(By.ID, "svc-dialog"))
+        Wait(d, 10).until(lambda drv: "Its key was deleted from this computer" in drv.execute_script("return document.getElementById('toast').textContent"))
+        # The key was saved for the address confirmed before: it is gone.
+        _, s = settings_json(d)
+        mine = next(v for v in s["services"] if v["id"] == "my-gateway")
+        assert mine["problem"] is None and mine["key_saved"] is False, mine
+        Wait(d, 10).until(lambda drv: "No key saved for My gateway" in drv.find_element(By.ID, "key-state").text)
+        # And a chat on it sends none to the new address.
+        close_settings(d)
+        new_chat(d)
+        Wait(d, 10).until(lambda drv: chat_service(drv) == "My gateway")
+        SCRIPT[:] = [("say", "Hello from elsewhere.")]
+        send(d, "Hello", "Hello from elsewhere.")
+        path, headers, _ = SEEN[-1]
+        assert path == "/elsewhere/v1/chat/completions", path
+        assert all(header(headers, h) is None for h in ("authorization", "api-key", "x-api-key")), \
+            "the key saved for the confirmed address was sent to the rewritten one"
+        # Back at its own address for what follows (confirmed again).
+        open_assistant(d)
+        change_added(d, "my-gateway")
+        address = d.find_element(By.ID, "svc-address")
+        address.clear()
+        address.send_keys(f"{here}/gw/v1")
+        d.find_element(By.ID, "svc-save").click()
+        Wait(d, 15).until(lambda drv: not drv.find_elements(By.ID, "svc-dialog"))
+        Wait(d, 10).until(lambda drv: f"{here}/gw/v1" in drv.find_element(By.CSS_SELECTOR, "#services-added li[data-id='my-gateway']").text)
         choose_service(d, "openai")
+
+        step("GitHub Copilot is not in the list of services: the line under it says where it is")
+        close_settings(d)
+        open_assistant(d)
+        assert d.execute_script("return document.getElementById('apps-pick').value") == "claude-desktop", "opened without the pointer, the first app"
+        copilot_line(d, "service-copilot")
+        assert d.execute_script("return document.getElementById('service-copilot').previousElementSibling.contains(document.getElementById('service'))"), "the line is under the list of services"
+        d.find_element(By.ID, "service-copilot-link").click()
+        opened_on_copilot(d)
+        assert d.execute_script("return location.hash") == "#/settings/ai"
+        assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
 
         step("How to connect other AI apps: this computer's path, each app's own file and entry, Copy")
         apps = [o.get_attribute("value") for o in Select(d.find_element(By.ID, "apps-pick")).options]
@@ -862,8 +987,7 @@ def main():
         assert [a["id"] for a in saved["services"]] == ["my-gateway"], "nothing is added without the confirmation"
         d.find_element(By.XPATH, "//dialog[@id='svc-dialog']//button[normalize-space()='Cancel']").click()
         # A change of address needs it too; a change of name alone does not.
-        d.find_element(By.CSS_SELECTOR, "#services-added li[data-id='my-gateway'] button:not(.danger)").click()
-        Wait(d, 10).until(EC.visibility_of_element_located((By.ID, "svc-address")))
+        change_added(d, "my-gateway")
         address = d.find_element(By.ID, "svc-address")
         address.clear()
         address.send_keys(f"{here}/moved/v1")
@@ -876,7 +1000,8 @@ def main():
         # the service is one whose address nobody confirmed, and no chat
         # starts on it.
         choose(d, "service", "my-gateway")
-        Wait(d, 10).until(lambda drv: "is not the one you confirmed in this app" in drv.find_element(By.ID, "service-error").text)
+        Wait(d, 10).until(lambda drv: f"My gateway has not been confirmed on this computer, so it is not used. The settings file gives its address as {here}/gw/v1." in drv.find_element(By.ID, "service-error").text)
+        assert "remove it in Settings › Assistant" in d.find_element(By.ID, "service-error").text
         assert settings_json(d)[1]["service"] != "my-gateway"
         assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
         print("desktop services e2e: ok")

@@ -5,7 +5,8 @@
 //! The key goes only to the service's own address, in the one header that
 //! service takes it in; no redirect is ever followed, so it cannot be
 //! carried to another host. Every text that comes from a service is shown
-//! only after the key, and any long piece of it, has been taken out.
+//! only after the key has been taken out of it, and for a key that looks
+//! random any long piece of it too (see [`scrub`]).
 
 use std::borrow::Cow;
 use std::collections::HashSet;
@@ -24,6 +25,12 @@ const API_VERSION: &str = "2023-06-01";
 pub(crate) const MAX_STREAM: usize = 32 * 1024 * 1024;
 /// Most bytes read of an answer that is an error.
 const MAX_ERROR_BODY: usize = 256 * 1024;
+/// The longest an error's body is read for, from first byte to last: a
+/// service that sends it a byte at a time does not hold the chat.
+const ERROR_BODY_TIME: Duration = Duration::from_secs(30);
+/// Who is asking, in every request (some gateways refuse a request that
+/// does not say).
+pub const USER_AGENT: &str = concat!("Columbus/", env!("CARGO_PKG_VERSION"));
 /// Most characters of a service's own words shown.
 const MAX_SAID: usize = 600;
 
@@ -33,6 +40,8 @@ pub(crate) struct Net {
     /// The address requests go to, without a trailing `/`.
     base: String,
     key: String,
+    /// Whether the address is this computer.
+    local: bool,
     pub service: Service,
 }
 
@@ -51,6 +60,7 @@ impl Net {
             // A streamed reply may take long in all; each read waits at
             // most a few minutes (see read_sse).
             .timeout(Duration::from_secs(3600))
+            .user_agent(USER_AGENT)
             .redirect(reqwest::redirect::Policy::none());
         if checked.local {
             // A service on this computer is spoken to directly: a proxy
@@ -61,12 +71,25 @@ impl Net {
             http: b.build()?,
             base: checked.url,
             key,
+            local: checked.local,
             service,
         })
     }
 
     pub fn key(&self) -> &str {
         &self.key
+    }
+
+    /// What the person is told when a request did not reach the service.
+    pub fn unreachable(&self, e: reqwest::Error) -> String {
+        if self.local && e.is_connect() {
+            // Nothing listens at an address on this computer: the service
+            // is not started. (The network has no part in it.)
+            let name = &self.service.name;
+            let who = name.strip_suffix(" on this computer").unwrap_or(name);
+            return format!("{who} is not running on this computer (nothing answers at its address). Start it and try again");
+        }
+        format!("could not reach {}: {}", self.service.name, plain(e))
     }
 
     fn with_key(&self, mut r: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
@@ -110,7 +133,7 @@ pub async fn list_models(address: &str, key: &str, service: &Service) -> Result<
         .models()
         .send()
         .await
-        .map_err(|e| anyhow!("could not reach {name}: {}", plain(e)))?;
+        .map_err(|e| anyhow!("{}", net.unreachable(e)))?;
     let code = r.status();
     if code.is_redirection() {
         bail!("{}", redirect_text(name));
@@ -241,10 +264,19 @@ pub(crate) async fn read_body(mut r: reqwest::Response, cap: usize) -> Result<Ve
     Ok(bytes)
 }
 
-/// The body of an answer that is an error: what fits, and no failure.
-pub(crate) async fn read_error_body(mut r: reqwest::Response) -> Vec<u8> {
+/// The body of an answer that is an error: what fits and arrives in time,
+/// and no failure.
+pub(crate) async fn read_error_body(r: reqwest::Response) -> Vec<u8> {
+    read_error_body_within(r, ERROR_BODY_TIME).await
+}
+
+/// As [`read_error_body`], reading for `limit` at most in all (not for
+/// each piece: a body that arrives a byte every few seconds would keep a
+/// limit on each piece from ever running out).
+async fn read_error_body_within(mut r: reqwest::Response, limit: Duration) -> Vec<u8> {
     let mut bytes = Vec::new();
-    while let Ok(Ok(Some(chunk))) = tokio::time::timeout(Duration::from_secs(20), r.chunk()).await {
+    let end = tokio::time::Instant::now() + limit;
+    while let Ok(Ok(Some(chunk))) = tokio::time::timeout_at(end, r.chunk()).await {
         let room = MAX_ERROR_BODY.saturating_sub(bytes.len());
         bytes.extend_from_slice(&chunk[..chunk.len().min(room)]);
         if room <= chunk.len() {
@@ -359,6 +391,41 @@ impl Said {
                     || m.contains("unknown model")))
     }
 
+    /// Whether the refusal says the model cannot call tools at all, in
+    /// the words services use for it: Ollama's "<model> does not support
+    /// tools", OpenRouter's "No endpoints found that support tool use",
+    /// OpenAI's "'tools' is not supported with this model". A refusal of
+    /// one field of a tool (`tools[3].function…`, `tool_choice`) is not
+    /// this: the second try is for those.
+    pub fn no_tools(&self) -> bool {
+        let m: String = self
+            .message
+            .to_ascii_lowercase()
+            .chars()
+            .filter(|c| !matches!(c, '\'' | '"' | '`'))
+            .collect();
+        // ("doesn't" is read without its quote mark, like every quoted word.)
+        const CANNOT: [&str; 3] = ["not support ", "nt support ", "found that support "];
+        const WHAT: [&str; 6] = [
+            "tools",
+            "tool use",
+            "tool calling",
+            "tool calls",
+            "function calling",
+            "functions",
+        ];
+        const SUBJECT: [&str; 4] = ["tools", "tool use", "tool calling", "function calling"];
+        CANNOT
+            .iter()
+            .any(|c| WHAT.iter().any(|w| m.contains(&format!("{c}{w}"))))
+            || SUBJECT.iter().any(|w| {
+                ["is not supported", "are not supported"].iter().any(|n| {
+                    let p = format!("{w} {n}");
+                    m.starts_with(&p) || m.contains(&format!(" {p}"))
+                })
+            })
+    }
+
     fn in_brackets(&self) -> String {
         if self.message.is_empty() {
             String::new()
@@ -367,6 +434,11 @@ impl Said {
         }
     }
 }
+
+/// What to do about a model that cannot call tools. Columbus works only
+/// through its tools, and their descriptions alone make a first request of
+/// about 58 KB: a model needs room for that and for what the tools return.
+const NO_TOOLS_ADVICE: &str = "Choose a model that can call tools, and give it a context length of about 32,000 tokens or more: Columbus's first request alone is about 58 KB";
 
 /// What the person is told when a service answers with an error status,
 /// in plain words that name the service.
@@ -379,6 +451,9 @@ pub(crate) fn refusal(name: &str, model: &str, status: u16, said: &Said, has_key
     };
     if said.no_credit(status) {
         return format!("your account at {name} has no credit left, or has reached its spending limit{its}. Columbus did not try again");
+    }
+    if said.no_tools() {
+        return format!("{name} says {the_model} cannot call tools{its}. {NO_TOOLS_ADVICE}");
     }
     if said.unknown_model(status) {
         return format!(
@@ -429,28 +504,79 @@ fn one_line(s: &str) -> String {
 /// What stands where a key was.
 pub(crate) const REMOVED: &str = "[key removed]";
 
-/// Pieces of a key this long or longer are taken out of every text. (A
-/// page shows a saved key's last four characters, so four are no secret.)
+/// Pieces of a key this long or longer may be taken out of a text. (A page
+/// shows a saved key's last four characters, so four are no secret.)
 const PIECE: usize = 8;
 
-/// `text` without `key` and without any piece of it [`PIECE`] characters
-/// or longer. Some services quote the key they refused in their error.
+/// A key shorter than this is looked for whole only.
+const RANDOM_LENGTH: usize = 20;
+
+/// Whether these characters read like ordinary writing: a word or two
+/// (letters with `- _ . '`, and at most three changes between small and
+/// capital letters, so `RoadName` and `gis-conn` are words and `xQzRtKpW`
+/// is not), or a number or a date (digits with `. , - : /`). Such a stretch
+/// of a key is in everyday text for reasons that have nothing to do with
+/// the key.
+fn ordinary(piece: &[u8]) -> bool {
+    if piece
+        .iter()
+        .all(|b| b.is_ascii_digit() || b".,-:/".contains(b))
+    {
+        return true;
+    }
+    if !piece
+        .iter()
+        .all(|b| b.is_ascii_alphabetic() || b"-_.'".contains(b))
+    {
+        return false;
+    }
+    let capital: Vec<bool> = piece
+        .iter()
+        .filter(|b| b.is_ascii_alphabetic())
+        .map(u8::is_ascii_uppercase)
+        .collect();
+    capital.windows(2).filter(|w| w[0] != w[1]).count() <= 3
+}
+
+/// Whether a key looks random, as the keys AI services issue do: at least
+/// [`RANDOM_LENGTH`] characters, and no more than a quarter of its
+/// [`PIECE`]-character stretches read like ordinary writing. A key a
+/// person made up from words (`gis-connection-2026`, for a gateway or a
+/// local server) does not: its pieces are everyday words, and taking them
+/// out of every text would garble ordinary work.
+pub(crate) fn looks_random(key: &str) -> bool {
+    let k = key.trim().as_bytes();
+    if !key.is_ascii() || k.len() < RANDOM_LENGTH {
+        return false;
+    }
+    let all = k.len() - PIECE + 1;
+    let plain = k.windows(PIECE).filter(|w| ordinary(w)).count();
+    plain * 4 <= all
+}
+
+/// `text` without `key`. For a key that looks random ([`looks_random`]),
+/// also without any piece of it [`PIECE`] characters or longer that does
+/// not itself read like ordinary writing: some services quote the key they
+/// refused, whole or in part. This is a safeguard against a service
+/// quoting the key, not a proof that no form of it can pass (a key written
+/// in short groups, backwards or encoded is not looked for).
 pub(crate) fn scrub<'a>(text: &'a str, key: &str) -> Cow<'a, str> {
     let key = key.trim();
     if key.len() < 4 || text.len() < key.len().min(PIECE) {
         return Cow::Borrowed(text);
     }
-    if !key.is_ascii() || key.len() < PIECE {
-        // Only the whole key can be looked for.
-        return if text.contains(key) {
-            Cow::Owned(text.replace(key, REMOVED))
-        } else {
-            Cow::Borrowed(text)
-        };
+    // The key itself, always.
+    let whole: Cow<'a, str> = if text.contains(key) {
+        Cow::Owned(text.replace(key, REMOVED))
+    } else {
+        Cow::Borrowed(text)
+    };
+    if !looks_random(key) {
+        return whole;
     }
     let k = key.as_bytes();
-    let t = text.as_bytes();
-    let pieces: HashSet<&[u8]> = k.windows(PIECE).collect();
+    let t = whole.as_bytes();
+    let pieces: HashSet<&[u8]> = k.windows(PIECE).filter(|w| !ordinary(w)).collect();
     let mut out: Option<Vec<u8>> = None;
     let mut i = 0;
     let mut copied = 0;
@@ -478,7 +604,7 @@ pub(crate) fn scrub<'a>(text: &'a str, key: &str) -> Cow<'a, str> {
         copied = i;
     }
     match out {
-        None => Cow::Borrowed(text),
+        None => whole,
         Some(mut o) => {
             o.extend_from_slice(&t[copied..]);
             // The key is ASCII, so what was cut out began and ended
@@ -488,7 +614,8 @@ pub(crate) fn scrub<'a>(text: &'a str, key: &str) -> Cow<'a, str> {
     }
 }
 
-/// Every text in `v`, scrubbed (keys too: nothing of a key stays).
+/// Every text in `v`, scrubbed for showing (names too: nothing of a key
+/// is shown).
 pub(crate) fn scrub_json(v: &Value, key: &str) -> Value {
     match v {
         Value::String(s) => Value::String(scrub(s, key).into_owned()),
@@ -502,7 +629,10 @@ pub(crate) fn scrub_json(v: &Value, key: &str) -> Value {
     }
 }
 
-/// Whether `v` holds the key or a long piece of it anywhere.
+/// Whether a value in `v` holds the key (or, for a key that looks random,
+/// a long piece of it). Only values are looked at: the names of a tool's
+/// arguments are Columbus's own words (`connection`, `dataset`), and a key
+/// that happens to be made of such words must not stop every call.
 pub(crate) fn holds_key(v: &Value, key: &str) -> bool {
     if key.trim().len() < PIECE {
         return false;
@@ -510,9 +640,7 @@ pub(crate) fn holds_key(v: &Value, key: &str) -> bool {
     match v {
         Value::String(s) => matches!(scrub(s, key), Cow::Owned(_)),
         Value::Array(a) => a.iter().any(|x| holds_key(x, key)),
-        Value::Object(m) => m
-            .iter()
-            .any(|(k, x)| matches!(scrub(k, key), Cow::Owned(_)) || holds_key(x, key)),
+        Value::Object(m) => m.values().any(|x| holds_key(x, key)),
         _ => false,
     }
 }
@@ -575,6 +703,108 @@ mod tests {
         assert!(!holds_key(&clean, KEY));
         assert!(!holds_key(&json!({"a": "nothing", "b": [1, 2]}), KEY));
         assert!(!holds_key(&json!({"a": KEY}), ""));
+        // Only values can hold the key: a name is not looked at (what is
+        // shown has it taken out all the same).
+        let named = json!({KEY: 1, "deep": [{format!("x{KEY}"): "plain"}]});
+        assert!(!holds_key(&named, KEY));
+        assert!(!scrub_json(&named, KEY).to_string().contains("51Hq8ZpL"));
+        assert!(holds_key(
+            &json!({"deep": [{"a": {"b": format!("x {KEY}")}}]}),
+            KEY
+        ));
+    }
+
+    // A key a person made up, as for a gateway or a local server.
+    const WORDS: &str = "gis-connection-2026";
+
+    #[test]
+    fn a_key_made_of_words_is_looked_for_whole_only() {
+        assert!(!looks_random(WORDS));
+        let text = "The tracts of the tiger connection: connection-2026 is ready (gis-connection).";
+        assert!(
+            matches!(scrub(text, WORDS), Cow::Borrowed(_)),
+            "{}",
+            scrub(text, WORDS)
+        );
+        assert_eq!(
+            scrub(&format!("key {WORDS}, twice {WORDS}."), WORDS),
+            format!("key {REMOVED}, twice {REMOVED}.")
+        );
+        // Tool calls: Columbus's own argument names and everyday values.
+        let call = json!({"connection": "tiger", "dataset": "tracts", "where": "NAME = 'connection-2026'"});
+        assert!(!holds_key(&call, WORDS));
+        assert_eq!(scrub_json(&call, WORDS), call);
+        assert!(holds_key(
+            &json!({"where": format!("NAME = '{WORDS}'")}),
+            WORDS
+        ));
+        assert!(!holds_key(&json!({WORDS: "a name is not a value"}), WORDS));
+    }
+
+    #[test]
+    fn which_keys_look_random() {
+        // As services issue them (all made up here).
+        for key in [
+            KEY,
+            "sk-proj-Tn4BcY81rvoa3Hc8Vb1NxK6mQw72RtLp9Zs4YdGfJe0A",
+            "AIzaSyD4q7Lp2Qs9xTn4BcY81-rv_3Hc8Vb1NxK6",
+            "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+            "3f2b8c1e-9d4a-4f6b-a1c7-5e8d2b9f0a3c",
+            "rvgw-7Lp2Qs9xTn4BcY81",
+        ] {
+            assert!(looks_random(key), "{key}");
+        }
+        // Made up by a person, short, or a number.
+        for key in [
+            WORDS,
+            "MyCompanyGateway2026",
+            "abc-team-llm-2026-prod",
+            "Tr0ub4dor-horse-battery-staple",
+            "open-sesame-open-sesame-123",
+            "RoadNameService-2026-11-11",
+            "20261111123456789012",
+            // (Half of it is one long number: numbers are in everyday text.)
+            "123e4567-e89b-12d3-a456-426614174000",
+            "tk-gw-9Lp2Qs7x",
+            "ключ-ключ-ключ-ключ-ключ",
+        ] {
+            assert!(!looks_random(key), "{key}");
+        }
+        // What reads like ordinary writing, and what does not.
+        for piece in [
+            "connecti", "gis-conn", "RoadName", "COLUMBUS", "yGateway", "2026-11-", "34567890",
+            "12:30:00",
+        ] {
+            assert!(ordinary(piece.as_bytes()), "{piece}");
+        }
+        for piece in ["ion-2026", "tk51Hq8Z", "aBcDeFgH", "abc_123x", "pL0vXn3T"] {
+            assert!(!ordinary(piece.as_bytes()), "{piece}");
+        }
+    }
+
+    #[test]
+    fn a_word_inside_a_random_key_stays_readable() {
+        // A key with a company's name in front, and the public start of a
+        // service's keys: those words are in everyday text.
+        let key = "AcmeRoads-sk-live-7Lp2Qs9xTn4BcY81rv3Hc8Vb1NxK6mQw72";
+        assert!(looks_random(key));
+        let text = "AcmeRoads keeps its roads here; the key starts with sk-live-.";
+        assert!(
+            matches!(scrub(text, key), Cow::Borrowed(_)),
+            "{}",
+            scrub(text, key)
+        );
+        // Quoted whole, and in part: the random part goes.
+        assert_eq!(
+            scrub(&format!("key: {key}."), key),
+            format!("key: {REMOVED}.")
+        );
+        let t = scrub("Incorrect key: AcmeRoads-sk-live-7Lp2Qs9x*****mQw72", key).into_owned();
+        assert!(!t.contains("7Lp2Qs9x") && t.contains(REMOVED), "{t}");
+        // A date and a number that are also in the key are not the key.
+        let key = "x9Kq2026-11-11Zp4LmW8vTn3BcY7rQe5d";
+        assert!(looks_random(key));
+        assert_eq!(scrub("Read on 2026-11-11.", key), "Read on 2026-11-11.");
     }
 
     #[test]
@@ -618,6 +848,62 @@ mod tests {
         assert!(read(json!({"error": {"message": "You exceeded your current quota", "code": "insufficient_quota"}})).no_credit(429));
         assert!(read(json!({"error": {"type": "invalid_request_error", "message": "Your credit balance is too low to access the Anthropic API."}})).no_credit(400));
         assert!(!read(json!({"error": {"message": "Rate limit reached for requests", "code": "rate_limit_exceeded"}})).no_credit(429));
+    }
+
+    #[test]
+    fn a_model_that_cannot_call_tools_is_told_from_other_refusals() {
+        let said = |m: &str| Said {
+            message: m.into(),
+            codes: String::new(),
+        };
+        for m in [
+            // Ollama (the review's run).
+            "registry.ollama.ai/library/gemma3:latest does not support tools",
+            // OpenRouter.
+            "No endpoints found that support tool use. To learn more about provider routing, visit: https://openrouter.ai/docs",
+            // OpenAI's wording for a model without them.
+            "Unsupported parameter: 'tools' is not supported with this model.",
+            "This model doesn't support function calling",
+            "`tool calling` is not supported with this model",
+            "Function calling is not supported by this deployment",
+        ] {
+            assert!(said(m).no_tools(), "{m}");
+        }
+        for m in [
+            // One field of a tool, or another setting: the second try's.
+            "Unsupported parameter: 'tools[3].function.parameters.additionalProperties' is not supported",
+            "Invalid schema for function 'export': 'anyOf' is not supported",
+            "tool_choice is not supported",
+            "This model does not support tool_choice",
+            "parallel tool calls are not supported",
+            "Unrecognized request argument supplied: stream_options",
+            "This model does not support reasoning effort",
+            "model \"llama9\" not found, try pulling it first",
+            "",
+        ] {
+            assert!(!said(m).no_tools(), "{m}");
+        }
+        let t = refusal(
+            "Ollama on this computer",
+            "gemma3",
+            400,
+            &said("registry.ollama.ai/library/gemma3:latest does not support tools"),
+            false,
+        );
+        assert_eq!(t, "Ollama on this computer says the model gemma3 cannot call tools (registry.ollama.ai/library/gemma3:latest does not support tools). Choose a model that can call tools, and give it a context length of about 32,000 tokens or more: Columbus's first request alone is about 58 KB");
+        // Whatever the status (OpenRouter answers 404), and never read as
+        // an address with nothing at it.
+        let t = refusal(
+            "OpenRouter",
+            "x/y",
+            404,
+            &said("No endpoints found that support tool use."),
+            true,
+        );
+        assert!(
+            t.starts_with("OpenRouter says the model x/y cannot call tools"),
+            "{t}"
+        );
     }
 
     #[test]
@@ -714,6 +1000,49 @@ mod tests {
         assert!(!told_not_to_retry(&h));
         h.insert("x-should-retry", "false".parse().unwrap());
         assert!(told_not_to_retry(&h));
+    }
+
+    /// A server that answers 400 and then sends its body a byte at a time,
+    /// for as long as anyone listens.
+    fn dripping_error() -> String {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let at = format!("http://{}", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            let mut request = [0u8; 4096];
+            let _ = stream.read(&mut request);
+            let head = "HTTP/1.1 400 Bad Request\r\ncontent-type: application/json\r\ntransfer-encoding: chunked\r\n\r\n";
+            if stream.write_all(head.as_bytes()).is_err() {
+                return;
+            }
+            // One chunk of one byte, ten times a second.
+            while stream.write_all(b"1\r\n \r\n").is_ok() && stream.flush().is_ok() {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        });
+        at
+    }
+
+    #[tokio::test]
+    async fn an_errors_body_is_read_for_a_set_time_in_all() {
+        // (Each piece arrives well inside any limit on a piece: only a
+        // limit on the whole ends the reading.)
+        let at = dripping_error();
+        let r = reqwest::Client::new().get(&at).send().await.unwrap();
+        assert_eq!(r.status().as_u16(), 400);
+        let began = std::time::Instant::now();
+        let bytes = read_error_body_within(r, Duration::from_millis(700)).await;
+        let took = began.elapsed();
+        assert!(took < Duration::from_secs(3), "{took:?}");
+        assert!(
+            (3..=10).contains(&bytes.len()),
+            "{} bytes in {took:?}",
+            bytes.len()
+        );
+        assert_eq!(ERROR_BODY_TIME, Duration::from_secs(30));
     }
 
     #[test]

@@ -130,12 +130,13 @@ fn resolve_added(a: &Added) -> Result<Resolved, String> {
         .ok_or("choose how the key is sent: bearer, api-key or x-api-key")?;
     let at = check_address(&a.address)?;
     Ok(Resolved {
-        service: services::added(&a.id, name, format, key_header, a.pictures),
+        service: services::added(&a.id, name, format, key_header, a.pictures)
+            .on_this_computer(at.local),
         address: at.url,
         host: at.host,
         local: at.local,
         about: if at.local {
-            "A service on this computer that you added.".into()
+            "A service on this computer that you added. It needs a model that can call tools and a context length of about 32,000 tokens or more.".into()
         } else {
             format!("A service you added. What the chat reads is sent to {}, and that service bills its use.", a.address.trim())
         },
@@ -353,17 +354,58 @@ fn confirmation(a: &Added) -> Result<String, String> {
     Ok(format!("{}|{}|{}", a.format, a.key_header, at.url))
 }
 
+/// Why an added service is not used as the settings file has it, for the
+/// person: `now` is what the file says, `confirmed` what the credential
+/// store holds as confirmed at this keyboard (both as [`confirmation`]
+/// writes them). The sentence shows both addresses and names both ways
+/// out, Remove and Change.
+fn not_confirmed(name: &str, now: &str, confirmed: Option<&str>) -> String {
+    fn parts(record: &str) -> Option<(String, &str, &str)> {
+        let mut p = record.splitn(3, '|');
+        let (format, header, address) = (p.next()?, p.next()?, p.next()?);
+        let format = match Format::from_id(format) {
+            Some(f) => f.words(),
+            None => format,
+        };
+        Some((format.to_string(), header, address))
+    }
+    let (format, header, address) = parts(now).unwrap_or((String::new(), "", now));
+    match confirmed.and_then(parts) {
+        None => format!(
+            "{name} has not been confirmed on this computer, so it is not used. The settings file gives its address as {address}. If you did not add it, remove it in Settings › Assistant. To use it, choose Change there and confirm it; a key saved under its name is deleted first."
+        ),
+        Some((was_format, was_header, was)) => {
+            let what = if was != address {
+                format!("You confirmed the address {was}; the settings file now gives {address}.")
+            } else {
+                format!("You confirmed {was} as {was_format} with the key sent as {was_header}; the settings file now says {format} with the key sent as {header}.")
+            };
+            format!(
+                "{name} was changed outside this app, so it is not used. {what} If you did not change it, remove it in Settings › Assistant. To use it as the file has it, choose Change there and confirm it; the key saved for it is deleted first, so it is never sent somewhere you did not save it for."
+            )
+        }
+    }
+}
+
 /// Whether an added service is as the person confirmed it at the keyboard.
 fn as_confirmed(a: &Added) -> Result<(), String> {
     let now = confirmation(a)?;
-    if secret(&confirmed_account(&a.id)).as_deref() == Some(now.as_str()) {
+    let confirmed = secret(&confirmed_account(&a.id));
+    if confirmed.as_deref() == Some(now.as_str()) {
         Ok(())
     } else {
-        Err(format!(
-            "The address or the format of {} is not the one you confirmed in this app, so it is not used. Open Settings › Assistant, choose Change for it and save it again.",
-            a.name
-        ))
+        Err(not_confirmed(&a.name, &now, confirmed.as_deref()))
     }
+}
+
+/// What the person is asked at the keyboard before a service is added or
+/// changed. The whole address comes first (scheme, host, port and path):
+/// Windows shows the first 1,024 bytes of the sentence, and an address is
+/// at most 500 characters.
+fn confirm_text(name: &str, address: &str) -> String {
+    format!(
+        "use the AI service at {address} ({name}) for the app's chat: the chat's messages, and what your assistant reads from your data, will be sent there"
+    )
 }
 
 /// A service ready for a chat or a look at its models: set up, as the
@@ -681,12 +723,26 @@ pub struct ServiceForm {
     pictures: bool,
 }
 
+/// What saving a service came to.
+#[derive(Serialize)]
+pub struct SavedService {
+    id: String,
+    /// Whether a key saved for it was deleted: what was confirmed for it
+    /// changed, and the key was saved for what was confirmed before.
+    key_removed: bool,
+}
+
 /// Add a service by its address, or change one. A new one, and any change
 /// to where a service points or how it is spoken to, is confirmed by the
 /// person at the keyboard first: from then on the chat's messages and what
-/// the assistant reads go there.
+/// the assistant reads go there. The key saved for it is deleted whenever
+/// what is confirmed differs from what was confirmed before (the record
+/// in the credential store, not the settings file's entry).
 #[tauri::command]
-pub async fn chat_service_save(app: AppHandle, service: ServiceForm) -> Result<String, String> {
+pub async fn chat_service_save(
+    app: AppHandle,
+    service: ServiceForm,
+) -> Result<SavedService, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let mut s = chat::load(&app);
         let old = match &service.id {
@@ -731,29 +787,38 @@ pub async fn chat_service_save(app: AppHandle, service: ServiceForm) -> Result<S
         };
         org_allows(&r.service.name, &r.host)?;
         let now = confirmation(&a)?;
-        let confirmed_before = old.is_some()
-            && secret(&confirmed_account(&a.id)).as_deref() == Some(now.as_str());
+        // What was confirmed is what the credential store holds, whatever
+        // the settings file says now: another program can rewrite the file,
+        // and then the entry read above is that program's.
+        let confirmed = secret(&confirmed_account(&a.id));
+        let confirmed_before = old.is_some() && confirmed.as_deref() == Some(now.as_str());
+        let mut key_removed = false;
         if !confirmed_before {
             can_keep().map_err(|e| {
                 format!("A service you add is confirmed and recorded in this computer's credential store, which this system does not have ({e}).")
             })?;
-            crate::settings::confirm(&format!(
-                "use {} as an AI service for the app's chat: the chat's messages, and what your assistant reads from your data, will be sent to {}",
-                a.name, r.host
-            ))?;
+            crate::settings::confirm(&confirm_text(&a.name, &r.address))?;
+            // A key goes only where it was saved for: whenever what is
+            // confirmed changes, whoever changed the file, the key saved
+            // for the service goes first. If it cannot be removed, nothing
+            // is changed.
+            let account = key_account(&a.id);
+            key_removed = secret(&account).is_some_and(|k| !k.is_empty());
+            delete_secret(&account).map_err(|e| {
+                format!("the key saved for {} could not be deleted from this computer's credential store, so nothing was changed: {e}", a.name)
+            })?;
             set_secret(&confirmed_account(&a.id), &now)
                 .map_err(|e| format!("the service could not be recorded in this computer's credential store: {e}"))?;
-            // A key saved for the address as it was is not sent to a new one.
-            if old.as_ref().is_some_and(|o| confirmation(o).ok().as_deref() != Some(now.as_str())) {
-                delete_secret(&key_account(&a.id))?;
-            }
         }
         match s.services.iter_mut().find(|x| x.id == a.id) {
             Some(x) => *x = a.clone(),
             None => s.services.push(a.clone()),
         }
         chat::save(&app, &s)?;
-        Ok(a.id)
+        Ok(SavedService {
+            id: a.id,
+            key_removed,
+        })
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1279,6 +1344,67 @@ mod tests {
             assert_ne!(confirmation(&changed).unwrap(), confirmation(&a).unwrap());
         }
         assert!(confirmation(&added("x", "http://ai.example.org/v1")).is_err());
+    }
+
+    #[test]
+    fn an_entry_changed_outside_the_app_is_said_plainly_with_both_addresses() {
+        let now = "chat|bearer|https://elsewhere.example:8443/api/v1";
+        // Changed after it was confirmed: both addresses, Remove and Change.
+        let t = not_confirmed(
+            "My gateway",
+            now,
+            Some("chat|bearer|https://gateway.example.org/v1"),
+        );
+        assert!(
+            t.starts_with("My gateway was changed outside this app, so it is not used. You confirmed the address https://gateway.example.org/v1; the settings file now gives https://elsewhere.example:8443/api/v1."),
+            "{t}"
+        );
+        assert!(
+            t.contains("remove it in Settings › Assistant")
+                && t.contains("choose Change there and confirm it")
+                && t.contains("the key saved for it is deleted first"),
+            "{t}"
+        );
+        // The same address, spoken to another way.
+        let t = not_confirmed(
+            "My gateway",
+            "responses|api-key|https://gateway.example.org/v1",
+            Some("chat|bearer|https://gateway.example.org/v1"),
+        );
+        assert!(
+            t.contains("You confirmed https://gateway.example.org/v1 as OpenAI Chat Completions with the key sent as bearer; the settings file now says OpenAI Responses with the key sent as api-key."),
+            "{t}"
+        );
+        // Never confirmed here (written into the file by something else, or
+        // a record that is not one).
+        for none in [None, Some("not a record")] {
+            let t = not_confirmed("My gateway", now, none);
+            assert!(
+                t.starts_with("My gateway has not been confirmed on this computer, so it is not used. The settings file gives its address as https://elsewhere.example:8443/api/v1.")
+                    && t.contains("remove it in Settings › Assistant")
+                    && t.contains("choose Change there and confirm it"),
+                "{t}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_keyboard_prompt_shows_the_whole_address_first() {
+        let t = confirm_text("My gateway", "https://elsewhere.example:8443/api/v1");
+        assert!(
+            t.starts_with(
+                "use the AI service at https://elsewhere.example:8443/api/v1 (My gateway)"
+            ),
+            "{t}"
+        );
+        // The longest address the rule takes still fits what Windows shows.
+        let long = format!("https://h.example/{}", "p".repeat(480));
+        assert!(check_address(&long).is_ok());
+        let t = format!(
+            "{} (Columbus settings)",
+            confirm_text(&"n".repeat(60), &long)
+        );
+        assert!(t.len() <= 1024 && t.contains(&long), "{}", t.len());
     }
 
     #[test]

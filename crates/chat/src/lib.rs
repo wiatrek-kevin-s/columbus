@@ -49,7 +49,7 @@ pub mod schema;
 pub mod services;
 mod wire;
 
-pub use http::{list_models, MAX_LISTED_MODELS};
+pub use http::{list_models, MAX_LISTED_MODELS, USER_AGENT};
 pub use messages::read_stream;
 pub use services::{Format, KeyHeader, KeyRule, Service, EFFORTS, MODELS};
 
@@ -199,7 +199,8 @@ pub trait Ui: Send + Sync + 'static {
 }
 
 /// The window behind a guard: whatever is shown or asked has the service's
-/// key, and any long piece of it, taken out first. The model never has the
+/// key taken out first (and, for a key that looks random, any long piece
+/// of it: `http::scrub`). The model never has the
 /// key, but the service does, and what a service sends is untrusted (R-26):
 /// its words, the tool calls it asks for and so the code on an approval
 /// card could all quote it. The window writes the transcript from what it
@@ -604,7 +605,9 @@ impl Chat {
         let wire: Box<dyn Wire> = match net.service.format {
             Format::Messages => Box::new(messages::Messages::new(pictures)),
             Format::Responses => Box::new(responses::Responses::new(pictures)),
-            Format::Chat => Box::new(completions::Completions::new(pictures)),
+            Format::Chat => Box::new(
+                completions::Completions::new(pictures).on_this_computer(net.service.local),
+            ),
         };
         Ok(Chat {
             client,
@@ -654,9 +657,17 @@ impl Chat {
         });
         match &r {
             Ok(()) => self.ui.event(Event::Done),
-            Err(e) => self.ui.event(Event::Error {
-                text: e.to_string(),
-            }),
+            Err(e) => {
+                // A message that got no answer leaves the conversation (the
+                // window keeps it, with the error): left in, the next
+                // request would hold two of the person's messages in a
+                // row, which a local model's template refuses. What a tool
+                // step made before the failure stays.
+                self.wire.forget_unanswered();
+                self.ui.event(Event::Error {
+                    text: e.to_string(),
+                });
+            }
         }
         r
     }
@@ -717,10 +728,11 @@ impl Chat {
                 stop,
                 input_tokens,
             } = reply.map_err(|e| self.named(e))?;
+            // (Added without overflow: a service can send any number.)
             match input_tokens {
-                Some(n) => used += n,
+                Some(n) => used = used.saturating_add(n),
                 None => {
-                    used += estimate;
+                    used = used.saturating_add(estimate);
                     estimated = true;
                 }
             }
@@ -769,7 +781,8 @@ impl Chat {
                 }
                 // What a service sends is untrusted (R-26): a call runs
                 // only if it names one of the session's tools and its
-                // arguments arrived whole, and never if it carries the key.
+                // arguments arrived whole, and never if one of their
+                // values carries the key.
                 let shown: String = name.chars().take(80).collect();
                 let refused = fault
                     .or_else(|| {
@@ -900,7 +913,7 @@ impl Chat {
                 .post(&body.json)
                 .send()
                 .await
-                .map_err(|e| anyhow!("could not reach {name}: {}", http::plain(e)))?;
+                .map_err(|e| anyhow!("{}", self.net.unreachable(e)))?;
             let code = r.status();
             if code.is_redirection() {
                 bail!("{}", http::redirect_text(name));
@@ -956,11 +969,14 @@ impl Chat {
             }
             // Refused, with fields in the request the format can do
             // without: one more try without them, once in a chat (build
-            // brief 3, A-11). The second answer is the one reported.
+            // brief 3, A-11). The second answer is the one reported. (Not
+            // for a model that cannot call tools: no second try helps it,
+            // and the chat keeps its one for a model that can.)
             if status == 400
                 && body.optional
                 && !no_credit
                 && !said.unknown_model(status)
+                && !said.no_tools()
                 && !self.tried_bare.swap(true, Ordering::SeqCst)
             {
                 self.bare.store(true, Ordering::SeqCst);
