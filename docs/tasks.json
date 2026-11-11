@@ -747,8 +747,8 @@
           "expected": "with no map open it says so and changes nothing; no web layer's source, URL or data appears (D-14, REQ-34)"
         }
       ],
-      "status": "todo",
-      "evidence": ""
+      "status": "done",
+      "evidence": "Commits ee09a63, 15f5e22, 6e8151d, 877a66d, 2d83d48 (merged as fe7e6b3). Check 1: app/ui/e2e/map.py passes in a real browser against a real gateway: after a pan and a click the extent read is within 3 px of the page's and the selection matches; hide, show, active and zoom are each followed in under 6 s (0.2 to 2.1 s measured); the snapshot's view extent equals the view read. crates/gateway/tests/map_view.rs 3 passed; the tool's unit tests 11 passed; the engine's snapshot tests pass (270 Python tests, 36 skipped for databases). Check 2: with no map open the tool answers not_open and a dropped change is not applied to a map opened later; nine reports carrying a web layer's id, title, address or state are refused with 400, tests/web_layers.rs checks map_view's answers against 12 saved sources, and app/ui/e2e/weblayers.py finds no web layer title, id, kind, address or setting in any answer. The desktop chat script: a scripted read leaves a closed panel closed; a scripted change opens it. Whole Rust suite 392 passed, 0 failed; fmt and clippy clean. Verified on Linux; Windows and macOS by CI on pull request 24."
     },
     {
       "id": "T-31",
