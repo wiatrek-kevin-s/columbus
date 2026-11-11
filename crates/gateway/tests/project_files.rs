@@ -971,6 +971,232 @@ async fn a_script_that_holds_a_secret_is_not_run_and_such_a_helper_is_not_copied
     );
 }
 
+/// Everyday ways of writing a password down that the re-check of R-103
+/// read to the assistant (R-105): in a comment, a docstring, a note's
+/// emphasis or table, a notebook's text, a subscript, a command line. Such
+/// a file is not read to the assistant and not written by it; files that
+/// only name a password still are. (`columbus_shared::secrets` holds the
+/// full list of forms and near misses.)
+#[tokio::test]
+async fn everyday_forms_of_a_password_are_not_read_to_the_assistant_or_written_by_it() {
+    let env = setup(None, "allow_project_files: true\n");
+    let files_dir = env.files("review");
+    std::fs::create_dir_all(&files_dir).unwrap();
+    let long = "a1B2c3D4e5F6g7H8i9J0".repeat(2);
+    let cases: Vec<(&str, String, &str)> = vec![
+        (
+            "comment.py",
+            format!("# sign in as gis_reader, password: {PASSWORD}\nprint('x')\n"),
+            "line 1 (a password written into the file)",
+        ),
+        (
+            "docstring.py",
+            format!("\"\"\"Loads roads.\n\nlogin: gis_reader\npassword: {PASSWORD}\n\"\"\"\nprint(1)\n"),
+            "line 4 (a password written into the file)",
+        ),
+        (
+            "environ.py",
+            format!("import os\nos.environ[\"PGPASSWORD\"] = \"{PASSWORD}\"\n"),
+            "line 2 (a password or key written into the file (a quoted value))",
+        ),
+        (
+            "index.py",
+            format!("cfg = {{}}\ncfg['password'] = '{PASSWORD}'\n"),
+            "line 2 (a password or key written into the file (a quoted value))",
+        ),
+        (
+            "typed.py",
+            format!("password: str = \"{PASSWORD}\"\n"),
+            "line 1 (a password or key written into the file (a quoted value))",
+        ),
+        (
+            "load.R",
+            format!("# password: {PASSWORD}\npassword <- \"{PASSWORD}\"\n"),
+            "line 1 (a password written into the file), line 2 (a password or key written into the file (a quoted value))",
+        ),
+        (
+            "bold.md",
+            format!("# Signing in\n\n**Password:** {PASSWORD}\n"),
+            "line 3 (a password written into the file)",
+        ),
+        (
+            "code.md",
+            format!("- Password: `{PASSWORD}`\n"),
+            "line 1 (a password written into the file)",
+        ),
+        (
+            "table.md",
+            format!("| user | password |\n|---|---|\n| gis_reader | {PASSWORD} |\n"),
+            "line 3 (a password or key written into the file (in a table))",
+        ),
+        (
+            "notebook.ipynb",
+            format!("{{\n \"cells\": [\n  {{\n   \"cell_type\": \"markdown\",\n   \"source\": [\n    \"password: {PASSWORD}\\n\"\n   ]\n  }}\n ]\n}}"),
+            "line 6 (a password written into the file)",
+        ),
+        (
+            "conn.xml",
+            format!("<connection>\n  <password>{PASSWORD}</password>\n</connection>\n"),
+            "line 2 (a password or key written into the file (between tags))",
+        ),
+        (
+            "conf.yaml",
+            format!("user: gis\npass: {PASSWORD}\ntoken: {long}\n"),
+            "line 2 (a password written into the file), line 3 (a token, key or secret written into the file)",
+        ),
+        (
+            "users.sql",
+            format!("CREATE USER gis WITH PASSWORD '{PASSWORD}';\n"),
+            "line 1 (a password written into the file (in a database command))",
+        ),
+        (
+            "sde_cmd.txt",
+            format!("sdetable -o list -u gis -p {PASSWORD}\n"),
+            "line 1 (a password written into the file (on a command line))",
+        ),
+    ];
+    // What the person (or a colleague, through sync) put there.
+    for (name, text, _) in &cases {
+        std::fs::write(files_dir.join(name), text).unwrap();
+    }
+    let fine = [
+        (
+            "plain.py",
+            "\"\"\"Load the roads.\n\n    password: the database password, read from the environment\n\"\"\"\nimport os\n\n# ask Ana for the password; it is kept by Columbus, never here\npassword = os.environ[\"PGPASSWORD\"]\nos.environ[\"PGPASSWORD\"] = password\n",
+        ),
+        (
+            "plain.md",
+            "**Password:** in the credential store\n\n| user | password |\n|---|---|\n| gis_reader | <ask Ana> |\n\nUse `--password` to give it, or leave it out to be asked.\n",
+        ),
+        ("run.json", "{\"pwd\": \"/home/ana/project\"}\n"),
+    ];
+    for (name, text) in &fine {
+        std::fs::write(files_dir.join(name), text).unwrap();
+    }
+    let before = snapshot(&files_dir);
+    let c = start(&env, Some("review")).await;
+
+    for (name, _, at) in &cases {
+        let e = err(&files(&c, json!({"action": "read", "path": name})).await);
+        assert!(
+            e.contains(&format!("{name} is not read to you")) && e.contains(at),
+            "{name}: {e}"
+        );
+        assert!(
+            !e.contains(PASSWORD) && !e.contains(&long) && !e.contains("gis_reader"),
+            "nothing of the file's text: {e}"
+        );
+    }
+    // Files that only name a password read as before.
+    for (name, text) in &fine {
+        let r = ok(&files(&c, json!({"action": "read", "path": name})).await);
+        assert_eq!(r["result"]["text"].as_str().unwrap(), *text, "{name}");
+    }
+    // The assistant writes none of them either, and is told the line.
+    for (name, text, at) in &cases {
+        let path = format!("written/{name}");
+        let e = err(&files(&c, json!({"action": "write", "path": path, "text": text})).await);
+        assert!(
+            e.contains("was not written") && e.contains(at),
+            "{name}: {e}"
+        );
+        assert!(!e.contains(PASSWORD) && !e.contains(&long), "{e}");
+    }
+    assert!(!files_dir.join("written").exists());
+    for (name, text) in &fine {
+        let path = format!("written/{name}");
+        assert_eq!(
+            written(&c, &path, text).await["result"]["status"],
+            "written",
+            "{name}"
+        );
+    }
+    std::fs::remove_dir_all(files_dir.join("written")).unwrap();
+    assert_eq!(snapshot(&files_dir), before, "nothing else changed");
+    c.cancel().await.unwrap();
+    let audit = env.audit();
+    assert!(
+        !audit.contains(PASSWORD) && !audit.contains(&long),
+        "the audit log holds no secret"
+    );
+}
+
+/// The same for a script run by its path and for its helpers (R-105): a
+/// password in a comment keeps a script from running, and a helper that
+/// sets one in the environment is not copied beside a script.
+#[tokio::test]
+async fn a_password_in_a_comment_or_set_in_the_environment_keeps_a_script_from_running() {
+    let Some(py) = engine() else { return };
+    let env = setup(
+        Some(&py),
+        "allow_scripts: true\nscripts: { approval: none }\nallow_project_files: true\n",
+    );
+    let files_dir = env.files("review");
+    std::fs::create_dir_all(files_dir.join("jobs")).unwrap();
+    std::fs::write(
+        files_dir.join("jobs").join("comment_main.py"),
+        format!("# password: {PASSWORD}\nprint(open(__file__).read())\n"),
+    )
+    .unwrap();
+    std::fs::write(
+        files_dir.join("jobs").join("main.py"),
+        "import geom\nfor name in ['comment_helper', 'environ_helper']:\n    try:\n        __import__(name)\n        print(name, 'came along')\n    except ImportError:\n        print(name, 'is not here')\nprint(geom.describe(2))\n",
+    )
+    .unwrap();
+    std::fs::write(files_dir.join("jobs").join("geom.py"), HELPER).unwrap();
+    std::fs::write(
+        files_dir.join("jobs").join("comment_helper.py"),
+        format!("# the prod password: {PASSWORD}\nSHOW = open(__file__).read()\n"),
+    )
+    .unwrap();
+    std::fs::write(
+        files_dir.join("jobs").join("environ_helper.py"),
+        format!("import os\nos.environ[\"PGPASSWORD\"] = \"{PASSWORD}\"\n"),
+    )
+    .unwrap();
+    let c = start(&env, Some("review")).await;
+
+    let e = err(&call(&c, "run_python", json!({"script": "jobs/comment_main.py"})).await);
+    assert!(
+        e.contains("jobs/comment_main.py is not run")
+            && e.contains("line 1 (a password written into the file)"),
+        "{e}"
+    );
+    assert!(!e.contains(PASSWORD), "{e}");
+
+    let ran = call(&c, "run_python", json!({"script": "jobs/main.py"})).await;
+    if !can_confine() {
+        assert!(err(&ran).contains("confined"));
+    } else {
+        let ran = ok(&ran);
+        assert_eq!(ran["result"]["status"], "done", "{ran}");
+        let out = ran["result"]["stdout"].as_str().unwrap();
+        assert!(
+            out.contains("comment_helper is not here")
+                && out.contains("environ_helper is not here")
+                && out.contains("helper says 2 parcels"),
+            "{ran}"
+        );
+        let skipped = ran["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|k| k["id"] == "script.helper_skipped")
+            .unwrap_or_else(|| panic!("the skipped helpers are named: {ran}"));
+        let said = skipped["message"].as_str().unwrap();
+        assert!(
+            said.contains("comment_helper.py")
+                && said.contains("line 1 (a password written into the file)")
+                && said.contains("environ_helper.py")
+                && said.contains("line 2 (a password or key written into the file"),
+            "{said}"
+        );
+        assert!(!ran.to_string().contains(PASSWORD), "{ran}");
+    }
+    c.cancel().await.unwrap();
+    assert!(!env.audit().contains(PASSWORD));
+}
+
 /// `columbus-project.yaml` at the top of the folder holds the project's
 /// shared settings (its name and its instructions for the assistant), and
 /// travels with the files when the project syncs (F-17). Instructions steer
