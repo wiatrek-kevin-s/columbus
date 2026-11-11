@@ -512,6 +512,55 @@ async fn everyday_forms_of_a_password_stop_the_sync_before_anything_is_sent() {
             1,
         ),
     ];
+    // What the review after that sent through: a real password with a sign
+    // or a word that stand-ins use, and more everyday forms. (Made-up
+    // passwords, as everywhere here.)
+    let more: Vec<(&str, String, usize)> = vec![
+        ("load.py", "password = \"Password123!\"\n".into(), 1),
+        ("load.py", "password = \"Parc3l$View\"\n".into(), 1),
+        (
+            "run.sh",
+            "PGPASSWORD=\"Tr4ffic$Count26\" psql -h db1 -U gis\n".into(),
+            1,
+        ),
+        (
+            "load.py",
+            format!(
+                "engine = create_engine(\"postgresql://gis_reader:{}@db1.corp.example:5432/gis\")\n",
+                "Dra1nage%21Map"
+            ),
+            1,
+        ),
+        ("conf.json", "{\"password\": \"Example#2026\"}\n".into(), 1),
+        (
+            "zugang.md",
+            format!("Benutzer: test_gis\nPasswort: {}\n", "Br0cken!Weg"),
+            2,
+        ),
+        (
+            "README.md",
+            format!("Sign in to the portal as `svc_gis` with the password `{}`.\n", "Bridge!Deck88"),
+            1,
+        ),
+        (
+            "conf.xml",
+            format!("<entry key=\"password\">{}</entry>\n", "Yam1!Config"),
+            1,
+        ),
+        (
+            "notes.txt",
+            format!("net use Z: \\\\fs1.corp.example\\gis /user:CORP\\svc_gis {} /persistent:no\n", "Sh4re!Drive9"),
+            1,
+        ),
+        (
+            "pack.sh",
+            format!("7z a -p{} out.7z out/\n", "Tr4fficCount26"),
+            1,
+        ),
+        ("load.py", "secret = \"Tr4ffic!Count26\"\n".into(), 1),
+        ("load.py", "login(\"gis_reader\", \"Tr4ffic!Count26\")\n".into(), 1),
+    ];
+    let cases: Vec<(&str, String, usize)> = cases.into_iter().chain(more).collect();
     for (name, text, line) in &cases {
         let r = repo();
         let host = MemoryHost::new(r.clone(), "Ana");
@@ -568,12 +617,12 @@ async fn files_that_name_a_password_without_giving_one_are_sent() {
     let files = [
         (
             "scripts/load.py",
-            "\"\"\"Load the roads.\n\n    password: the database password, read from the environment\n\"\"\"\nimport os\n\n# ask Ana for the password; it is kept by Columbus, never here\npassword = os.environ[\"PGPASSWORD\"]\npassword: str\nos.environ[\"PGPASSWORD\"] = password\ncfg = {}\ncfg['password'] = get_password()\nconn = connect(user=user, password=pw2026x)  # as set above\ngis = GIS(url, username, password)\ngis = GIS(\"https://www.arcgis.com\", \"ana\", getpass.getpass())\ngis = GIS(\"pro\")\nr = requests.get(url, auth=(user, pw))\nhost = os.environ.get(\"PGHOST\", \"db1.corp.example\")\npassword = os.environ.get(\"PGPASSWORD\")\nconn = oracledb.connect(user=user, password=pw, dsn=dsn)\nx, y = \"12.5\", \"48.1\"\npw = get_pw()\npassword = os.getenv(\"PGPASSWORD\", default=None)\npassword = os.environ.get(\"PGPASSWORD\") or getpass.getpass()\nkey = os.environ.get(\"S3_KEY\", \"exports/2026/roads_north_v2.parquet\")\nftp.login(\"anonymous\", \"ana@county.gov\")\nconn = pymssql.connect(\"db1\", \"gis\", pw, \"roads2026\")\ny = np.exp(x/sigma2@w)\n",
+            "\"\"\"Load the roads.\n\n    password: the database password, read from the environment\n\"\"\"\nimport os\n\n# ask Ana for the password; it is kept by Columbus, never here\npassword = os.environ[\"PGPASSWORD\"]\npassword: str\nos.environ[\"PGPASSWORD\"] = password\ncfg = {}\ncfg['password'] = get_password()\nconn = connect(user=user, password=pw2026x)  # as set above\ngis = GIS(url, username, password)\ngis = GIS(\"https://www.arcgis.com\", \"ana\", getpass.getpass())\ngis = GIS(\"pro\")\nr = requests.get(url, auth=(user, pw))\nhost = os.environ.get(\"PGHOST\", \"db1.corp.example\")\npassword = os.environ.get(\"PGPASSWORD\")\nconn = oracledb.connect(user=user, password=pw, dsn=dsn)\nx, y = \"12.5\", \"48.1\"\npw = get_pw()\npassword = os.getenv(\"PGPASSWORD\", default=None)\npassword = os.environ.get(\"PGPASSWORD\") or getpass.getpass()\nkey = os.environ.get(\"S3_KEY\", \"exports/2026/roads_north_v2.parquet\")\nftp.login(\"anonymous\", \"ana@county.gov\")\nconn = pymssql.connect(\"db1\", \"gis\", pw, \"roads2026\")\ny = np.exp(x/sigma2@w)\npassword = \"${DB_PASSWORD}\"\npassword = \"%DB_PASSWORD%\"\npassword = \"your-password-here\"\npwd = \"row_widths\"\ntoken_hash = \"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b\"\nurl = f\"postgresql://{user}:{pw}@db1/roads\"\n",
         ),
         ("scripts/load.R", "password <- Sys.getenv(\"PGPASSWORD\")\npwd <- getwd()\n"),
         (
             "notes.md",
-            "# Signing in\n\nAsk Ana for the password.\n\n**Password:** in the credential store\n\n| user | password |\n|---|---|\n| gis_reader | <ask Ana> |\n\nThe password is 12 characters or more.\nUse `--password` to give it, or leave it out to be asked.\nThe layer is \"ana/roads@2024\" in the old naming.\nAuthorization: Basic <credentials>\n",
+            "# Signing in\n\nAsk Ana for the password.\n\n**Password:** in the credential store\n\n| user | password |\n|---|---|\n| gis_reader | <ask Ana> |\n\nThe password is 12 characters or more.\nUse `--password` to give it, or leave it out to be asked.\nThe layer is \"ana/roads@2024\" in the old naming.\nAuthorization: Basic <credentials>\nPasswort: siehe Tresor\nPassword for staging: ask Dana\n",
         ),
         (
             "conf/settings.yaml",

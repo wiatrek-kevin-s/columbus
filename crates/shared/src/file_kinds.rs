@@ -15,7 +15,8 @@
 /// The kind of a file that is kept out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
-    /// `.env`, `.env.local` …: settings that usually hold secrets.
+    /// `.env`, `.env.local`, `prod.env` …: settings that usually hold
+    /// secrets.
     EnvFile,
     /// A key or a store of keys: `*.pem`, `*.key`, `*.pfx`, `id_rsa` …
     Key,
@@ -89,11 +90,19 @@ const PASSWORD_NAMES: &[&str] = &[
     "pgpass.conf",
 ];
 
+/// Files that hold passwords or keys in plain text, by their ending:
+/// Terraform's record of what it built (`terraform.tfstate`, also as
+/// `terraform.tfstate.backup`).
+const PASSWORD_ENDINGS: &[&str] = &["tfstate"];
+
 /// Private keys, by their whole name (SSH's).
 const KEY_NAMES: &[&str] = &["id_dsa", "id_ecdsa", "id_ed25519", "id_rsa"];
 
-/// Keys, certificates with their keys, and stores of keys or passwords.
-const KEY_ENDINGS: &[&str] = &["jks", "kdbx", "key", "keystore", "p12", "pem", "pfx", "ppk"];
+/// Keys, certificates with their keys, stores of keys or passwords, and a
+/// VPN's profile, which carries its keys (`ovpn`).
+const KEY_ENDINGS: &[&str] = &[
+    "jks", "kdbx", "key", "keystore", "ovpn", "p12", "pem", "pfx", "ppk",
+];
 
 /// Connection files: ArcGIS (`sde`, `ags`, `acs`), Office and ODBC (`odc`,
 /// `dsn`, `udl`). They name a server and can hold its password.
@@ -328,9 +337,11 @@ const GEODATA_ENDINGS: &[&str] = &[
 const TABLE_ENDINGS: &[&str] = &[
     "accdb",
     "arrow",
+    "bak",
     "csv",
     "db",
     "db3",
+    "dmp",
     "dta",
     "duckdb",
     "feather",
@@ -343,6 +354,7 @@ const TABLE_ENDINGS: &[&str] = &[
     "npz",
     "ods",
     "parquet",
+    "pbix",
     "pickle",
     "pkl",
     "rdata",
@@ -353,6 +365,7 @@ const TABLE_ENDINGS: &[&str] = &[
     "sqlite3",
     "tab",
     "tsv",
+    "twbx",
     "wal",
     "xls",
     "xlsb",
@@ -402,17 +415,26 @@ pub fn kind_of(name: &str) -> Option<Kind> {
     if SYSTEM_NAMES.contains(&lower.as_str()) {
         return Some(Kind::System);
     }
-    if lower.starts_with(".env") {
+    let ext = extension(&lower);
+    let ext = ext.as_str();
+    // `.env`, `.env.local`, and a name that ends so: `prod.env`.
+    if lower.starts_with(".env") || ext == "env" {
         return Some(Kind::EnvFile);
     }
     if PASSWORD_NAMES.contains(&lower.as_str()) {
         return Some(Kind::Passwords);
     }
+    // (`terraform.tfstate.backup` is the state before the last change.)
+    let ending = lower.strip_suffix(".backup").map(extension);
+    if PASSWORD_ENDINGS
+        .iter()
+        .any(|e| ext == *e || ending.as_deref() == Some(*e))
+    {
+        return Some(Kind::Passwords);
+    }
     if KEY_NAMES.contains(&lower.as_str()) {
         return Some(Kind::Key);
     }
-    let ext = extension(&lower);
-    let ext = ext.as_str();
     if KEY_ENDINGS.contains(&ext) {
         return Some(Kind::Key);
     }
@@ -475,8 +497,15 @@ pub fn examples() -> Vec<(String, Kind)> {
     );
     out.extend(KEY_NAMES.iter().map(|n| (n.to_string(), Kind::Key)));
     out.extend(SYSTEM_NAMES.iter().map(|n| (n.to_string(), Kind::System)));
+    out.extend(
+        PASSWORD_ENDINGS
+            .iter()
+            .flat_map(|e| [format!("thing.{e}"), format!("thing.{e}.backup")])
+            .map(|n| (n, Kind::Passwords)),
+    );
     out.push((".env".into(), Kind::EnvFile));
     out.push((".env.local".into(), Kind::EnvFile));
+    out.push(("prod.env".into(), Kind::EnvFile));
     out
 }
 
@@ -619,6 +648,32 @@ mod tests {
         );
         // A workbook with macros stays what it was: a table.
         assert_eq!(kind_of("book.xlsm"), Some(Kind::Table));
+        // Names the review of R-105 found still leaving: a database's
+        // backup and dump, a report that carries its data, Terraform's
+        // state, a VPN's profile, and settings named `….env`.
+        for name in [
+            "gis.bak",
+            "GIS.BAK",
+            "export.dmp",
+            "roads.pbix",
+            "roads.twbx",
+        ] {
+            assert_eq!(kind_of(name), Some(Kind::Table), "{name}");
+            assert!(kind_of(name).is_some_and(Kind::is_data), "{name}");
+        }
+        for (name, kind) in [
+            ("terraform.tfstate", Kind::Passwords),
+            ("terraform.tfstate.backup", Kind::Passwords),
+            ("prod.TFSTATE", Kind::Passwords),
+            ("office.ovpn", Kind::Key),
+            ("prod.env", Kind::EnvFile),
+            ("settings.env", Kind::EnvFile),
+            ("Settings.ENV", Kind::EnvFile),
+            (".env.production", Kind::EnvFile),
+        ] {
+            assert_eq!(kind_of(name), Some(kind), "{name}");
+            assert!(kind.is_secret(), "{name}");
+        }
     }
 
     #[test]
@@ -641,6 +696,10 @@ mod tests {
             "keys.md",
             "csv",
             "my.env.txt",
+            "env",
+            "tfstate.md",
+            "notes.backup",
+            "bak.py",
             "data.csv.md",
             "zip.py",
             "Makefile",
