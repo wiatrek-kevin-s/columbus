@@ -120,6 +120,30 @@ const IGNORED: &[(&str, &str)] = &[
     ("query.iqy", "runs or follows"),
     ("sheet.slk", "runs or follows"),
     ("Tool.app/Contents/Info.plist", "runs or follows"),
+    // R-105: other tools' token files; map documents and layer files,
+    // which can hold a saved connection; data formats the list lacked;
+    // Office files that carry macros.
+    (".npmrc", "password"),
+    (".pypirc", "password"),
+    ("County.aprx", "saved connection"),
+    ("roads.mxd", "saved connection"),
+    ("roads.mapx", "saved connection"),
+    ("roads.lyrx", "saved connection"),
+    ("old-roads.lyr", "saved connection"),
+    ("county.qgs", "saved connection"),
+    ("county.qgz", "saved connection"),
+    ("tiles.mbtiles", "geodata"),
+    ("dem.asc", "geodata"),
+    ("points.xyz", "geodata"),
+    ("town.osm", "geodata"),
+    ("town.osm.pbf", "geodata"),
+    ("loose.gdbtable", "geodata"),
+    ("report.docm", "runs or follows"),
+    ("letter.dotm", "runs or follows"),
+    ("slides.pptm", "runs or follows"),
+    ("addin.ppam", "runs or follows"),
+    ("addin.xlam", "runs or follows"),
+    ("book.xltm", "runs or follows"),
 ];
 
 #[tokio::test]

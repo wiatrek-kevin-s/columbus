@@ -530,6 +530,15 @@ async fn paths_and_files_the_rules_refuse_stay_refused() {
         (".env", "password or key"),
         ("keys/server.pem", "password or key"),
         ("db/prod.sde", "connection file"),
+        // R-105: other tools' token files, and map documents and layer
+        // files, which can hold a saved connection.
+        (".npmrc", "password or key"),
+        (".pypirc", "password or key"),
+        ("County.aprx", "can hold a saved connection"),
+        ("maps/roads.mxd", "can hold a saved connection"),
+        ("maps/roads.lyrx", "can hold a saved connection"),
+        ("county.qgs", "can hold a saved connection"),
+        ("county.qgz", "can hold a saved connection"),
     ];
     if cfg!(unix) {
         cases.push(("link.txt", "links are never followed"));
@@ -606,6 +615,13 @@ async fn paths_and_files_the_rules_refuse_stay_refused() {
         json!({"action": "write", "path": "places.kml", "text": "<kml/>"}),
         json!({"action": "write", "path": "book.xlsx", "text": "x"}),
         json!({"action": "write", "path": "cache.sqlite", "text": "x"}),
+        // R-105: data formats the list lacked.
+        json!({"action": "write", "path": "tiles.mbtiles", "text": "x"}),
+        json!({"action": "write", "path": "dem.asc", "text": "ncols 2\nnrows 2\n1 2\n3 4\n"}),
+        json!({"action": "write", "path": "points.xyz", "text": "1 2 3\n"}),
+        json!({"action": "write", "path": "town.osm", "text": "<osm/>"}),
+        json!({"action": "write", "path": "town.osm.pbf", "text": "x"}),
+        json!({"action": "write", "path": "loose.gdbtable", "text": "x"}),
     ] {
         let e = err(&files(&c, args.clone()).await);
         assert!(
@@ -672,6 +688,13 @@ async fn paths_and_files_the_rules_refuse_stay_refused() {
         "Tool.app/Contents/MacOS/tool.py",
         "tools/Daily.workflow/notes.md",
         "a.app/x.py",
+        // R-105: Office files that carry macros.
+        "report.docm",
+        "letter.dotm",
+        "slides.pptm",
+        "addin.ppam",
+        "addin.xlam",
+        "book.xltm",
     ] {
         let e = err(&files(
             &c,
