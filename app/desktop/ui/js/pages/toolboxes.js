@@ -73,7 +73,7 @@ export function toolboxSection() {
       const text = el("div", "text");
       const facts = [t.id, t.version ? `version ${t.version}` : null, t.tools != null ? tools(t.tools) : null].filter(Boolean).join(" · ");
       text.append(el("b", null, t.name), el("span", "where", facts));
-      if (t.cannot_run) text.append(el("span", "where", `${count(t.cannot_run)} of them need data Columbus cannot give yet.`));
+      if (t.cannot_run) text.append(el("span", "where", `${count(t.cannot_run)} of them cannot be run by Columbus yet.`));
       const from = [t.source ? `From ${t.source}` : null, t.licence ? `licence: ${t.licence}` : null, t.installed ? `installed ${when(t.installed)}` : null].filter(Boolean).join(" · ");
       if (from) text.append(el("span", "where", from));
       const state = !ok ? (t.state === "changed" ? "Off: its program changed" : t.state === "missing" ? "Off: its program is missing" : "Off: it cannot be read")
