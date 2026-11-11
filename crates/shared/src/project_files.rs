@@ -199,9 +199,9 @@ pub fn kept_from_assistant(name: &str) -> Option<&'static str> {
 /// Why the assistant may not write a file of this name, if it may not:
 /// the project's shared settings (sync writes them), or one of the kinds
 /// that never sync ([`file_kinds`]): a password, key or connection file,
-/// a type the system runs when it is opened, data, an archive, a file the
-/// system makes for itself. Data leaves a chat only through an export
-/// (D-19).
+/// a type the system runs when it is opened (as the file's own name or a
+/// folder's on the way: `Tool.app/…`), data, an archive, a file the system
+/// makes for itself. Data leaves a chat only through an export (D-19).
 pub fn write_problem(parts: &[String]) -> Option<String> {
     let name = parts.last()?;
     if parts.len() == 1 && name.eq_ignore_ascii_case(SETTINGS_FILE) {
@@ -211,6 +211,13 @@ pub fn write_problem(parts: &[String]) -> Option<String> {
     }
     const NOT_THOSE: &str =
         "the assistant writes scripts Columbus runs in its sandbox (.py) and notes, not those";
+    for folder in &parts[..parts.len() - 1] {
+        if let Some(ext) = file_kinds::runs_when_opened(folder) {
+            return Some(format!(
+                "{folder} is a folder of a kind the system runs or follows when it is opened (.{ext}); {NOT_THOSE}"
+            ));
+        }
+    }
     if let Some(why) = kept_from_assistant(name) {
         return Some(why.into());
     }
@@ -468,6 +475,21 @@ mod tests {
             ("prod.sde", "connection file"),
             ("server.AGS", "connection file"),
             ("prod.dsn", "connection file"),
+            // Files that run when they are opened (R-104): more kinds, and
+            // every part of the path, not only the file's own name.
+            ("tool.pyw", "runs or follows"),
+            ("tool.pyz", "runs or follows"),
+            ("tool.PYZW", "runs or follows"),
+            ("office.rdp", "runs or follows"),
+            ("query.iqy", "runs or follows"),
+            ("sheet.slk", "runs or follows"),
+            ("a.app/x.py", "runs or follows"),
+            ("Tool.app/Contents/Info.plist", "runs or follows"),
+            ("do/Daily.workflow/document.md", "runs or follows"),
+            (
+                "Panel.{21EC2020-3AEA-1069-A2DD-08002B30309D}/x.md",
+                "runs or follows",
+            ),
             // Data (R-103): results leave a chat only through an export.
             ("data/codes.csv", "only through an export"),
             ("codes.TSV", "only through an export"),

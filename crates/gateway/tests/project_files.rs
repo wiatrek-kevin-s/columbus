@@ -662,6 +662,16 @@ async fn paths_and_files_the_rules_refuse_stay_refused() {
         "tools/setup.vbs",
         "report.pdf.lnk",
         "page.url",
+        // R-104: more kinds, and every part of the path.
+        "tool.pyw",
+        "tool.pyz",
+        "tool.pyzw",
+        "office.rdp",
+        "query.iqy",
+        "sheet.slk",
+        "Tool.app/Contents/MacOS/tool.py",
+        "tools/Daily.workflow/notes.md",
+        "a.app/x.py",
     ] {
         let e = err(&files(
             &c,
@@ -696,7 +706,10 @@ async fn paths_and_files_the_rules_refuse_stay_refused() {
             "scripts/widths.py"
         ]
     );
-
+    assert!(
+        !files_dir.join("Tool.app").exists() && !files_dir.join("tools").exists(),
+        "a refused write makes no folder"
+    );
     let note = |path: &str| {
         l["result"]["files"]
             .as_array()

@@ -73,7 +73,7 @@ pub fn write(root: &Path, shared: &Shared) -> Result<bool, Error> {
         }
     }
     std::fs::create_dir_all(root).map_err(|e| Error::io(root, e))?;
-    fsx::write(root, SETTINGS_FILE, want.to_text().as_bytes(), false)?;
+    fsx::write(root, SETTINGS_FILE, want.to_text().as_bytes())?;
     Ok(true)
 }
 

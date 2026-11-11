@@ -383,6 +383,9 @@ fn record(state: &mut State, path: &str, blob: &str, stat: fsx::Stat, hash: Stri
 
 /// Write the server's version of `path` into the folder and record it.
 /// A folder or a link of that name is said in `skipped`, not an error.
+/// The file is never given the run permission, whatever the repository
+/// says of it (R-104): what arrives is somebody else's, and has not been
+/// looked at. The person marks a script as a program themselves.
 fn put(
     root: &Path,
     path: &str,
@@ -391,7 +394,7 @@ fn put(
     state: &mut State,
     skipped: &mut Vec<Skipped>,
 ) -> Result<bool, Error> {
-    match fsx::write(root, path, bytes, s.exec) {
+    match fsx::write(root, path, bytes) {
         Ok(stat) => {
             record(state, path, &s.blob, stat, content_hash(bytes));
             Ok(true)
@@ -852,12 +855,14 @@ fn outgoing(
                 bytes,
                 exec: stat.exec,
             },
-            // Windows has no mark for programs: the server's is kept.
+            // The server's mark for a program is kept: a file that arrived
+            // is never one here, and Windows has no such mark at all. A
+            // file the person marked themselves is sent as one.
             Some(s) => Change::Update {
                 path,
                 bytes,
                 old: s.blob,
-                exec: if cfg!(unix) { stat.exec } else { s.exec },
+                exec: s.exec || stat.exec,
             },
         });
     }

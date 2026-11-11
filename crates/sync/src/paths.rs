@@ -106,7 +106,7 @@ pub fn refused_name(name: &str) -> Option<&'static str> {
 ///   data leaves Columbus only through an export (D-19, D-20);
 /// * archives and disk images;
 /// * files the system runs or follows when they are opened (`.bat`,
-///   `.lnk`, `.url` …);
+///   `.lnk`, `.pyw`, `.rdp`, a macOS bundle such as `Tool.app/…`);
 /// * `__pycache__/`, `.venv/`, `outputs/`, `*.gdb/`, and the files the
 ///   system itself leaves in folders.
 ///
@@ -147,7 +147,8 @@ pub fn ignored_folder(name: &str) -> Option<&'static str> {
             FolderKind::Geodatabase => "a file geodatabase (.gdb) is on the ignore list",
         });
     }
-    None
+    // A macOS bundle is a folder: `Tool.app`, `Daily.workflow`.
+    file_kinds::runs_when_opened(name).map(|_| RUNS)
 }
 
 /// The name a person's version is kept under beside a file both sides
@@ -318,9 +319,21 @@ mod tests {
             ("prod.dsn", "connection"),
             ("prod.udl", "connection"),
             ("cube.odc", "connection"),
-            // Files the system runs or follows when they are opened.
+            // Files the system runs or follows when they are opened, as a
+            // file or as a folder on the way.
             ("open me.bat", "runs or follows"),
             ("report.pdf.lnk", "runs or follows"),
+            ("tool.pyw", "runs or follows"),
+            ("tool.pyz", "runs or follows"),
+            ("tool.pyzw", "runs or follows"),
+            ("office.rdp", "runs or follows"),
+            ("query.iqy", "runs or follows"),
+            ("sheet.slk", "runs or follows"),
+            ("Tool.app/Contents/MacOS/tool", "runs or follows"),
+            (
+                "do/Daily.workflow/Contents/document.wflow",
+                "runs or follows",
+            ),
             // More archives.
             ("bundle.7z", "archives"),
             ("bundle.tar.gz", "archives"),

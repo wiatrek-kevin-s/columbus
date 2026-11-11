@@ -25,7 +25,7 @@ pub enum Kind {
     /// A connection file, which can hold a password: `*.sde`, `*.dsn` …
     Connection,
     /// A file the system runs or follows when the person opens it:
-    /// `*.bat`, `*.lnk`, `*.url` …
+    /// `*.bat`, `*.lnk`, `*.rdp` …
     Runs,
     /// Geodata: `*.gpkg`, the parts of a shapefile, rasters, point clouds …
     Geodata,
@@ -89,56 +89,123 @@ const CONNECTION_ENDINGS: &[&str] = &["acs", "ags", "dsn", "odc", "sde", "udl"];
 /// File types an operating system runs or follows when the person opens
 /// them (a double-click in Explorer or Finder): programs and installers,
 /// scripts the system's own script hosts run, shortcuts and files that
-/// point somewhere, macOS bundles. `.py`, `.sh`, `.ps1`, `.sql`, `.md` and
-/// `.json` are not here: they open in an editor, or are what a project's
-/// files are for.
+/// point somewhere, Office query files, remote desktop files, macOS
+/// bundles. `.py`, `.sh`, `.ps1`, `.sql`, `.md` and `.json` are not here:
+/// they open in an editor, or are what a project's files are for.
 const RUNS_WHEN_OPENED: &[&str] = &[
+    // Windows: programs, installers, libraries.
+    "appinstaller",
+    "appx",
+    "appxbundle",
     "bat",
     "cmd",
     "com",
+    "cpl",
+    "dll",
+    "drv",
     "exe",
-    "pif",
-    "scr",
+    "msc",
     "msi",
+    "msix",
+    "msixbundle",
     "msp",
     "mst",
-    "cpl",
-    "msc",
+    "msu",
+    "ocx",
+    "pif",
+    "scr",
+    "sys",
+    // Windows: scripts its script hosts run, and their settings.
     "hta",
-    "vbs",
-    "vbe",
     "js",
     "jse",
+    "ps1xml",
+    "psc1",
+    "sct",
+    "vbe",
+    "vbs",
+    "wsc",
     "wsf",
     "wsh",
-    "wsc",
-    "sct",
-    "ps1xml",
-    "reg",
-    "lnk",
-    "url",
-    "scf",
-    "inf",
-    "jar",
-    "jnlp",
-    "chm",
-    "hlp",
+    // Python files the launcher runs without a window, and compiled ones.
+    "pyc",
+    "pyo",
+    "pyw",
+    "pyz",
+    "pyzw",
+    // Shortcuts, and files that point somewhere or change settings.
     "application",
     "appref-ms",
+    "chm",
+    "diagcab",
+    "diagcfg",
+    "diagpkg",
+    "deskthemepack",
+    "hlp",
+    "inf",
     "library-ms",
+    "lnk",
+    "prf",
+    "rdp",
+    "reg",
+    "scf",
     "search-ms",
+    "searchconnector-ms",
+    "settingcontent-ms",
+    "theme",
+    "themepack",
+    "url",
     "website",
-    "desktop",
-    "command",
-    "app",
+    // Office: files that fetch or run when Excel, Word or Access opens them.
+    "accda",
+    "accde",
+    "ade",
+    "adp",
+    "dqy",
+    "iqy",
+    "mad",
+    "maf",
+    "mag",
+    "mam",
+    "maq",
+    "mar",
+    "mas",
+    "mat",
+    "mau",
+    "mav",
+    "maw",
+    "mda",
+    "mde",
+    "mdz",
+    "oqy",
+    "rqy",
+    "slk",
+    "wll",
+    "xll",
+    // Java.
+    "jar",
+    "jnlp",
+    // macOS: bundles and files Finder runs, installs or follows.
     "action",
-    "workflow",
-    "terminal",
-    "inetloc",
-    "webloc",
+    "app",
+    "command",
     "fileloc",
-    "dll",
-    "sys",
+    "inetloc",
+    "mobileconfig",
+    "mpkg",
+    "pkg",
+    "prefpane",
+    "saver",
+    "terminal",
+    "tool",
+    "webloc",
+    "workflow",
+    // Linux desktops: launchers and packages.
+    "deb",
+    "desktop",
+    "flatpakref",
+    "flatpakrepo",
+    "rpm",
 ];
 
 /// Geodata: GeoPackage, the parts of a shapefile, GeoJSON and its line
@@ -273,10 +340,13 @@ pub fn extension(name: &str) -> String {
 }
 
 /// The extension that makes a name one the system runs or follows when it
-/// is opened, if it is one.
+/// is opened, if it is one. For a file's name and for a folder's (a macOS
+/// bundle is a folder: `Tool.app`, `Do.workflow`).
 pub fn runs_when_opened(name: &str) -> Option<String> {
     let ext = extension(name);
-    RUNS_WHEN_OPENED.contains(&ext.as_str()).then_some(ext)
+    // `Name.{…}`: Explorer opens the system object with that id.
+    let shell_object = ext.starts_with('{') && ext.ends_with('}');
+    (RUNS_WHEN_OPENED.contains(&ext.as_str()) || shell_object).then_some(ext)
 }
 
 /// The kind of a file by its name, if it is one that is kept out.
@@ -366,7 +436,7 @@ mod tests {
     #[test]
     fn every_entry_of_the_table_is_found_in_any_letter_case() {
         let all = examples();
-        assert!(all.len() > 150, "{}", all.len());
+        assert!(all.len() > 200, "{}", all.len());
         for (name, kind) in &all {
             assert_eq!(kind_of(name), Some(*kind), "{name}");
             assert_eq!(kind_of(&name.to_uppercase()), Some(*kind), "{name}");
@@ -433,6 +503,12 @@ mod tests {
         }
         // Files that run when opened.
         for name in [
+            "a.pyw",
+            "a.pyz",
+            "a.pyzw",
+            "a.rdp",
+            "a.iqy",
+            "a.slk",
             "a.bat",
             "a.lnk",
             "a.url",
@@ -443,6 +519,10 @@ mod tests {
             assert_eq!(kind_of(name), Some(Kind::Runs), "{name}");
             assert!(runs_when_opened(name).is_some(), "{name}");
         }
+        assert_eq!(
+            runs_when_opened("Panel.{21EC2020-3AEA-1069-A2DD-08002B30309D}").as_deref(),
+            Some("{21ec2020-3aea-1069-a2dd-08002b30309d}")
+        );
     }
 
     #[test]
