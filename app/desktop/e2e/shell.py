@@ -151,6 +151,8 @@ def main():
     port = json.loads(wait_file(root / "live" / f"{session}.json"))["port"]
     q = mcp.tool("query_features", {"connection": "tiger", "dataset": "tracts"})
     handle = q["result"]["layer"]["handle"]
+    # A read of exactly one row, for the words the app counts rows in (R-104).
+    mcp.tool("query_features", {"connection": "tiger", "dataset": "tracts", "where": "NAME = 'A'"})
 
     step("the app")
     d, driver_proc = guard.driver(files, APP)
@@ -318,6 +320,9 @@ def main():
         assert "The conversation is in that app" in text(d, "#chat-list")
         click(d, By.CSS_SELECTOR, f"#chat-list a[href='#/chats/s/{session}']")
         wait.until(lambda drv: 'Querying "tracts" on "tiger"' in text(drv, ".activity"))
+        # One row is "1 row" (R-104).
+        acts = text(d, ".activity")
+        assert "1 row" in acts and "2 rows" in acts and "1 rows" not in acts, acts
         # Its row in the sidebar is the one that is lit now.
         wait.until(lambda drv: drv.find_element(By.CSS_SELECTOR, f"#recents a[href='#/chats/s/{session}']").get_attribute("aria-current") == "page")
         frame = WebDriverWait(d, 40).until(EC.presence_of_element_located((By.CSS_SELECTOR, "#stage iframe")))
@@ -438,6 +443,8 @@ def main():
         step("The audit log, under what waits: this session's calls, filtered, and its chain checked")
         wait.until(lambda drv: "query_features" in text(drv, "#audit-rows"))
         assert "approval_decision" in text(d, "#audit-rows")
+        history = text(d, "#audit-rows")
+        assert "1 row" in history and "2 rows" in history and "1 rows" not in history, history
         assert "You declined" in text(d, "#audit-rows"), text(d, "#audit-rows")
         click(d, By.ID, "audit-filter")
         wait.until(lambda drv: drv.find_element(By.ID, "audit-tool").is_displayed())

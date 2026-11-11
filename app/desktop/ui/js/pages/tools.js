@@ -1,7 +1,7 @@
 // Tools: the person's own tools (ported from the Settings window), each
 // read in full before it is installed, which is confirmed at the keyboard
 // in the app's own code; and the Skills library, read only.
-import { $, h, el, invoke, store, button, pageHead, sec, showError, when, numbered, emptyState } from "../core.js";
+import { $, h, el, invoke, store, button, pageHead, sec, showError, when, numbered, emptyState, plural, CANNOT_CONFIRM, cannotConfirm } from "../core.js";
 import { switchRow } from "./settings.js";
 import { shareOut, shareIn, importedText, teamLibrary } from "./share.js";
 import { toolboxSection } from "./toolboxes.js";
@@ -20,7 +20,7 @@ function testText(t) {
   const parts = [];
   if (p.imported) return importedText(p);
   if (p.proposed) parts.push(`Proposed ${when(p.proposed)}`);
-  const outs = (test.outputs || []).map((o) => `${o.kind}${o.rows != null ? ` (${o.rows} rows)` : ""}`);
+  const outs = (test.outputs || []).map((o) => `${o.kind}${o.rows != null ? ` (${plural(Number(o.rows), "row")})` : ""}`);
   if (outs.length) parts.push(`test run made ${outs.join(", ")}`);
   const checks = test.checks || [];
   const bad = checks.filter((c) => c.severity === "fail").map((c) => c.id);
@@ -205,7 +205,9 @@ export async function render(main) {
     inst.hidden = false;
     $("review-decline").hidden = false;
     inst.disabled = !tools.allowed;
-    inst.title = tools.allowed ? `Install it (asks for ${store.info ? store.info.confirm_with : "confirmation"})` : "Personal tools are turned off in your organization's settings";
+    inst.title = !tools.allowed ? "Personal tools are turned off in your organization's settings"
+      : cannotConfirm(store.info) ? `Install it. ${CANNOT_CONFIRM}, so install it in a terminal instead: columbus-mcp tools install ${t.id}`
+        : `Install it (asks for ${store.info ? store.info.confirm_with : "confirmation"})`;
     inst.onclick = install;
     $("review-close").textContent = "Not now";
     $("review-decline").onclick = () => reviewing && decline(reviewing.id);

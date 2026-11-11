@@ -180,7 +180,7 @@ function history(body, foot, view) {
       for (const l of r.lines) {
         const d = dayName(l.ts);
         if (d !== day) { day = d; rows.append(h("li", { class: "day" }, d)); }
-        const what = [l.connection && l.dataset ? `${l.connection}:${l.dataset}` : l.connection || l.dataset, l.rows != null ? `${Number(l.rows).toLocaleString()} rows` : null, l.reason].filter(Boolean).join(" · ");
+        const what = [l.connection && l.dataset ? `${l.connection}:${l.dataset}` : l.connection || l.dataset, l.rows != null ? plural(Number(l.rows), "row") : null, l.reason].filter(Boolean).join(" · ");
         const dec = String(l.decision || "");
         const [words, tone] = decided(dec);
         // In plain words first; then the line as the log has it.

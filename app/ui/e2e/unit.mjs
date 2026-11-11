@@ -13,6 +13,8 @@
 //   changes it takes back.
 // - The colours the map is given in code agree with the page's tokens in
 //   src/styles.css.
+// - `rowsText` (src/words.ts): a count of rows in words, "1 row" and
+//   "12 rows".
 //
 //     node app/ui/e2e/unit.mjs        (or: npm run test:unit, in app/ui)
 //
@@ -33,6 +35,7 @@ const { BASEMAP_URL, MAP_TONES, blankStyle, isStyle, restyle } = await import(".
 const { GAP, NO_INSET, layout, namedOutput, parseInset } = await import("../src/layout.ts");
 const { LAYER_TONES } = await import("../src/theme.ts");
 const { MAX_LAYERS, normalExtent, parseCommand, planCommand, viewReport } = await import("../src/view.ts");
+const { rowsText } = await import("../src/words.ts");
 
 const OFM = "https://tiles.openfreemap.org";
 const stops = (a, b) => ({ base: 1.4, stops: [[8, a], [20, b]] });
@@ -605,4 +608,14 @@ test("the map's colours in code are the page's tokens in styles.css", () => {
   assert.equal(MAP_TONES.light.casing, "#dfdbd3");
   assert.equal(MAP_TONES.dark.road, "#2b2e33");
   assert.equal(MAP_TONES.dark.minor, "#1c1e21");
+});
+
+test("a count of rows in words: one row, many rows", () => {
+  assert.equal(rowsText(1), "1 row");
+  assert.equal(rowsText(0), "0 rows");
+  assert.equal(rowsText(2), "2 rows");
+  assert.equal(rowsText(12), "12 rows");
+  // Thousands are grouped as the reader's system groups them.
+  assert.match(rowsText(1204), /^1.?204 rows$/);
+  assert.equal(rowsText(1204), `${(1204).toLocaleString()} rows`);
 });

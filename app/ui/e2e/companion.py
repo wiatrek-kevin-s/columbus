@@ -227,6 +227,17 @@ def main():
             assert not a11y.unnamed(page), a11y.unnamed(page)  # every control has a name, and Tab reaches it
             page.screenshot(path=str(OUT / "3-done.png"))
 
+            # A result with one row is "1 row", not "1 rows" (R-104): the
+            # count's words in the list, and on the open result.
+            mcp.tool("query_features", {"connection": "tiger", "dataset": "Tribal Census Tract", "where": "NAME = 'Tract 3'"})
+            expect(page.locator(".out-count[title='1 row']")).to_have_count(1, timeout=20000)
+            expect(page.locator(".out-count[title='1 rows']")).to_have_count(0)
+            expect(page.locator(".out-count[title='12 rows']")).to_have_count(1)
+            one = page.locator("li.out", has=page.locator(".out-count[title='1 row']"))
+            one.locator("button.out-name").click()
+            expect(one.locator(".out-meta")).to_contain_text("1 row")
+            assert "1 rows" not in one.locator(".out-meta").inner_text(), one.locator(".out-meta").inner_text()
+
             # The rendered page held to its policy: no CSP violations.
             csp = [p for p in problems if "Content Security Policy" in p or "Refused to" in p]
             assert not csp, csp

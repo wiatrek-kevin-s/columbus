@@ -76,7 +76,7 @@ tools:
 TOOL_PY = "def run(ctx):\n    return {}\n"
 
 
-def propose(root, tool_id, title):
+def propose(root, tool_id, title, made=None):
     """A proposal as propose_tool files it; returns the hash the person installs."""
     d = root / "tools" / "proposals" / tool_id
     d.mkdir(parents=True)
@@ -84,7 +84,7 @@ def propose(root, tool_id, title):
     (d / "plugin.yaml").write_text(y)
     (d / "tool.py").write_text(TOOL_PY)
     (d / "proposal.json").write_text(json.dumps({"proposed": "2026-11-05T10:00:00+00:00",
-                                                 "test": {"outputs": [{"kind": "file", "rows": None}], "checks": []}}))
+                                                 "test": {"outputs": made or [{"kind": "file", "rows": None}], "checks": []}}))
     return "sha256:" + hashlib.sha256(y.encode() + b"\0" + TOOL_PY.encode()).hexdigest()
 
 
@@ -180,7 +180,8 @@ gpd.GeoDataFrame({"RTE": ["IH0035", "US0183"], "district": [14, 12]}, geometry=[
     broken = root / "broken.gpkg"
     broken.write_bytes(b"not a GeoPackage")
 
-    count_hash = propose(root, "personal.count-rows", "Count rows")
+    # Its test run made a table of one row and a layer of twelve (R-104).
+    count_hash = propose(root, "personal.count-rows", "Count rows", [{"kind": "table", "rows": 1}, {"kind": "layer", "rows": 12}])
     propose(root, "personal.other-tool", "Other tool")
     # Two more, declined one after the other further down.
     propose(root, "personal.late-one", "Late tool one")
@@ -296,6 +297,14 @@ gpd.GeoDataFrame({"RTE": ["IH0035", "US0183"], "district": [14, 12]}, geometry=[
         assert len(d.find_elements(By.CSS_SELECTOR, "#review-code span.ln")) == 2
         assert "id: personal.count-rows" in d.find_element(By.ID, "review-manifest").text
         assert count_hash in d.find_element(By.ID, "review-name").text
+        # R-104: one row is "1 row"; and where the app cannot confirm who is
+        # at the keyboard, the Install button says so, in words.
+        made = d.find_element(By.ID, "review-test").text
+        assert "test run made table (1 row), layer (12 rows)" in made, made
+        tip = d.find_element(By.ID, "review-install").get_attribute("title")
+        assert "asks for not available" not in tip, tip
+        assert tip == ("Install it. On this system the app cannot confirm it is you (there is no Touch ID or Windows Hello), "
+                       "so install it in a terminal instead: columbus-mcp tools install personal.count-rows"), tip
         assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
         d.save_screenshot(str(OUT / "settings-tool-review.png"))
         click(d, By.ID, "review-install")
