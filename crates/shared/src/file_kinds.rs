@@ -170,7 +170,6 @@ const RUNS_WHEN_OPENED: &[&str] = &[
     "maq",
     "mar",
     "mas",
-    "mat",
     "mau",
     "mav",
     "maw",
@@ -277,8 +276,9 @@ const GEODATA_ENDINGS: &[&str] = &[
 ];
 
 /// Tables and databases: delimited text, spreadsheets, column files,
-/// records one per line, tables as Python, R and statistics programs save
-/// them, and database files with the files they keep beside them.
+/// records one per line, tables as Python, R, MATLAB and statistics
+/// programs save them, and database files with the files they keep beside
+/// them.
 const TABLE_ENDINGS: &[&str] = &[
     "accdb",
     "arrow",
@@ -290,6 +290,7 @@ const TABLE_ENDINGS: &[&str] = &[
     "feather",
     "geoparquet",
     "jsonl",
+    "mat",
     "mdb",
     "ndjson",
     "npy",
