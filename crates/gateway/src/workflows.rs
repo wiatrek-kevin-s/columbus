@@ -36,6 +36,11 @@ pub(crate) const NEEDS_YOU: &str = "needs you:";
 /// destination (`flows`: `to: [ai:anthropic]`).
 pub const REVIEW_TOOL: &str = "workflow_review";
 pub const REVIEW_DESTINATION: &str = "ai:anthropic";
+/// Where a review is sent, as the organization's `assistant.hosts` names
+/// AI services. A review is one more use of an AI service: where the
+/// organization lists the services allowed, a review runs only if this
+/// host is among them.
+pub const REVIEW_HOST: &str = "api.anthropic.com";
 /// Anthropic is also an outside service: rules an organization wrote for
 /// every connected server (`to: [server:*]`) cover the review too.
 const REVIEW_AS_SERVER: &str = "server:anthropic";
@@ -199,6 +204,11 @@ pub(crate) fn workflow_problems(
         if !policy.tool_allowed(REVIEW_TOOL) {
             problems.push(format!(
                 "it has an AI review, and organization policy does not allow one ({REVIEW_TOOL})"
+            ));
+        }
+        if !policy.assistant.allows(REVIEW_HOST) {
+            problems.push(format!(
+                "it has an AI review, and organization policy does not allow an AI service at {REVIEW_HOST}, where a review is sent (assistant.hosts)"
             ));
         }
         for c in &w.scope.connections {
@@ -1275,8 +1285,18 @@ async fn run_steps(
     })
 }
 
-/// The API key the person saved in the Columbus app (its credential store
-/// entry). Test builds may give one in the environment.
+/// What a run says when its review finds no key. A review is always sent
+/// to Anthropic with the Anthropic key saved in the Columbus app, whichever
+/// AI service the app's chat uses: a person whose chat runs on another
+/// service has a key saved, and not this one.
+fn no_review_key(why: &str) -> String {
+    format!(
+        "an AI review needs an Anthropic API key, whichever AI service the app's chat uses; {why}"
+    )
+}
+
+/// The Anthropic API key the person saved in the Columbus app (its
+/// credential store entry). Test builds may give one in the environment.
 fn api_key() -> Result<String, String> {
     #[cfg(debug_assertions)]
     if let Ok(k) = std::env::var("COLUMBUS_WORKFLOW_API_KEY") {
@@ -1286,10 +1306,19 @@ fn api_key() -> Result<String, String> {
     {
         keyring_core::Entry::new("columbus-app", "anthropic-api-key")
             .and_then(|e| e.get_password())
-            .map_err(|e| format!("the API key saved in the Columbus app could not be read here ({e}); on a Mac, choose Always Allow when asked during Run now"))
+            .map_err(|e| match e {
+                keyring_core::Error::NoEntry => no_review_key(
+                    "none is saved in the Columbus app (Settings › Assistant, with Anthropic chosen)",
+                ),
+                e => no_review_key(&format!(
+                    "the one saved in the Columbus app could not be read here ({e}); on a Mac, choose Always Allow when asked during Run now"
+                )),
+            })
     }
     #[cfg(not(any(windows, target_os = "macos")))]
-    Err("no API key: the Columbus app keeps it in the system's credential store, which this system does not have".into())
+    Err(no_review_key(
+        "the Columbus app keeps it in the system's credential store, which this system does not have",
+    ))
 }
 
 fn api_base() -> String {
@@ -1327,6 +1356,10 @@ async fn review(
         if !policy.tool_allowed(REVIEW_TOOL) {
             refused = true;
             return Err(format!("organization policy does not allow an AI review ({REVIEW_TOOL})"));
+        }
+        if !policy.assistant.allows(REVIEW_HOST) {
+            refused = true;
+            return Err(format!("organization policy does not allow an AI service at {REVIEW_HOST}, where an AI review is sent (assistant.hosts)"));
         }
         // The data's labels, and the organization's rules on sending it to the AI.
         for c in state.scope.connections.iter().filter(|c| !c.starts_with('\u{0}')) {
@@ -1417,7 +1450,7 @@ async fn review(
             .min(Duration::from_secs(120));
         let key = tokio::time::timeout(wait, tokio::task::spawn_blocking(api_key))
             .await
-            .map_err(|_| "the API key could not be read without you (on a Mac, start the workflow once with Run now and choose Always Allow)".to_string())?
+            .map_err(|_| "the Anthropic API key could not be read without you (on a Mac, start the workflow once with Run now and choose Always Allow)".to_string())?
             .map_err(|e| e.to_string())??;
         let max_tokens = match r.effort.as_deref() {
             Some("high" | "xhigh" | "max") => 32_000,
