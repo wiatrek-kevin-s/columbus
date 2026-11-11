@@ -672,3 +672,8 @@ svg.mark .s { fill: var(--ink); }
 .rules li svg { margin-top: 3px; color: var(--mute); }
 .rules li b { color: var(--ink); font-weight: 600; }
 dialog.settings h1:focus { outline: none; }
+/* Toolboxes: the download's progress in Add tools. */
+progress.dl { -webkit-appearance: none; appearance: none; display: block; width: 100%; height: 6px; border: 0; border-radius: 3px; background: var(--fill); overflow: hidden; }
+progress.dl::-webkit-progress-bar { background: var(--fill); border-radius: 3px; }
+progress.dl::-webkit-progress-value { background: var(--ink); border-radius: 3px; }
+progress.dl::-moz-progress-bar { background: var(--ink); border-radius: 3px; }

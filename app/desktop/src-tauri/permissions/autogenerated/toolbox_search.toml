@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-toolbox-search"
+description = "Enables the toolbox_search command without any pre-configured scope."
+commands.allow = ["toolbox_search"]
+
+[[permission]]
+identifier = "deny-toolbox-search"
+description = "Denies the toolbox_search command without any pre-configured scope."
+commands.deny = ["toolbox_search"]

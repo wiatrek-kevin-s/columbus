@@ -2082,6 +2082,25 @@ pub fn catalogue_entry(id: &str) -> Option<CatalogueEntry> {
     catalogue().into_iter().find(|e| e.id == id)
 }
 
+/// The catalogue as a page shows it: what would be downloaded, for this
+/// system.
+pub fn catalogue_json() -> Vec<Value> {
+    catalogue().iter().map(entry_json).collect()
+}
+
+fn entry_json(e: &CatalogueEntry) -> Value {
+    let d = e.for_this_system();
+    json!({"id": e.id, "name": e.name, "about": e.about, "kind": e.kind.as_str(),
+        "version": e.version, "licence": e.licence, "publisher": e.publisher,
+        "homepage": e.homepage,
+        "available": d.is_some(),
+        "system": this_system_words(),
+        "url": d.map(|d| d.url.clone()),
+        "bytes": d.map(|d| d.bytes),
+        "size": d.map(|d| size_words(d.bytes)),
+        "sha256": d.map(|d| d.sha256.clone())})
+}
+
 /// A size for a person: `18.1 MB`.
 pub fn size_words(bytes: u64) -> String {
     if bytes < 1024 * 1024 {

@@ -29,9 +29,7 @@ use std::time::Duration;
 use anyhow::{anyhow, bail, Result};
 use columbus_shared::audit::AuditRecord;
 use columbus_shared::canon::{sha256_file, sha256_hex};
-use columbus_shared::toolboxes::{
-    self as tbx, CatalogueEntry, Download, Kind, Listing, Packing, Toolbox,
-};
+use columbus_shared::toolboxes::{self as tbx, Download, Kind, Listing, Packing, Toolbox};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
@@ -256,16 +254,19 @@ fn done_words(tb: &Toolbox, listing: &Listing) -> String {
         .iter()
         .filter(|t| t.cannot_run.is_some())
         .count();
+    let ready = listing.tools.len() - cannot;
     let mut s = format!(
-        "Installed {} {}: {} tools ready.",
+        "Installed {} {}: {} tool{} ready.",
         tb.name,
         tb.version,
-        tbx::count_words(listing.tools.len() - cannot)
+        tbx::count_words(ready),
+        if ready == 1 { "" } else { "s" }
     );
     if cannot > 0 {
         s.push_str(&format!(
-            " {} more are listed that Columbus cannot run yet.",
-            tbx::count_words(cannot)
+            " {} more {} listed that Columbus cannot run yet.",
+            tbx::count_words(cannot),
+            if cannot == 1 { "is" } else { "are" }
         ));
     }
     if listing.unreadable > 0 {
@@ -1205,7 +1206,7 @@ fn list(flags: &[&str]) -> Result<()> {
             "{}",
             json!({"dir": dir.display().to_string(), "allowed": policy.allow_toolboxes,
                 "catalogue_allowed": policy.toolboxes.catalogue,
-                "installed": views, "catalogue": catalogue_json()})
+                "installed": views, "catalogue": tbx::catalogue_json()})
         );
         return Ok(());
     }
@@ -1254,25 +1255,6 @@ fn list(flags: &[&str]) -> Result<()> {
         }
     }
     Ok(())
-}
-
-/// The catalogue as a page shows it: what would be downloaded, for this
-/// system.
-pub(crate) fn catalogue_json() -> Vec<serde_json::Value> {
-    tbx::catalogue().iter().map(entry_json).collect()
-}
-
-fn entry_json(e: &CatalogueEntry) -> serde_json::Value {
-    let d = e.for_this_system();
-    json!({"id": e.id, "name": e.name, "about": e.about, "kind": e.kind.as_str(),
-        "version": e.version, "licence": e.licence, "publisher": e.publisher,
-        "homepage": e.homepage,
-        "available": d.is_some(),
-        "system": tbx::this_system_words(),
-        "url": d.map(|d| d.url.clone()),
-        "bytes": d.map(|d| d.bytes),
-        "size": d.map(|d| tbx::size_words(d.bytes)),
-        "sha256": d.map(|d| d.sha256.clone())})
 }
 
 fn tools(words: &[&str]) -> Result<()> {

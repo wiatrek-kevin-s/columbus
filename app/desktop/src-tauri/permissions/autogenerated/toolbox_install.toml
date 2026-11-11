@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-toolbox-install"
+description = "Enables the toolbox_install command without any pre-configured scope."
+commands.allow = ["toolbox_install"]
+
+[[permission]]
+identifier = "deny-toolbox-install"
+description = "Denies the toolbox_install command without any pre-configured scope."
+commands.deny = ["toolbox_install"]

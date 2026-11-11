@@ -52,6 +52,7 @@ mod registry;
 mod settings;
 mod share;
 mod shell;
+mod toolboxes;
 mod workflows;
 use tauri::{AppHandle, Manager, Url, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_deep_link::DeepLinkExt;
@@ -525,6 +526,13 @@ fn main() {
             settings::settings_tool_decline,
             settings::settings_tool_remove,
             settings::settings_tool_files,
+            toolboxes::toolboxes_state,
+            toolboxes::toolbox_install,
+            toolboxes::toolbox_add,
+            toolboxes::toolbox_remove,
+            toolboxes::toolbox_search,
+            toolboxes::toolbox_tool,
+            toolboxes::toolbox_pick,
             settings::settings_arcgis_signin,
             maplayers::map_layers_list,
             maplayers::map_layer_inspect,

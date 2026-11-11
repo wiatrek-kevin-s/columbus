@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-toolbox-tool"
+description = "Enables the toolbox_tool command without any pre-configured scope."
+commands.allow = ["toolbox_tool"]
+
+[[permission]]
+identifier = "deny-toolbox-tool"
+description = "Denies the toolbox_tool command without any pre-configured scope."
+commands.deny = ["toolbox_tool"]
