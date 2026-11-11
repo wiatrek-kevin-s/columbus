@@ -1415,7 +1415,8 @@ const USER_FLAGS: &[&str] = &[
 ///   rules');
 /// * after `-P` or `-p`, on a line that also names the user (`-U gis`).
 ///   By themselves the two letters mean too many things (`mkdir -p`,
-///   `ssh -p 22`, `rsync -P`);
+///   `ssh -p 22`, `rsync -P`), except after `sshpass`, whose `-p` is the
+///   password;
 /// * as curl's `-u user:password`.
 ///
 /// What follows a flag counts when it is not another flag and reads as a
@@ -1461,6 +1462,8 @@ fn on_a_command_line(line: &str) -> bool {
     // PostgreSQL's `-P` sets how psql prints, or asks createuser to prompt.
     let p_is_not_a_password = names(&["mysql", "mariadb"]);
     let capital_p_is_not_a_password = names(&["psql", "createuser", "pg_"]);
+    // And one whose `-p` is always the password.
+    let sshpass = names(&["sshpass"]);
     let curl = lower
         .split(|c: char| !c.is_ascii_alphanumeric())
         .any(|w| w == "curl");
@@ -1471,9 +1474,10 @@ fn on_a_command_line(line: &str) -> bool {
         let long = word.starts_with('-')
             && !word.contains('=')
             && holds(word).is_some_and(|h| h != Holds::Key);
-        let short = user
+        let short = (user
             && ((*word == "-P" && !capital_p_is_not_a_password)
-                || (*word == "-p" && !p_is_not_a_password));
+                || (*word == "-p" && !p_is_not_a_password)))
+            || (sshpass && *word == "-p");
         // A port (`-p 8080:80`, `-p host1:5432`) or a setting
         // (`-P border=2`) is not a password.
         let port = value
@@ -2277,6 +2281,7 @@ mod tests {
             ("load.py", format!("subprocess.run([\"sqlcmd\", \"-U\", \"gis\", \"-P\", \"{PW}\"])\n"), 1, "on a command line"),
             ("load.py", format!("os.system(\"sqlcmd -S db -U gis -P {PW}\")\n"), 1, "on a command line"),
             ("run.sh", format!("curl -u gis:{PW} https://gis.corp.example/geoserver/rest/layers\n"), 1, "on a command line"),
+            ("run.sh", format!("sshpass -p '{PW}' sftp ana@files.corp.example\n"), 1, "on a command line"),
             // A token after the word Bearer.
             ("call.sh", format!("curl -H 'Authorization: Bearer {m32}' https://api.example.org\n"), 1, "Bearer"),
             ("call.py", format!("headers = {{'Authorization': 'Bearer {m32}'}}\n"), 1, "Bearer"),
@@ -2405,6 +2410,8 @@ mod tests {
             ("a.sh", "mysql -u root -p parcels2024\n".into()),
             ("a.sh", "psql -U gis -p 5432 -h db1host\n".into()),
             ("a.sh", "ssh -p 2222 ana@host1\n".into()),
+            ("a.sh", "sshpass -p \"$SFTP_PASS1\" sftp -P 2222 ana@host1\n".into()),
+            ("a.sh", "sshpass -e ssh -p 2222 ana@host1\n".into()),
             ("a.sh", "mkdir -p output2026\n".into()),
             ("a.sh", "cp -u -p file1.txt backup1\n".into()),
             ("a.sh", "rsync -u -P data2024 backup\n".into()),
