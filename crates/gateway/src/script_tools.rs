@@ -2,13 +2,24 @@
 //! wrote, run on workspace layers after the person has read it and said yes.
 //!
 //! The agent is untrusted, so the script is too. It runs only when
-//! organization policy allows scripts, only after the person approves that
-//! exact code with those exact inputs (every run, unless policy
-//! `scripts.session_approval` lets them allow that code for the session:
-//! the engine and governed level-A environments only), and only confined at level A through the `columbus-confine`
-//! launcher: its own run folder is the one place it can write, the Python
-//! installation the one other place it can read, and it has no network.
-//! There is no unconfined fallback, whatever `allow_unconfined_local` says.
+//! organization policy allows scripts, and only confined at level A through
+//! the `columbus-confine` launcher: its own run folder is the one place it
+//! can write, the Python installation the one other place it can read, and
+//! it has no network. There is no unconfined fallback, whatever
+//! `allow_unconfined_local` says. That sandbox is the boundary (build brief
+//! 3, D-16); whether the person is also asked first is the policy's
+//! `scripts.approval` (F-15):
+//!
+//! * `each` (the default): the person approves that exact code with those
+//!   exact inputs, every run.
+//! * `session` (or the older `scripts.session_approval: true`): they may
+//!   allow that code for the session.
+//! * `none`: a run confined at level A (the engine's Python, or a governed
+//!   level-A environment) starts without an approval, and the audit line
+//!   names the rule that allowed it.
+//!
+//! A run that crosses the boundary asks every time, whatever the key says:
+//! a governed environment at level B (network), and a trusted environment.
 //! It gets a cleared environment (no secrets, no COLUMBUS_* settings), copies
 //! of its inputs whose content is checked against what Columbus recorded, a
 //! time limit after which its whole process tree is ended, and capped
@@ -53,6 +64,34 @@ use crate::server::{
 /// so the code that runs is the code the person read. Python run on a file
 /// would honour `# coding: utf-7` and decode a comment into code.
 const RUN_TEXT: &str = "import sys, types; p = sys.argv[1]; t = open(p, encoding='utf-8', newline='').read(); m = types.ModuleType('__main__'); m.__file__ = p; m.__builtins__ = __builtins__; sys.modules['__main__'] = m; sys.argv = [p]; exec(compile(t, p, 'exec', dont_inherit=True), m.__dict__)";
+
+/// What the audit line and provenance of a run that needed no approval
+/// carry as its approval: the policy rule that allowed it (D-16, F-15).
+pub(crate) const NO_APPROVAL: &str = "scripts.approval: none";
+
+/// The policy's `scripts.approval` in force, as the policy file spells it.
+pub(crate) fn approval_name(policy: &columbus_shared::policy::OrgPolicy) -> &'static str {
+    use columbus_shared::policy::ScriptApproval;
+    match policy.scripts.approval_rule() {
+        ScriptApproval::Each => "each",
+        ScriptApproval::Session => "session",
+        ScriptApproval::None => "none",
+    }
+}
+
+/// When scripts ask the person, in words for the assistant, under the
+/// policy in force (`whoami`, `describe_tool`).
+pub(crate) fn approval_words(policy: &columbus_shared::policy::OrgPolicy) -> String {
+    use columbus_shared::policy::ScriptApproval;
+    if !policy.allow_scripts {
+        return "Scripts are off (organization policy allow_scripts), so run_python refuses every script.".into();
+    }
+    match policy.scripts.approval_rule() {
+        ScriptApproval::Each => "The person reads the code and approves every run (scripts.approval: each).".into(),
+        ScriptApproval::Session => "The person reads the code and approves a script, and may allow that exact code for the rest of the session (scripts.approval: session); a run in an environment with network (level B) or a trusted one is approved every time.".into(),
+        ScriptApproval::None => "A script that runs in the sandbox with no network (the engine's Python, or a governed level A environment) starts without asking the person (scripts.approval: none): the sandbox is the boundary. A run in an environment with network (level B) or a trusted one still asks the person every time.".into(),
+    }
+}
 
 /// How a personal tool or workflow step whose environment can't be used
 /// stops (REQ-18, R-13c): it needs the person. A workflow run goes on with
@@ -940,7 +979,7 @@ async fn wait_for(
 #[tool_router(router = script_router, vis = "pub(crate)")]
 impl Gateway {
     #[tool(
-        description = "Run a Python script on workspace layers, for what the GIS tools cannot do. The person sees the full code and approves every run (where organization policy allows it, they may allow that exact code for the session: the same code with new inputs then runs without asking, any change asks again). It runs confined: no network, it can write only its own run folder, and it is stopped at the time limit. Inputs (name -> ws:// handle) are copied to in/<name>.<ext> and listed in inputs.json; every file it writes in out/ comes back as a workspace output carrying the inputs' data labels; stdout and stderr come back (64 KB each). Needs organization policy to allow scripts (whoami: scripts_allowed). By default it runs in the engine's Python, which has no ArcPy; pass environment to run in one the person registered (whoami: environments), under the same rules. A trusted environment (experimental; where policy allows it, for example for ArcPy) runs unconfined as the person, still approved every run, and its outputs carry the session's data labels plus environment:<id>.",
+        description = "Run a Python script on workspace layers, for what the GIS tools cannot do. It runs in a sandbox: no network, it can write only its own run folder, and it is stopped at the time limit. Whether the person is asked first is the organization's choice (whoami: policy.script_approval, and describe_tool says what is in force now): they read the full code and approve every run (each), may allow that exact code for the session (session), or are not asked for a sandboxed run (none). A run that leaves the sandbox always asks: an environment with network, or a trusted one. Inputs (name -> ws:// handle) are copied to in/<name>.<ext> and listed in inputs.json; every file it writes in out/ comes back as a workspace output carrying the inputs' data labels; stdout and stderr come back (64 KB each). Needs organization policy to allow scripts (whoami: scripts_allowed). By default it runs in the engine's Python, which has no ArcPy; pass environment to run in one the person registered (whoami: environments), under the same rules. A trusted environment (experimental; where policy allows it, for example for ArcPy) runs unconfined as the person, approved every run, and its outputs carry the session's data labels plus environment:<id>.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -1070,7 +1109,7 @@ impl Gateway {
         }
         rec.labels = labels.iter().cloned().collect();
 
-        // The person reads the code and says yes to this run.
+        // What the person reads when this run asks them.
         let lines = args.code.lines().count();
         let digest = columbus_shared::canon::sha256_hex(args.code.as_bytes());
         let where_runs = match &senv {
@@ -1105,14 +1144,23 @@ impl Gateway {
         } else {
             "no network; can write only its own run folder".to_string()
         };
+        // The engine's Python and governed level-A environments run inside
+        // the boundary (no network, their own run folder to write). What
+        // the person is asked for those is the policy's (F-15); a trusted
+        // or level-B run crosses the boundary and asks every time.
+        let rule = policy.scripts.approval_rule();
+        let inside = senv.as_ref().is_none_or(ScriptEnv::session_allow_possible);
+        // D-16: scripts.approval: none. No approval; the sandbox is the
+        // boundary, and the audit line names the rule.
+        // (A workflow run never runs a script: there it stops as before.)
+        let free = rule == columbus_shared::policy::ScriptApproval::None
+            && inside
+            && !self.state.unattended;
         // REQ-17, R-15: under policy scripts.approval: session (or the older
-        // scripts.session_approval), the engine
-        // and governed level-A environments may be allowed for the session,
-        // bound to this exact code and environment (as confirmed) in this
-        // Columbus session; never a trusted or level-B one.
-        let session_ok = policy.scripts.approval_rule()
-            == columbus_shared::policy::ScriptApproval::Session
-            && senv.as_ref().is_none_or(ScriptEnv::session_allow_possible);
+        // scripts.session_approval), such a script may be allowed for the
+        // session, bound to this exact code and environment (as confirmed)
+        // in this Columbus session.
+        let session_ok = rule == columbus_shared::policy::ScriptApproval::Session && inside;
         let session_scope = [json!({"session_script": code_sha256,
             "environment": senv.as_ref().map(|e| json!({"id": e.env.id, "confirmed": e.env.confirmation_hash()}))})];
         let session_words = format!(
@@ -1143,8 +1191,13 @@ impl Gateway {
             },
             if session_ok {
                 "You can allow this script for the session."
-            } else {
+            } else if rule != columbus_shared::policy::ScriptApproval::None {
                 "Scripts are approved one run at a time."
+            } else if trusted {
+                // Under scripts.approval: none only these still ask.
+                "A script that runs outside the sandbox is approved every run."
+            } else {
+                "A script that can reach the internet is approved every run."
             },
         );
         let bound_inputs: Vec<Value> = inputs
@@ -1174,34 +1227,39 @@ impl Gateway {
             summary,
             detail: Some(detail),
             approval_id: args.approval_id.as_deref(),
-            // Every run, unless policy allows the session approval here
-            // (`ScriptEnv::session_allow_possible`, or the engine); a
-            // trusted run is always asked on its own.
+            // Every run that asks, unless policy allows the session
+            // approval here (`ScriptEnv::session_allow_possible`, or the
+            // engine); a trusted run is always asked on its own.
             every_time: !session_ok,
             code: Some(&args.code),
             standing: session_ok.then_some(&session_scope[..]),
             always_covers: session_ok.then_some(session_words),
             script_session: session_ok,
         };
-        match self.seek_approval(&ctx, ask).await {
-            Ok(Sought::Granted(id)) => rec.approval = Some(id),
-            Ok(Sought::Declined(msg)) => return Err(self.deny(&ctx, rec, msg)),
-            Ok(Sought::Pending(needed)) => {
-                rec.approval = Some(needed.id.clone());
-                self.audit(
-                    &ctx,
-                    AuditRecord {
-                        decision: "approval_required".into(),
-                        ..rec
-                    },
-                )?;
-                return Ok(Json(Output {
-                    result: json!({"status": "approval_required", "approval": needed, "code_sha256": code_sha256}),
-                    checks: vec![],
-                    provenance: None,
-                }));
+        if free {
+            // Nothing to spend: an approval id given anyway is not used.
+            rec.approval = Some(NO_APPROVAL.into());
+        } else {
+            match self.seek_approval(&ctx, ask).await {
+                Ok(Sought::Granted(id)) => rec.approval = Some(id),
+                Ok(Sought::Declined(msg)) => return Err(self.deny(&ctx, rec, msg)),
+                Ok(Sought::Pending(needed)) => {
+                    rec.approval = Some(needed.id.clone());
+                    self.audit(
+                        &ctx,
+                        AuditRecord {
+                            decision: "approval_required".into(),
+                            ..rec
+                        },
+                    )?;
+                    return Ok(Json(Output {
+                        result: json!({"status": "approval_required", "approval": needed, "code_sha256": code_sha256}),
+                        checks: vec![],
+                        provenance: None,
+                    }));
+                }
+                Err(e) => return Err(self.deny(&ctx, rec, e)),
             }
-            Err(e) => return Err(self.deny(&ctx, rec, e)),
         }
 
         // One script at a time in a session.

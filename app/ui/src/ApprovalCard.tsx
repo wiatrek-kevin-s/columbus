@@ -144,7 +144,7 @@ export function ApprovalCard(props: {
               ? a.risk === "edit"
                 ? "Edits are approved one change set at a time."
                 : a.risk === "script"
-                  ? "Scripts are approved one run at a time."
+                  ? "This script is approved one run at a time."
                   : "This is asked every time."
               : a.always_covers || "Allow for this session allows this exact request again until the assistant's session ends."}
           </p>

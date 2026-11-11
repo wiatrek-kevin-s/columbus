@@ -166,7 +166,8 @@ button:disabled { opacity: .5; cursor: default; }
     c.appendChild(det);
     var actions = el("div", "actions");
     // A script is offered for the session only where the server says so
-    // (policy scripts.session_approval; never trusted or network ones).
+    // (policy scripts.approval: session; never trusted or network ones).
+    // Under scripts.approval: none only those two kinds reach this page.
     var once = a.offer_always !== true || a.risk === "edit";
     [["allow_once", "Allow once", "primary"], ["always_this_session", a.risk === "script" ? "Allow this script for the session" : "Allow for this session", ""], ["decline", "Decline", "danger"]]
       .filter(function (b) { return !(once && b[0] === "always_this_session"); })
@@ -178,7 +179,7 @@ button:disabled { opacity: .5; cursor: default; }
         actions.appendChild(btn);
       });
     c.appendChild(actions);
-    c.appendChild(el("p", "hint", once ? (a.risk === "edit" ? "Edits are approved one change set at a time." : a.risk === "script" ? "Scripts are approved one run at a time." : "This is asked every time.") : (a.always_covers || "Allow for this session allows this exact request again until the assistant's session ends.")));
+    c.appendChild(el("p", "hint", once ? (a.risk === "edit" ? "Edits are approved one change set at a time." : a.risk === "script" ? "This script is approved one run at a time." : "This is asked every time.") : (a.always_covers || "Allow for this session allows this exact request again until the assistant's session ends.")));
     return c;
   }
 

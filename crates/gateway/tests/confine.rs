@@ -58,6 +58,18 @@ struct Run {
 static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn run(level: &str, rw: &Path, extra: &[&str], py: &str, script: &str) -> Run {
+    run_with(level, rw, extra, py, script, |_| {})
+}
+
+/// As [`run`], after `prepare` has had the launcher's command.
+fn run_with(
+    level: &str,
+    rw: &Path,
+    extra: &[&str],
+    py: &str,
+    script: &str,
+    prepare: impl FnOnce(&mut Command),
+) -> Run {
     let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
     let mut args: Vec<String> = vec![
         "--level".into(),
@@ -75,14 +87,14 @@ fn run(level: &str, rw: &Path, extra: &[&str], py: &str, script: &str) -> Run {
     args.push("--".into());
     args.push(py.into());
     args.extend(["-I".into(), "-c".into(), script.into()]);
-    let out = Command::new(launcher())
-        .args(&args)
+    let mut cmd = Command::new(launcher());
+    cmd.args(&args)
         .current_dir(rw)
         .env("TEMP", rw)
         .env("TMP", rw)
-        .env("TMPDIR", rw)
-        .output()
-        .unwrap();
+        .env("TMPDIR", rw);
+    prepare(&mut cmd);
+    let out = cmd.output().unwrap();
     Run {
         code: out.status.code().unwrap_or(-1),
         stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
@@ -489,6 +501,251 @@ fn level_a_has_no_unix_sockets_and_cannot_leave_its_process_group() {
         "setsid: refused",
         "pair: ok",
     ] {
+        assert!(
+            has(&out, l),
+            "expected {l:?}:\n{}{}",
+            out.stdout,
+            out.stderr
+        );
+    }
+}
+
+/// What the Linux tests below run inside the confinement: each attempt
+/// prints `name: ok` or `name: refused <exception> <errno>`.
+#[cfg(target_os = "linux")]
+const LINUX_PROBES: &str = r#"
+import ctypes, errno, os, platform, socket, sys
+def attempt(name, f):
+    try:
+        f()
+        print(name + ": ok", flush=True)
+    except BaseException as e:
+        print(name + ": refused", type(e).__name__, getattr(e, "errno", None), flush=True)
+def read(path):
+    with open(path, "rb") as f:
+        return f.read(64)
+parent = os.getppid()
+for p in ETC:
+    attempt("etc " + p, lambda: read(p))
+attempt("etc_list", lambda: os.listdir("/etc"))
+attempt("proc_list", lambda: os.listdir("/proc"))
+attempt("proc_parent_environ", lambda: read(f"/proc/{parent}/environ"))
+attempt("proc_parent_cmdline", lambda: read(f"/proc/{parent}/cmdline"))
+attempt("proc_init_cmdline", lambda: read("/proc/1/cmdline"))
+attempt("proc_self_environ", lambda: read("/proc/self/environ"))
+attempt("proc_net", lambda: read("/proc/net/tcp"))
+attempt("proc_mounts", lambda: read("/proc/mounts"))
+attempt("tty", lambda: read("/dev/tty"))
+attempt("fd9", lambda: os.read(9, 64))
+# Every socket family the kernel numbers, in every type: which calls are
+# not refused by the sandbox itself (EACCES)?
+open_families = set()
+for family in range(0, 64):
+    for kind in (socket.SOCK_STREAM, socket.SOCK_DGRAM, socket.SOCK_RAW, socket.SOCK_SEQPACKET):
+        try:
+            socket.socket(family, kind).close()
+            open_families.add(family)
+        except OSError as e:
+            if e.errno != errno.EACCES:
+                open_families.add(family)
+print("sockets_not_refused:", sorted(open_families), flush=True)
+attempt("stream_pair", lambda: socket.socketpair())
+def datagram(address):
+    a, b = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
+    a.sendto(b"out of the sandbox", address)
+attempt("dgram_abstract", lambda: datagram("\0" + ABSTRACT))
+attempt("dgram_path", lambda: datagram(SOCKET_PATH))
+attempt("signal_parent", lambda: os.kill(parent, 0))
+# The kernel's key store and System V shared memory, by number.
+numbers = {"x86_64": {"keyctl": 250, "add_key": 248, "shmget": 29, "msgget": 68},
+           "aarch64": {"keyctl": 219, "add_key": 217, "shmget": 194, "msgget": 186}}.get(platform.machine())
+if numbers:
+    libc = ctypes.CDLL(None, use_errno=True)
+    def call(name, *args):
+        ctypes.set_errno(0)
+        r = libc.syscall(numbers[name], *args)
+        if r < 0:
+            raise OSError(ctypes.get_errno(), name)
+    attempt("keyctl", lambda: call("keyctl", 0, -4, 0))
+    attempt("add_key", lambda: call("add_key", b"user", b"columbus-test", b"x", 1, -4))
+    attempt("shmget", lambda: call("shmget", 0, 4096, 0o1600))
+    attempt("msgget", lambda: call("msgget", 0, 0o1600))
+else:
+    print("syscalls: not checked on", platform.machine())
+"#;
+
+/// The kernel's Landlock version; 6 or more scopes signals.
+#[cfg(target_os = "linux")]
+fn landlock_abi() -> i64 {
+    unsafe {
+        libc::syscall(
+            libc::SYS_landlock_create_ruleset,
+            std::ptr::null::<libc::c_void>(),
+            0usize,
+            1u32,
+        )
+    }
+}
+
+/// Files in `/etc` that this user can read and the launcher's short list
+/// leaves out, as a Python list.
+#[cfg(target_os = "linux")]
+fn etc_outside_the_list(names: &[&str]) -> String {
+    let found: Vec<String> = names
+        .iter()
+        .map(|n| format!("/etc/{n}"))
+        .filter(|p| std::fs::read(p).is_ok())
+        .map(|p| format!("{p:?}"))
+        .collect();
+    assert!(
+        !found.is_empty(),
+        "none of {names:?} is in /etc here; name another file"
+    );
+    format!("[{}]", found.join(", "))
+}
+
+/// Levels A and B on Linux (build brief 3, D-16): of `/etc` only what a
+/// program needs to start (never the organization's own folder there, or
+/// other programs' settings), nothing of `/proc` (no other process's
+/// environment or command line), no terminal, no file the launcher was
+/// handed, no socket but a stream pair (level B: internet sockets too), no
+/// datagram reaching a Unix socket outside, no key store, no System V
+/// shared memory, and no signal to a process outside the sandbox.
+#[cfg(target_os = "linux")]
+#[test]
+fn levels_a_and_b_on_linux_keep_the_system_and_other_processes_out() {
+    use std::os::linux::net::SocketAddrExt;
+    use std::os::unix::io::AsRawFd;
+    use std::os::unix::net::{SocketAddr, UnixDatagram};
+    use std::os::unix::process::CommandExt;
+    let Some(py) = python() else { return };
+    if !can_confine() {
+        eprintln!("skipping: this machine cannot confine");
+        return;
+    }
+    let d = dirs();
+    // Two datagram sockets outside the sandbox: one by name only, one a file.
+    let name = format!("columbus-confine-test-{}", std::process::id());
+    let abstract_socket =
+        UnixDatagram::bind_addr(&SocketAddr::from_abstract_name(name.as_bytes()).unwrap()).unwrap();
+    let socket_dir = tempfile::Builder::new().prefix("cb").tempdir().unwrap();
+    let socket_path = socket_dir.path().join("d.sock");
+    let path_socket = UnixDatagram::bind(&socket_path).unwrap();
+    for s in [&abstract_socket, &path_socket] {
+        s.set_nonblocking(true).unwrap();
+    }
+    // A file of the launcher's parent, left open for the launcher as 9.
+    let secret = std::fs::File::open(d.outside.join("secret.txt")).unwrap();
+    let secret_fd = secret.as_raw_fd();
+    for level in ["A", "B"] {
+        let etc = if level == "A" {
+            etc_outside_the_list(&[
+                "hostname",
+                "fstab",
+                "hosts",
+                "shells",
+                "environment",
+                "issue",
+            ])
+        } else {
+            // Level B reads the resolver's files (hosts, resolv.conf).
+            etc_outside_the_list(&["hostname", "fstab", "shells", "environment", "issue"])
+        };
+        let script = format!(
+            "ETC = {etc}\nABSTRACT = {name:?}\nSOCKET_PATH = {:?}\n{LINUX_PROBES}",
+            socket_path.display().to_string()
+        );
+        let out = run_with(level, &d.ws, &[], &py, &script, |cmd| unsafe {
+            cmd.pre_exec(move || {
+                // dup2 leaves the copy open across exec.
+                if libc::dup2(secret_fd, 9) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        });
+        assert_eq!(out.code, 0, "level {level}: {}{}", out.stdout, out.stderr);
+        let mut expected = vec![
+            "etc_list: refused PermissionError",
+            "proc_list: refused PermissionError",
+            "proc_parent_environ: refused PermissionError",
+            "proc_parent_cmdline: refused PermissionError",
+            "proc_init_cmdline: refused PermissionError",
+            "proc_self_environ: refused PermissionError",
+            "proc_net: refused PermissionError",
+            "proc_mounts: refused PermissionError",
+            // Refused by the sandbox (13), not for want of a terminal (6).
+            "tty: refused PermissionError 13",
+            // Closed before the program started: a bad descriptor (9).
+            "fd9: refused OSError 9",
+            "stream_pair: ok",
+            "dgram_abstract: refused PermissionError 13",
+            "dgram_path: refused PermissionError 13",
+        ];
+        expected.push(if level == "A" {
+            "sockets_not_refused: []"
+        } else {
+            // IPv4 (2) and IPv6 (10) only.
+            "sockets_not_refused: [2, 10]"
+        });
+        if landlock_abi() >= 6 {
+            expected.push("signal_parent: refused PermissionError");
+        } else {
+            eprintln!(
+                "this kernel's Landlock (version {}) cannot scope signals; not checked",
+                landlock_abi()
+            );
+        }
+        if cfg!(any(target_arch = "x86_64", target_arch = "aarch64")) {
+            expected.extend([
+                "keyctl: refused PermissionError 13",
+                "add_key: refused PermissionError 13",
+                "shmget: refused PermissionError 13",
+                "msgget: refused PermissionError 13",
+            ]);
+        }
+        for l in expected {
+            assert!(
+                has(&out, l),
+                "level {level}: expected {l:?}:\n{}{}",
+                out.stdout,
+                out.stderr
+            );
+        }
+        let etc_lines: Vec<&str> = out
+            .stdout
+            .lines()
+            .filter(|l| l.starts_with("etc /"))
+            .collect();
+        assert!(!etc_lines.is_empty(), "{}", out.stdout);
+        for l in etc_lines {
+            assert!(
+                l.contains(": refused PermissionError"),
+                "level {level}: {l}\n{}",
+                out.stdout
+            );
+        }
+        assert!(!out.stdout.contains("the secret"), "{}", out.stdout);
+        // Nothing reached either socket outside.
+        let mut buf = [0u8; 64];
+        for (which, s) in [("abstract", &abstract_socket), ("path", &path_socket)] {
+            assert!(
+                s.recv(&mut buf).is_err(),
+                "level {level}: a datagram left the sandbox for the {which} socket"
+            );
+        }
+    }
+    // What a program needs of /etc is still there: user names resolve, the
+    // time zone and the certificates' settings open.
+    let s = [
+        "import os, pwd, ssl, time\n".to_string(),
+        attempt("user", "pwd.getpwuid(os.getuid())"),
+        attempt("time", "time.tzset()"),
+        attempt("ssl", "ssl.create_default_context()"),
+    ]
+    .concat();
+    let out = run("A", &d.ws, &[], &py, &s);
+    for l in ["user: ok", "time: ok", "ssl: ok"] {
         assert!(
             has(&out, l),
             "expected {l:?}:\n{}{}",
