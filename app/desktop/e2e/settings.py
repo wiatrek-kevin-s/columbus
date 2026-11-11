@@ -389,6 +389,22 @@ gpd.GeoDataFrame({"RTE": ["IH0035", "US0183"], "district": [14, 12]}, geometry=[
         assert ("An export to a folder that is not pre-approved asks; an export to a pre-approved folder, and what your "
                 "assistant writes into a project's files, do not") in words, words
         assert "before anything leaves the workspace" not in words, words
+        # R-104: on a Mac the card states the sandbox's one limit where it
+        # makes its promise. Not on this system; so the page is told it is
+        # on a Mac, and drawn again.
+        assert "On a Mac" not in words, words
+        d.execute_script("Object.defineProperty(navigator, 'platform', {get: () => 'MacIntel', configurable: true});")
+        click(d, By.ID, "settings-close")
+        nav(d, wait, "#/settings", "work-free")
+        wait.until(lambda drv: "Python scripts are off" in drv.find_element(By.ID, "work-state").text)
+        on_mac = d.find_element(By.ID, "work").text
+        assert ("On a Mac there is one limit: a script or a tool can read what your other running programs were started with. "
+                "Columbus's own passwords are never there; a token another program was started with can be.") in on_mac, on_mac
+        d.execute_script("delete navigator.platform;")
+        click(d, By.ID, "settings-close")
+        nav(d, wait, "#/settings", "work-free")
+        wait.until(lambda drv: "Python scripts are off" in drv.find_element(By.ID, "work-state").text)
+        assert "On a Mac" not in d.find_element(By.ID, "work").text
         assert not guard.unnamed(d), guard.unnamed(d)  # every control has a name, and Tab reaches it
         d.save_screenshot(str(OUT / "settings-work-mode.png"))
         step("work freely on copies: on, after one confirmation, writes the seven settings")

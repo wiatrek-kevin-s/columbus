@@ -130,12 +130,17 @@ export function workMode(st, after, id = "work", inSheet = true) {
   freeBox.addEventListener("change", () => { if (freeBox.checked) choose(true); });
   askBox.addEventListener("change", () => { if (askBox.checked) choose(false); });
   say();
+  // On a Mac the sandbox has one limit that touches the card's promise
+  // ("cannot reach … your passwords"): said here, where the promise is.
+  const macLimit = navigator.platform.startsWith("Mac")
+    ? " On a Mac there is one limit: a script or a tool can read what your other running programs were started with. Columbus's own passwords are never there; a token another program was started with can be."
+    : "";
   const how = st.confirm_with === "not available on this system"
     ? "On this system the app cannot confirm it is you (there is no Touch ID or Windows Hello), so set it in the policy file instead."
     : `Choosing Work freely on copies asks for ${st.confirm_with} once. Going back to asking does not.`;
   return h("div", { class: "stack", id },
     h("div", { class: "choices", role: "radiogroup", "aria-label": "How your assistant works" },
-      card(freeBox, "Work freely on copies", " (recommended)", "Scripts and tools run without asking you each time, in a sandbox, on copies of your data. They cannot reach your connections, your passwords, your other files or the internet. Choosing this also turns on Python environments you register, your own tools, toolboxes, project files and sync."),
+      card(freeBox, "Work freely on copies", " (recommended)", `Scripts and tools run without asking you each time, in a sandbox, on copies of your data. They cannot reach your connections, your passwords, your other files or the internet.${macLimit} Choosing this also turns on Python environments you register, your own tools, toolboxes, project files and sync.`),
       card(askBox, "Ask me before each script", "", "You read each script your assistant writes and allow it before it runs, in the same sandbox. This changes scripts only: tools from a toolbox and your own installed tools still run without asking, and what the first choice turned on stays on.")),
     state, err,
     h("p", { class: "small muted" }, "Either way your assistant reads your data only through Columbus, under each source's rules, and Columbus asks you before it changes a source. An export to a folder that is not pre-approved asks; an export to a pre-approved folder, and what your assistant writes into a project's files, do not. ", mine ? how : ""));

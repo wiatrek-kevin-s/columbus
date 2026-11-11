@@ -496,7 +496,9 @@ fn level_a_on_macos_reaches_no_socket_service_or_home_folder() {
         "svc com.apple.SecurityServer: refused",
         // Not "procargs parent": macOS's sandbox does not cover reading
         // the arguments and environment other processes of the same user
-        // started with (a known limit, in the README).
+        // started with (a known limit, stated in SECURITY.md, in the
+        // reference under Confinement levels, and on the app's card for
+        // Work freely on copies on a Mac).
         "proc list: refused",
     ] {
         assert!(
@@ -880,6 +882,8 @@ def _sysctl(mib):
         return "refused"
     buf = ctypes.create_string_buffer(size.value)
     return "ok" if _lib.sysctl(m, len(mib), buf, ctypes.byref(size), None, 0) == 0 else "refused"
+# Printed, not asserted: the sandbox does not cover it (the known limit
+# stated in SECURITY.md and in the reference).
 print("procargs parent:", _sysctl([1, 49, os.getppid()]))
 print("proc list:", _sysctl([1, 14, 0]))
 "#;
