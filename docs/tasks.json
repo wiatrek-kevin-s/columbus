@@ -616,8 +616,8 @@
           "expected": "no known advisories in the pinned engine requirements; RUSTSEC-2026-0462 and RUSTSEC-2026-0459 gone; the Engine requirements workflow has run once"
         }
       ],
-      "status": "blocked",
-      "evidence": "Done: Pillow 12.3.0 -> 13.0.0 (commit e393259); pip-audit finds no known vulnerabilities in all five pinned engine files (fresh re-check confirmed); Engine requirements workflow ran once (run https://github.com/wiatrek-kevin-s/columbus/actions/runs/42698196436, branch deps/engine-requirements-20261109). Blocked: RUSTSEC-2026-0462 (rmcp) and RUSTSEC-2026-0459 (libsqlite3-sys, plugin SDK only) clear only when the owner merges the green Dependabot PRs #9, #13 and #11; the session's safety check refuses merging pull requests it didn't author. Both advisories predate the rework."
+      "status": "todo",
+      "evidence": "Done: Pillow 12.3.0 -> 13.0.0 (commit e393259); pip-audit finds no known vulnerabilities in all five pinned engine files (fresh re-check confirmed); Engine requirements workflow ran once (run https://github.com/wiatrek-kevin-s/columbus/actions/runs/42698196436, branch deps/engine-requirements-20261109). Blocked: RUSTSEC-2026-0462 (rmcp) and RUSTSEC-2026-0459 (libsqlite3-sys, plugin SDK only) clear only when the owner merges the green Dependabot PRs #9, #13 and #11; the session's safety check refuses merging pull requests it didn't author. Both advisories predate the rework. Update of 2026-11-12: the owner's part is done. Dependabot pull requests 9, 11 and 13 were merged on 2026-11-09 (rmcp 3.9.0 in both lockfiles; rusqlite 0.41.1 with libsqlite3-sys 0.39.1 in the workspace lockfile), and 0.15.0 carries them. What remains is Claude's: rerun cargo audit on both lockfiles and pip-audit on the engine files; neither tool is installed on the build machine of 2026-11-12, so the task is back to todo, not done."
     },
     {
       "id": "T-26",
@@ -893,7 +893,7 @@
         }
       ],
       "status": "done",
-      "evidence": "Pull requests 23, 24, 25, 26 and 28 are merged; main is at d7ebc56 and every CI job passed on it (run 43121061867, 2026-11-11) on Windows, macOS and Linux. The hand-over note is the newest handoff note in docs/progress-log.md. One message was sent to the owner on 2026-11-11: what 0.15 does (the window, the one boundary and Work freely on copies, read-only data with their Python and documentation, the map the assistant reads and steers, installable tools, projects with files and sync, any AI service, GitHub Copilot as an AI app), the answer to the sandbox question, what was never tried on the real thing with the optional checks H-2 to H-6, what was cut to finish on the owner's instruction (the re-check of the last fixes; two small items), the branches (deleting is refused for the build session, so the lists and commands were given), and the owner's calls (publishing 0.15, the policy file on a new computer, map documents in sync, the About text, the line in CLAUDE.md). Nothing is published (D-21)."
+      "evidence": "Pull requests 23, 24, 25, 26 and 28 are merged; main is at d7ebc56 and every CI job passed on it (run 43121061867, 2026-11-11) on Windows, macOS and Linux. The hand-over note is the newest handoff note in docs/progress-log.md. One message was sent to the owner on 2026-11-11: what 0.15 does (the window, the one boundary and Work freely on copies, read-only data with their Python and documentation, the map the assistant reads and steers, installable tools, projects with files and sync, any AI service, GitHub Copilot as an AI app), the answer to the sandbox question, what was never tried on the real thing with the optional checks H-2 to H-6, what was cut to finish on the owner's instruction (the re-check of the last fixes; two small items), the branches (deleting is refused for the build session, so the lists and commands were given), and the owner's calls (publishing 0.15, the policy file on a new computer, map documents in sync, the About text, the line in CLAUDE.md). Nothing was published at the hand-over (D-21). Afterwards the owner said \"release 0.15\", and 0.15.0 was published on 2026-11-12 as a test release: https://github.com/wiatrek-kevin-s/columbus/releases/tag/v0.15.0 (Release run 43144636963 on main bc97b68, every job passed; 7 files)."
     },
     {
       "id": "R-103",
@@ -1091,6 +1091,27 @@
       ],
       "status": "done",
       "evidence": "Commits c30cacd (finding 7: a message that got no answer is taken back), 483a60c (3), abbc980 (4), f48f656 (8, 10, 11 and a User-Agent header), 2ca9915 (12), 7676a5a (6), b57b9fa (1: the saved key is deleted whenever the confirmed record differs from what is being confirmed; the prompt shows the whole address), b383337 (2); merged as 06efb18. Each test failed against the earlier code (for finding 1: 'the key saved for the confirmed address was sent to the rewritten one'). The builder's runs at the end: gateway chat 6, chat_services 29, workflows 5; columbus-chat 55; desktop crate 50; desktop scripts services and foot; fmt and clippy clean. Dropped on the owner's instruction of 2026-11-11 to finish without what is not needed: plainer tool schemas on the second try, and the wording when a Mac's keychain prompt is declined (finding 13). Finding 9 (the settings file can move new chats to another service that has a key) is logged. Not independently re-checked: see T-40."
+    },
+    {
+      "id": "R-108",
+      "title": "The owner's report after the 0.15.0 release: the app's icon (Dock, Finder, taskbar, installers) still shows the old compass of 2026-11-07, not the mark the app draws in its window; make every icon file from that mark, and keep the two from drifting apart again",
+      "session": "S13",
+      "depends_on": [
+        "T-36"
+      ],
+      "done_by": "claude",
+      "acceptance": [
+        {
+          "how": "Claude makes every icon file Tauri bundles (icon.icns, icon.ico, the PNGs) and the README's logo from LOGO in app/desktop/ui/js/core.js, coloured as app.css colours it in the light theme, reads each file back, and looks at every size beside the app's own mark",
+          "expected": "icon.icns holds 32 to 1024 px and icon.ico 16 to 256 px, every entry opens, and each shows the app's mark"
+        },
+        {
+          "how": "Claude runs make_icons.py --check on the old icons and on the new ones; CI runs it in the Docs links job",
+          "expected": "it fails on the old icons and passes on the new ones"
+        }
+      ],
+      "status": "done",
+      "evidence": "Commit 4a7acd3 (pull request 30). make_icons.py --check failed on the old icons (\"icon.svg does not follow the app's mark as it is now; ... docs/images/logo.svg is not icon.svg\") and passes on the new ones. Read back with Pillow: icon.icns has ic07 to ic14 (32 to 1024 px), icon.ico has 16, 24, 32, 48, 64 and 256 px, and every entry opens. Every size was looked at on white and on dark, beside the sidebar's mark in the README's own pictures: the same ring, north and south, in the light theme's colours. CI builds the macOS .app with icon.icns and the Windows program with icon.ico inside it; the merge waits for it (D-8). Not seen on a real Mac or Windows PC: how macOS 26 and later show an icon on Apple's grid without a drawn shadow, and whether the Dock shows the new icon at once after an update (macOS keeps icons in a cache)."
     }
   ]
 }

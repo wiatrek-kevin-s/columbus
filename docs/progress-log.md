@@ -4,10 +4,10 @@ Kit version 1.1 · as of 2026-11-08, session S1 not started
 
 ## Where things stand
 
-- **Session:** part 3, the open workbench (0.15), from the owner's instruction of 2026-11-10 (`docs/build-brief-3.md`) · **Task:** T-34 to T-36 (area S12: docs, pictures, version 0.15.0, review, hand-over); T-26 to T-33 are done and on `main`
-- **Next step:** area S12: a few small follow-ups from the builders, the docs, README and pictures, version 0.15.0, the final review and its fixes, then the hand-over message
-- **Waiting on the owner:** nothing. They asked not to be involved and to be told when it is done
-- **Homework received:** setup round answered ("skip" on Dependabot alerts); H-1 and H-2 are optional, after release; H-3 to H-5 are optional, after part 3
+- **Session:** part 3 (`docs/build-brief-3.md`) and its addendum are finished and on `main`. **Columbus 0.15.0 is published** as a test release (2026-11-12, on the owner's word). Afterwards the app's icon was made from the app's own mark (R-108, pull request 30) · **Task:** none in work
+- **Next step:** nothing planned. A later session starts from the newest handoff note; its open ends block nothing
+- **Waiting on the owner:** nothing. Theirs when they wish: the word to publish a version with the new icon (0.15.0 has the old one); deleting the old branches (the lists are in the hand-over), the optional checks in `docs/manual-checks.md`, and the word "re-check" for the independent re-check of the last fixes (T-40)
+- **Homework received:** setup round answered ("skip" on Dependabot alerts); H-1 to H-4 and H-6 are optional (H-5 is H-2 again)
 
 ## Setup round (T-1), 2026-11-08
 
@@ -149,6 +149,11 @@ Kit version 1.1 · as of 2026-11-08, session S1 not started
 | 2026-11-11 | R-106: where the line for a stand-in is drawn means two known costs: a password that is exactly `$` and a name (`$ummer2026`) reads as a variable, and one holding a name in braces as put together from parts. `pwd = "row_widths"` is let through for the name `pwd` only | Applied to every password name, the exemption let the repository's own test password through | Decided |
 | 2026-11-11 | Branches: nothing was deleted. The owner asked for a clean-up; the build session's Git access refuses a push that deletes another branch, and that was not worked around. The lists and one command go to the owner | A refusal that is deliberate is not a blocker to work past | Decided |
 | 2026-11-12 | Pull request 28 merged as d7ebc56 after all 14 CI jobs passed on d743d2f (run 43118603735); main green afterwards (run 43121061867). The hand-over message went to the owner; T-36 is done. Open for a later session, none blocking: the re-check of R-105's second part, R-106 and R-107 (T-40), and the owner's calls named in the hand-over note | D-8; the owner asked to finish on 2026-11-11 | Done |
+| 2026-11-12 | Columbus 0.15.0 is published as a test release (a pre-release, as every release before it), from `main` bc97b68, by the Release workflow dispatched on `main` with the tag `v0.15.0`, the way 0.14 was. D-21 left publishing to the owner's word; the owner gave it ("release 0.15") after the hand-over message, which says what was never tried on the real thing and that the last fixes had no independent re-check (T-40, still blocked). Nothing else on the never-without-approval list changes | The owner's instruction | Asked (owner: "release 0.15") |
+| 2026-11-12 | R-102 goes from blocked to todo. Its blocker, the owner merging Dependabot pull requests 9, 11 and 13, was met on 2026-11-09 (found while writing the release's records). It is not marked done: its check is a rerun of cargo audit and pip-audit, and neither tool is on this machine | A record must say what is true; a check that was not run is not passed | Decided |
+| 2026-11-12 | The app's icon is the mark the app draws, in the light theme's colours, on a light tile (the panel's white to the paper's beige). On a Mac it sits on Apple's grid (a tile of 824 in 1024, its corners a superellipse, no drawn shadow); on Windows and Linux the tile fills the square; from 16 to 32 px the ring is bolder. The README's logo is the Mac drawing | The owner asked that the icon be the logo the app shows; light is the app's first theme; a shape on Apple's grid without a drawn shadow is what macOS 26 and later are meant to show as it is (not seen on a real Mac) | Decided |
+| 2026-11-12 | The icons are drawn by a script from the app's own code (`app/desktop/src-tauri/icons/make_icons.py`), and CI checks that they still are | The logo changed with the new window (2026-11-10) and the icon files did not; the check makes the same slip fail in CI | Decided |
+| 2026-11-12 | The released 0.15.0 keeps the old icon; the new one reaches people with the next release, which needs the owner's word | Publishing is on the never-without-approval list (D-21) | Decided |
 
 ## Change requests
 
@@ -164,6 +169,14 @@ Status: raised, approved, declined, or Sent to Blueprint (touches a one-way door
 ## Handoff notes
 
 Newest first, written as you go. Mark each claim verified (checked this session) or unverified.
+
+### Release of 0.15.0 (2026-11-12)
+
+- **Released:** https://github.com/wiatrek-kevin-s/columbus/releases/tag/v0.15.0 (the pre-release "Columbus 0.15.0 (test release)", from `main` bc97b68; Release run 43144636963, every job passed; CI on that commit: run 43126860783). It lists 7 files: the Mac and Windows `.mcpb` and `.zip`, the Mac `.dmg`, the Windows `-setup.exe` and `.msi` (verified).
+- **Why now:** the owner's word, "release 0.15" (D-21). The release notes are `packaging/release-notes.md` as merged; they say what was never tried on the real thing (H-2, H-3, H-4, H-6).
+- **After it:** the lines that said 0.15 might not be published yet are gone from the README, the reference's status line and the manual checks. The reference's status line also no longer reads as if Anthropic had met the real service in this build; it now agrees with "Honest limits" in the same file.
+- **Afterwards, the app's icon (R-108, verified):** the owner saw that on a Mac the app's icon was still the old compass of 2026-11-07. Every icon file and the README's logo are now drawn from the mark the app shows (`app/desktop/src-tauri/icons/make_icons.py`), and CI checks that they stay so. The released 0.15.0 still has the old icon; a new release needs the owner's word.
+- **Still open, none blocking:** as listed in the hand-over note below. T-40's re-check waits for the owner's word; the branches are the owner's to delete; T-18 is as it was. R-102 is back to todo: what blocked it (the owner merging Dependabot pull requests 9, 11 and 13) happened on 2026-11-09, so 0.15.0 carries rmcp 3.9.0 and rusqlite 0.41.1; the audit rerun it asks for is left, because cargo-audit and pip-audit are not on this build machine.
 
 ### Hand-over: Columbus 0.15.0, part 3 and the addendum (2026-11-11)
 
@@ -378,6 +391,8 @@ A fresh subagent that built none of it reviewed commit 428cabd (method and scori
 - 2026-11-11 Follow-ups (branch work/s12a): a65e11f, 06ceb1b, 05fc662, c119cd1, 64d6328; whole Rust suite 529 passed, 12 desktop scripts pass on Linux (verified by the builder).
 - 2026-11-11 T-34 done: cd9d934, fe0913f, 309f1d7, 61262db, 3a27e87, df15694, ff109df, 5825e9f (merged 1f18f24); version 0.15.0; pictures and animation retaken; all local suites pass on Linux (verified by the builder; fast checks rerun after the merge).
 - 2026-11-11 Follow-ups' extras (branch work/s12a): 6f54a15 (Table on a script's result card), 9f6fda5 ("1 row"), 9488b5c (newest reads on the Tools page, each with a test that failed before its fix), 4c3f797 (the sentence where the app cannot confirm), 18cb9eb (reference); 12 desktop scripts pass on Linux (verified by the builder).
+- 2026-11-12 0.15.0 released (pre-release) from bc97b68 on the owner's word ("release 0.15"); Release run 43144636963, every job passed; 7 files on the release page (verified).
+- 2026-11-12 R-108 done: 4a7acd3; make_icons.py --check failed on the old icons and passes on the new; icon.icns (32 to 1024 px) and icon.ico (16 to 256 px) read back; every size looked at beside the app's own mark (verified).
 
 ### Kit → Session S1 (2026-11-08)
 
