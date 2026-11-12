@@ -892,8 +892,8 @@
           "expected": "all jobs green; the note is the newest in docs/progress-log.md"
         }
       ],
-      "status": "todo",
-      "evidence": ""
+      "status": "done",
+      "evidence": "Pull requests 23, 24, 25, 26 and 28 are merged; main is at d7ebc56 and every CI job passed on it (run 43121061867, 2026-11-11) on Windows, macOS and Linux. The hand-over note is the newest handoff note in docs/progress-log.md. One message was sent to the owner on 2026-11-11: what 0.15 does (the window, the one boundary and Work freely on copies, read-only data with their Python and documentation, the map the assistant reads and steers, installable tools, projects with files and sync, any AI service, GitHub Copilot as an AI app), the answer to the sandbox question, what was never tried on the real thing with the optional checks H-2 to H-6, what was cut to finish on the owner's instruction (the re-check of the last fixes; two small items), the branches (deleting is refused for the build session, so the lists and commands were given), and the owner's calls (publishing 0.15, the policy file on a new computer, map documents in sync, the About text, the line in CLAUDE.md). Nothing is published (D-21)."
     },
     {
       "id": "R-103",
