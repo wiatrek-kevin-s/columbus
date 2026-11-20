@@ -260,7 +260,7 @@ fn as_text(mut f: std::fs::File, cap: u64, what: &str) -> Result<TextFile, Strin
             "{what} is not a text file (it holds binary data); the assistant reads text files only"
         ));
     }
-    let sha256 = format!("{:x}", Sha256::digest(&buf));
+    let sha256 = hex::encode(Sha256::digest(&buf));
     let bytes = buf.len() as u64;
     let text = String::from_utf8(buf).map_err(|_| {
         format!(

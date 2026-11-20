@@ -482,7 +482,7 @@ pub fn copy_into(
         dst.write_all(&buf[..k])?;
     }
     dst.sync_all()?;
-    Ok((format!("{:x}", h.finalize()), n))
+    Ok((hex::encode(h.finalize()), n))
 }
 
 /// Open the regular file at `path` (below `root`) without following a link
@@ -516,7 +516,7 @@ pub fn copy_to_new(src: &mut File, to: &Path) -> io::Result<String> {
         dst.write_all(&buf[..k])?;
     }
     dst.sync_all()?;
-    Ok(format!("{:x}", h.finalize()))
+    Ok(hex::encode(h.finalize()))
 }
 
 /// The components of `path` below `root`, each a plain name.

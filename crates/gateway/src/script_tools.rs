@@ -411,7 +411,7 @@ fn take_output(src: std::fs::File, to: &Path, cap: u64) -> Result<(String, u64),
         dst.write_all(&buf[..k]).map_err(|e| e.to_string())?;
     }
     dst.sync_all().map_err(|e| e.to_string())?;
-    Ok((format!("{:x}", h.finalize()), n))
+    Ok((hex::encode(h.finalize()), n))
 }
 
 /// One file taken from `out/`.
