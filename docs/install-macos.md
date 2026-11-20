@@ -2,7 +2,7 @@
 
 Columbus is a governed GIS server for AI agents. It runs on your computer, beside the AI client you already use (Claude desktop, or any MCP client), and enforces what the agent may read, write, run and send.
 
-This build is for Macs with Apple Silicon (M1 and later) on macOS 15 or later (the engine's pinned packages, such as rasterio 1.5, publish Apple Silicon wheels for macOS 15 and later only). The Columbus app (step 5) is optional. These steps are for Columbus 0.15.0. For Windows, see [install.md](install.md).
+This build is for Macs with Apple Silicon (M1 and later) on macOS 15 or later (the engine's pinned packages, such as rasterio 1.5, publish Apple Silicon wheels for macOS 15 and later only). The Columbus app (step 5) is optional. These steps are for Columbus 0.15.1. For Windows, see [install.md](install.md).
 
 **Updating from 0.14?** Install the new `.mcpb` and app as in steps 4 and 5. The engine's packages did not change, so step 2 need not be run again. Nothing loosens by itself: working freely on copies, toolboxes, project files and sync are off until you choose them in the app (step 3) or your organization writes them in `policy.yaml`. The app's chat keeps using Anthropic, with the key you saved, until you choose another AI service (step 5). The app's window is new: a sidebar, the chat, and a panel on the right. (From 0.13 or earlier, also run the engine setup, step 2, once more.)
 

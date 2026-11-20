@@ -1,6 +1,6 @@
 # The Columbus app, page by page
 
-What each page of the Columbus desktop app (0.15.0) is for. For how it works underneath, see the [technical reference](reference.md#companion-window-and-desktop-app); to install it, the [Mac](install-macos.md) or [Windows](install.md) guide.
+What each page of the Columbus desktop app (0.15.1) is for. For how it works underneath, see the [technical reference](reference.md#companion-window-and-desktop-app); to install it, the [Mac](install-macos.md) or [Windows](install.md) guide.
 
 The Columbus app is one window with three parts. On the left is a sidebar. In the middle is the chat, or the page of the place you chose. On the right, a panel opens when your assistant makes something: the chat's map and table.
 

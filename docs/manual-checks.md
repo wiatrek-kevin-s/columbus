@@ -1,6 +1,6 @@
-# Manual checks for Columbus 0.15.0
+# Manual checks for Columbus 0.15.1
 
-Optional checks that only a person with the real systems can do. Columbus is tested with fake ArcGIS servers, a stand-in arcpy, a stand-in for the GeoLibre program, stand-in Git servers and stand-in AI services, never against a real portal, a real ArcGIS Pro, the real GeoLibre program or a real GitHub or Gitea; and no AI service was contacted while 0.15 was built, so the services new in 0.15 for the app's own chat have never met the real thing. None of these checks is needed to use Columbus. H-1 and H-2 take about 30 minutes each, H-3 and H-4 about 20, H-6 about 15, and the three short looks at the end about 5 each. H-3, H-4, H-6 and the three short looks need Columbus 0.15.0. H-1 and H-2 can be done on 0.14.0 too.
+Optional checks that only a person with the real systems can do. Columbus is tested with fake ArcGIS servers, a stand-in arcpy, a stand-in for the GeoLibre program, stand-in Git servers and stand-in AI services, never against a real portal, a real ArcGIS Pro, the real GeoLibre program or a real GitHub or Gitea; and no AI service was contacted while 0.15 was built, so the services new in 0.15 for the app's own chat have never met the real thing. None of these checks is needed to use Columbus. H-1 and H-2 take about 30 minutes each, H-3 and H-4 about 20, H-6 about 15, and the three short looks at the end about 5 each. H-3, H-4, H-6 and the three short looks need Columbus 0.15.0 or later. H-1 and H-2 can be done on 0.14.0 too.
 
 - **H-1: ArcGIS sign-in.** Your organization registers its own ArcGIS OAuth app for Columbus, and you sign in to a layer shared only inside your organization. It also settles which of the two sign-in routes your portal accepts (A-2, below).
 - **H-2: arcpy on a real ArcGIS Pro computer.** You register an ArcGIS Pro environment and run one small arcpy script. Until this passes, arcpy and trusted environments stay marked **experimental** (D-13). (The plan for 0.15 lists arcpy again as H-5: it is this same check, still open.)
@@ -17,7 +17,7 @@ Don't use production data you can't afford to have read. H-1 and H-2 only read y
 
 1. Install Columbus and set up the GIS engine, as the [Windows](install.md) or [Mac](install-macos.md) guide says (steps 1 to 4).
 2. Open a terminal in your Columbus folder (Windows: in File Explorer, open your Columbus folder (`%USERPROFILE%\Columbus`), type `powershell` in the address bar and press Enter; Mac: Terminal, then `cd ~/Columbus`).
-3. Type `.\columbus-mcp.exe --version` (Windows) or `./columbus-mcp --version` (Mac). It should print `columbus-mcp 0.15.0` (or `0.14.0`, for H-1 and H-2 on the earlier release). The steps below write `columbus-mcp`; type it the same way.
+3. Type `.\columbus-mcp.exe --version` (Windows) or `./columbus-mcp --version` (Mac). It should print `columbus-mcp 0.15.1` (or `0.14.0`, for H-1 and H-2 on the earlier release). The steps below write `columbus-mcp`; type it the same way.
 
 ## H-1: ArcGIS sign-in
 

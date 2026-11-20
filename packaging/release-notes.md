@@ -1,5 +1,31 @@
 Columbus {{VERSION}}, a test release. Click a link to download that file.
 
+## What's new in 0.15.1
+
+Fixes found by a review of the whole app, button by button, and the new app icon. Nothing new to set up, and no rule changes.
+
+- **The app's icon** is now the Columbus mark you see inside the app (Dock, Finder, taskbar and installers showed the old compass).
+- **Oracle:** typing a host, port and service name now saves the service name where Columbus reads it. A full connect string typed beside a host is refused, with what to do. Connections saved by 0.15.0's form still work.
+- **Connecting other AI apps:** the Claude Code command the app shows now works (it was in the wrong order). The Codex and Gemini commands name the engine too.
+- **Python:**
+  - A new environment your assistant asks for starts from Columbus's GIS packages (geopandas, shapely, rasterio and the rest) at the engine's versions.
+  - If creating one fails, it says why. Your assistant now tells you exactly where to approve one: **Settings › Python environments**.
+  - A script that fails without network says that downloads (osmnx, contextily, geocoders) can't work there.
+- **Workflows:**
+  - **Run now** always opens the report of the run it started, and says so when a run left no record.
+  - The runs list says "100+" instead of stopping at 50.
+  - **Remove** asks first.
+  - Windows schedules are matched correctly.
+- **Map:** a result your assistant saves again under the same name is drawn again.
+- **Exports:** GeoTIFF exports bring their side files.
+- **GIS results:** an intersect keeps the right geometry type. Empty results, dropped fields, shapefile dates and datum shifts are now said.
+- **Skills:** your assistant can now read every GIS skill (projections, spatial SQL, linear referencing, lidar and more), not only the first one.
+- **Sharing and sync:** a workflow that uses a tool your organization installed for everyone can be shared. A file renamed only by its capital letters says how to undo it.
+- **Safety:**
+  - On a dataset with a row filter, a check no longer shows the outer bounds of the rows you can't see.
+  - Downloads refuse a few more kinds of address that can point inside your network.
+- **Smaller:** the Activity page follows a new month; the map layer editor reads layers again after you change the address or sign-in; and settings errors are shown.
+
 ## What's new in 0.15.0
 
 Columbus now looks like the AI apps you know, lets your assistant work freely on copies of your data, takes tools you install in place of tools someone has to build, and chats with the AI service you choose. No rule loosens by itself: every new switch is off until you choose it.
