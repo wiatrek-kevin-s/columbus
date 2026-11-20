@@ -130,11 +130,7 @@ impl Opener {
     }
 
     pub fn is_dev_handoff(&self) -> bool {
-        #[cfg(debug_assertions)]
-        if matches!(self, Opener::File(_)) {
-            return true;
-        }
-        false
+        cfg!(debug_assertions) && matches!(self, Opener::File(_))
     }
 }
 

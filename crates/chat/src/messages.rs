@@ -81,11 +81,11 @@ impl Wire for Messages {
             }
         }
         let mut total = size(&self.history);
-        for i in 0..last {
+        for m in self.history.iter_mut().take(last) {
             if total <= goal {
                 break;
             }
-            let Some(blocks) = self.history[i]["content"].as_array_mut() else {
+            let Some(blocks) = m["content"].as_array_mut() else {
                 continue;
             };
             for b in blocks.iter_mut() {

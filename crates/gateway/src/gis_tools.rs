@@ -425,8 +425,23 @@ impl Gateway {
             // ones included.
             o.remove("estimated_rows");
         }
-        if !access.filters_for(dataset).is_empty() && o.get("extent").is_some_and(|e| !e.is_null())
-        {
+        // The worker's CRS checks are worked out from the stored extent (and
+        // the CRS): where those are withheld, so are the checks, whose
+        // detail and very presence would tell them.
+        let filtered = !access.filters_for(dataset).is_empty();
+        if geom_hidden || filtered {
+            if let Some(Value::Array(checks)) = o.get_mut("checks") {
+                checks.retain(|c| {
+                    let id = c.get("id").and_then(Value::as_str).unwrap_or("");
+                    if geom_hidden {
+                        !id.starts_with("crs.")
+                    } else {
+                        id != "crs.area_of_use"
+                    }
+                });
+            }
+        }
+        if filtered && o.get("extent").is_some_and(|e| !e.is_null()) {
             o.insert("extent".into(), Value::Null);
             o.insert(
                 "extent_note".into(),
@@ -1650,6 +1665,64 @@ impl<T: JsonSchema> MapChecks for Json<Output<T>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn access(filter: Option<&str>, hide: &[&str]) -> EffectiveAccess {
+        let mut conn: Connection = serde_yaml::from_str(
+            "id: roads\ntype: gpkg\npath: roads.gpkg\ndatasets:\n  allow: [\"*\"]\n",
+        )
+        .unwrap();
+        conn.row_filter = filter.map(String::from);
+        let org = columbus_shared::policy::OrgPolicy {
+            connection_types: vec!["gpkg".into()],
+            ..Default::default()
+        };
+        let mut a = EffectiveAccess::resolve(
+            &org,
+            &conn,
+            &columbus_shared::policy::ProjectScope::default(),
+            chrono::Utc::now(),
+        )
+        .unwrap();
+        a.hide_fields = hide.iter().map(|s| s.to_string()).collect();
+        a
+    }
+
+    fn described() -> Value {
+        json!({
+            "fields": [{"name": "district"}, {"name": "geom"}],
+            "geometry_column": "geom", "crs": {"epsg": 3081}, "extent": [1.0, 2.0, 3.0, 4.0],
+            "checks": [
+                {"id": "crs.info", "severity": "info", "message": "in EPSG:3081"},
+                {"id": "crs.area_of_use", "severity": "warn", "message": "outside",
+                 "detail": {"extent_lonlat": [-126.4, 13.3, -71.1, 43.2], "degrees_beyond": {"west": 20.0}}},
+            ],
+        })
+    }
+
+    fn ids(v: &Value) -> Vec<&str> {
+        v["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["id"].as_str().unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn a_withheld_extent_takes_the_checks_made_from_it() {
+        // No filter: everything stays.
+        let v = Gateway::visible_info(described(), &access(None, &[]), "roads");
+        assert_eq!(ids(&v), ["crs.info", "crs.area_of_use"]);
+        // A row filter: the extent and the check worked out from it go.
+        let v = Gateway::visible_info(described(), &access(Some("district = 14"), &[]), "roads");
+        assert!(v["extent"].is_null());
+        assert_eq!(ids(&v), ["crs.info"]);
+        assert!(!v.to_string().contains("extent_lonlat"));
+        // A hidden geometry: every CRS check goes with the CRS.
+        let v = Gateway::visible_info(described(), &access(None, &["geom"]), "roads");
+        assert!(v.get("crs").is_none());
+        assert!(ids(&v).is_empty());
+    }
 
     #[test]
     fn names_that_need_quotes() {
