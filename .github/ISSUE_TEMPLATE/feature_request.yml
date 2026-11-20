@@ -20,7 +20,7 @@ body:
     id: version
     attributes:
       label: Columbus version you use
-      placeholder: "0.15.0"
+      placeholder: "0.15.1"
   - type: dropdown
     id: os
     attributes:

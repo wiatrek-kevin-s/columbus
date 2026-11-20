@@ -1,6 +1,6 @@
 # How Columbus is built
 
-The parts of Columbus 0.15.0 and where they live. The [technical reference](reference.md#layout) has the folder layout and every rule.
+The parts of Columbus 0.15.1 and where they live. The [technical reference](reference.md#layout) has the folder layout and every rule.
 
 ```text
         AI app (Columbus's own chat, Claude, Copilot, any MCP client)

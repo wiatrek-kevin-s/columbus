@@ -1,6 +1,6 @@
 # What Columbus can do
 
-What Columbus 0.15.0 does, area by area. Items marked *experimental* work but have not yet been checked on a real ArcGIS Pro computer ([manual checks](manual-checks.md), H-2). The [technical reference](reference.md) has every rule in detail; [Not in this release](reference.md#not-in-this-release) lists what it doesn't do.
+What Columbus 0.15.1 does, area by area. Items marked *experimental* work but have not yet been checked on a real ArcGIS Pro computer ([manual checks](manual-checks.md), H-2). The [technical reference](reference.md) has every rule in detail; [Not in this release](reference.md#not-in-this-release) lists what it doesn't do.
 
 | Area | Highlights |
 | --- | --- |

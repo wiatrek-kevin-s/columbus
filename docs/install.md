@@ -2,7 +2,7 @@
 
 Columbus is a governed GIS server for AI agents. It runs on your computer, beside the AI client you already use (Claude desktop, GitHub Copilot in VS Code, or any MCP client), and enforces what the agent may read, write, run and send.
 
-These steps are for Columbus 0.15.0 on Windows 10 and 11 (64-bit). The server (step 1 to 4) is all you need; the Columbus app (step 5) is optional. For a Mac, see [install-macos.md](install-macos.md).
+These steps are for Columbus 0.15.1 on Windows 10 and 11 (64-bit). The server (step 1 to 4) is all you need; the Columbus app (step 5) is optional. For a Mac, see [install-macos.md](install-macos.md).
 
 **Updating from 0.14?** Install the new `.mcpb` and app as in steps 4 and 5. The engine's packages did not change, so step 2 need not be run again. Nothing loosens by itself: working freely on copies, toolboxes, project files and sync are off until you choose them in the app (step 3) or your organization writes them in `policy.yaml`. The app's chat keeps using Anthropic, with the key you saved, until you choose another AI service (step 5). The app's window is new: a sidebar, the chat, and a panel on the right. (From 0.13 or earlier, also run the engine setup, step 2, once more.)
 
