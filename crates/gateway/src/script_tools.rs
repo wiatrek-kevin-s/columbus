@@ -1297,8 +1297,19 @@ impl Gateway {
         if !helpers.is_empty() {
             bound["helpers"] = json!(helpers);
         }
+        // What the card shows is all the code that runs: the script, then
+        // each helper beside it in full (a helper runs when the script
+        // imports it, so it is approved with it).
+        let shown_code = from_project.iter().flat_map(|s| &s.helpers).fold(
+            code.to_string(),
+            |mut all, h| {
+                all.push_str(&format!("\n\n# ---------- helper file {} (runs when the script imports it) ----------\n", h.name));
+                all.push_str(&h.text);
+                all
+            },
+        );
         let detail = json!({
-            "code": code,
+            "code": shown_code,
             "code_sha256": code_sha256,
             "script": from_project.as_ref().map(|s| &s.path),
             "helpers": helpers,
