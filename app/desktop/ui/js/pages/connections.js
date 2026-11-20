@@ -494,6 +494,15 @@ export async function openEditor(c, onSaved) {
   showTest(null);
   $("editor-h").textContent = c ? `Edit ${c.id}` : "Add data";
   $("confirm-hint").textContent = confirmNote();
+  // Kinds the organization's rules leave out are said so in the list: the
+  // person learns it before filling in the form, not at Test.
+  const allowed = (state && state.policy && state.policy.exists && state.policy.connection_types) || null;
+  for (const o of form.kind.options) {
+    o.textContent = o.dataset.name || (o.dataset.name = o.textContent);
+    // As the rules read it: by name, in any case; the old name "file" is "files".
+    const ok = !allowed || allowed.some((t) => { const n = String(t).toLowerCase(); return n === o.value || (n === "file" && o.value === "files"); });
+    if (!ok) o.textContent += " (not allowed by your organization's rules)";
+  }
   form.conn_id.readOnly = !!c;
   $("delete").hidden = !c;
   const v = c || { type: "gpkg", mode: "read", datasets: { allow: ["*"], deny: [] } };

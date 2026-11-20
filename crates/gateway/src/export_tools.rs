@@ -908,6 +908,14 @@ impl Gateway {
         let _ = self.write_provenance(&prov, &record);
         rec.prov = Some(prov.clone());
         rec.rows = meta.rows;
+        // Where it landed, as Activity shows it: the folder and the name.
+        let main_file = gdb_target
+            .as_ref()
+            .or_else(|| targets.first())
+            .and_then(|p| p.file_name())
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| args.name.clone());
+        rec.dataset = Some(format!("{}: {main_file}", folder.id));
         let approval = rec.approval.clone();
         self.audit(&ctx, rec)?;
         Ok(Json(Output {

@@ -314,7 +314,9 @@ impl PluginManifest {
     pub fn parse_any(text: &str) -> Result<Self, String> {
         let m: PluginManifest = serde_yaml::from_str(text).map_err(|e| e.to_string())?;
         let ok = !m.id.is_empty()
-            && m.id.len() <= 64
+            // Its confinement profile is named after it (`plugin.<id>`),
+            // and a profile name is at most 64 characters.
+            && m.id.len() <= 50
             && m.id.split('.').all(|seg| {
                 seg.starts_with(|c: char| c.is_ascii_lowercase())
                     && seg
@@ -323,7 +325,7 @@ impl PluginManifest {
             });
         if !ok {
             return Err(format!(
-                "id {:?} must be dot-separated lower-case names (a-z, 0-9, '-')",
+                "id {:?} must be dot-separated lower-case names (a-z, 0-9, '-'), at most 50 characters in all",
                 m.id
             ));
         }

@@ -1280,7 +1280,12 @@ pub fn install(
     let mut approvals = read_approvals(root);
     approvals.insert(id.to_string(), fp);
     write_approvals(root, &approvals)?;
-    let _ = std::fs::remove_dir_all(&from);
+    // The proposal goes only if it is still the one installed: one the
+    // assistant filed again meanwhile stays waiting for the person.
+    let same = read_plain(&from.join(FILE), MAX_FILE).is_ok_and(|b| b == bytes);
+    if same {
+        let _ = std::fs::remove_dir_all(&from);
+    }
     list_installed(root, tools_root)
         .into_iter()
         .find(|w| w.id == id)
