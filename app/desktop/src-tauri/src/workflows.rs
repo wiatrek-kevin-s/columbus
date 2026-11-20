@@ -201,11 +201,14 @@ pub async fn workflow_run_now(app: AppHandle, id: String) -> Result<Value, Strin
         }
         let root = wf::workflows_dir();
         let (w, _) = wf::ready(&root, &tools_root(), &id)?;
+        // The newest run before this one: if none newer is there after, this
+        // run left no record and its report would be an older run's.
+        let before = newest_run(&root, &id);
         let mut cmd = Command::new(&server);
         cmd.args(["workflow", "run", &id])
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
+            .stderr(std::process::Stdio::piped());
         if let Some(e) = &engine {
             cmd.env("COLUMBUS_PYTHON", e);
         }
@@ -217,6 +220,15 @@ pub async fn workflow_run_now(app: AppHandle, id: String) -> Result<Value, Strin
         let mut child = cmd
             .spawn()
             .map_err(|e| format!("{}: {e}", server.display()))?;
+        // Read what it says on stderr as it goes, so a full pipe never
+        // stops it; the last of it explains a run that left no record.
+        let said = child.stderr.take().map(|mut err| {
+            std::thread::spawn(move || {
+                let mut buf = Vec::new();
+                let _ = std::io::Read::read_to_end(&mut err, &mut buf);
+                buf
+            })
+        });
         let limit = Duration::from_secs(u64::from(w.run_minutes()) * 60 + 120);
         let start = std::time::Instant::now();
         loop {
@@ -232,14 +244,46 @@ pub async fn workflow_run_now(app: AppHandle, id: String) -> Result<Value, Strin
                 }
             }
         }
-        wf::list_runs(&root, &id, 1)
-            .into_iter()
-            .next()
-            .ok_or_else(|| "the run left no record".to_string())
+        let said = said
+            .and_then(|t| t.join().ok())
+            .map(|b| String::from_utf8_lossy(&b).trim().to_string())
+            .unwrap_or_default();
+        let latest = wf::list_runs(&root, &id, 1).into_iter().next();
+        let fresh = latest
+            .as_ref()
+            .and_then(|r| r.get("run").and_then(Value::as_str))
+            .is_some_and(|r| before.as_deref() != Some(r));
+        match latest {
+            Some(rec) if fresh => Ok(rec),
+            _ => Err(no_record(&said)),
+        }
     })
     .await
     .map_err(|e| e.to_string())?
 }
+
+/// The id of a workflow's newest run, if it has one.
+fn newest_run(root: &std::path::Path, id: &str) -> Option<String> {
+    wf::list_runs(root, id, 1)
+        .into_iter()
+        .next()
+        .and_then(|r| r.get("run").and_then(Value::as_str).map(String::from))
+}
+
+/// The error for a run that left no record, with the end of what it said.
+fn no_record(said: &str) -> String {
+    let tail: Vec<&str> = said.lines().rev().take(6).collect();
+    let tail: Vec<&str> = tail.into_iter().rev().collect();
+    if tail.is_empty() {
+        "the run left no record".into()
+    } else {
+        format!("the run left no record: {}", tail.join(" / "))
+    }
+}
+
+/// How many runs the Runs list reads: one more than it shows, so it can
+/// say there are more.
+const RUNS_READ: usize = 101;
 
 /// A workflow's latest runs, newest first.
 #[tauri::command]
@@ -248,7 +292,7 @@ pub async fn workflow_runs(id: String) -> Result<Vec<Value>, String> {
         if !wf::id_ok(&id) {
             return Err(format!("{id:?} is not a workflow"));
         }
-        Ok(wf::list_runs(&wf::workflows_dir(), &id, 50))
+        Ok(wf::list_runs(&wf::workflows_dir(), &id, RUNS_READ))
     })
     .await
     .map_err(|e| e.to_string())?

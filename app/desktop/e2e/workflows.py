@@ -320,6 +320,8 @@ def main():
         wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "#main .wf-more"))).click()
         assert wait.until(EC.presence_of_element_located((By.ID, "wf-share"))).is_enabled()
         wait.until(EC.element_to_be_clickable((By.ID, "wf-remove"))).click()
+        step("Removing asks first")
+        wait.until(EC.element_to_be_clickable((By.XPATH, "//dialog[@open]//button[normalize-space()='Remove workflow']"))).click()
         wait.until(lambda drv: drv.find_elements(By.ID, "wf-installed") and "Tract export" not in text(drv, "wf-installed"))
         assert "tract-export" not in (root / "workflows" / "approved.yaml").read_text()
         assert list((root / "workflows" / "runs" / "tract-export").iterdir()), "runs are kept"

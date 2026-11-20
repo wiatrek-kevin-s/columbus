@@ -159,7 +159,9 @@ function buildEditor() {
   document.body.append(dlg);
   read.addEventListener("click", () => readLayers());
   kind.addEventListener("change", () => { found = null; showAuth(); });
-  form.wl_url.addEventListener("change", () => { found = null; });
+  // Layers read for one address or sign-in are not the next one's.
+  form.wl_url.addEventListener("input", () => { found = null; });
+  form.wl_auth.addEventListener("change", () => { found = null; });
   layer.addEventListener("change", () => {
     const o = layer.selectedOptions[0];
     if (o && o.dataset.title && !form.wl_title.dataset.typed) form.wl_title.value = o.dataset.title;

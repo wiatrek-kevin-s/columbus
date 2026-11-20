@@ -698,6 +698,26 @@ export function App() {
     setViewDone({ seq: settling.seq, notDone: [...new Set([...settling.notDone, ...missed])] });
   }, [settling, layers]);
 
+  // A result saved again under the same name keeps its handle: drop its
+  // drawn copy when its file changed, so the map reads it again.
+  const stamps = useRef(new Map<string, string>());
+  useEffect(() => {
+    const changed: string[] = [];
+    for (const o of outputs) {
+      const stamp = `${o.modified ?? ""}|${o.bytes}`;
+      const was = stamps.current.get(o.handle);
+      if (was !== undefined && was !== stamp) changed.push(o.handle);
+      stamps.current.set(o.handle, stamp);
+    }
+    if (!changed.length) return;
+    setLayers((l) => {
+      if (!changed.some((h) => h in l)) return l;
+      const next = { ...l };
+      for (const h of changed) delete next[h];
+      return next;
+    });
+  }, [outputs]);
+
   // Load what is on the map.
   useEffect(() => {
     for (const h of onMap) {
