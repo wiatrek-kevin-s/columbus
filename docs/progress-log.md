@@ -6,7 +6,7 @@ Kit version 1.1 · as of 2026-11-08, session S1 not started
 
 - **Session:** part 3 (`docs/build-brief-3.md`) and its addendum are finished and on `main`. **Columbus 0.15.0 is published** as a test release (2026-11-12, on the owner's word). Afterwards the app's icon was made from the app's own mark (R-108, pull request 30) · **Task:** none in work
 - **Next step:** nothing planned. A later session starts from the newest handoff note; its open ends block nothing
-- **Waiting on the owner:** nothing. Theirs when they wish: the word to publish a version with the new icon (0.15.0 has the old one); deleting the old branches (the lists are in the hand-over), the optional checks in `docs/manual-checks.md`, and the word "re-check" for the independent re-check of the last fixes (T-40)
+- **Waiting on the owner:** nothing. Theirs when they wish: the word to publish a version with the new icon and the review's fixes (0.15.0 has neither; see the note of 2026-11-20); deleting the old branches (the lists are in the hand-over), the optional checks in `docs/manual-checks.md`, and the word "re-check" for the independent re-check of the last fixes (T-40)
 - **Homework received:** setup round answered ("skip" on Dependabot alerts); H-1 to H-4 and H-6 are optional (H-5 is H-2 again)
 
 ## Setup round (T-1), 2026-11-08
@@ -169,6 +169,29 @@ Status: raised, approved, declined, or Sent to Blueprint (touches a one-way door
 ## Handoff notes
 
 Newest first, written as you go. Mark each claim verified (checked this session) or unverified.
+
+### App-wide review and its fixes (2026-11-20)
+
+- **Asked:** the owner asked to fix the "build the example first" CI failures, then review the whole app with fresh agents, button by button (Oracle and SQL Server connections, AI clients, spatial tools, GeoLibre, Python environments and installing libraries), and fix what they found.
+- **Merged:** pull request 35, as `main` 32ae91a; all 14 CI jobs passed on 54eae04 (run 44691695535) (verified).
+- **Rust 1.100 (CI's stable since 2026-11-12):** it moves test programs to `target/<profile>/build/<crate>/<hash>/out/`. The tests' helper `support::profile_dir()` and the launcher search (`columbus_confine::find_launcher`, only in Cargo's exact test layouts) handle it. Two of its new lints are fixed. The full suite passed locally on 1.100 (655 tests) (verified).
+- **Fixed, from seven reviews and one re-check:**
+  - **Connections:** Oracle by host and service name; SQL Server help.
+  - **AI clients:** the Claude Code, Codex and Gemini commands; a refusal; `/v1` addresses; history trimming.
+  - **Windows schedules:** matched by their XML.
+  - **Workflow runs:** raster exports; run pruning; Run now finds its own run (stderr goes to a file); runs list "100+"; Remove asks first.
+  - **Map:** a result saved again is redrawn, and a late answer is dropped.
+  - **GIS:** results changed without a word.
+  - **Python environments:** start from the engine's GIS packages at its versions; clearer failures; scikit-learn models run in the Linux sandbox (a script may read its own `/proc/<pid>/maps`); a note that downloads cannot work with no network.
+  - **Safety:** the CRS checks no longer leak the extent of filtered-out rows; IPv6 addresses that wrap a private IPv4 one are refused; the remaining reserved Windows names are added.
+  - **Skills:** every GIS skill and its references are served by `columbus_guide`, and the app's chat is told the list.
+  - **Sharing and sync:** a workflow using an organization-installed tool can be shared; a rename by capital letters alone says how to undo it.
+- **Safety review held:** read-only, edit-a-copy, row filters, hidden fields, denied tables, folder boundaries and approvals all held against probes on the real server (verified by the reviewer; not tried on live Oracle, SQL Server or PostgreSQL, or on Windows and macOS sandboxes).
+- **Logged, not fixed:**
+  - **Python environments:** a created one cannot get network from the app (CLI only). A Python update asks to re-confirm every created one. A Python under Program Files may fail to sandbox on Windows. The AI does not see why creating an environment failed.
+  - **Sharing and sync:** allow lists ignore letter case even on PostgreSQL (a design choice). If the synced `files/` folder is deleted, Sync lists every file as deleted with no extra warning. Accented names are not normalized on macOS. GeoLibre tools that take several inputs are unverified (H-3).
+  - **Earlier notes:** Windows ACL leftovers when an environment is removed; the hand-written module-name list; project-file delete not going to the trash.
+- **Not published:** 0.15.0 is still the latest release; a 0.15.1 with these fixes and the new icon needs the owner's word.
 
 ### Release of 0.15.0 (2026-11-12)
 
