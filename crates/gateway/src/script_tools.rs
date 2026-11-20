@@ -151,7 +151,7 @@ pub struct RunPythonArgs {
     #[serde(default)]
     pub approval_id: Option<String>,
     /// A Python environment the person registered (whoami lists them, with
-    /// their Python version, packages and arcpy licence), instead of the
+    /// their Python version, description and arcpy licence), instead of the
     /// engine's Python. A governed one runs confined, with the same
     /// extracts; its own interpreter folder is the only extra folder it can
     /// read. A trusted one (experimental; policy environments.allow_trusted)
@@ -411,7 +411,7 @@ fn take_output(src: std::fs::File, to: &Path, cap: u64) -> Result<(String, u64),
         dst.write_all(&buf[..k]).map_err(|e| e.to_string())?;
     }
     dst.sync_all().map_err(|e| e.to_string())?;
-    Ok((format!("{:x}", h.finalize()), n))
+    Ok((hex::encode(h.finalize()), n))
 }
 
 /// One file taken from `out/`.
@@ -1297,8 +1297,19 @@ impl Gateway {
         if !helpers.is_empty() {
             bound["helpers"] = json!(helpers);
         }
+        // What the card shows is all the code that runs: the script, then
+        // each helper beside it in full (a helper runs when the script
+        // imports it, so it is approved with it).
+        let shown_code = from_project.iter().flat_map(|s| &s.helpers).fold(
+            code.to_string(),
+            |mut all, h| {
+                all.push_str(&format!("\n\n# ---------- helper file {} (runs when the script imports it) ----------\n", h.name));
+                all.push_str(&h.text);
+                all
+            },
+        );
         let detail = json!({
-            "code": code,
+            "code": shown_code,
             "code_sha256": code_sha256,
             "script": from_project.as_ref().map(|s| &s.path),
             "helpers": helpers,
@@ -1323,7 +1334,7 @@ impl Gateway {
             // approval here (`ScriptEnv::session_allow_possible`, or the
             // engine); a trusted run is always asked on its own.
             every_time: !session_ok,
-            code: Some(code),
+            code: Some(&shown_code),
             standing: session_ok.then_some(&session_scope[..]),
             always_covers: session_ok.then_some(session_words),
             script_session: session_ok,
@@ -1510,6 +1521,18 @@ impl Gateway {
                     None => "The script was ended by a signal (for example, out of memory)".into(),
                 },
                 Some("Read stderr, fix the code and run it again"),
+            ));
+        }
+        // A script with no network that stopped or failed may have been
+        // waiting on one (a package that downloads data, say): said once,
+        // so the next try does not wait again.
+        let offline = !trusted && !network;
+        if offline && (ran.timed_out || ran.exit_code != Some(0)) {
+            checks.push(check(
+                "script.no_network",
+                Severity::Info,
+                "This script runs with no network: anything that downloads (OpenStreetMap through osmnx, basemap tiles through contextily, geocoding through geopy, a web API) cannot work here, and may wait until it times out".into(),
+                Some("Use data already in the workspace or the person's connections (a web service can be added as a connection), or ask the person for an environment their organization allows network for"),
             ));
         }
         if let Some(s) = from_project.as_ref().filter(|s| !s.skipped.is_empty()) {

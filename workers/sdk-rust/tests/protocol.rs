@@ -18,9 +18,19 @@ fn example_binary() -> PathBuf {
     static BUILT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     BUILT
         .get_or_init(|| {
-            // target/<profile>/deps/protocol-<hash>[.exe] → target/<profile>/examples/
+            // The profile folder (target/<profile>), found from this test
+            // program wherever cargo placed it: target/<profile>/deps/…
+            // before Rust 1.100, target/<profile>/build/<crate>/<hash>/out/…
+            // from it. It holds build/ and examples/ (or deps/).
             let exe = std::env::current_exe().unwrap();
-            let profile_dir = exe.parent().and_then(Path::parent).unwrap();
+            let profile_dir = exe
+                .ancestors()
+                .skip(1)
+                .find(|a| {
+                    a.join("build").is_dir()
+                        && (a.join("examples").is_dir() || a.join("deps").is_dir())
+                })
+                .unwrap_or_else(|| exe.parent().and_then(Path::parent).unwrap());
             let bin = profile_dir
                 .join("examples")
                 .join(format!("geometry_stats{}", std::env::consts::EXE_SUFFIX));

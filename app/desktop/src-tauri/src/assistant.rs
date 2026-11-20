@@ -1019,6 +1019,13 @@ pub(crate) fn other_apps(server: &str, env: &[(String, String)]) -> Vec<OtherApp
     let sep = if cfg!(windows) { "\\" } else { "/" };
     let in_home = |parts: &[&str]| format!("{home}{}", parts.join(sep));
     let word = quoted(server);
+    // The commands name the engine too, as the entries do: `flag` is how
+    // each command line takes one variable (KEY=value, one word).
+    let env_flags = |flag: &str| -> String {
+        env.iter()
+            .map(|(k, v)| format!(" {flag} {}", quoted(&format!("{k}={v}"))))
+            .collect()
+    };
     let env_note = (!env.is_empty()).then(|| {
         "The entry also names the GIS engine's Python (COLUMBUS_PYTHON), because it is not in the folder the server looks in by itself.".to_string()
     });
@@ -1075,7 +1082,9 @@ pub(crate) fn other_apps(server: &str, env: &[(String, String)]) -> Vec<OtherApp
             // the same one. (The CLI takes "local" or "stdio" for the type,
             // "local" where none is written; VS Code's page writes "stdio".)
             entry: entry("mcpServers", Some("stdio"), vec![("tools", all_tools())]),
-            command: Some(format!("copilot mcp add columbus -- {word}")),
+            // Not shown when the entry needs the engine named: how the CLI's
+            // command takes a variable is not confirmed, and the entry is.
+            command: env.is_empty().then(|| format!("copilot mcp add columbus -- {word}")),
             notes: with_env(vec![
                 "Copilot in VS Code reads the same file: one entry serves both. The CLI also takes \"local\" in place of \"stdio\".".into(),
             ]),
@@ -1109,7 +1118,7 @@ pub(crate) fn other_apps(server: &str, env: &[(String, String)]) -> Vec<OtherApp
             name: "Codex and ChatGPT desktop",
             file: in_home(&[".codex", "config.toml"]),
             entry: format!("[mcp_servers.columbus]\ncommand = {}\nargs = []{toml_env}", toml_string(server)),
-            command: Some(format!("codex mcp add columbus -- {word}")),
+            command: Some(format!("codex mcp add columbus{} -- {word}", env_flags("--env"))),
             notes: with_env(vec![
                 "Codex reads this file. OpenAI's documentation says the ChatGPT desktop app shares it (Settings, MCP servers); Columbus has not been tried with either.".into(),
             ]),
@@ -1119,15 +1128,18 @@ pub(crate) fn other_apps(server: &str, env: &[(String, String)]) -> Vec<OtherApp
             name: "Gemini CLI",
             file: format!("{} (yours), or .gemini{sep}settings.json in one project", in_home(&[".gemini", "settings.json"])),
             entry: entry("mcpServers", None, vec![]),
-            command: Some(format!("gemini mcp add -s user columbus {word}")),
+            command: Some(format!("gemini mcp add -s user{} columbus {word}", env_flags("-e"))),
             notes: with_env(vec![]),
         },
         OtherApp {
             id: "claude-code",
             name: "Claude Code",
-            file: ".mcp.json at the top of a project (or use the command, which keeps it for you)".into(),
+            file: ".mcp.json at the top of a project, or use the command, which adds Columbus for all your projects".into(),
             entry: entry("mcpServers", None, vec![]),
-            command: Some(format!("claude mcp add --transport stdio columbus -- {word}")),
+            command: Some(format!(
+                "claude mcp add --transport stdio --scope user columbus{} -- {word}",
+                env_flags("-e")
+            )),
             notes: with_env(vec![]),
         },
         OtherApp {
@@ -1528,7 +1540,10 @@ mod tests {
         // A command line takes the path as one word.
         assert_eq!(
             by("claude-code").command.as_deref(),
-            Some(format!("claude mcp add --transport stdio columbus -- \"{server}\"").as_str())
+            Some(
+                format!("claude mcp add --transport stdio --scope user columbus -- \"{server}\"")
+                    .as_str()
+            )
         );
         assert_eq!(
             by("codex").command.as_deref(),
@@ -1550,6 +1565,24 @@ mod tests {
         let apps = other_apps(
             server,
             &[("COLUMBUS_PYTHON".into(), "/opt/gis/bin/python3".into())],
+        );
+        let cmd = |id: &str| apps.iter().find(|a| a.id == id).unwrap().command.clone();
+        assert_eq!(
+            cmd("claude-code").as_deref(),
+            Some(format!("claude mcp add --transport stdio --scope user columbus -e COLUMBUS_PYTHON=/opt/gis/bin/python3 -- \"{server}\"").as_str())
+        );
+        assert_eq!(
+            cmd("codex").as_deref(),
+            Some(format!("codex mcp add columbus --env COLUMBUS_PYTHON=/opt/gis/bin/python3 -- \"{server}\"").as_str())
+        );
+        assert_eq!(
+            cmd("gemini-cli").as_deref(),
+            Some(format!("gemini mcp add -s user -e COLUMBUS_PYTHON=/opt/gis/bin/python3 columbus \"{server}\"").as_str())
+        );
+        assert_eq!(
+            cmd("copilot-cli"),
+            None,
+            "the entry, not a command, when the engine is named"
         );
         for a in apps.iter().filter(|a| a.id != "codex") {
             let v: serde_json::Value = serde_json::from_str(&a.entry).unwrap();

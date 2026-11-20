@@ -66,7 +66,7 @@ Your AI app never touches your data. It asks Columbus for each step, and Columbu
 **You need:** Windows 10 or 11, or a Mac with Apple Silicon and macOS 15 or later; Python 3.12 (the setup script installs the rest); an AI of your choice (a key for an AI service, a model on your own computer, or an AI app such as Claude desktop or GitHub Copilot); ArcGIS Pro only if you want arcpy.
 
 1. **Download** the [latest release](https://github.com/wiatrek-kevin-s/columbus/releases/latest): the Columbus app, the Claude desktop extension and the server folder.
-2. **Set up Columbus's Python** once, from the server folder: `sh engine/setup-engine.sh` on a Mac, `engine\setup-engine.ps1` on Windows. It installs the GIS tools Columbus uses.
+2. **Set up Columbus's Python** once, from the server folder: `sh engine/setup-engine.sh` on a Mac, `powershell -ExecutionPolicy Bypass -File engine\setup-engine.ps1` on Windows. It installs the GIS tools Columbus uses.
 3. **Connect an AI.** In the app, choose your AI service under **Settings › Assistant** and save its key (a model on your own computer, through Ollama, needs none). Or use an AI app you already have: install the extension in Claude desktop, or copy the entry for GitHub Copilot, Cursor and others from that same page.
 4. **Add your data and ask.** In the app, **Data › Add data** (a GeoPackage or a file geodatabase is the quickest start). Then ask, for example: *Check the parcels layer for invalid geometries and show me where they are.*
 5. **Choose how the AI works.** On the first-run screen or in **Settings**: **Work freely on copies** (recommended) or **Ask me before each script**. On your own computer you create Columbus's settings file once first; the guides show how.

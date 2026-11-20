@@ -287,7 +287,7 @@ pub fn copy_hashed(from: &Path, to: &Path) -> std::io::Result<String> {
         dst.write_all(&buf[..n])?;
     }
     dst.sync_all()?;
-    Ok(format!("{:x}", h.finalize()))
+    Ok(hex::encode(h.finalize()))
 }
 
 /// Copy each file the approval covered into a confined process's folder

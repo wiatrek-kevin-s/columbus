@@ -16,7 +16,7 @@ Don't use production data you can't afford to have read. H-1 and H-2 only read y
 ## Before you start
 
 1. Install Columbus and set up the GIS engine, as the [Windows](install.md) or [Mac](install-macos.md) guide says (steps 1 to 4).
-2. Open a terminal in your Columbus folder (Windows: in File Explorer, open `C:\Columbus`, type `powershell` in the address bar and press Enter; Mac: Terminal, then `cd ~/Columbus`).
+2. Open a terminal in your Columbus folder (Windows: in File Explorer, open your Columbus folder (`%USERPROFILE%\Columbus`), type `powershell` in the address bar and press Enter; Mac: Terminal, then `cd ~/Columbus`).
 3. Type `.\columbus-mcp.exe --version` (Windows) or `./columbus-mcp --version` (Mac). It should print `columbus-mcp 0.15.0` (or `0.14.0`, for H-1 and H-2 on the earlier release). The steps below write `columbus-mcp`; type it the same way.
 
 ## H-1: ArcGIS sign-in

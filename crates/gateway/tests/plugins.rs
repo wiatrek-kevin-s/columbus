@@ -1,6 +1,8 @@
 //! Engine plugins end to end (design change 1, section 7): the LRS checker
 //! from the change document, run by the real gateway on governed data.
 
+mod support;
+
 use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
 
@@ -111,13 +113,7 @@ impl Env {
 
     /// Install the Rust SDK's example plugin, building it if needed.
     fn install_rust_example(&self) {
-        let target = std::env::current_exe()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .to_path_buf();
+        let target = support::profile_dir();
         let built = target.join("examples").join(rust_entry());
         if !built.exists() {
             let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());

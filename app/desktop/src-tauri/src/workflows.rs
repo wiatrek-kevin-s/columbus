@@ -201,11 +201,25 @@ pub async fn workflow_run_now(app: AppHandle, id: String) -> Result<Value, Strin
         }
         let root = wf::workflows_dir();
         let (w, _) = wf::ready(&root, &tools_root(), &id)?;
+        // The runs there before this one: its run is the one that was not.
+        let before = run_ids(&root, &id);
+        // What it says on stderr goes to a file, not a pipe: a process it
+        // started that outlives it (the GIS worker, say) can never keep
+        // the button waiting. The end of it explains a run with no record.
+        let said_at = std::env::temp_dir().join(format!(
+            "columbus-run-now-{}-{}.txt",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let said_file = std::fs::File::create(&said_at).map_err(|e| e.to_string())?;
         let mut cmd = Command::new(&server);
         cmd.args(["workflow", "run", &id])
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
+            .stderr(std::process::Stdio::from(said_file));
         if let Some(e) = &engine {
             cmd.env("COLUMBUS_PYTHON", e);
         }
@@ -214,32 +228,93 @@ pub async fn workflow_run_now(app: AppHandle, id: String) -> Result<Value, Strin
             use std::os::windows::process::CommandExt;
             cmd.creation_flags(0x0800_0000);
         }
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| format!("{}: {e}", server.display()))?;
+        let mut child = cmd.spawn().map_err(|e| {
+            let _ = std::fs::remove_file(&said_at);
+            format!("{}: {e}", server.display())
+        })?;
         let limit = Duration::from_secs(u64::from(w.run_minutes()) * 60 + 120);
         let start = std::time::Instant::now();
-        loop {
+        let ended = loop {
             match child.try_wait() {
-                Ok(Some(_)) => break,
+                Ok(Some(_)) => break true,
                 Ok(None) if start.elapsed() < limit => {
                     std::thread::sleep(Duration::from_millis(200))
                 }
                 _ => {
                     let _ = child.kill();
                     let _ = child.wait();
-                    return Err("the run did not finish in its time limit".into());
+                    break false;
                 }
             }
+        };
+        let said = read_tail(&said_at, 64 * 1024);
+        let _ = std::fs::remove_file(&said_at);
+        if !ended {
+            return Err("the run did not finish in its time limit".into());
         }
-        wf::list_runs(&root, &id, 1)
-            .into_iter()
-            .next()
-            .ok_or_else(|| "the run left no record".to_string())
+        // Its run: new since it started, with its record written (a folder
+        // with no record, now that the run has ended, is a run that failed
+        // before it could write one).
+        let runs = runs_dir(&root, &id);
+        let mine = run_ids(&root, &id)
+            .difference(&before)
+            .filter(|r| runs.join(r).join(wf::RUN_FILE).is_file())
+            .max()
+            .cloned();
+        mine.and_then(|r| {
+            wf::list_runs(&root, &id, RUNS_READ)
+                .into_iter()
+                .find(|v| v.get("run").and_then(Value::as_str) == Some(r.as_str()))
+        })
+        .ok_or_else(|| no_record(&said))
     })
     .await
     .map_err(|e| e.to_string())?
 }
+
+/// A workflow's run folders.
+fn runs_dir(root: &std::path::Path, id: &str) -> std::path::PathBuf {
+    wf::runs_dir(root, id)
+}
+
+/// The ids of a workflow's runs (its run folders' names).
+fn run_ids(root: &std::path::Path, id: &str) -> std::collections::BTreeSet<String> {
+    std::fs::read_dir(runs_dir(root, id))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| e.file_name().to_str().map(String::from))
+        .filter(|n| wf::run_id_ok(n))
+        .collect()
+}
+
+/// The last `max` bytes of a file, as text.
+fn read_tail(p: &std::path::Path, max: u64) -> String {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut f) = std::fs::File::open(p) else {
+        return String::new();
+    };
+    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+    let _ = f.seek(SeekFrom::Start(len.saturating_sub(max)));
+    let mut buf = Vec::new();
+    let _ = f.take(max).read_to_end(&mut buf);
+    String::from_utf8_lossy(&buf).trim().to_string()
+}
+
+/// The error for a run that left no record, with the end of what it said.
+fn no_record(said: &str) -> String {
+    let tail: Vec<&str> = said.lines().rev().take(6).collect();
+    let tail: Vec<&str> = tail.into_iter().rev().collect();
+    if tail.is_empty() {
+        "the run left no record".into()
+    } else {
+        format!("the run left no record: {}", tail.join(" / "))
+    }
+}
+
+/// How many runs the Runs list reads: one more than it shows, so it can
+/// say there are more.
+const RUNS_READ: usize = 101;
 
 /// A workflow's latest runs, newest first.
 #[tauri::command]
@@ -248,7 +323,7 @@ pub async fn workflow_runs(id: String) -> Result<Vec<Value>, String> {
         if !wf::id_ok(&id) {
             return Err(format!("{id:?} is not a workflow"));
         }
-        Ok(wf::list_runs(&wf::workflows_dir(), &id, 50))
+        Ok(wf::list_runs(&wf::workflows_dir(), &id, RUNS_READ))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -557,15 +632,82 @@ fn schedule_state(v: &wf::WorkflowView, server: Option<&PathBuf>) -> &'static st
         }
     } else if cfg!(windows) {
         let mut c = Command::new("schtasks.exe");
-        c.args(["/Query", "/TN", &task_name(&v.id)]);
+        c.args(["/Query", "/TN", &task_name(&v.id), "/XML"]);
         hide(&mut c);
         match c.output() {
-            Ok(o) if o.status.success() => "on",
+            Ok(o) if o.status.success() => match server {
+                // As on a Mac: the same program, time and days as the
+                // workflow would get now, or Repair is offered.
+                Some(s) if task_matches(&decode_task_xml(&o.stdout), v, s) => "on",
+                _ => "differs",
+            },
             _ => "off",
         }
     } else {
         "off"
     }
+}
+
+/// What `schtasks /Query /XML` printed: UTF-16 (with its mark) or plain text.
+fn decode_task_xml(bytes: &[u8]) -> String {
+    if bytes.starts_with(&[0xFF, 0xFE]) {
+        let units: Vec<u16> = bytes[2..]
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|p| u16::from_le_bytes(*p))
+            .collect();
+        String::from_utf16_lossy(&units)
+    } else {
+        String::from_utf8_lossy(bytes).into_owned()
+    }
+}
+
+/// Whether a scheduled task runs this workflow as it would be scheduled now:
+/// the program beside this server, at the workflow's time, on its days.
+/// Compared by what matters, as Task Scheduler rewrites the rest of the XML.
+fn task_matches(xml: &str, v: &wf::WorkflowView, server: &Path) -> bool {
+    let between = |open: &str, close: &str| {
+        xml.split(open)
+            .nth(1)
+            .and_then(|r| r.split(close).next())
+            .map(str::to_string)
+    };
+    let Some(command) = between("<Command>", "</Command>") else {
+        return false;
+    };
+    // The command as text (Task Scheduler writes ' and " as it likes), in
+    // the server's folder: the folder, then a separator.
+    let command = command
+        .replace("&apos;", "'")
+        .replace("&quot;", "\"")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&");
+    let dir = server.parent().map(|d| d.display().to_string());
+    let program_ok = dir.is_some_and(|d| {
+        let c = command.trim().trim_matches('"').to_lowercase();
+        let d = d.to_lowercase();
+        c.strip_prefix(d.trim_end_matches(['\\', '/']))
+            .is_some_and(|rest| rest.starts_with(['\\', '/']))
+    });
+    let at = v.at.clone().unwrap_or_else(|| "00:00".into());
+    let time_ok = between("<StartBoundary>", "</StartBoundary>")
+        .is_some_and(|b| b.contains(&format!("T{at}:00")));
+    let days = between("<DaysOfWeek>", "</DaysOfWeek>").unwrap_or_default();
+    let names = [
+        ("sun", "Sunday"),
+        ("mon", "Monday"),
+        ("tue", "Tuesday"),
+        ("wed", "Wednesday"),
+        ("thu", "Thursday"),
+        ("fri", "Friday"),
+        ("sat", "Saturday"),
+    ];
+    let days_ok = names
+        .iter()
+        .all(|(d, n)| v.days.iter().any(|x| x == d) == days.contains(&format!("<{n}")));
+    program_ok && time_ok && days_ok
 }
 
 #[allow(unused_variables)]
@@ -592,6 +734,19 @@ fn uid() -> u32 {
 mod tests {
     use super::*;
 
+    #[test]
+    fn the_end_of_what_a_run_said_is_read() {
+        let d = std::env::temp_dir().join(format!("columbus-said-test-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let p = d.join("said.txt");
+        std::fs::write(&p, format!("{}\nlast line\n", "x".repeat(200))).unwrap();
+        assert_eq!(read_tail(&p, 10), "last line");
+        assert_eq!(read_tail(&d.join("none"), 9), "");
+        assert_eq!(no_record(""), "the run left no record");
+        assert_eq!(no_record("a\nb"), "the run left no record: a / b");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     fn view() -> wf::WorkflowView {
         let text = "id: crash-check\nname: Crash check\nschedule: { days: [mon, wed], at: \"06:30\" }\nscope: { connections: [c] }\nsteps:\n  - id: a\n    tool: query_features\n    args: { connection: c, dataset: d }\n";
         let w = wf::check(text).unwrap();
@@ -614,6 +769,56 @@ mod tests {
             replaces: None,
             last_run: None,
         }
+    }
+
+    /// A Windows task is "on" only when it runs this server's program at the
+    /// workflow's time on its days; one left from a moved or changed setup
+    /// is offered Repair, as on a Mac.
+    #[test]
+    fn a_windows_task_is_compared_with_what_would_be_scheduled_now() {
+        let v = view();
+        let server = std::env::temp_dir().join("cols").join("columbus-mcp.exe");
+        let xml = task_xml(&v, &server, None, 10);
+        assert!(task_matches(&xml, &v, &server));
+        // Task Scheduler's own copy comes back as UTF-16 with its mark.
+        let mut wide = vec![0xFF, 0xFE];
+        for u in xml.encode_utf16() {
+            wide.extend(u.to_le_bytes());
+        }
+        assert!(task_matches(&decode_task_xml(&wide), &v, &server));
+        // A folder with an apostrophe, as Task Scheduler writes it back.
+        let apos = std::env::temp_dir()
+            .join("O'Brien")
+            .join("columbus-mcp.exe");
+        let xml_apos = task_xml(&v, &apos, None, 10).replace("&apos;", "'");
+        assert!(task_matches(&xml_apos, &v, &apos));
+        assert!(task_matches(&task_xml(&v, &apos, None, 10), &v, &apos));
+        // A folder whose name only begins like the server's is another one.
+        let longer = std::env::temp_dir().join("colsX").join("columbus-mcp.exe");
+        assert!(!task_matches(&task_xml(&v, &longer, None, 10), &v, &server));
+        let moved = std::env::temp_dir()
+            .join("elsewhere")
+            .join("columbus-mcp.exe");
+        assert!(
+            !task_matches(&xml, &v, &moved),
+            "an old copy of the program"
+        );
+        assert!(
+            !task_matches(&xml.replace("T06:30:00", "T07:00:00"), &v, &server),
+            "another time"
+        );
+        assert!(
+            !task_matches(&xml.replace("<Wednesday />", ""), &v, &server),
+            "a day missing"
+        );
+        assert!(
+            !task_matches(
+                &xml.replace("<Monday />", "<Monday /><Friday />"),
+                &v,
+                &server
+            ),
+            "a day too many"
+        );
     }
 
     /// The real scheduler takes the entry, and it can be removed again

@@ -601,6 +601,7 @@ impl Chat {
             system.push_str("\n\nHow to work with Columbus (the working-with-columbus skill):\n\n");
             system.push_str(&skill);
         }
+        system.push_str(SKILLS_NOTE);
         let pictures = net.service.pictures;
         let wire: Box<dyn Wire> = match net.service.format {
             Format::Messages => Box::new(messages::Messages::new(pictures)),
@@ -746,7 +747,7 @@ impl Chat {
                     }),
                     Stop::Filtered => self.ui.event(Event::Status {
                         text: format!(
-                            "{}'s content filter cut the reply short.",
+                            "{}'s safety filter declined the request or cut the reply short. Rephrase it, or try another model.",
                             self.net.service.name
                         ),
                     }),
@@ -1209,6 +1210,10 @@ fn result_summary(v: Option<&Value>) -> String {
         parts.join(", ")
     }
 }
+
+/// The GIS skills the server carries, so the model knows to read one
+/// before work in its area (they come from `columbus_guide`).
+const SKILLS_NOTE: &str = "\n\nGIS skills: before work in one of these areas, read its skill with columbus_guide (name = the skill; its references are <skill>/references/<file>; no name lists them all): crs-and-datums (projections, distances, areas, datum shifts), spatial-sql (PostGIS, Oracle, SQL Server queries), spatial-joins-and-keys (attribute and spatial joins), spatial-data-qa (checking data before use or delivery), linear-referencing (routes, measures, events), enterprise-geodatabases (SDE, versions), arcpy-scripting (ArcGIS Pro scripts), raster-and-terrain (rasters, DEMs), lidar-with-pdal (point clouds), imagery-and-stac (satellite imagery), open-data-sourcing (finding and citing open data), maps-and-deliverables (maps and data to a spec), sop-conversion (turning SOP documents into steps), writing-clearly-and-concisely (reports and messages).";
 
 /// The `working-with-columbus` skill installed beside the server, without
 /// its front matter.

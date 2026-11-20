@@ -1,7 +1,7 @@
 // What a new chat shows before anything is asked: the first steps when
 // nothing is set up, and what changed that the person should know. (Home's
 // parts, moved here: the app opens on a question now.)
-import { h, put, icon, invoke, store, button, savePrefs, showError } from "../core.js";
+import { h, put, icon, invoke, store, button, savePrefs, showError, toast } from "../core.js";
 import { openEditor } from "./connections.js";
 import { workMode, COPILOT_LINE } from "./settings.js";
 
@@ -44,7 +44,7 @@ export function notices(st) {
 export function firstSteps(s, again) {
   const { done, skipped, chat, engine } = s;
   const box = h("section", { class: "welcome", id: "first-steps", "aria-labelledby": "h-setup" });
-  const skip = (k) => button("Skip", "ghost sm", async () => { await savePrefs({ skipped: [...new Set([...(store.prefs.skipped || []), k])] }); again(); });
+  const skip = (k) => button("Skip", "ghost sm", async () => { try { await savePrefs({ skipped: [...new Set([...(store.prefs.skipped || []), k])] }); again(); } catch (e) { toast(`Not saved: ${e}`); } });
   const mark = (k) => h("span", { class: done[k] ? "check done" : skipped.has(k) ? "check skipped" : "check", "aria-hidden": "true" }, done[k] ? icon("check") : null);
 
   // Your data first: a read-only connection, tested before it is saved.
@@ -103,7 +103,10 @@ export function firstSteps(s, again) {
   const eng = h("div", { class: "text" });
   if (engine && engine.server_found) {
     eng.append(h("b", {}, engine.engine_found ? "Found Columbus's server and its Python engine." : "Found Columbus's server, but not its Python engine."),
-      h("span", { class: "where wrap-any" }, engine.engine_found ? `${engine.server} · ${engine.engine}` : "Run engine\\setup-engine.ps1 (Windows) or follow the install guide, then check again."));
+      h("span", { class: "where wrap-any" }, engine.engine_found ? `${engine.server} · ${engine.engine}`
+        : (chat && chat.engine_suggestions && chat.engine_suggestions.length)
+          ? h("span", {}, `There is one in ${chat.engine_suggestions[0]}: choose it in `, h("a", { href: "#/settings/ai" }, "Settings › Assistant"), ", then check again.")
+          : "Run engine\\setup-engine.ps1 (Windows) or follow the install guide, then check again."));
     if (!engine.engine_found) eng.append(h("div", { class: "row" }, button("Check again", "sm", () => again()), skipped.has("engine") ? null : skip("engine")));
   } else {
     eng.append(h("b", {}, "Columbus's server was not found"),
@@ -116,6 +119,6 @@ export function firstSteps(s, again) {
   const mode = s.st ? h("div", { class: "stack", id: "fr-mode" }, h("h3", {}, "How should your assistant work?"), workMode(s.st, () => again(), "fr-work", false)) : null;
   put(box, checks, mode,
     h("div", { class: "row welcome-foot" }, h("span", { class: "small muted grow" }, "Your assistant sees only what your connections allow; anything that changes data or leaves this computer asks you first."),
-      button("Skip setup", "ghost sm", async () => { await savePrefs({ setup_done: true }); again(); }, { id: "fr-skip" })));
+      button("Skip setup", "ghost sm", async () => { try { await savePrefs({ setup_done: true }); again(); } catch (e) { toast(`Not saved: ${e}`); } }, { id: "fr-skip" })));
   return box;
 }

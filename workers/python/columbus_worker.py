@@ -882,9 +882,12 @@ def _ora_connect(conn: dict[str, Any], timeout_s: float):
     params: dict[str, Any] = {"user": user, "password": password, "tcp_connect_timeout": 15.0}
     sslmode = str(conn.get("sslmode") or "").lower()
     if conn.get("host"):
-        if not conn.get("database"):
+        # The service name is `database`; one saved by 0.15.0's form sits in
+        # `dsn` beside the host, and means the same.
+        service = conn.get("database") or conn.get("dsn")
+        if not service:
             raise WorkerError(INVALID_PARAMS, "an Oracle connection needs database: its service name (for example FREEPDB1)")
-        params.update(host=conn["host"], port=int(conn.get("port") or 1521), service_name=conn["database"])
+        params.update(host=conn["host"], port=int(conn.get("port") or 1521), service_name=service)
         if sslmode in ("require", "verify-ca", "verify-full"):
             params.update(protocol="tcps", ssl_server_dn_match=sslmode == "verify-full")
     elif conn.get("dsn"):

@@ -3,6 +3,8 @@
 //! `examples/fake_oauth_server.rs`, then the gateway connecting with the
 //! stored tokens.
 
+mod support;
+
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -14,12 +16,7 @@ use rmcp::{RoleClient, ServiceExt};
 use serde_json::{json, Value};
 
 fn example(name: &str) -> PathBuf {
-    let exe = std::env::current_exe().unwrap();
-    let p = exe
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
+    let p = support::profile_dir()
         .join("examples")
         .join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
     assert!(

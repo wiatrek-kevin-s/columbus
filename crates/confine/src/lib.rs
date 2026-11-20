@@ -271,14 +271,25 @@ pub fn find_launcher() -> Option<PathBuf> {
         "columbus-confine"
     };
     let dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
-    // Cargo puts test binaries one folder down, in deps/.
-    let candidates = [
-        Some(dir.join(name)),
-        (dir.file_name()? == "deps")
-            .then(|| dir.parent().map(|d| d.join(name)))
-            .flatten(),
-    ];
-    candidates.into_iter().flatten().find(|p| p.is_file())
+    let next_to = dir.join(name);
+    if next_to.is_file() {
+        return Some(next_to);
+    }
+    // Cargo puts test programs below the profile folder: in deps/, or
+    // (Rust 1.100 and later) in build/<crate>/<hash>/out/. The launcher is
+    // in the profile folder. Only those exact layouts: an installed
+    // program never takes a launcher from a folder above its own.
+    let profile = if dir.file_name()? == "deps" {
+        dir.parent()
+    } else if dir.file_name()? == "out" {
+        dir.ancestors()
+            .nth(3)
+            .filter(|b| b.file_name().is_some_and(|n| n == "build"))
+            .and_then(std::path::Path::parent)
+    } else {
+        None
+    };
+    profile.map(|d| d.join(name)).filter(|p| p.is_file())
 }
 
 /// Whether a process can be started confined at `level` here: the

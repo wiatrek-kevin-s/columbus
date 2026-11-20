@@ -809,7 +809,7 @@ pub fn fingerprint(python: &Path, site_dirs: &[String], prefixes: &[String]) -> 
             Err(e) => feed(format!("error:{:?}", e.kind()).as_bytes()),
         }
     }
-    format!("sha256:{:x}", h.finalize())
+    format!("sha256:{}", hex::encode(h.finalize()))
 }
 
 // ---------- registering, confirming, removing (at the keyboard only) ----------

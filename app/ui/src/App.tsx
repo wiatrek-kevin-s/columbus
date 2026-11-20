@@ -698,16 +698,41 @@ export function App() {
     setViewDone({ seq: settling.seq, notDone: [...new Set([...settling.notDone, ...missed])] });
   }, [settling, layers]);
 
-  // Load what is on the map.
+  // A result saved again under the same name keeps its handle: drop its
+  // drawn copy when its file changed, so the map reads it again.
+  const stamps = useRef(new Map<string, string>());
+  useEffect(() => {
+    const changed: string[] = [];
+    for (const o of outputs) {
+      const stamp = `${o.modified ?? ""}|${o.bytes}`;
+      const was = stamps.current.get(o.handle);
+      if (was !== undefined && was !== stamp) changed.push(o.handle);
+      stamps.current.set(o.handle, stamp);
+    }
+    if (!changed.length) return;
+    setLayers((l) => {
+      if (!changed.some((h) => h in l)) return l;
+      const next = { ...l };
+      for (const h of changed) delete next[h];
+      return next;
+    });
+  }, [outputs]);
+
+  // Load what is on the map. Each read of a layer is numbered: an answer
+  // to an older read (of a file since saved again) is dropped.
+  const reads = useRef(new Map<string, number>());
   useEffect(() => {
     for (const h of onMap) {
       if (layers[h]) continue;
+      const n = (reads.current.get(h) ?? 0) + 1;
+      reads.current.set(h, n);
+      const latest = () => reads.current.get(h) === n;
       setLayers((l) => ({ ...l, [h]: { type: "FeatureCollection", features: [], total: 0, shown: 0, truncated: false, geometry: true, loading: true } }));
       api.layer(h).then(
-        (fc) => setLayers((l) => ({ ...l, [h]: fc })),
+        (fc) => { if (latest()) setLayers((l) => ({ ...l, [h]: fc })); },
         (e) => {
           if (e instanceof SignedOut) return signedOut(e);
-          setLayers((l) => ({ ...l, [h]: { error: String(e.message || e) } }));
+          if (latest()) setLayers((l) => ({ ...l, [h]: { error: String(e.message || e) } }));
         },
       );
     }

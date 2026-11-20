@@ -2,7 +2,7 @@
 // plain words and in full before you approve it, which is confirmed at the
 // keyboard in the app's own code; their schedules; Run now; and every run's
 // report. Your workflows are yours alone: nothing here is shared.
-import { $, h, el, icon, invoke, store, button, pageHead, placeHead, sec, menuButton, showError, when, shortWhen, plural, numbered, emptyState, CANNOT_CONFIRM, cannotConfirm } from "../core.js";
+import { $, h, el, icon, invoke, store, button, pageHead, placeHead, sec, menuButton, showError, askConfirm, when, shortWhen, plural, numbered, emptyState, CANNOT_CONFIRM, cannotConfirm } from "../core.js";
 import { switchRow } from "./settings.js";
 import { shareOut, shareIn, importedText } from "./share.js";
 import { markdown } from "./chats.js";
@@ -10,6 +10,10 @@ import { markdown } from "./chats.js";
 let state = null;
 let reviewing = null;
 let onFocus = null;
+// The newest runs a workflow's page lists (the app reads one more).
+const RUNS_LISTED = 100;
+// The cleanup of a page drawn again in place (Pause, Resume, Repair).
+let redrawn = null;
 
 const STATUS = {
   succeeded: ["Succeeded", "pass"],
@@ -260,7 +264,10 @@ export async function render(main, rest) {
     let runs = [];
     try { runs = await invoke("workflow_runs", { id: w.id }); } catch (e) { runsBd.append(el("p", "pad error-text", String(e))); return; }
     if (!runs.length) { runsBd.append(h("p", { class: "pad muted small" }, "No runs yet. Run it now, or wait for its schedule.")); return; }
-    runsN.textContent = `${runs.length}${runs.length >= 100 ? "+" : ""}`;
+    // The app reads one run more than it lists, to know there are more.
+    const many = runs.length > RUNS_LISTED;
+    runs = runs.slice(0, RUNS_LISTED);
+    runsN.textContent = many ? `${RUNS_LISTED}+` : `${runs.length}`;
     const ul = h("ul", { class: "list", id: "wf-run-list" });
     let shown = 0;
     const more = button("Show older runs", "sm", () => drawMore(), { id: "wf-more" });
@@ -280,9 +287,18 @@ export async function render(main, rest) {
     runsBd.append(ul, h("div", { class: "pad" }, more));
     drawMore();
     async function setSchedule(on) {
-      try { await invoke("workflow_set_schedule", { id: w.id, on }); await refresh(); location.reload(); } catch (e) { showError(err, e); }
+      try {
+        await invoke("workflow_set_schedule", { id: w.id, on });
+        await refresh();
+        // Draw this page again, not the whole window: a reload loses an open
+        // chat's view and any approval waiting in it.
+        main.replaceChildren();
+        if (redrawn) redrawn();
+        redrawn = await render(main, rest);
+      } catch (e) { showError(err, e); }
     }
     async function removeWf() {
+      if (!(await askConfirm(`Remove ${w.name}?`, "It stops running and its schedule is taken off this computer. Its past runs' reports are kept.", "Remove workflow", true))) return;
       try {
         await invoke("workflow_remove", { id: w.id });
         await refresh();
@@ -395,7 +411,11 @@ export async function render(main, rest) {
   }
   let focusFn = () => onFocus && onFocus();
   window.addEventListener("focus", focusFn);
-  return () => { window.removeEventListener("focus", focusFn); for (const fn of cleanup) fn(); };
+  return () => {
+    window.removeEventListener("focus", focusFn);
+    for (const fn of cleanup) fn();
+    if (redrawn) { const r = redrawn; redrawn = null; r(); }
+  };
 }
 
 // Email for workflows' reports: as the organization set it up, and the mail
@@ -418,6 +438,6 @@ function emailCard() {
       });
       bd.append(h("label", { class: "field" }, `Password for ${e.username} on the mail server (kept in your credential store; leave empty and save to forget it)`, pw), h("div", { class: "row" }, save), err);
     }
-  }).catch(() => {});
+  }).catch((x) => bd.append(el("p", "error-text small", `Email settings could not be read: ${x}`)));
   return card;
 }

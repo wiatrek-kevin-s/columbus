@@ -43,8 +43,7 @@ fn engine() -> Option<String> {
 }
 
 fn launcher() -> PathBuf {
-    let exe = std::env::current_exe().unwrap();
-    let dir = exe.parent().unwrap().parent().unwrap();
+    let dir = support::profile_dir();
     dir.join(format!("columbus-confine{}", std::env::consts::EXE_SUFFIX))
 }
 

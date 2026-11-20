@@ -372,7 +372,7 @@ function buildEditor() {
   const kind = h("select", { name: "kind" },
     ...Object.entries({ gpkg: "GeoPackage file", filegdb: "File geodatabase (.gdb)", shapefile: "Folder of shapefiles", files: "Folder of files (CSV, Excel, GeoJSON, KML…)", sqlite: "SQLite file", rasters: "Folder of rasters (GeoTIFF)", arcgis: "ArcGIS Online, Portal or Server service", postgis: "PostgreSQL / PostGIS", sqlserver: "SQL Server", oracle: "Oracle" })
       .map(([v, t]) => h("option", { value: v }, t)));
-  const ssl = h("select", { name: "sslmode" }, h("option", { value: "" }, "Default (prefer)"), ...["disable", "prefer", "require", "verify-full"].map((v) => h("option", { value: v }, v)));
+  const ssl = h("select", { name: "sslmode" }, h("option", { value: "" }, "Default"), ...["disable", "prefer", "require", "verify-full"].map((v) => h("option", { value: v }, v)));
   // What the assistant may do with it: two cards the person chooses
   // between. The select they drive holds the value the form saves.
   const mode = h("select", { name: "mode", class: "visually-hidden", "aria-hidden": "true", tabindex: "-1" }, h("option", { value: "read" }, "Read only"), h("option", { value: "read-write" }, "Read and write (needs edits allowed)"));
@@ -407,11 +407,11 @@ function buildEditor() {
       field("Client id", inp("client_id"), { for: "arcgis-oauth", help: "Your organization's own ArcGIS app (your ArcGIS administrator has it). Not a secret." }),
       field("Host", inp("host"), { for: "postgis sqlserver oracle" }),
       field("Port", inp("port", { type: "number", min: "1", max: "65535" }), { for: "postgis sqlserver oracle" }),
-      field("Database", inp("database"), { for: "postgis sqlserver" }),
-      field("Service name (DSN)", inp("dsn"), { for: "oracle" }),
+      field("Database", inp("database"), { for: "postgis sqlserver oracle", help: "For Oracle: the service name, as SQL Developer shows it (for example ORCLPDB1)." }),
+      field("Or: TNS alias or full address", inp("dsn"), { for: "oracle", help: "Instead of Host, Port and service name: an alias from tnsnames.ora, or host:port/service." }),
       field("Login", inp("user"), { for: "postgis sqlserver oracle" }),
-      field("Password", inp("password", { type: "password", autocomplete: "new-password" }), { for: "postgis sqlserver oracle", help: "Kept in your computer's credential store, never in a file.", helpId: "pw-note" }),
-      field("SSL", ssl, { for: "postgis" }),
+      field("Password", inp("password", { type: "password", autocomplete: "new-password" }), { for: "postgis sqlserver oracle", help: "Kept in your computer's credential store, never in a file. SQL Server on Windows: leave it empty to sign in as yourself (Windows sign-in).", helpId: "pw-note" }),
+      field("SSL", ssl, { for: "postgis sqlserver oracle", help: "Default: PostGIS prefers encryption; SQL Server encrypts and checks the certificate (choose require to accept a self-signed one); Oracle connects without TLS (require or verify-full uses TCPS)." }),
       field("Schemas", inp("search_path", { placeholder: "public" }), { for: "postgis" }),
       h("h3", { class: "wide" }, "What may your assistant do with it?"),
       choices,
@@ -494,6 +494,15 @@ export async function openEditor(c, onSaved) {
   showTest(null);
   $("editor-h").textContent = c ? `Edit ${c.id}` : "Add data";
   $("confirm-hint").textContent = confirmNote();
+  // Kinds the organization's rules leave out are said so in the list: the
+  // person learns it before filling in the form, not at Test.
+  const allowed = (state && state.policy && state.policy.exists && state.policy.connection_types) || null;
+  for (const o of form.kind.options) {
+    o.textContent = o.dataset.name || (o.dataset.name = o.textContent);
+    // As the rules read it: by name, in any case; the old name "file" is "files".
+    const ok = !allowed || allowed.some((t) => { const n = String(t).toLowerCase(); return n === o.value || (n === "file" && o.value === "files"); });
+    if (!ok) o.textContent += " (not allowed by your organization's rules)";
+  }
   form.conn_id.readOnly = !!c;
   $("delete").hidden = !c;
   const v = c || { type: "gpkg", mode: "read", datasets: { allow: ["*"], deny: [] } };
@@ -665,8 +674,8 @@ async function projectDbs(body) {
   let r;
   try { r = await invoke("project_databases"); } catch (e) { body.append(el("p", "error-text", String(e))); return; }
   if (!r.files.length) {
-    body.append(emptyState("No project databases yet",
-      `Each project will get a local database the assistant can save working tables into (scratch space, never a source of record), exported to GeoPackage for ArcGIS Pro or QGIS. Large tables are not part of this version yet. When they are, they are listed here from ${r.dir}.`));
+    body.append(emptyState("Project databases are on each project's page",
+      "Your assistant makes a project database when you ask it to join or keep large tables: a local working store (scratch space, never a source of record) that exports to GeoPackage for ArcGIS Pro or QGIS. Open a project under Projects to see its databases."));
     return;
   }
   const tbody = h("tbody");

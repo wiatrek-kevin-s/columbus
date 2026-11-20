@@ -548,7 +548,9 @@ async function ai(body, hint) {
     ev.preventDefault();
     try { await invoke("chat_set_key", { key: key.value, service: s.service }); key.value = ""; await refresh(); toast("Key saved. New chats will use it."); } catch (err) { keyState.textContent = String(err); keyState.className = "small error-text"; }
   });
-  $("key-clear").addEventListener("click", async () => { await invoke("chat_clear_key", { service: s.service }); await refresh(); toast("Key removed."); });
+  $("key-clear").addEventListener("click", async () => {
+    try { await invoke("chat_clear_key", { service: s.service }); await refresh(); toast("Key removed."); } catch (err) { toast(`The key was not removed: ${err}`); }
+  });
   load.addEventListener("click", async () => {
     load.disabled = true;
     loaded.textContent = "Asking the service…";
@@ -608,12 +610,12 @@ async function overview(body, foot) {
   // The map and the look.
   const basemap = h("input", { type: "checkbox", class: "switch", id: "pref-basemap", "aria-label": "Street background" });
   basemap.checked = !!store.prefs.basemap;
-  basemap.addEventListener("change", () => savePrefs({ basemap: basemap.checked }));
+  basemap.addEventListener("change", () => savePrefs({ basemap: basemap.checked }).catch((e) => { basemap.checked = !basemap.checked; toast(`Not saved: ${e}`); }));
   const theme = h("div", { class: "seg", role: "group", "aria-label": "Appearance" });
   for (const [v, t] of [["light", "Light"], ["dark", "Dark"], ["system", "Match the system"]]) {
     const b = h("button", { type: "button", "aria-pressed": String((store.prefs.theme || "system") === v) }, t);
     b.addEventListener("click", async () => {
-      await savePrefs({ theme: v });
+      try { await savePrefs({ theme: v }); } catch (e) { toast(`Not saved: ${e}`); return; }
       applyTheme(v);
       for (const x of theme.children) x.setAttribute("aria-pressed", String(x === b));
     });

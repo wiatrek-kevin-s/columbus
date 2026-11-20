@@ -106,15 +106,25 @@ impl Net {
         r
     }
 
+    /// The service's address before a request's path. The Messages format's
+    /// paths carry their own `/v1`, so an address given with it (as most
+    /// services print theirs) does not get a second one.
+    fn base(&self) -> &str {
+        match self.service.format {
+            Format::Messages => self.base.strip_suffix("/v1").unwrap_or(&self.base),
+            _ => &self.base,
+        }
+    }
+
     /// A chat request to the service's own address.
     pub fn post(&self, body: &Value) -> reqwest::RequestBuilder {
-        let url = format!("{}{}", self.base, self.service.format.path());
+        let url = format!("{}{}", self.base(), self.service.format.path());
         self.with_key(self.http.post(url)).json(body)
     }
 
     /// The request for the service's list of models.
     fn models(&self) -> reqwest::RequestBuilder {
-        let url = format!("{}{}", self.base, self.service.format.models_path());
+        let url = format!("{}{}", self.base(), self.service.format.models_path());
         self.with_key(self.http.get(url))
             .timeout(Duration::from_secs(30))
     }
@@ -652,6 +662,34 @@ mod tests {
 
     // Made up for these tests: no service ever issued it.
     const KEY: &str = "tk51Hq8ZpL0vXn3TdRy7WbQe2MfUaKc9Gj4sVhN6";
+
+    /// An Anthropic-format gateway given with `/v1` (as such addresses are
+    /// printed) gets one `/v1`, not two; other formats keep their address.
+    #[test]
+    fn an_address_ending_in_v1_gets_one_v1() {
+        let mut svc = crate::services::builtin("anthropic").unwrap().service();
+        for (address, want) in [
+            (
+                "https://gw.example.com/v1",
+                "https://gw.example.com/v1/messages",
+            ),
+            (
+                "https://gw.example.com",
+                "https://gw.example.com/v1/messages",
+            ),
+        ] {
+            let net = Net::new(address, "k", svc.clone()).unwrap();
+            let r = net.post(&json!({})).build().unwrap();
+            assert_eq!(r.url().as_str(), want);
+        }
+        svc.format = Format::Chat;
+        let net = Net::new("https://gw.example.com/v1", "k", svc).unwrap();
+        let r = net.post(&json!({})).build().unwrap();
+        assert_eq!(
+            r.url().as_str(),
+            "https://gw.example.com/v1/chat/completions"
+        );
+    }
 
     #[test]
     fn a_key_and_its_long_pieces_are_taken_out_of_text() {

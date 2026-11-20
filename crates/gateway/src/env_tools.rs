@@ -24,7 +24,8 @@ pub struct ProposeEnvironmentArgs {
     /// Columbus uses a Python already on this computer and never downloads one.
     #[serde(default)]
     pub python_version: Option<String>,
-    /// Every package as an exact pin, name==version (e.g. "whitebox==2.3.6").
+    /// Every package to add, as an exact pin, name==version (e.g.
+    /// "scikit-learn==1.6.1"). The engine's GIS packages come with it.
     /// Ranges, wildcards, URLs, paths and VCS links are refused. Each must
     /// publish a wheel for this system: nothing is built from source.
     pub packages: Vec<String>,
@@ -36,7 +37,7 @@ pub struct ProposeEnvironmentArgs {
 impl Gateway {
     #[tool(
         name = "propose_environment",
-        description = "Ask the person for a new Python environment for scripts, with packages the engine lacks (for example whitebox==2.3.6). Give an id, the Python version (omit for the engine's), every package pinned exactly as name==version, and the reason. This only files a request: the person approves it in the Columbus app or the terminal, and only then does Columbus create it from the organization's package index (wheels only, no source builds) and register it governed. You cannot approve it. Then run_python can use it by its id. Needs environments_allowed in whoami.",
+        description = "Ask the person for a new Python environment for scripts, with packages the engine lacks (for example scikit-learn==1.6.1). It starts with the engine's GIS packages (geopandas, pyogrio, shapely, pyproj, rasterio…) at the engine's versions, so list only what to add; a package may not move one of the engine's to another version. Scripts run without network, so a package that downloads a program or data when first used will not work. Give an id, the Python version (omit for the engine's), each package to add pinned exactly as name==version, and the reason. This only files a request: the person approves it in the Columbus app or the terminal, and only then does Columbus create it from the organization's package index (wheels only, no source builds) and register it governed. You cannot approve it. Then run_python can use it by its id. Needs environments_allowed in whoami.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -91,7 +92,7 @@ impl Gateway {
                 "fingerprint": fingerprint,
                 "index_hosts": policy.index_hosts,
                 "next": format!(
-                    "Tell the person the environment {id} is waiting for them: they approve it with `columbus-mcp env approve {id}` in a terminal (or in the Columbus app, where it offers this). Nothing is downloaded before that. Once whoami lists {id} as ready, pass it to run_python.",
+                    "Tell the person the environment {id} is waiting for them: in the Columbus app, Settings › Python environments, under Asked for by your assistant, they read it and click Approve (without the app: `columbus-mcp env approve {id}` in a terminal). Nothing is downloaded before that. Once whoami lists {id} as ready, pass it to run_python. If it does not appear after they approve, ask them what the app said: creating it can fail (a version the index does not have, say), and a new proposal needs a new id.",
                     id = p.id
                 ),
             }),

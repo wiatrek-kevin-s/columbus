@@ -231,7 +231,8 @@ async fn an_approved_proposal_creates_a_governed_environment() {
     if !pypi_reachable() {
         return;
     }
-    let env = setup("allow_scripts: true\nenvironments: { allow: true }\n");
+    let env =
+        setup("allow_scripts: true\nscripts: { approval: none }\nenvironments: { allow: true }\n");
     let c = start(&env, &py).await;
 
     let r = ok(&propose(&c, "six-env", &["six==1.17.0"]).await);
@@ -289,6 +290,26 @@ async fn an_approved_proposal_creates_a_governed_environment() {
     );
     assert!(folder.join("pyvenv.cfg").is_file());
     assert!(site_packages(&folder).join("six.py").is_file());
+    // It starts from the engine's packages, at the engine's versions: a
+    // script there can read and write layers as in the engine.
+    let version = |python: &str| {
+        let out = std::process::Command::new(python)
+            .args([
+                "-I",
+                "-c",
+                "import geopandas, pyogrio; print(geopandas.__version__, pyogrio.__version__)",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    assert_eq!(version(&made.python), version(&py));
+    assert!(!folder.join("columbus-engine-pins.txt").exists());
     assert!(create::read_proposal(&env.environments(), "six-env").is_err());
     let listed = whoami_envs(&c).await;
     let e = listed
@@ -298,6 +319,16 @@ async fn an_approved_proposal_creates_a_governed_environment() {
     assert_eq!(e["status"], "ready", "{e}");
     assert_eq!(e["trust"], "governed", "{e}");
     assert_eq!(e["created_by"], "columbus", "{e}");
+    // A script runs in it, in the sandbox, with the engine's GIS packages
+    // and the one added.
+    let r = ok(&call(
+        &c,
+        "run_python",
+        json!({"code": "import geopandas, six\nprint('ok', geopandas.__version__, six.__version__)", "environment": "six-env"}),
+    )
+    .await);
+    let said = r.to_string();
+    assert!(said.contains("ok ") && said.contains("1.17.0"), "{r}");
 
     // pypi.org's files are on files.pythonhosted.org: without it in
     // index_hosts, creation fails naming it, and nothing is left behind.

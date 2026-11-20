@@ -166,10 +166,13 @@ function history(body, foot, view) {
     q.offset = 0;
     load();
   };
+  // Whether the person chose a month; until then the newest is read each
+  // time, so a page left open into a new month follows it.
+  let monthPicked = false;
   const load = async () => {
     drawSeg();
     try {
-      const r = await invoke("audit_page", { query: { ...q, month: q.month || null } });
+      const r = await invoke("audit_page", { query: { ...q, month: monthPicked ? q.month || null : null } });
       q.month = r.month || "";
       month.replaceChildren(...(r.months.length ? r.months : [{ month: "" }]).map((m) => { const o = h("option", { value: m.month }, m.month ? monthName(m.month) : "No log yet"); o.selected = m.month === q.month; return o; }));
       opt(client, r.clients, q.client, "All apps");
@@ -246,7 +249,7 @@ function history(body, foot, view) {
       h("p", { class: "small muted" }, "Checks and the full provenance of each file are in its session's files while the session runs, and in the provenance file written beside the export."));
   };
   const reset = (k) => (ev) => { q[k] = ev.target.value; q.offset = 0; load(); };
-  month.addEventListener("change", (ev) => { q.month = ev.target.value; q.offset = 0; q.client = q.tool = q.decision = ""; result.hidden = true; load(); });
+  month.addEventListener("change", (ev) => { q.month = ev.target.value; monthPicked = true; q.offset = 0; q.client = q.tool = q.decision = ""; result.hidden = true; load(); });
   client.addEventListener("change", reset("client"));
   tool.addEventListener("change", reset("tool"));
   decision.addEventListener("change", reset("decision"));

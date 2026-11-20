@@ -155,15 +155,31 @@ pub(crate) fn plan(
         by_case.entry(paths::case_key(p)).or_default().insert(p);
     }
     for names in by_case.values().filter(|n| n.len() > 1) {
+        // The person renamed a synced file by its capital letters alone:
+        // the new name is only here, the old one only on the server and in
+        // the record. Said so, with the way out.
+        let renamed_from = |new: &str| {
+            (names.len() == 2
+                && local.files.contains_key(new)
+                && !theirs.contains_key(new)
+                && !state.files.contains_key(new))
+            .then(|| names.iter().find(|o| **o != new).copied())
+            .flatten()
+            .filter(|old| !local.files.contains_key(*old) && state.files.contains_key(*old))
+        };
         for p in names {
             let other = names.iter().find(|o| *o != p).copied().unwrap_or("");
             if theirs.contains_key(p) || local.files.contains_key(*p) {
-                skip(
-                    &mut out,
-                    p,
-                    format!("its name differs from {other} only by capital letters"),
-                    !local.files.contains_key(*p),
-                );
+                let why = match renamed_from(p) {
+                    Some(old) => format!(
+                        "it was renamed from {old} by its capital letters alone, which sync cannot send; rename it back to {old} (or save it under a new name and delete {old})"
+                    ),
+                    None if names.iter().any(|n| renamed_from(n) == Some(*p)) => format!(
+                        "it was renamed here to {other} by its capital letters alone, which sync cannot send; rename {other} back to {p} (or save it under a new name and delete {p})"
+                    ),
+                    None => format!("its name differs from {other} only by capital letters"),
+                };
+                skip(&mut out, p, why, !local.files.contains_key(*p));
             }
             blocked.insert(p.to_string());
         }
@@ -429,6 +445,27 @@ mod tests {
         let got = plan(&State::default(), &local, &server, &|_| None);
         assert!(got.create.is_empty() && got.write.is_empty() && got.both.is_empty());
         assert_eq!(got.skipped.len(), 2);
+    }
+
+    #[test]
+    fn a_rename_by_capital_letters_alone_says_how_to_undo_it() {
+        let mut state = State::default();
+        state.files.insert("Notes.md".into(), synced("b1", "h1"));
+        let mut local = Scan::default();
+        local.files.insert("notes.md".into(), file("h1"));
+        let server = [entry("Notes.md", "b1")];
+        let got = plan(&state, &local, &server, &|_| None);
+        assert!(got.create.is_empty() && got.delete.is_empty() && got.write.is_empty());
+        let why: Vec<&str> = got.skipped.iter().map(|s| s.why.as_str()).collect();
+        assert!(
+            why.iter().any(|w| w.contains("rename it back to Notes.md")),
+            "{why:?}"
+        );
+        assert!(
+            why.iter()
+                .any(|w| w.contains("rename notes.md back to Notes.md")),
+            "{why:?}"
+        );
     }
 
     #[test]

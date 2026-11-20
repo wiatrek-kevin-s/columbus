@@ -85,11 +85,32 @@ pub(crate) fn public_ip(ip: IpAddr) -> bool {
                 return public_ip(IpAddr::V4(m));
             }
             let s = v.segments();
+            let o = v.octets();
+            let v4 = |a: u8, b: u8, c: u8, d: u8| IpAddr::V4(std::net::Ipv4Addr::new(a, b, c, d));
+            // Addresses that carry an IPv4 address inside: judged by it.
+            let inner = if s[0] == 0x0064 && s[1] == 0xff9b && s[2..6] == [0, 0, 0, 0] {
+                Some(v4(o[12], o[13], o[14], o[15])) // NAT64 (64:ff9b::/96)
+            } else if s[0] == 0x2002 {
+                Some(v4(o[2], o[3], o[4], o[5])) // 6to4 (2002::/16)
+            } else if s[0] == 0x2001 && s[1] == 0 {
+                // Teredo (2001::/32): the client's address, inverted.
+                Some(v4(!o[12], !o[13], !o[14], !o[15]))
+            } else if s[..6] == [0, 0, 0, 0, 0xffff, 0] || s[..6] == [0, 0, 0, 0, 0, 0] {
+                // IPv4-translated (::ffff:0:a.b.c.d), IPv4-compatible (::a.b.c.d)
+                Some(v4(o[12], o[13], o[14], o[15]))
+            } else {
+                None
+            };
+            if let Some(i) = inner {
+                return public_ip(i);
+            }
             !(v.is_loopback()
                 || v.is_unspecified()
                 || v.is_multicast()
                 || (s[0] & 0xfe00) == 0xfc00 // unique local
                 || (s[0] & 0xffc0) == 0xfe80 // link local
+                || (s[0] == 0x0064 && s[1] == 0xff9b && s[2] == 1) // local-use NAT64 (64:ff9b:1::/48)
+                || (s[0] & 0xffc0) == 0xfec0 // site local (old, still routed inside some networks)
                 || (s[0] == 0x2001 && s[1] == 0x0db8)) // documentation
         }
     }
@@ -727,10 +748,24 @@ mod tests {
             "fd00::1",
             "::ffff:10.0.0.1",
             "224.0.0.1",
+            // IPv6 addresses that carry a private IPv4 address.
+            "64:ff9b::a9fe:a9fe",
+            "2002:c0a8:0101::1",
+            "2001:0:4136:e378:8000:63bf:f5ff:fffe", // Teredo for 10.0.0.1
+            "::10.0.0.1",
+            "fec0::1",
+            "::ffff:0:10.0.0.1",
+            "64:ff9b:1::a9fe:a9fe",
         ] {
             assert!(!public_ip(bad.parse().unwrap()), "{bad}");
         }
-        for ok in ["8.8.8.8", "140.211.1.1", "2606:4700::1111"] {
+        for ok in [
+            "8.8.8.8",
+            "140.211.1.1",
+            "2606:4700::1111",
+            "64:ff9b::808:808",
+            "2002:0808:0808::1",
+        ] {
             assert!(public_ip(ok.parse().unwrap()), "{ok}");
         }
     }

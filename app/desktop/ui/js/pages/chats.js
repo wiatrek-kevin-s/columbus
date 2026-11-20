@@ -37,7 +37,9 @@ export function liveSession() {
 
 /** Requests waiting in sessions other than the app's own chat. */
 export function otherInbox() {
-  return store.inbox.filter((s) => s.session !== live.session);
+  // The app's own session too, by the id the app keeps (after a reload
+  // the live chat's id is not known yet).
+  return store.inbox.filter((s) => s.session !== live.session && s.session !== store.ownSession);
 }
 
 export function waitingCount() {

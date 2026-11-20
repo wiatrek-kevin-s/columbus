@@ -76,7 +76,8 @@ pub struct ExportArgs {
 /// Windows device names, which open devices whatever the extension.
 const DEVICE_NAMES: &[&str] = &[
     "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
-    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9", "COM0", "LPT0",
+    "COM¹", "COM²", "COM³", "LPT¹", "LPT²", "LPT³",
 ];
 
 pub(crate) fn valid_name(n: &str) -> bool {
@@ -908,6 +909,14 @@ impl Gateway {
         let _ = self.write_provenance(&prov, &record);
         rec.prov = Some(prov.clone());
         rec.rows = meta.rows;
+        // Where it landed, as Activity shows it: the folder and the name.
+        let main_file = gdb_target
+            .as_ref()
+            .or_else(|| targets.first())
+            .and_then(|p| p.file_name())
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| args.name.clone());
+        rec.dataset = Some(format!("{}: {main_file}", folder.id));
         let approval = rec.approval.clone();
         self.audit(&ctx, rec)?;
         Ok(Json(Output {
@@ -982,6 +991,13 @@ const EXPORT_SUFFIXES: &[&str] = &[
     ".atx",
     ".aih",
     ".ain",
+    // A raster's own file and what GIS programs keep beside it.
+    ".tif",
+    ".tiff",
+    ".tif.aux.xml",
+    ".tfw",
+    ".tif.ovr",
+    ".ovr",
     ".prov.json",
 ];
 

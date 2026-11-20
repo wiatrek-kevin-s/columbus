@@ -37,12 +37,7 @@ fn python() -> Option<String> {
 }
 
 fn example(name: &str) -> PathBuf {
-    let exe = std::env::current_exe().unwrap();
-    let p = exe
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
+    let p = support::profile_dir()
         .join("examples")
         .join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
     assert!(
