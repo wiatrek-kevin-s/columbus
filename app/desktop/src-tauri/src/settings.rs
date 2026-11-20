@@ -796,6 +796,11 @@ fn build(form: &ConnForm, old: Option<&Connection>) -> Result<Connection, String
         }
     } else if form.kind == "oracle" {
         if trimmed(&form.host).is_some() {
+            // Beside a host, the alias box can only hold a service name: a
+            // full address (host:port/service) or a descriptor goes alone.
+            if trimmed(&form.dsn).is_some_and(|d| d.contains(['/', ':', '(', '@'])) {
+                return Err("give either Host, Port and the service name, or a full address (host:port/service) or TNS alias with Host left empty, not both".into());
+            }
             if trimmed(&form.database).is_none() && trimmed(&form.dsn).is_none() {
                 return Err(
                     "give the database's service name (as SQL Developer shows it, e.g. ORCLPDB1)"
@@ -2462,6 +2467,12 @@ mod more_tests {
         )
         .unwrap_err();
         assert!(e.contains("service name"), "{e}");
+        let e = build(
+            &form(json!({"id": "ora", "kind": "oracle", "mode": "read", "host": "db", "dsn": "db:1521/ORCL", "user": "gis"})),
+            None,
+        )
+        .unwrap_err();
+        assert!(e.contains("not both"), "{e}");
         let ms = build(
             &form(json!({"id": "ms", "kind": "sqlserver", "mode": "read", "host": "sql", "database": "gis", "sslmode": "require"})),
             None,

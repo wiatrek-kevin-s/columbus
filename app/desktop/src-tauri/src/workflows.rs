@@ -601,15 +601,20 @@ fn task_matches(xml: &str, v: &wf::WorkflowView, server: &Path) -> bool {
     let Some(command) = between("<Command>", "</Command>") else {
         return false;
     };
-    let dir = server
-        .parent()
-        .map(|d| xml_escape(&d.display().to_string()));
+    // The command as text (Task Scheduler writes ' and " as it likes), in
+    // the server's folder: the folder, then a separator.
+    let command = command
+        .replace("&apos;", "'")
+        .replace("&quot;", "\"")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&");
+    let dir = server.parent().map(|d| d.display().to_string());
     let program_ok = dir.is_some_and(|d| {
-        command
-            .trim()
-            .trim_matches('"')
-            .to_lowercase()
-            .starts_with(&d.to_lowercase())
+        let c = command.trim().trim_matches('"').to_lowercase();
+        let d = d.to_lowercase();
+        c.strip_prefix(d.trim_end_matches(['\\', '/']))
+            .is_some_and(|rest| rest.starts_with(['\\', '/']))
     });
     let at = v.at.clone().unwrap_or_else(|| "00:00".into());
     let time_ok = between("<StartBoundary>", "</StartBoundary>")
@@ -693,6 +698,16 @@ mod tests {
             wide.extend(u.to_le_bytes());
         }
         assert!(task_matches(&decode_task_xml(&wide), &v, &server));
+        // A folder with an apostrophe, as Task Scheduler writes it back.
+        let apos = std::env::temp_dir()
+            .join("O'Brien")
+            .join("columbus-mcp.exe");
+        let xml_apos = task_xml(&v, &apos, None, 10).replace("&apos;", "'");
+        assert!(task_matches(&xml_apos, &v, &apos));
+        assert!(task_matches(&task_xml(&v, &apos, None, 10), &v, &apos));
+        // A folder whose name only begins like the server's is another one.
+        let longer = std::env::temp_dir().join("colsX").join("columbus-mcp.exe");
+        assert!(!task_matches(&task_xml(&v, &longer, None, 10), &v, &server));
         let moved = std::env::temp_dir()
             .join("elsewhere")
             .join("columbus-mcp.exe");

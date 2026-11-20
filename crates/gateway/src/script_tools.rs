@@ -1334,7 +1334,7 @@ impl Gateway {
             // approval here (`ScriptEnv::session_allow_possible`, or the
             // engine); a trusted run is always asked on its own.
             every_time: !session_ok,
-            code: Some(code),
+            code: Some(&shown_code),
             standing: session_ok.then_some(&session_scope[..]),
             always_covers: session_ok.then_some(session_words),
             script_session: session_ok,

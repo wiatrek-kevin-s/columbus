@@ -59,6 +59,13 @@ impl Wire for Messages {
     /// block goes (removing all of them keeps the request valid).
     fn trim(&mut self) {
         let start = size(&self.history);
+        if start <= HISTORY_CHARS {
+            return;
+        }
+        // Down to three quarters, so that a long chat is shortened (and its
+        // thinking dropped, with the prompt cache) once in a while, not at
+        // every step.
+        let goal = HISTORY_CHARS / 4 * 3;
         let last = self.history.len().saturating_sub(2);
         // Pictures go first: an earlier one is the biggest thing to keep,
         // and the words of every result are worth more.
@@ -75,7 +82,7 @@ impl Wire for Messages {
         }
         let mut total = size(&self.history);
         for i in 0..last {
-            if total <= HISTORY_CHARS {
+            if total <= goal {
                 break;
             }
             let Some(blocks) = self.history[i]["content"].as_array_mut() else {
@@ -92,7 +99,7 @@ impl Wire for Messages {
         // Still too long: the turns before the latest keep their words and
         // their calls alone. (The service asks for a turn's thinking back
         // only while that turn's tools are being answered.)
-        if total > HISTORY_CHARS {
+        if total > goal {
             for m in self.history.iter_mut().take(last) {
                 if m["role"] != "assistant" {
                     continue;

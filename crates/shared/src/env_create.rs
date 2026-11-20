@@ -1056,7 +1056,7 @@ pub fn approve(
         let constraints = folder.join(ENGINE_CONSTRAINTS);
         std::fs::write(&constraints, engine_pins.join("\n") + "\n")
             .map_err(|e| format!("{}: {e}", constraints.display()))?;
-        let install = |extra: &[&str], what: &str| -> Result<(), String> {
+        let install = |extra: &[&str], what: &str, constrained: bool| -> Result<(), String> {
             let mut cmd = uv_command(&uv, &gate, envs_root);
             cmd.args([
                 "pip",
@@ -1070,13 +1070,11 @@ pub fn approve(
                 "first-index",
                 "--default-index",
                 &index,
-                "--constraint",
-            ])
-            .arg(&constraints)
-            .arg("--python")
-            .arg(&python)
-            .arg("--")
-            .args(extra);
+            ]);
+            if constrained {
+                cmd.arg("--constraint").arg(&constraints);
+            }
+            cmd.arg("--python").arg(&python).arg("--").args(extra);
             let r = run_uv(cmd, INSTALL_SECONDS, what)?;
             if !r.ok || !gate.refused().is_empty() {
                 return Err(failure(&gate, &r.output, &policy.index_hosts));
@@ -1095,14 +1093,21 @@ pub fn approve(
             })
             .map(String::as_str)
             .collect();
-        let without_engine = if core.is_empty() {
+        // Only for the engine's own Python: its packages' versions are
+        // for that Python.
+        let same_python = base == engine.executable;
+        let without_engine = if core.is_empty() || !same_python {
             true
         } else {
-            install(&core, "installing the engine's GIS packages").is_err()
+            install(&core, "installing the engine's GIS packages", true).is_err()
         };
         let asked: Vec<&str> = p.packages.iter().map(|s| s.trim()).collect();
-        install(&asked, "installing the packages").map_err(|e| {
-            format!("{e}\n(A package asked for may not change the version of one the engine has: each of the engine's packages stays at the engine's version.)")
+        install(&asked, "installing the packages", !without_engine).map_err(|e| {
+            if without_engine {
+                e
+            } else {
+                format!("{e}\n(A package asked for may not change the version of one the engine has: each of the engine's packages stays at the engine's version.)")
+            }
         })?;
         let _ = std::fs::remove_file(&constraints);
         drop(gate);

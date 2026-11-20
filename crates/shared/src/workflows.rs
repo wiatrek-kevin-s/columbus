@@ -1461,19 +1461,27 @@ pub fn prune_runs(root: &Path, id: &str, keep: usize, workspaces: Option<&Path>)
             work.push((p, r));
         }
     }
-    let going = |r: &Value| {
+    // Still going: running, and started in the last day (by its record, or
+    // by its folder when the record is missing, as after a crash).
+    let going = |p: &Path, r: &Value| {
+        let day = chrono::Duration::days(1);
         r["status"].as_str().unwrap_or("running") == "running"
-            && r["started"]
+            && match r["started"]
                 .as_str()
                 .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
-                .is_none_or(|t| {
-                    chrono::Utc::now().signed_duration_since(t) < chrono::Duration::days(1)
-                })
+            {
+                Some(t) => chrono::Utc::now().signed_duration_since(t) < day,
+                None => std::fs::metadata(p)
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|m| m.elapsed().ok())
+                    .is_none_or(|age| age < std::time::Duration::from_secs(24 * 3600)),
+            }
     };
     let ws_root = workspaces.and_then(|w| w.canonicalize().ok());
     for list in [work, notes] {
         // A run still going does not count: it prunes when it finishes.
-        let list: Vec<(PathBuf, Value)> = list.into_iter().filter(|(_, r)| !going(r)).collect();
+        let list: Vec<(PathBuf, Value)> = list.into_iter().filter(|(p, r)| !going(p, r)).collect();
         let n = list.len().saturating_sub(keep);
         for (p, r) in list.into_iter().take(n) {
             if let Some(ws_root) = &ws_root {

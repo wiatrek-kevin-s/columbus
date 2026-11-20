@@ -1137,7 +1137,7 @@ pub(crate) fn other_apps(server: &str, env: &[(String, String)]) -> Vec<OtherApp
             file: ".mcp.json at the top of a project, or use the command, which adds Columbus for all your projects".into(),
             entry: entry("mcpServers", None, vec![]),
             command: Some(format!(
-                "claude mcp add --transport stdio --scope user{} columbus -- {word}",
+                "claude mcp add --transport stdio --scope user columbus{} -- {word}",
                 env_flags("-e")
             )),
             notes: with_env(vec![]),
@@ -1569,7 +1569,7 @@ mod tests {
         let cmd = |id: &str| apps.iter().find(|a| a.id == id).unwrap().command.clone();
         assert_eq!(
             cmd("claude-code").as_deref(),
-            Some(format!("claude mcp add --transport stdio --scope user -e COLUMBUS_PYTHON=/opt/gis/bin/python3 columbus -- \"{server}\"").as_str())
+            Some(format!("claude mcp add --transport stdio --scope user columbus -e COLUMBUS_PYTHON=/opt/gis/bin/python3 -- \"{server}\"").as_str())
         );
         assert_eq!(
             cmd("codex").as_deref(),
