@@ -779,7 +779,7 @@ Where the GIS engine's Python is not in the folder the server looks in by itself
 | Cursor | `~/.cursor/mcp.json`, or `.cursor/mcp.json` in a project | under `mcpServers`: `"type": "stdio"`, `command`, `args` |
 | Codex and ChatGPT desktop | `~/.codex/config.toml` | `[mcp_servers.columbus]` with `command = "<path>"` and `args = []`, or `codex mcp add columbus -- <path>`. Codex reads this file; OpenAI's documentation says the ChatGPT desktop app shares it. Columbus has not been tried with either |
 | Gemini CLI | `~/.gemini/settings.json`, or `.gemini/settings.json` in a project | under `mcpServers`: `command`, `args`, or `gemini mcp add -s user columbus <path>` |
-| Claude Code | `.mcp.json` at the top of a project | under `mcpServers`: `command`, `args`, or `claude mcp add --transport stdio columbus -- <path>` |
+| Claude Code | `.mcp.json` at the top of a project | under `mcpServers`: `command`, `args`, or `claude mcp add --transport stdio --scope user columbus -- <path>` (for all your projects). Where the app's entry names the engine (`COLUMBUS_PYTHON`), its Claude Code, Codex and Gemini commands name it too (`-e`/`--env`), and it shows no Copilot CLI command, only the entry |
 | LM Studio | `~/.lmstudio/mcp.json` | under `mcpServers`: `command`, `args` |
 
 How approvals reach the person is the same for every app ([Connected MCP servers](#connected-mcp-servers)): Columbus asks in the app's own prompt, and when the app cannot ask, opens its local approvals page in the browser. Which of these apps show the prompt themselves was not checked for each one here.

@@ -746,7 +746,7 @@ impl Chat {
                     }),
                     Stop::Filtered => self.ui.event(Event::Status {
                         text: format!(
-                            "{}'s content filter cut the reply short.",
+                            "{}'s safety filter declined the request or cut the reply short. Rephrase it, or try another model.",
                             self.net.service.name
                         ),
                     }),

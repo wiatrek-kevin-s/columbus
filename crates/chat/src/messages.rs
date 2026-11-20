@@ -53,8 +53,12 @@ impl Wire for Messages {
     }
 
     /// Keep the conversation within [`HISTORY_CHARS`]: replace the oldest
-    /// tool results with a note.
+    /// tool results with a note. A thinking block is bound to the exact
+    /// history it was made in, and the service refuses one replayed after an
+    /// earlier turn changed; so once anything is shortened, every thinking
+    /// block goes (removing all of them keeps the request valid).
     fn trim(&mut self) {
+        let start = size(&self.history);
         let last = self.history.len().saturating_sub(2);
         // Pictures go first: an earlier one is the biggest thing to keep,
         // and the words of every result are worth more.
@@ -100,6 +104,9 @@ impl Wire for Messages {
                     }
                 }
             }
+        }
+        if size(&self.history) != start {
+            drop_thinking(&mut self.history);
         }
     }
 
@@ -186,6 +193,9 @@ impl Wire for Messages {
         let stop = match answer["stop_reason"].as_str() {
             Some("max_tokens") => Stop::Length,
             Some("tool_use") if !calls.is_empty() => Stop::Tools,
+            // The service's safety checks declined the request: said, not
+            // shown as an empty reply.
+            Some("refusal") => Stop::Filtered,
             _ => Stop::End,
         };
         let mut kept = content.clone();
@@ -557,8 +567,22 @@ mod tests {
         assert_eq!(r.input_tokens, Some(most));
     }
 
+    /// A request the service's safety checks declined is said as such, not
+    /// shown as an empty reply.
     #[test]
-    fn a_long_conversation_keeps_only_the_latest_turns_thinking() {
+    fn a_refusal_is_a_filtered_reply() {
+        let r = Messages::new(true)
+            .reply(
+                json!({"content": [], "stop_reason": "refusal",
+                       "stop_details": {"type": "refusal", "category": "cyber"}}),
+                &ask("", false),
+            )
+            .unwrap();
+        assert_eq!(r.stop, Stop::Filtered);
+    }
+
+    #[test]
+    fn a_shortened_conversation_sends_no_thinking_back() {
         let mut w = Messages::new(true);
         let step = |w: &mut Messages, n: usize| {
             let r = w
@@ -601,7 +625,12 @@ mod tests {
             turns[..3].iter().all(|m| !thinking(m)),
             "the earlier turns keep their calls alone"
         );
-        assert!(thinking(turns[3]), "the latest turn goes back as it came");
+        // Thinking is bound to the history it was made in; once an earlier
+        // turn changed, the service refuses any that is replayed.
+        assert!(
+            !thinking(turns[3]),
+            "no thinking survives a shortened history"
+        );
         assert!(turns.iter().all(|m| m["content"]
             .as_array()
             .unwrap()

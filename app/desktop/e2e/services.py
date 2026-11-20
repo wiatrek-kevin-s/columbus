@@ -875,7 +875,7 @@ def main():
         assert json.loads(entries["cursor"][1])["mcpServers"]["columbus"] == {"type": "stdio", "command": str(GATEWAY), "args": []} and ".cursor" in entries["cursor"][0]
         assert entries["codex"][1] == f"[mcp_servers.columbus]\ncommand = '{GATEWAY}'\nargs = []" and entries["codex"][0].endswith("config.toml")
         assert json.loads(entries["gemini-cli"][1]) == {"mcpServers": {"columbus": {"command": str(GATEWAY), "args": []}}} and "settings.json" in entries["gemini-cli"][0]
-        assert entries["claude-code"][2] == f"claude mcp add --transport stdio columbus -- {GATEWAY}"
+        assert entries["claude-code"][2] == f"claude mcp add --transport stdio --scope user columbus -- {GATEWAY}"
         assert json.loads(entries["lm-studio"][1]) == json.loads(entries["claude-desktop"][1]) and "mcp.json" in entries["lm-studio"][0]
         approvals = d.find_element(By.ID, "apps-approvals").text
         assert "opens its local approvals page in your browser" in approvals and "45 seconds" in approvals, approvals
