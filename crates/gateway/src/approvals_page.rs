@@ -130,7 +130,15 @@ impl Opener {
     }
 
     pub fn is_dev_handoff(&self) -> bool {
-        cfg!(debug_assertions) && matches!(self, Opener::File(_))
+        // `Opener::File` exists only in debug builds (for tests).
+        #[cfg(debug_assertions)]
+        {
+            matches!(self, Opener::File(_))
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            false
+        }
     }
 }
 
