@@ -526,7 +526,7 @@ pub async fn settings_draft_notes(id: String) -> Result<Value, String> {
 fn signed_post(dir: &Path, path: &str, body: &[u8], what: &str) -> Result<(u16, Value), String> {
     let sessions = sessions_here(dir);
     if sessions.is_empty() {
-        return Err(format!("No Columbus session is running to {what} with. Open Claude desktop (it starts Columbus), then try again."));
+        return Err(format!("No Columbus session is running to {what} with. Start a chat in this app (New chat), or open the AI app you use with Columbus, then try again."));
     }
     let mut last = format!("The Columbus running now is too old to {what}. Update the Columbus extension in Claude desktop, then try again.");
     for s in &sessions {

@@ -410,7 +410,7 @@ function buildEditor() {
       field("Database", inp("database"), { for: "postgis sqlserver oracle", help: "For Oracle: the service name, as SQL Developer shows it (for example ORCLPDB1)." }),
       field("Or: TNS alias or full address", inp("dsn"), { for: "oracle", help: "Instead of Host, Port and service name: an alias from tnsnames.ora, or host:port/service." }),
       field("Login", inp("user"), { for: "postgis sqlserver oracle" }),
-      field("Password", inp("password", { type: "password", autocomplete: "new-password" }), { for: "postgis sqlserver oracle", help: "Kept in your computer's credential store, never in a file.", helpId: "pw-note" }),
+      field("Password", inp("password", { type: "password", autocomplete: "new-password" }), { for: "postgis sqlserver oracle", help: "Kept in your computer's credential store, never in a file. SQL Server on Windows: leave it empty to sign in as yourself (Windows sign-in).", helpId: "pw-note" }),
       field("SSL", ssl, { for: "postgis sqlserver oracle", help: "Default: PostGIS prefers encryption; SQL Server encrypts and checks the certificate (choose require to accept a self-signed one); Oracle connects without TLS (require or verify-full uses TCPS)." }),
       field("Schemas", inp("search_path", { placeholder: "public" }), { for: "postgis" }),
       h("h3", { class: "wide" }, "What may your assistant do with it?"),
@@ -665,8 +665,8 @@ async function projectDbs(body) {
   let r;
   try { r = await invoke("project_databases"); } catch (e) { body.append(el("p", "error-text", String(e))); return; }
   if (!r.files.length) {
-    body.append(emptyState("No project databases yet",
-      `Each project will get a local database the assistant can save working tables into (scratch space, never a source of record), exported to GeoPackage for ArcGIS Pro or QGIS. Large tables are not part of this version yet. When they are, they are listed here from ${r.dir}.`));
+    body.append(emptyState("Project databases are on each project's page",
+      "Your assistant makes a project database when you ask it to join or keep large tables: a local working store (scratch space, never a source of record) that exports to GeoPackage for ArcGIS Pro or QGIS. Open a project under Projects to see its databases."));
     return;
   }
   const tbody = h("tbody");

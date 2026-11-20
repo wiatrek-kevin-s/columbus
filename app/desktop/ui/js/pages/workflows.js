@@ -280,7 +280,14 @@ export async function render(main, rest) {
     runsBd.append(ul, h("div", { class: "pad" }, more));
     drawMore();
     async function setSchedule(on) {
-      try { await invoke("workflow_set_schedule", { id: w.id, on }); await refresh(); location.reload(); } catch (e) { showError(err, e); }
+      try {
+        await invoke("workflow_set_schedule", { id: w.id, on });
+        await refresh();
+        // Draw this page again, not the whole window: a reload loses an open
+        // chat's view and any approval waiting in it.
+        main.replaceChildren();
+        await render(main, rest);
+      } catch (e) { showError(err, e); }
     }
     async function removeWf() {
       try {

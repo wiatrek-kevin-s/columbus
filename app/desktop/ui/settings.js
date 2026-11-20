@@ -91,9 +91,16 @@ function render() {
     d.type = "button";
     d.title = "Write notes about this connection's datasets from the database itself (fields, keys, relationships, codes), for you to fill in";
     d.addEventListener("click", () => draftNotes(c.id, d, status));
+    // This window's form has the older types only; the others (shapefiles,
+    // file geodatabases, folders of files, ArcGIS) are edited in the main window.
+    const editable = Array.from(form.kind.options).some((o) => o.value === c.type);
     const b = el("button", null, "Edit");
     b.type = "button";
-    b.addEventListener("click", () => openEditor(c));
+    if (editable) b.addEventListener("click", () => openEditor(c));
+    else {
+      b.disabled = true;
+      b.title = "Edit this kind of connection in the main window: Data, then the connection";
+    }
     li.append(text, d, b);
     list.append(li);
   }
