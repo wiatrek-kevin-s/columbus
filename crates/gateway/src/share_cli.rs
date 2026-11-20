@@ -381,6 +381,18 @@ async fn check(state: &State, request: &str, seen: &mut Seen) -> Result<Plan, St
             already.push(t.id.clone());
             continue;
         }
+        // The organization installed one of this id for everyone: that is
+        // the one that runs here, so the shared copy is not needed.
+        if state
+            .org_tools
+            .current()
+            .all()
+            .iter()
+            .any(|p| p.id() == t.id && p.gate.is_none())
+        {
+            already.push(t.id.clone());
+            continue;
+        }
         if waiting_tools.contains(&t.id) {
             return Err(format!(
                 "{label} is already waiting for your review under Tools: install or decline it first, then open this file again"
@@ -392,18 +404,6 @@ async fn check(state: &State, request: &str, seen: &mut Seen) -> Result<Plan, St
         if !policy.tool_allowed(&tool) {
             return Err(format!(
                 "organization policy does not allow the tool {tool}"
-            ));
-        }
-        if state
-            .org_tools
-            .current()
-            .all()
-            .iter()
-            .any(|p| p.id() == built.id && p.gate.is_none())
-        {
-            return Err(format!(
-                "your organization already installed {} for everyone; it's the one that runs here",
-                built.id
             ));
         }
         if state.tools.taken().contains(&built.id) {

@@ -1223,13 +1223,47 @@ const GUIDES: &[(&str, &str, &str)] = &[
     ("designing-workflows", "How to design a workflow for propose_workflow: the format, which tools a step may be, references between steps, checks, the schedule and outputs.", include_str!("../../../skills/working-with-columbus/references/designing-workflows.md")),
     ("columbus-tools", "Every Columbus tool, its arguments and what it returns.", include_str!("../../../skills/working-with-columbus/references/columbus-tools.md")),
     ("check-ids", "The verification check ids and what each finding means.", include_str!("../../../skills/working-with-columbus/references/check-ids.md")),
+    ("sources-and-environments", "Folders of files, ArcGIS services, Python environments and web layers: what the person sets up and how you use them.", include_str!("../../../skills/working-with-columbus/references/sources-and-environments.md")),
+    // The other skills, and their reference files, by the name of their
+    // folder (a reference as <skill>/<path>, without .md).
+    ("arcpy-scripting", "Writing ArcPy scripts for ArcGIS Pro that run correctly the first time, covering arcpy.da cursors in with blocks, environment settings (workspace…", include_str!("../../../skills/arcpy-scripting/SKILL.md")),
+    ("arcpy-scripting/references/errors-and-fixes", "Reference for arcpy-scripting: ArcPy errors and fixes", include_str!("../../../skills/arcpy-scripting/references/errors-and-fixes.md")),
+    ("crs-and-datums", "Choosing and checking coordinate reference systems so distances, buffers and areas come out right, covering projected vs geographic CRS, Texas state plane and…", include_str!("../../../skills/crs-and-datums/SKILL.md")),
+    ("crs-and-datums/references/texas-crs", "Reference for crs-and-datums: Texas coordinate reference systems", include_str!("../../../skills/crs-and-datums/references/texas-crs.md")),
+    ("enterprise-geodatabases", "Reading and safely working with Esri enterprise geodatabases (SDE) on Oracle, SQL Server and PostgreSQL, covering versions, reconcile and post, branch vs traditional…", include_str!("../../../skills/enterprise-geodatabases/SKILL.md")),
+    ("enterprise-geodatabases/references/storage-and-sql", "Reference for enterprise-geodatabases: Geometry storage and geodatabase SQL, by database", include_str!("../../../skills/enterprise-geodatabases/references/storage-and-sql.md")),
+    ("imagery-and-stac", "Finding and using satellite imagery through STAC APIs, covering searches by collection, bbox, datetime and eo:cloud_cover, Sentinel-2 L2A and Landsat Collection 2…", include_str!("../../../skills/imagery-and-stac/SKILL.md")),
+    ("imagery-and-stac/references/bands-and-masks", "Reference for imagery-and-stac: Bands, scale factors and masks", include_str!("../../../skills/imagery-and-stac/references/bands-and-masks.md")),
+    ("lidar-with-pdal", "Processing lidar point clouds (LAS, LAZ, COPC, EPT) with PDAL, covering JSON pipelines, ASPRS classification codes (2 ground, 6 building, 7 low noise, 9 water, 18 high…", include_str!("../../../skills/lidar-with-pdal/SKILL.md")),
+    ("lidar-with-pdal/references/las-classification", "Reference for lidar-with-pdal: ASPRS LAS classification codes and flags", include_str!("../../../skills/lidar-with-pdal/references/las-classification.md")),
+    ("linear-referencing", "Work with linear referencing (LRS) data, meaning routes with measures, point and linear events, mileposts and DFO, calibration and dynamic segmentation, and run QC for…", include_str!("../../../skills/linear-referencing/SKILL.md")),
+    ("maps-and-deliverables", "Making maps and data deliverables that meet a spec, covering layout elements (scale bar, north arrow where meaningful, legend, data sources and dates, CRS note)…", include_str!("../../../skills/maps-and-deliverables/SKILL.md")),
+    ("maps-and-deliverables/references/metadata-and-formats", "Reference for maps-and-deliverables: Metadata elements and delivery checklist", include_str!("../../../skills/maps-and-deliverables/references/metadata-and-formats.md")),
+    ("open-data-sourcing", "Find, vet and cite open GIS data (parcels, lidar, elevation, flood zones, census boundaries, hydrography, imagery, roads) by searching a curated registry before the web…", include_str!("../../../skills/open-data-sourcing/SKILL.md")),
+    ("open-data-sourcing/references/licences", "Reference for open-data-sourcing: Common data licences and what they require", include_str!("../../../skills/open-data-sourcing/references/licences.md")),
+    ("raster-and-terrain", "Working correctly with rasters and elevation models in GDAL, rasterio and ArcGIS, covering resampling choices, nodata, Cloud-Optimized GeoTIFF (overviews, tiling…", include_str!("../../../skills/raster-and-terrain/SKILL.md")),
+    ("raster-and-terrain/references/gdal-commands", "Reference for raster-and-terrain: GDAL commands for raster work", include_str!("../../../skills/raster-and-terrain/references/gdal-commands.md")),
+    ("sop-conversion", "Convert Word, PDF or Excel SOPs, procedures, checklists and manuals into context-pack entries (Markdown with YAML front matter) without losing a step, threshold or…", include_str!("../../../skills/sop-conversion/SKILL.md")),
+    ("sop-conversion/references/fidelity-checks", "Reference for sop-conversion: Fidelity checks", include_str!("../../../skills/sop-conversion/references/fidelity-checks.md")),
+    ("sop-conversion/references/templates", "Reference for sop-conversion: Entry templates", include_str!("../../../skills/sop-conversion/references/templates.md")),
+    ("spatial-data-qa", "Quality-checking spatial data before it is used or delivered, covering invalid geometry (self-intersections, ring orientation), null and empty shapes, duplicates, mixed…", include_str!("../../../skills/spatial-data-qa/SKILL.md")),
+    ("spatial-joins-and-keys", "Getting attribute joins and spatial joins right, covering key types, leading-zero padding (CSJ, county FIPS, ZIP), case and whitespace, null keys, one-to-many row…", include_str!("../../../skills/spatial-joins-and-keys/SKILL.md")),
+    ("spatial-sql", "Write correct, fast, read-only spatial SQL for PostGIS, Oracle Spatial (SDO_RELATE, SDO_WITHIN_DISTANCE) and SQL Server (STIntersects, geography), covering intersects…", include_str!("../../../skills/spatial-sql/SKILL.md")),
+    ("spatial-sql/references/columbus-sql-refusals", "Reference for spatial-sql: sql_select: what is refused, the message, and what to do", include_str!("../../../skills/spatial-sql/references/columbus-sql-refusals.md")),
+    ("spatial-sql/references/dialects", "Reference for spatial-sql: Spatial SQL by dialect", include_str!("../../../skills/spatial-sql/references/dialects.md")),
+    ("writing-clearly-and-concisely", "Apply Strunk's timeless writing rules to ANY prose humans will read—documentation, commit messages, error messages, explanations, reports, or UI text. Makes your writing…", include_str!("../../../skills/writing-clearly-and-concisely/SKILL.md")),
+    ("writing-clearly-and-concisely/SOURCE", "Reference for writing-clearly-and-concisely: Source", include_str!("../../../skills/writing-clearly-and-concisely/SOURCE.md")),
+    ("writing-clearly-and-concisely/elements-of-style", "Reference for writing-clearly-and-concisely: The Elements of Style (1918)", include_str!("../../../skills/writing-clearly-and-concisely/elements-of-style.md")),
 ];
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct GuideArgs {
     /// Which guide: working-with-columbus, designing-tools,
-    /// designing-workflows, columbus-tools or check-ids. Leave out to list them.
+    /// designing-workflows, columbus-tools, check-ids, or one of the GIS
+    /// skills (crs-and-datums, spatial-sql, linear-referencing, ...) or a
+    /// skill's reference (spatial-sql/references/dialects). Leave out to
+    /// list them.
     #[serde(default)]
     pub name: Option<String>,
 }
@@ -1237,7 +1271,7 @@ pub struct GuideArgs {
 #[tool_router(router = tools_router, vis = "pub(crate)")]
 impl Gateway {
     #[tool(
-        description = "Read one of Columbus's guides for assistants: working-with-columbus (how to work here), designing-tools (read before propose_tool), columbus-tools (every tool) or check-ids (what each check means). Leave name out to list them.",
+        description = "Read one of Columbus's guides for assistants: working-with-columbus (how to work here), designing-tools (read before propose_tool), columbus-tools (every tool), check-ids (what each check means), and the GIS skills, each with its references: crs-and-datums, spatial-sql, spatial-joins-and-keys, spatial-data-qa, linear-referencing, enterprise-geodatabases, arcpy-scripting, raster-and-terrain, lidar-with-pdal, imagery-and-stac, open-data-sourcing, maps-and-deliverables, sop-conversion, writing-clearly-and-concisely. Read the skill before work in its area. Leave name out to list them all.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn columbus_guide(
@@ -1702,6 +1736,41 @@ impl Gateway {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_skill_and_reference_is_a_guide() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../skills");
+        let mut want = Vec::new();
+        for d in std::fs::read_dir(&root).unwrap().flatten() {
+            if !d.path().join("SKILL.md").is_file() {
+                continue;
+            }
+            let skill = d.file_name().to_string_lossy().to_string();
+            let mut stack = vec![d.path()];
+            while let Some(dir) = stack.pop() {
+                for f in std::fs::read_dir(&dir).unwrap().flatten() {
+                    let p = f.path();
+                    if p.is_dir() {
+                        stack.push(p);
+                    } else if p.extension().is_some_and(|e| e == "md") {
+                        want.push((skill.clone(), p));
+                    }
+                }
+            }
+        }
+        for (skill, p) in want {
+            let text = std::fs::read_to_string(&p).unwrap();
+            assert!(
+                GUIDES.iter().any(|(_, _, t)| *t == text),
+                "{} (skill {skill}) is not served by columbus_guide",
+                p.display()
+            );
+        }
+        let mut names: Vec<&str> = GUIDES.iter().map(|(n, _, _)| *n).collect();
+        names.sort();
+        names.dedup();
+        assert_eq!(names.len(), GUIDES.len(), "guide names are unique");
+    }
 
     pub(crate) fn good() -> ProposeToolArgs {
         serde_json::from_value(good_value()).unwrap()

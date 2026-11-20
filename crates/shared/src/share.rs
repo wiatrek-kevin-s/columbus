@@ -162,8 +162,18 @@ pub fn export_workflow(
     w.schedule = None;
     w.outputs.email = None;
     let text = to_text(&w)?;
+    // Its personal tools, but not one the organization installed for
+    // everyone here: that is the one that runs, and the recipient's
+    // organization has its own (checked when they open the file).
+    let org_allowed = crate::policy::OrgPolicy::load(&crate::paths::policy_file())
+        .map(|p| p.allow_org_tools)
+        .unwrap_or(false);
+    let org = tools::org_tools_in_force(org_allowed);
     let mut shared = Vec::new();
     for t in w.personal_tools() {
+        if org.iter().any(|o| o.id == t) {
+            continue;
+        }
         shared.push(shared_tool(tools_root, &t)?);
     }
     Ok(ShareFile {
@@ -311,12 +321,14 @@ pub fn parse(text: &str) -> Result<ShareFile, String> {
             if w.schedule.is_some() {
                 return Err("a shared workflow has no schedule".into());
             }
-            // It brings every personal tool it uses, and only those.
+            // It brings only personal tools it uses (one the sharer's
+            // organization installed for everyone stays behind; the
+            // recipient needs it installed, which is checked on opening).
             let uses = w.personal_tools();
             let brings: BTreeSet<String> = s.tools.iter().map(|t| t.id.clone()).collect();
-            if uses != brings {
+            if !brings.is_subset(&uses) || brings.len() != s.tools.len() {
                 return Err(
-                    "the shared workflow doesn't bring exactly the personal tools it uses".into(),
+                    "the shared workflow brings a tool it doesn't use, or one twice".into(),
                 );
             }
         }

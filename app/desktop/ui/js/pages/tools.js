@@ -264,7 +264,7 @@ export async function renderSkills(main) {
   let r;
   try { r = await invoke("skills_list"); } catch (e) { body.append(el("p", "error-text", String(e))); return; }
   const from = r.from === "installed"
-    ? `Installed beside Columbus's server, in ${r.dir}. Your assistant gets them from Columbus itself.`
+    ? `Installed beside Columbus's server, in ${r.dir}. Your assistant reads them from Columbus itself (any assistant, through its guide tool; the app's chat is told the list).`
     : "These ship with this version of Columbus. (No installed copy was found beside the server.)";
   if (!r.skills.length) { body.append(emptyState("No skills found", "Columbus's skills ship with the server.")); return; }
   const ul = h("ul", { class: "list" });
