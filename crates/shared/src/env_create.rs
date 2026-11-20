@@ -1099,11 +1099,18 @@ pub fn approve(
         let without_engine = if core.is_empty() || !same_python {
             true
         } else {
-            install(&core, "installing the engine's GIS packages", true).is_err()
+            match install(&core, "installing the engine's GIS packages", true) {
+                Ok(()) => false,
+                // The index has not got them: made without them, and said.
+                Err(e) if index_lacks(&e) => true,
+                // A time limit, the network or a refused host: the same
+                // would stop the packages asked for, so it stops here.
+                Err(e) => return Err(e),
+            }
         };
         let asked: Vec<&str> = p.packages.iter().map(|s| s.trim()).collect();
         install(&asked, "installing the packages", !without_engine).map_err(|e| {
-            if without_engine {
+            if without_engine || !names_an_engine_package(&e, &engine_pins) {
                 e
             } else {
                 format!("{e}\n(A package asked for may not change the version of one the engine has: each of the engine's packages stays at the engine's version.)")
@@ -1136,7 +1143,9 @@ pub fn approve(
             .chars()
             .take(200)
             .collect();
-        let note = if without_engine {
+        let note = if !same_python {
+            " (on a different Python than the engine's, so without the engine's GIS packages: list every package a script needs)"
+        } else if without_engine {
             " (without the engine's GIS packages, which the package index could not give: list every package a script needs)"
         } else {
             " (starts from the engine's GIS packages, at the engine's versions)"
@@ -1161,6 +1170,40 @@ pub fn approve(
             Err(e)
         }
     }
+}
+
+/// Whether uv's error says the index has not got a package or version
+/// (rather than a time limit, the network or a refused host).
+fn index_lacks(e: &str) -> bool {
+    let l = e.to_ascii_lowercase();
+    !l.contains("ran longer than")
+        && !l.contains("could not start")
+        && !l.contains("index_hosts")
+        && (l.contains("not found")
+            || l.contains("no solution found")
+            || l.contains("unsatisfiable")
+            || l.contains("no wheel")
+            || l.contains("no usable wheels"))
+}
+
+/// Whether an install error names one of the engine's packages, so the
+/// note on the engine's versions explains it.
+fn names_an_engine_package(e: &str, pins: &[String]) -> bool {
+    let l = e.to_ascii_lowercase();
+    pins.iter()
+        .filter_map(|p| p.split("==").next())
+        .map(normalize)
+        .filter(|n| n.len() > 2)
+        .any(|n| {
+            l.match_indices(&n).any(|(i, _)| {
+                let before = l[..i].chars().next_back();
+                let after = l[i + n.len()..].chars().next();
+                let edge = |c: Option<char>| {
+                    c.is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '-' || c == '_'))
+                };
+                edge(before) && edge(after)
+            })
+        })
 }
 
 /// Where a new environment's constraints (the engine's versions) are
@@ -1217,6 +1260,41 @@ pub fn describe(p: &Proposal) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_missing_package_makes_an_environment_without_the_engines() {
+        assert!(index_lacks(
+            "installing: uv said:\n  × No solution found when resolving dependencies"
+        ));
+        assert!(index_lacks(
+            "uv said: geopandas was not found in the package registry"
+        ));
+        assert!(!index_lacks(
+            "installing the engine's GIS packages ran longer than 900 s and was stopped"
+        ));
+        assert!(!index_lacks("creating the environment needed mirror.example, which is not in environments.index_hosts (pypi.org); nothing was installed. uv said: not found"));
+        assert!(!index_lacks(
+            "uv said: error sending request for url (https://pypi.org/simple/numpy/)"
+        ));
+    }
+
+    #[test]
+    fn the_engine_versions_note_is_for_errors_about_the_engines_packages() {
+        let pins = vec!["numpy==2.3.1".to_string(), "geopandas==1.1.1".to_string()];
+        assert!(names_an_engine_package(
+            "uv said: Because you require numpy>=2.4 and numpy==2.3.1, we can conclude",
+            &pins
+        ));
+        assert!(!names_an_engine_package(
+            "uv said: Because there is no version of scikit-learn==9.9.9, we can conclude",
+            &pins
+        ));
+        // A name inside another name is not it.
+        assert!(!names_an_engine_package(
+            "uv said: numpy-financial==9 not found",
+            &pins
+        ));
+    }
 
     fn hosts() -> Vec<String> {
         vec!["pypi.org".into(), "files.pythonhosted.org".into()]

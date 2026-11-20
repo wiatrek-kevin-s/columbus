@@ -1523,6 +1523,18 @@ impl Gateway {
                 Some("Read stderr, fix the code and run it again"),
             ));
         }
+        // A script with no network that stopped or failed may have been
+        // waiting on one (a package that downloads data, say): said once,
+        // so the next try does not wait again.
+        let offline = !trusted && !network;
+        if offline && (ran.timed_out || ran.exit_code != Some(0)) {
+            checks.push(check(
+                "script.no_network",
+                Severity::Info,
+                "This script runs with no network: anything that downloads (OpenStreetMap through osmnx, basemap tiles through contextily, geocoding through geopy, a web API) cannot work here, and may wait until it times out".into(),
+                Some("Use data already in the workspace or the person's connections (a web service can be added as a connection), or ask the person for an environment their organization allows network for"),
+            ));
+        }
         if let Some(s) = from_project.as_ref().filter(|s| !s.skipped.is_empty()) {
             checks.push(Check {
                 id: "script.helper_skipped".into(),

@@ -575,6 +575,8 @@ attempt("proc_parent_environ", lambda: read(f"/proc/{parent}/environ"))
 attempt("proc_parent_cmdline", lambda: read(f"/proc/{parent}/cmdline"))
 attempt("proc_init_cmdline", lambda: read("/proc/1/cmdline"))
 attempt("proc_self_environ", lambda: read("/proc/self/environ"))
+attempt("proc_self_maps", lambda: read("/proc/self/maps"))
+attempt("proc_parent_maps", lambda: read(f"/proc/{parent}/maps"))
 attempt("proc_net", lambda: read("/proc/net/tcp"))
 attempt("proc_mounts", lambda: read("/proc/mounts"))
 attempt("tty", lambda: read("/dev/tty"))
@@ -759,6 +761,9 @@ fn levels_a_and_b_on_linux_keep_the_system_and_other_processes_out() {
             "proc_parent_cmdline: refused PermissionError",
             "proc_init_cmdline: refused PermissionError",
             "proc_self_environ: refused PermissionError",
+            // Its own memory map only (scikit-learn's threadpoolctl reads it).
+            "proc_self_maps: ok",
+            "proc_parent_maps: refused PermissionError",
             "proc_net: refused PermissionError",
             "proc_mounts: refused PermissionError",
             // Refused by the sandbox (13), not for want of a terminal (6).

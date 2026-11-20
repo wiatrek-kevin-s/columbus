@@ -9,8 +9,9 @@
 //!   never the rest of `/etc`, where the organization's Columbus folder and
 //!   other programs' connection settings live), the read-only folders given
 //!   and the read-write folders given, and write only the read-write ones.
-//!   Nothing in `/proc` can be opened, so other processes cannot be listed
-//!   and their command lines cannot be read; Landlock itself refuses a
+//!   Nothing in `/proc` can be opened but the program's own memory map
+//!   (`maps`, which libraries read to list what is loaded), so other
+//!   processes cannot be listed and their command lines cannot be read; Landlock itself refuses a
 //!   confined program the memory, environment and open files of every
 //!   process outside its sandbox. Level C may read everything and write
 //!   only the read-write folders.
@@ -161,6 +162,12 @@ fn etc_read() -> Vec<PathBuf> {
     out
 }
 
+/// `/proc/<this process>/maps`, by number: `/proc/self` is a link that a
+/// rule would follow to this process anyway, and the number says so.
+fn own_maps() -> [PathBuf; 1] {
+    [PathBuf::from(format!("/proc/{}/maps", std::process::id()))]
+}
+
 fn add_paths(
     mut ruleset: landlock::RulesetCreated,
     paths: impl IntoIterator<Item = impl AsRef<Path>>,
@@ -211,6 +218,11 @@ fn restrict_files(spec: &Spec) -> Result<(), Error> {
         Level::A | Level::B => {
             let r = add_paths(ruleset, SYSTEM_READ, read, false)?;
             let r = add_paths(r, etc_read(), read, false)?;
+            // The program's own memory map: libraries list what is loaded
+            // from it (threadpoolctl, which scikit-learn uses, does). It is
+            // this process's map only: the launcher replaces itself with
+            // the program, so the number in /proc stays the same.
+            let r = add_paths(r, own_maps(), read, false)?;
             let r = if spec.level == Level::B {
                 add_paths(r, NETWORK_READ, read, false)?
             } else {

@@ -92,7 +92,7 @@ impl Gateway {
                 "fingerprint": fingerprint,
                 "index_hosts": policy.index_hosts,
                 "next": format!(
-                    "Tell the person the environment {id} is waiting for them: they approve it with `columbus-mcp env approve {id}` in a terminal (or in the Columbus app, where it offers this). Nothing is downloaded before that. Once whoami lists {id} as ready, pass it to run_python.",
+                    "Tell the person the environment {id} is waiting for them: in the Columbus app, Settings › Python environments, under Asked for by your assistant, they read it and click Approve (without the app: `columbus-mcp env approve {id}` in a terminal). Nothing is downloaded before that. Once whoami lists {id} as ready, pass it to run_python. If it does not appear after they approve, ask them what the app said: creating it can fail (a version the index does not have, say), and a new proposal needs a new id.",
                     id = p.id
                 ),
             }),
