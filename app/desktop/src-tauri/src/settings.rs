@@ -795,8 +795,17 @@ fn build(form: &ConnForm, old: Option<&Connection>) -> Result<Connection, String
             return Err("give the service's address (ending in FeatureServer or MapServer, or a layer number)".into());
         }
     } else if form.kind == "oracle" {
-        if trimmed(&form.dsn).is_none() && trimmed(&form.host).is_none() {
-            return Err("give the database's service name (DSN) or host".into());
+        if trimmed(&form.host).is_some() {
+            if trimmed(&form.database).is_none() && trimmed(&form.dsn).is_none() {
+                return Err(
+                    "give the database's service name (as SQL Developer shows it, e.g. ORCLPDB1)"
+                        .into(),
+                );
+            }
+        } else if trimmed(&form.dsn).is_none() {
+            return Err(
+                "give the server's host and service name, or a TNS alias or full address".into(),
+            );
         }
     } else if trimmed(&form.host).is_none() || trimmed(&form.database).is_none() {
         return Err("give the server's host and the database name".into());
@@ -839,16 +848,26 @@ fn build(form: &ConnForm, old: Option<&Connection>) -> Result<Connection, String
             Some(other) => return Err(format!("sign-in must be none or oauth, not {other:?}")),
         }
     };
+    // Oracle by host: the service name is `database` (the worker connects
+    // with host, port and service_name); a service name typed in the
+    // alias box goes there too, so the two ways of filling the form agree.
+    let oracle_by_host = form.kind == "oracle" && trimmed(&form.host).is_some();
+    let (dsn, database) = if oracle_by_host {
+        (None, trimmed(&form.database).or_else(|| trimmed(&form.dsn)))
+    } else {
+        (trimmed(&form.dsn), trimmed(&form.database))
+    };
     let conn = Connection {
         id: form.id.clone(),
         kind: form.kind.clone(),
-        dsn: trimmed(&form.dsn).filter(|_| db),
+        dsn: dsn.filter(|_| db),
         path: path.filter(|_| file_kind),
         host: trimmed(&form.host).filter(|_| db),
         port: form.port.filter(|_| db),
-        database: trimmed(&form.database).filter(|_| db),
+        database: database.filter(|_| db),
         user: trimmed(&form.user).filter(|_| db),
-        sslmode: trimmed(&form.sslmode).filter(|_| form.kind == "postgis"),
+        sslmode: trimmed(&form.sslmode)
+            .filter(|_| matches!(form.kind.as_str(), "postgis" | "sqlserver" | "oracle")),
         search_path: trimmed(&form.search_path).filter(|_| form.kind == "postgis"),
         mode,
         datasets,
@@ -2410,6 +2429,45 @@ mod more_tests {
 
     fn form(json: Value) -> ConnForm {
         serde_json::from_value(json).unwrap()
+    }
+
+    /// Oracle as SQL Developer shows it (host, port, service name) saves the
+    /// service name where the worker reads it, whichever box it was typed
+    /// in; SQL Server and Oracle keep their SSL choice.
+    #[test]
+    fn oracle_by_host_saves_the_service_name_and_ssl_is_kept() {
+        for (box_, value) in [("database", "ORCLPDB1"), ("dsn", "ORCLPDB1.corp.example")] {
+            let c = build(
+                &form(
+                    json!({"id": "ora", "kind": "oracle", "mode": "read", "host": "db.corp.example",
+                             "port": 1521, box_: value, "user": "gis", "sslmode": "require"}),
+                ),
+                None,
+            )
+            .unwrap();
+            assert_eq!(c.database.as_deref(), Some(value), "{box_}");
+            assert!(c.dsn.is_none(), "{box_}: {c:?}");
+            assert_eq!(c.sslmode.as_deref(), Some("require"));
+        }
+        let alias = build(&form(json!({"id": "ora", "kind": "oracle", "mode": "read", "dsn": "ORAPROD", "user": "gis"})), None).unwrap();
+        assert_eq!(
+            (alias.dsn.as_deref(), alias.database.as_deref()),
+            (Some("ORAPROD"), None)
+        );
+        let e = build(
+            &form(
+                json!({"id": "ora", "kind": "oracle", "mode": "read", "host": "db", "user": "gis"}),
+            ),
+            None,
+        )
+        .unwrap_err();
+        assert!(e.contains("service name"), "{e}");
+        let ms = build(
+            &form(json!({"id": "ms", "kind": "sqlserver", "mode": "read", "host": "sql", "database": "gis", "sslmode": "require"})),
+            None,
+        )
+        .unwrap();
+        assert_eq!(ms.sslmode.as_deref(), Some("require"));
     }
 
     #[test]
