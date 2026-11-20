@@ -276,13 +276,20 @@ pub fn find_launcher() -> Option<PathBuf> {
         return Some(next_to);
     }
     // Cargo puts test programs below the profile folder: in deps/, or
-    // (Rust 1.100 and later) in build/<crate>/<hash>/out/. The launcher
-    // is in the profile folder, the parent of that deps/ or build/.
-    dir.ancestors()
-        .take(6)
-        .filter(|a| a.file_name().is_some_and(|n| n == "deps" || n == "build"))
-        .filter_map(|a| a.parent().map(|d| d.join(name)))
-        .find(|p| p.is_file())
+    // (Rust 1.100 and later) in build/<crate>/<hash>/out/. The launcher is
+    // in the profile folder. Only those exact layouts: an installed
+    // program never takes a launcher from a folder above its own.
+    let profile = if dir.file_name()? == "deps" {
+        dir.parent()
+    } else if dir.file_name()? == "out" {
+        dir.ancestors()
+            .nth(3)
+            .filter(|b| b.file_name().is_some_and(|n| n == "build"))
+            .and_then(std::path::Path::parent)
+    } else {
+        None
+    };
+    profile.map(|d| d.join(name)).filter(|p| p.is_file())
 }
 
 /// Whether a process can be started confined at `level` here: the

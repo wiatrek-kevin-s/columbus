@@ -201,14 +201,25 @@ pub async fn workflow_run_now(app: AppHandle, id: String) -> Result<Value, Strin
         }
         let root = wf::workflows_dir();
         let (w, _) = wf::ready(&root, &tools_root(), &id)?;
-        // The newest run before this one: if none newer is there after, this
-        // run left no record and its report would be an older run's.
-        let before = newest_run(&root, &id);
+        // The runs there before this one: its run is the one that was not.
+        let before = run_ids(&root, &id);
+        // What it says on stderr goes to a file, not a pipe: a process it
+        // started that outlives it (the GIS worker, say) can never keep
+        // the button waiting. The end of it explains a run with no record.
+        let said_at = std::env::temp_dir().join(format!(
+            "columbus-run-now-{}-{}.txt",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let said_file = std::fs::File::create(&said_at).map_err(|e| e.to_string())?;
         let mut cmd = Command::new(&server);
         cmd.args(["workflow", "run", &id])
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::piped());
+            .stderr(std::process::Stdio::from(said_file));
         if let Some(e) = &engine {
             cmd.env("COLUMBUS_PYTHON", e);
         }
@@ -217,57 +228,77 @@ pub async fn workflow_run_now(app: AppHandle, id: String) -> Result<Value, Strin
             use std::os::windows::process::CommandExt;
             cmd.creation_flags(0x0800_0000);
         }
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| format!("{}: {e}", server.display()))?;
-        // Read what it says on stderr as it goes, so a full pipe never
-        // stops it; the last of it explains a run that left no record.
-        let said = child.stderr.take().map(|mut err| {
-            std::thread::spawn(move || {
-                let mut buf = Vec::new();
-                let _ = std::io::Read::read_to_end(&mut err, &mut buf);
-                buf
-            })
-        });
+        let mut child = cmd.spawn().map_err(|e| {
+            let _ = std::fs::remove_file(&said_at);
+            format!("{}: {e}", server.display())
+        })?;
         let limit = Duration::from_secs(u64::from(w.run_minutes()) * 60 + 120);
         let start = std::time::Instant::now();
-        loop {
+        let ended = loop {
             match child.try_wait() {
-                Ok(Some(_)) => break,
+                Ok(Some(_)) => break true,
                 Ok(None) if start.elapsed() < limit => {
                     std::thread::sleep(Duration::from_millis(200))
                 }
                 _ => {
                     let _ = child.kill();
                     let _ = child.wait();
-                    return Err("the run did not finish in its time limit".into());
+                    break false;
                 }
             }
+        };
+        let said = read_tail(&said_at, 64 * 1024);
+        let _ = std::fs::remove_file(&said_at);
+        if !ended {
+            return Err("the run did not finish in its time limit".into());
         }
-        let said = said
-            .and_then(|t| t.join().ok())
-            .map(|b| String::from_utf8_lossy(&b).trim().to_string())
-            .unwrap_or_default();
-        let latest = wf::list_runs(&root, &id, 1).into_iter().next();
-        let fresh = latest
-            .as_ref()
-            .and_then(|r| r.get("run").and_then(Value::as_str))
-            .is_some_and(|r| before.as_deref() != Some(r));
-        match latest {
-            Some(rec) if fresh => Ok(rec),
-            _ => Err(no_record(&said)),
-        }
+        // Its run: new since it started, with its record written (a folder
+        // with no record, now that the run has ended, is a run that failed
+        // before it could write one).
+        let runs = runs_dir(&root, &id);
+        let mine = run_ids(&root, &id)
+            .difference(&before)
+            .filter(|r| runs.join(r).join(wf::RUN_FILE).is_file())
+            .max()
+            .cloned();
+        mine.and_then(|r| {
+            wf::list_runs(&root, &id, RUNS_READ)
+                .into_iter()
+                .find(|v| v.get("run").and_then(Value::as_str) == Some(r.as_str()))
+        })
+        .ok_or_else(|| no_record(&said))
     })
     .await
     .map_err(|e| e.to_string())?
 }
 
-/// The id of a workflow's newest run, if it has one.
-fn newest_run(root: &std::path::Path, id: &str) -> Option<String> {
-    wf::list_runs(root, id, 1)
+/// A workflow's run folders.
+fn runs_dir(root: &std::path::Path, id: &str) -> std::path::PathBuf {
+    wf::runs_dir(root, id)
+}
+
+/// The ids of a workflow's runs (its run folders' names).
+fn run_ids(root: &std::path::Path, id: &str) -> std::collections::BTreeSet<String> {
+    std::fs::read_dir(runs_dir(root, id))
         .into_iter()
-        .next()
-        .and_then(|r| r.get("run").and_then(Value::as_str).map(String::from))
+        .flatten()
+        .flatten()
+        .filter_map(|e| e.file_name().to_str().map(String::from))
+        .filter(|n| wf::run_id_ok(n))
+        .collect()
+}
+
+/// The last `max` bytes of a file, as text.
+fn read_tail(p: &std::path::Path, max: u64) -> String {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut f) = std::fs::File::open(p) else {
+        return String::new();
+    };
+    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+    let _ = f.seek(SeekFrom::Start(len.saturating_sub(max)));
+    let mut buf = Vec::new();
+    let _ = f.take(max).read_to_end(&mut buf);
+    String::from_utf8_lossy(&buf).trim().to_string()
 }
 
 /// The error for a run that left no record, with the end of what it said.
@@ -702,6 +733,19 @@ fn uid() -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_end_of_what_a_run_said_is_read() {
+        let d = std::env::temp_dir().join(format!("columbus-said-test-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let p = d.join("said.txt");
+        std::fs::write(&p, format!("{}\nlast line\n", "x".repeat(200))).unwrap();
+        assert_eq!(read_tail(&p, 10), "last line");
+        assert_eq!(read_tail(&d.join("none"), 9), "");
+        assert_eq!(no_record(""), "the run left no record");
+        assert_eq!(no_record("a\nb"), "the run left no record: a / b");
+        let _ = std::fs::remove_dir_all(&d);
+    }
 
     fn view() -> wf::WorkflowView {
         let text = "id: crash-check\nname: Crash check\nschedule: { days: [mon, wed], at: \"06:30\" }\nscope: { connections: [c] }\nsteps:\n  - id: a\n    tool: query_features\n    args: { connection: c, dataset: d }\n";

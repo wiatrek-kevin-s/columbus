@@ -95,8 +95,9 @@ pub(crate) fn public_ip(ip: IpAddr) -> bool {
             } else if s[0] == 0x2001 && s[1] == 0 {
                 // Teredo (2001::/32): the client's address, inverted.
                 Some(v4(!o[12], !o[13], !o[14], !o[15]))
-            } else if s[..6] == [0, 0, 0, 0, 0, 0] {
-                Some(v4(o[12], o[13], o[14], o[15])) // IPv4-compatible (::a.b.c.d)
+            } else if s[..6] == [0, 0, 0, 0, 0xffff, 0] || s[..6] == [0, 0, 0, 0, 0, 0] {
+                // IPv4-translated (::ffff:0:a.b.c.d), IPv4-compatible (::a.b.c.d)
+                Some(v4(o[12], o[13], o[14], o[15]))
             } else {
                 None
             };
@@ -108,6 +109,7 @@ pub(crate) fn public_ip(ip: IpAddr) -> bool {
                 || v.is_multicast()
                 || (s[0] & 0xfe00) == 0xfc00 // unique local
                 || (s[0] & 0xffc0) == 0xfe80 // link local
+                || (s[0] == 0x0064 && s[1] == 0xff9b && s[2] == 1) // local-use NAT64 (64:ff9b:1::/48)
                 || (s[0] & 0xffc0) == 0xfec0 // site local (old, still routed inside some networks)
                 || (s[0] == 0x2001 && s[1] == 0x0db8)) // documentation
         }
@@ -752,6 +754,8 @@ mod tests {
             "2001:0:4136:e378:8000:63bf:f5ff:fffe", // Teredo for 10.0.0.1
             "::10.0.0.1",
             "fec0::1",
+            "::ffff:0:10.0.0.1",
+            "64:ff9b:1::a9fe:a9fe",
         ] {
             assert!(!public_ip(bad.parse().unwrap()), "{bad}");
         }

@@ -718,16 +718,21 @@ export function App() {
     });
   }, [outputs]);
 
-  // Load what is on the map.
+  // Load what is on the map. Each read of a layer is numbered: an answer
+  // to an older read (of a file since saved again) is dropped.
+  const reads = useRef(new Map<string, number>());
   useEffect(() => {
     for (const h of onMap) {
       if (layers[h]) continue;
+      const n = (reads.current.get(h) ?? 0) + 1;
+      reads.current.set(h, n);
+      const latest = () => reads.current.get(h) === n;
       setLayers((l) => ({ ...l, [h]: { type: "FeatureCollection", features: [], total: 0, shown: 0, truncated: false, geometry: true, loading: true } }));
       api.layer(h).then(
-        (fc) => setLayers((l) => ({ ...l, [h]: fc })),
+        (fc) => { if (latest()) setLayers((l) => ({ ...l, [h]: fc })); },
         (e) => {
           if (e instanceof SignedOut) return signedOut(e);
-          setLayers((l) => ({ ...l, [h]: { error: String(e.message || e) } }));
+          if (latest()) setLayers((l) => ({ ...l, [h]: { error: String(e.message || e) } }));
         },
       );
     }
