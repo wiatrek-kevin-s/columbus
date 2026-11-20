@@ -2,6 +2,8 @@
 //! with a client that cannot show prompts; the test plays the person's
 //! browser over HTTP, and also tries what a hostile page or agent would.
 
+mod support;
+
 use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
 use std::sync::Arc;
@@ -30,8 +32,7 @@ fn python() -> Option<String> {
 }
 
 fn fake_server() -> PathBuf {
-    let exe = std::env::current_exe().unwrap();
-    let dir = exe.parent().unwrap().parent().unwrap().join("examples");
+    let dir = support::profile_dir().join("examples");
     let p = dir.join(format!("fake_mcp_server{}", std::env::consts::EXE_SUFFIX));
     assert!(
         p.exists(),

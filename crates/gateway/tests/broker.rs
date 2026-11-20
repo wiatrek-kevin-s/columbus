@@ -7,6 +7,8 @@
 //! untrusted output (Rule 4), approvals asked of the person in their own
 //! client, and the fallback when the client cannot ask.
 
+mod support;
+
 use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -38,8 +40,7 @@ fn python() -> Option<String> {
 }
 
 fn fake_server() -> PathBuf {
-    let exe = std::env::current_exe().unwrap();
-    let dir = exe.parent().unwrap().parent().unwrap().join("examples");
+    let dir = support::profile_dir().join("examples");
     let name = if cfg!(windows) {
         "fake_mcp_server.exe"
     } else {

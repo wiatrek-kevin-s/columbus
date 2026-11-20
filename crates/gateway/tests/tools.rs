@@ -702,12 +702,7 @@ async fn propose_test_install_run_and_remove_a_personal_tool() {
 }
 
 fn fake_server() -> PathBuf {
-    let exe = std::env::current_exe().unwrap();
-    let p = exe
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
+    let p = support::profile_dir()
         .join("examples")
         .join(format!("fake_mcp_server{}", std::env::consts::EXE_SUFFIX));
     assert!(

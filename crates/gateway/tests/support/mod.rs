@@ -3,6 +3,9 @@
 //! engine (REQ-22); and asking whether this machine can set the sandbox
 //! up, failing instead of skipping where CI says tests must not skip.
 
+// Each test file uses a part of this.
+#![allow(dead_code)]
+
 use std::process::Command;
 
 /// Set to `1` in every CI job that installs the GIS engine. A test that
@@ -94,4 +97,20 @@ pub fn sandbox_or_fail(launcher: &std::path::Path, must_not_skip: bool) -> bool 
         );
     }
     ok
+}
+
+/// The build's profile folder (`target/debug`), where cargo puts the
+/// programs and the examples, found from this test program wherever cargo
+/// placed it (`target/debug/deps/…` before Rust 1.100,
+/// `target/debug/build/<crate>/<hash>/out/…` from it).
+#[allow(dead_code)]
+pub fn profile_dir() -> std::path::PathBuf {
+    let exe = std::env::current_exe().unwrap();
+    exe.ancestors()
+        .skip(1)
+        .find(|a| {
+            a.join("build").is_dir() && (a.join("examples").is_dir() || a.join("deps").is_dir())
+        })
+        .unwrap_or_else(|| exe.parent().unwrap().parent().unwrap())
+        .to_path_buf()
 }

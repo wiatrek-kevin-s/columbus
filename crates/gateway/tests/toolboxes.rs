@@ -43,8 +43,7 @@ fn python() -> Option<String> {
 }
 
 fn target_dir() -> PathBuf {
-    let exe = std::env::current_exe().unwrap();
-    exe.parent().unwrap().parent().unwrap().to_path_buf()
+    support::profile_dir()
 }
 
 /// Whether this machine can set the sandbox up. Where CI says tests must
