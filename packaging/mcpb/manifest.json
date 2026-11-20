@@ -53,8 +53,8 @@
     "python": {
       "type": "file",
       "title": "Engine Python",
-      "description": "The engine's Python: engine\\setup-engine.ps1 prints the path to paste here.",
-      "required": true
+      "description": "The engine's Python: engine\\setup-engine.ps1 prints the path to paste here. Leave empty if you set up the engine in %USERPROFILE%\\Columbus.",
+      "required": false
     }
   },
   "compatibility": {

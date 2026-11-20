@@ -35,7 +35,7 @@ def manifest(platform: str, version: str) -> dict:
         f"Your organization's GIS context pack. Leave empty to use {MACOS_ORG}/context."
     )
     uc["python"]["description"] = (
-        "The engine's Python: engine/setup-engine.sh prints the path to paste here."
+        "The engine's Python: engine/setup-engine.sh prints the path to paste here (type it, don't browse to it). Leave empty if you set up the engine in ~/Columbus."
     )
     return m
 

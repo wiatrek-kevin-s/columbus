@@ -14,11 +14,11 @@ Engine plugins, `run_python` scripts, toolbox tools and local MCP servers run in
 
 ## 1. Download and unpack
 
-Download `columbus-<version>-macos-arm64.zip` from the release page in your browser (while the repository is private, you must be signed in to GitHub; `curl` in Terminal gets a "Not Found" page instead). Safari unpacks it in Downloads, into a folder named after the file but cut at the first dot, such as `columbus-0`. Then, in Terminal (Applications → Utilities → Terminal):
+Download `columbus-<version>-macos-arm64.zip` from the release page in your browser. Safari unpacks it in Downloads, into a folder whose name starts with `columbus-` (for example `columbus-0`; other browsers leave the zip as it is). Then, in Terminal (Applications → Utilities → Terminal):
 
 ```sh
 mkdir -p ~/Columbus
-cp -R ~/Downloads/columbus-0/ ~/Columbus/        # the folder Safari made
+cp -R ~/Downloads/columbus-*/ ~/Columbus/        # the folder Safari made
 xattr -dr com.apple.quarantine ~/Columbus
 ~/Columbus/columbus-mcp --version
 ```
@@ -45,7 +45,7 @@ This creates `engine/venv` with GDAL, PROJ, GeoPandas and rasterio (about 300 MB
 
 **Or by hand,** as below.
 
-Columbus reads the organization's settings from `/Library/Application Support/Columbus` and your own from `~/Library/Application Support/Columbus`. On your own Mac you create the organization folder once, owned by you:
+Columbus reads the organization's settings from `/Library/Application Support/Columbus` and your own from `~/Library/Application Support/Columbus`. On your own Mac you create the organization folder once, owned by you (`sudo` asks for your Mac password and needs an administrator account; on a Mac your organization manages, ask IT to do this step):
 
 ```sh
 sudo mkdir -p "/Library/Application Support/Columbus"
@@ -84,7 +84,7 @@ SQL Server connections also need unixODBC and Microsoft ODBC Driver 18 (`brew in
 
 Any AI app that speaks MCP can use Columbus, with its own model and its own subscription. (To chat in the Columbus app itself, with an AI service you choose, see **Chat in the app** under step 5.)
 
-**Claude desktop, the extension:** download `columbus-<version>-macos-arm64.mcpb` from the release and open it; Claude desktop installs it as an extension. Paste the Python path from step 2 into **Engine Python** (required). The folder fields can stay empty from version 0.1.4; in earlier versions, fill them in (Connections folder: `~/Library/Application Support/Columbus/connections`), because an empty field reached the server as the text `${user_config.connections}`. In a file picker, Cmd+Shift+G lets you paste a path.
+**Claude desktop, the extension:** download `columbus-<version>-macos-arm64.mcpb` from the release and open it; Claude desktop installs it as an extension. Paste the Python path from step 2 into **Engine Python** (or leave it empty: with the engine in `~/Columbus`, Columbus finds it by itself). The folder fields can stay empty. Type or paste the Python path rather than browsing to it: a file picker may follow the link `venv/bin/python3` to the Python it was made from, which has no GIS tools (in a file picker, Cmd+Shift+G lets you paste a path).
 
 **Or its config file:** in Claude desktop, Settings → Developer → Edit Config, and add (with your own user name):
 
@@ -180,7 +180,11 @@ A file changed on both sides is kept twice, and you choose: **Keep mine**, **Kee
 
 ## 10. Skills
 
-The `skills` folder holds GIS skills. Copy them where your agent loads skills, for example `~/.claude/skills` for Claude Code.
+The `skills` folder holds GIS skills. Copy them where your agent loads skills. For Claude Code, each skill's folder goes directly in `~/.claude/skills`, one folder per skill (not the `skills` folder itself):
+
+```sh
+mkdir -p ~/.claude/skills && cp -R ~/Columbus/skills/*/ ~/.claude/skills/
+```
 
 ## Check it works
 

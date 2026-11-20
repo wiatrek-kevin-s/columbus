@@ -8,7 +8,9 @@ These steps are for Columbus 0.15.0 on Windows 10 and 11 (64-bit). The server (s
 
 ## 1. Unpack
 
-Download `columbus-<version>-windows-x64.zip` from the release and unpack it to a folder of your own, for example `C:\Columbus`. In an organization, IT usually installs it under `C:\Program Files\Columbus`.
+Download `columbus-<version>-windows-x64.zip` from the release and unpack it to `%USERPROFILE%\Columbus` (that is `C:\Users\<you>\Columbus`): the app and Claude desktop find the GIS engine there by themselves. In an organization, IT may install it elsewhere, for example under `C:\Program Files\Columbus`; then choose the engine once in the app, under **Settings › Assistant**.
+
+This guide writes `columbus-mcp` for the program. In PowerShell, run it from the Columbus folder as `.\columbus-mcp.exe` (first `cd $env:USERPROFILE\Columbus`).
 
 ## 2. Set up the GIS engine (once)
 
@@ -72,7 +74,7 @@ Any AI app that speaks MCP can use Columbus, with its own model and its own subs
 ```json
 {
   "mcpServers": {
-    "columbus": { "command": "C:\\Columbus\\columbus-mcp.exe", "args": [] }
+    "columbus": { "command": "C:\\Users\\<you>\\Columbus\\columbus-mcp.exe", "args": [] }
   }
 }
 ```
@@ -111,7 +113,7 @@ Anthropic, OpenAI, xAI and Google Gemini come with a short list of models. For a
 
 No key of any service was used while this was built: every service, Anthropic too, was tested against stand-ins. The services new in 0.15 were built from each one's published description, so your first chat with OpenAI, xAI, Gemini or one of the others is its first meeting with the real thing ([manual-checks.md](manual-checks.md), H-6). A GitHub Copilot subscription cannot be used in this chat: GitHub supports that only through a program of its own, which Columbus does not ship. Copilot works as an AI app connected to Columbus (step 4). A workflow's optional AI review does not follow this choice: it still uses Anthropic, with the Anthropic key.
 
-Then press **New chat**. The chat starts its own Columbus session from the server that comes with the app (or, in a build without one, the one in `C:\\Columbus`), so the same policy, connections and checks apply. The GIS engine it uses can be chosen in **Settings › Assistant**; choosing another asks you to confirm first. Its steps fold into one line per turn (open it to see each step, with **Provenance** for results that made data). The last result of a turn is a card with **Table**, which opens the table on the map, and **How it was made**, which shows its checks, inputs and files; both open in the panel on the right. That panel opens with the chat's map the first time your assistant makes a result, and **Map**, at the top of the chat, opens and closes it. **Fill the window with the map**, in the chat's **⋯** menu, puts the chat away so the map has the window, and **Show the chat again**, in the panel's head, brings it back. When something needs your approval, the chat shows a card (**Columbus needs your OK**) with **Allow once**, **Allow for this chat** where Columbus offers it, and **Decline**. Under **Work freely on copies** a script that stays in the sandbox runs without a card. Under **Ask me before each script**, and for any script that needs the network or runs outside the sandbox, the card shows the code the AI wrote in its own box, apart from what Columbus says about the run: read it before allowing. **New chat** ends the chat and its session; your chats are kept on this computer, listed under **Chats** and found with **Ctrl+K** (⌘K on a Mac), but an ended chat cannot be continued. Closing the app's window ends the chat.
+Then press **New chat**. The chat starts its own Columbus session from the server that comes with the app (or, in a build without one, the one in `%USERPROFILE%\Columbus`), so the same policy, connections and checks apply. The GIS engine it uses can be chosen in **Settings › Assistant**; choosing another asks you to confirm first. Its steps fold into one line per turn (open it to see each step, with **Provenance** for results that made data). The last result of a turn is a card with **Table**, which opens the table on the map, and **How it was made**, which shows its checks, inputs and files; both open in the panel on the right. That panel opens with the chat's map the first time your assistant makes a result, and **Map**, at the top of the chat, opens and closes it. **Fill the window with the map**, in the chat's **⋯** menu, puts the chat away so the map has the window, and **Show the chat again**, in the panel's head, brings it back. When something needs your approval, the chat shows a card (**Columbus needs your OK**) with **Allow once**, **Allow for this chat** where Columbus offers it, and **Decline**. Under **Work freely on copies** a script that stays in the sandbox runs without a card. Under **Ask me before each script**, and for any script that needs the network or runs outside the sandbox, the card shows the code the AI wrote in its own box, apart from what Columbus says about the run: read it before allowing. **New chat** ends the chat and its session; your chats are kept on this computer, listed under **Chats** and found with **Ctrl+K** (⌘K on a Mac), but an ended chat cannot be continued. Closing the app's window ends the chat.
 
 ## 6. ArcGIS sign-in (optional)
 
@@ -165,12 +167,17 @@ A file changed on both sides is kept twice, and you choose: **Keep mine**, **Kee
 
 ## 10. Skills
 
-The `skills` folder holds GIS skills: CRS choice, joins, QA, spatial SQL, rasters, lidar, imagery, deliverables, SOP conversion and more. Copy them where your agent loads skills, for example `%USERPROFILE%\.claude\skills` for Claude Code.
+The `skills` folder holds GIS skills: CRS choice, joins, QA, spatial SQL, rasters, lidar, imagery, deliverables, SOP conversion and more. Copy them where your agent loads skills. For Claude Code, each skill's folder goes directly in `%USERPROFILE%\.claude\skills`, one folder per skill (not the `skills` folder itself):
+
+```powershell
+New-Item -ItemType Directory -Force "$env:USERPROFILE\.claude\skills" | Out-Null
+Copy-Item -Recurse -Force "$env:USERPROFILE\Columbus\skills\*" "$env:USERPROFILE\.claude\skills\"
+```
 
 ## Check it works
 
 - `columbus-mcp --version` prints the version.
-- `columbus-mcp audit verify %ProgramData%\Columbus\audit\<month>.jsonl` checks the audit log's hash chain.
+- `columbus-mcp audit verify "$env:ProgramData\Columbus\audit\<month>.jsonl"` checks the audit log's hash chain.
 - In the AI client, `whoami` reports `engines` as ready once the engine is set up.
 
 ## Known limits in this release

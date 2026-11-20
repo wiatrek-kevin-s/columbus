@@ -56,6 +56,7 @@ All are step by step in [docs/manual-checks.md](https://github.com/wiatrek-kevin
 1. Install the new extension and app (below).
 2. The engine's packages did not change, so the engine setup need not be run again. (From 0.13 or earlier, run it once more, from the new server folder: `sh engine/setup-engine.sh` on a Mac, `engine\setup-engine.ps1` on Windows.)
 3. Nothing else to change. To use what is new, open **Settings** in the app and choose how your assistant works.
+4. If another AI app (Copilot, Cursor, Claude Code, or Claude desktop through its config file) starts Columbus from your Columbus folder, also unpack the new server zip over that folder (your engine stays), or copy the new entry from **Settings › Assistant › Use Columbus from another AI app**.
 
 Licences of software Columbus carries are in `THIRD-PARTY-NOTICES.md` in the server folder. GeoLibre is not part of Columbus; its own licence and notices are kept beside it when you install it.
 
@@ -68,7 +69,7 @@ Licences of software Columbus carries are in `THIRD-PARTY-NOTICES.md` in the ser
 1. **Claude extension:** [columbus-{{VERSION}}-macos-arm64.mcpb]({{BASE}}/columbus-{{VERSION}}-macos-arm64.mcpb). Double-click it in your Downloads folder. Claude desktop asks to install or update the extension: accept, check that **Engine Python** still says `/Users/<you>/Columbus/engine/venv/bin/python3`, then quit Claude with **Cmd+Q** and open it again.
 2. **Columbus app (optional):** [columbus-app-{{VERSION}}-macos-arm64.dmg]({{BASE}}/columbus-app-{{VERSION}}-macos-arm64.dmg). Double-click it and drag **Columbus** onto **Applications**, replacing the old one. Then, in Terminal: `xattr -dr com.apple.quarantine /Applications/Columbus.app` (again after each update: it also clears the server inside the app).
 
-**New to Columbus?** Also download the server folder, [columbus-{{VERSION}}-macos-arm64.zip]({{BASE}}/columbus-{{VERSION}}-macos-arm64.zip), and follow the [Mac install guide](https://github.com/wiatrek-kevin-s/columbus/blob/main/docs/install-macos.md) from step 1. You only need the folder once, to set up the GIS engine.
+**New to Columbus?** Also download the server folder, [columbus-{{VERSION}}-macos-arm64.zip]({{BASE}}/columbus-{{VERSION}}-macos-arm64.zip), and follow the [Mac install guide](https://github.com/wiatrek-kevin-s/columbus/blob/main/docs/install-macos.md) from step 1. Keep the folder: the GIS engine is set up inside it.
 
 ## Windows (10 and 11, 64-bit)
 

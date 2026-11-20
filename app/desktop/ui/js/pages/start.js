@@ -103,7 +103,10 @@ export function firstSteps(s, again) {
   const eng = h("div", { class: "text" });
   if (engine && engine.server_found) {
     eng.append(h("b", {}, engine.engine_found ? "Found Columbus's server and its Python engine." : "Found Columbus's server, but not its Python engine."),
-      h("span", { class: "where wrap-any" }, engine.engine_found ? `${engine.server} · ${engine.engine}` : "Run engine\\setup-engine.ps1 (Windows) or follow the install guide, then check again."));
+      h("span", { class: "where wrap-any" }, engine.engine_found ? `${engine.server} · ${engine.engine}`
+        : (chat && chat.engine_suggestions && chat.engine_suggestions.length)
+          ? h("span", {}, `There is one in ${chat.engine_suggestions[0]}: choose it in `, h("a", { href: "#/settings/ai" }, "Settings › Assistant"), ", then check again.")
+          : "Run engine\\setup-engine.ps1 (Windows) or follow the install guide, then check again."));
     if (!engine.engine_found) eng.append(h("div", { class: "row" }, button("Check again", "sm", () => again()), skipped.has("engine") ? null : skip("engine")));
   } else {
     eng.append(h("b", {}, "Columbus's server was not found"),
