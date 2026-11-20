@@ -65,7 +65,10 @@ each with `id`, `trust`, `status` (`ready`, `changed`, `invalid`), `python_versi
   must open ArcGIS Pro first. Personal tools and workflow steps can use governed level-A
   environments only, so arcpy is not available to them yet.
 - **Ask for a new one** with `propose_environment` (`id`, `python_version?`, exact
-  `packages` like `whitebox==2.3.6`, `reason`). The person approves it at the keyboard; then
+  `packages` like `scikit-learn==1.6.1`, `reason`). It starts with the engine's GIS packages
+  (geopandas, pyogrio, rasterio…) at the engine's versions: list only what to add. Scripts run
+  without network, so a package that downloads a program or data on first use will not work.
+  The person approves it at the keyboard; then
   call `whoami` to see it `ready`. Never ask the person to `pip install` into an environment
   for you: that marks it `changed`.
 - A personal tool's code may still import only the modules the tool rules allow, even in an

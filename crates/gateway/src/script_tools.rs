@@ -151,7 +151,7 @@ pub struct RunPythonArgs {
     #[serde(default)]
     pub approval_id: Option<String>,
     /// A Python environment the person registered (whoami lists them, with
-    /// their Python version, packages and arcpy licence), instead of the
+    /// their Python version, description and arcpy licence), instead of the
     /// engine's Python. A governed one runs confined, with the same
     /// extracts; its own interpreter folder is the only extra folder it can
     /// read. A trusted one (experimental; policy environments.allow_trusted)

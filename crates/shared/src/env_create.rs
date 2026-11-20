@@ -1046,28 +1046,65 @@ pub fn approve(
                 envs_root.display()
             ));
         }
-        let mut cmd = uv_command(&uv, &gate, envs_root);
-        cmd.args([
-            "pip",
-            "install",
-            "--no-config",
-            "--no-build",
-            "--no-python-downloads",
-            "--no-cache",
-            "--system-certs",
-            "--index-strategy",
-            "first-index",
-            "--default-index",
-            &index,
-            "--python",
-        ])
-        .arg(&python)
-        .arg("--")
-        .args(p.packages.iter().map(|s| s.trim()));
-        let r = run_uv(cmd, INSTALL_SECONDS, "installing the packages")?;
-        if !r.ok || !gate.refused().is_empty() {
-            return Err(failure(&gate, &r.output, &policy.index_hosts));
-        }
+        // The engine's own packages first, at the engine's versions, so a
+        // script here reads and writes layers as it does in the engine
+        // (geopandas, pyogrio, rasterio…); then the ones asked for, which
+        // may not move any of the engine's to another version.
+        let engine_found = envs::probe(Path::new(&engine.executable), envs::probe_limit())
+            .map_err(|e| format!("the engine's packages could not be listed: {e}"))?;
+        let engine_pins = engine_pins(&engine_found.packages);
+        let constraints = folder.join(ENGINE_CONSTRAINTS);
+        std::fs::write(&constraints, engine_pins.join("\n") + "\n")
+            .map_err(|e| format!("{}: {e}", constraints.display()))?;
+        let install = |extra: &[&str], what: &str| -> Result<(), String> {
+            let mut cmd = uv_command(&uv, &gate, envs_root);
+            cmd.args([
+                "pip",
+                "install",
+                "--no-config",
+                "--no-build",
+                "--no-python-downloads",
+                "--no-cache",
+                "--system-certs",
+                "--index-strategy",
+                "first-index",
+                "--default-index",
+                &index,
+                "--constraint",
+            ])
+            .arg(&constraints)
+            .arg("--python")
+            .arg(&python)
+            .arg("--")
+            .args(extra);
+            let r = run_uv(cmd, INSTALL_SECONDS, what)?;
+            if !r.ok || !gate.refused().is_empty() {
+                return Err(failure(&gate, &r.output, &policy.index_hosts));
+            }
+            Ok(())
+        };
+        // The engine's main GIS packages (and what they need, at the
+        // engine's versions). Where the index cannot give them (an
+        // organization's own mirror without them, say), the environment is
+        // made with the packages asked for alone, and says so.
+        let core: Vec<&str> = engine_pins
+            .iter()
+            .filter(|p| {
+                let n = normalize(p.split("==").next().unwrap_or(""));
+                ENGINE_CORE.contains(&n.as_str())
+            })
+            .map(String::as_str)
+            .collect();
+        let without_engine = if core.is_empty() {
+            true
+        } else {
+            install(&core, "installing the engine's GIS packages").is_err()
+        };
+        let asked: Vec<&str> = p.packages.iter().map(|s| s.trim()).collect();
+        install(&asked, "installing the packages").map_err(|e| {
+            format!("{e}\n(A package asked for may not change the version of one the engine has: each of the engine's packages stays at the engine's version.)")
+        })?;
+        let _ = std::fs::remove_file(&constraints);
         drop(gate);
         let found = envs::probe(&python, envs::probe_limit())?;
         // What was asked for is what is there.
@@ -1094,13 +1131,18 @@ pub fn approve(
             .chars()
             .take(200)
             .collect();
+        let note = if without_engine {
+            " (without the engine's GIS packages, which the package index could not give: list every package a script needs)"
+        } else {
+            " (starts from the engine's GIS packages, at the engine's versions)"
+        };
         let reg = Registration {
             id: id.to_string(),
             python: python.clone(),
             trust: Trust::Governed,
             confinement: Confinement::A,
             created_by: CreatedBy::Columbus,
-            description: Some(format!("Created by Columbus: {first_line}")),
+            description: Some(format!("Created by Columbus: {first_line}{note}")),
         };
         envs::register(dir, envs_root, policy, &reg, &found, id, now)
     })();
@@ -1114,6 +1156,44 @@ pub fn approve(
             Err(e)
         }
     }
+}
+
+/// Where a new environment's constraints (the engine's versions) are
+/// written while it is made.
+const ENGINE_CONSTRAINTS: &str = "columbus-engine-pins.txt";
+
+/// The engine's packages a new environment starts with (normalized names),
+/// when the engine has them; what they need comes with them.
+const ENGINE_CORE: &[&str] = &[
+    "geopandas",
+    "pyogrio",
+    "shapely",
+    "pyproj",
+    "pandas",
+    "numpy",
+    "rasterio",
+    "pyarrow",
+    "pillow",
+    "pypdf",
+    "duckdb",
+];
+
+/// The engine's packages as exact pins, for a new environment to start
+/// from: the installers themselves left out (the environment has its own).
+fn engine_pins(found: &[String]) -> Vec<String> {
+    let mut pins: Vec<String> = found
+        .iter()
+        .filter_map(|l| {
+            let (n, v) = l.split_once("==")?;
+            let n = n.trim();
+            let skip = ["pip", "setuptools", "wheel", "uv", "distribute"];
+            (!n.is_empty() && !v.trim().is_empty() && !skip.contains(&normalize(n).as_str()))
+                .then(|| format!("{n}=={}", v.trim()))
+        })
+        .collect();
+    pins.sort();
+    pins.dedup();
+    pins
 }
 
 /// A proposal as the app and the terminal show it.
@@ -1135,6 +1215,19 @@ mod tests {
 
     fn hosts() -> Vec<String> {
         vec!["pypi.org".into(), "files.pythonhosted.org".into()]
+    }
+
+    #[test]
+    fn a_new_environment_starts_from_the_engines_versions() {
+        let found = vec![
+            "geopandas==1.0.1".to_string(),
+            "pip==24.2".into(),
+            "uv==0.13.7".into(),
+            "Setuptools==75.1.0".into(),
+            "pyogrio==0.10.0".into(),
+            "broken".into(),
+        ];
+        assert_eq!(engine_pins(&found), ["geopandas==1.0.1", "pyogrio==0.10.0"]);
     }
 
     #[test]
