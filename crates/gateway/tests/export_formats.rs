@@ -370,6 +370,18 @@ async fn tif_export() {
     assert!(out.starts_with("COG 3081 "), "{out}");
     assert_eq!(std::fs::read(&tif).unwrap(), std::fs::read(&ws).unwrap());
 
+    // A raster of the same name already there (the person's, say, with no
+    // provenance file of ours) is not replaced without overwrite.
+    std::fs::write(share.join("theirs.tif"), b"their raster").unwrap();
+    let e = err(&call(
+        &client,
+        "export_output",
+        json!({"handle": slope, "folder": "share", "name": "theirs", "format": "tif"}),
+    )
+    .await);
+    assert!(e.contains("already exist"), "{e}");
+    assert_eq!(std::fs::read(share.join("theirs.tif")).unwrap(), b"their raster");
+
     // A delivery spec in the raster's own CRS takes its format from the
     // spec; one in another CRS fails: rasters are never reprojected here.
     let x = ok(&call(

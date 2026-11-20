@@ -982,6 +982,13 @@ const EXPORT_SUFFIXES: &[&str] = &[
     ".atx",
     ".aih",
     ".ain",
+    // A raster's own file and what GIS programs keep beside it.
+    ".tif",
+    ".tiff",
+    ".tif.aux.xml",
+    ".tfw",
+    ".tif.ovr",
+    ".ovr",
     ".prov.json",
 ];
 
