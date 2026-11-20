@@ -4,9 +4,9 @@ Kit version 1.1 · as of 2026-11-08, session S1 not started
 
 ## Where things stand
 
-- **Session:** part 3 (`docs/build-brief-3.md`) and its addendum are finished and on `main`. **Columbus 0.15.0 is published** as a test release (2026-11-12, on the owner's word). Afterwards the app's icon was made from the app's own mark (R-108, pull request 30) · **Task:** none in work
+- **Session:** part 3 (`docs/build-brief-3.md`) and its addendum are finished and on `main`. **Columbus 0.15.1 is published** as a test release (2026-11-20, on the owner's word; 0.15.0 on 2026-11-12), with the app-wide review's fixes and the app icon made from the app's own mark (R-108) · **Task:** none in work
 - **Next step:** nothing planned. A later session starts from the newest handoff note; its open ends block nothing
-- **Waiting on the owner:** nothing. Theirs when they wish: the word to publish a version with the new icon and the review's fixes (0.15.0 has neither; see the note of 2026-11-20); deleting the old branches (the lists are in the hand-over), the optional checks in `docs/manual-checks.md`, and the word "re-check" for the independent re-check of the last fixes (T-40)
+- **Waiting on the owner:** nothing. Theirs when they wish: deleting the old branches (the lists are in the hand-over), the optional checks in `docs/manual-checks.md`, and the word "re-check" for the independent re-check of the last fixes (T-40)
 - **Homework received:** setup round answered ("skip" on Dependabot alerts); H-1 to H-4 and H-6 are optional (H-5 is H-2 again)
 
 ## Setup round (T-1), 2026-11-08
@@ -169,6 +169,15 @@ Status: raised, approved, declined, or Sent to Blueprint (touches a one-way door
 ## Handoff notes
 
 Newest first, written as you go. Mark each claim verified (checked this session) or unverified.
+
+### Release of 0.15.1 (2026-11-20)
+
+- **Released:** https://github.com/wiatrek-kevin-s/columbus/releases/tag/v0.15.1, the pre-release "Columbus 0.15.1 (test release)". It was built from `main` 6a5aec3 (Release run 44761483969; every job passed). It lists the same 7 files as 0.15.0 (verified).
+- **Why:** the owner's word, "Release." It carries the app-wide review's fixes (pull request 35) and the new app icon (R-108). The version change and notes are pull request 37.
+- **First try failed:** Release run 44754574729 did not compile on Windows or macOS, and nothing was published.
+  - **Cause:** `Opener::File` exists only in debug builds, and the one-line form from a Rust 1.100 lint fix named it in release builds too. CI builds in debug only, so it passed there.
+  - **Fix:** pull request 38. Before the second run it was built here with `--release` and linted in both modes on Rust 1.99 and 1.100 (verified).
+  - **Open:** CI has no release-mode build, so a slip like this one is caught only by the Release run.
 
 ### App-wide review and its fixes (2026-11-20)
 
