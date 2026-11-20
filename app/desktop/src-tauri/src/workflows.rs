@@ -557,15 +557,77 @@ fn schedule_state(v: &wf::WorkflowView, server: Option<&PathBuf>) -> &'static st
         }
     } else if cfg!(windows) {
         let mut c = Command::new("schtasks.exe");
-        c.args(["/Query", "/TN", &task_name(&v.id)]);
+        c.args(["/Query", "/TN", &task_name(&v.id), "/XML"]);
         hide(&mut c);
         match c.output() {
-            Ok(o) if o.status.success() => "on",
+            Ok(o) if o.status.success() => match server {
+                // As on a Mac: the same program, time and days as the
+                // workflow would get now, or Repair is offered.
+                Some(s) if task_matches(&decode_task_xml(&o.stdout), v, s) => "on",
+                _ => "differs",
+            },
             _ => "off",
         }
     } else {
         "off"
     }
+}
+
+/// What `schtasks /Query /XML` printed: UTF-16 (with its mark) or plain text.
+fn decode_task_xml(bytes: &[u8]) -> String {
+    if bytes.starts_with(&[0xFF, 0xFE]) {
+        let units: Vec<u16> = bytes[2..]
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|p| u16::from_le_bytes(*p))
+            .collect();
+        String::from_utf16_lossy(&units)
+    } else {
+        String::from_utf8_lossy(bytes).into_owned()
+    }
+}
+
+/// Whether a scheduled task runs this workflow as it would be scheduled now:
+/// the program beside this server, at the workflow's time, on its days.
+/// Compared by what matters, as Task Scheduler rewrites the rest of the XML.
+fn task_matches(xml: &str, v: &wf::WorkflowView, server: &Path) -> bool {
+    let between = |open: &str, close: &str| {
+        xml.split(open)
+            .nth(1)
+            .and_then(|r| r.split(close).next())
+            .map(str::to_string)
+    };
+    let Some(command) = between("<Command>", "</Command>") else {
+        return false;
+    };
+    let dir = server
+        .parent()
+        .map(|d| xml_escape(&d.display().to_string()));
+    let program_ok = dir.is_some_and(|d| {
+        command
+            .trim()
+            .trim_matches('"')
+            .to_lowercase()
+            .starts_with(&d.to_lowercase())
+    });
+    let at = v.at.clone().unwrap_or_else(|| "00:00".into());
+    let time_ok = between("<StartBoundary>", "</StartBoundary>")
+        .is_some_and(|b| b.contains(&format!("T{at}:00")));
+    let days = between("<DaysOfWeek>", "</DaysOfWeek>").unwrap_or_default();
+    let names = [
+        ("sun", "Sunday"),
+        ("mon", "Monday"),
+        ("tue", "Tuesday"),
+        ("wed", "Wednesday"),
+        ("thu", "Thursday"),
+        ("fri", "Friday"),
+        ("sat", "Saturday"),
+    ];
+    let days_ok = names
+        .iter()
+        .all(|(d, n)| v.days.iter().any(|x| x == d) == days.contains(&format!("<{n}")));
+    program_ok && time_ok && days_ok
 }
 
 #[allow(unused_variables)]
@@ -614,6 +676,46 @@ mod tests {
             replaces: None,
             last_run: None,
         }
+    }
+
+    /// A Windows task is "on" only when it runs this server's program at the
+    /// workflow's time on its days; one left from a moved or changed setup
+    /// is offered Repair, as on a Mac.
+    #[test]
+    fn a_windows_task_is_compared_with_what_would_be_scheduled_now() {
+        let v = view();
+        let server = std::env::temp_dir().join("cols").join("columbus-mcp.exe");
+        let xml = task_xml(&v, &server, None, 10);
+        assert!(task_matches(&xml, &v, &server));
+        // Task Scheduler's own copy comes back as UTF-16 with its mark.
+        let mut wide = vec![0xFF, 0xFE];
+        for u in xml.encode_utf16() {
+            wide.extend(u.to_le_bytes());
+        }
+        assert!(task_matches(&decode_task_xml(&wide), &v, &server));
+        let moved = std::env::temp_dir()
+            .join("elsewhere")
+            .join("columbus-mcp.exe");
+        assert!(
+            !task_matches(&xml, &v, &moved),
+            "an old copy of the program"
+        );
+        assert!(
+            !task_matches(&xml.replace("T06:30:00", "T07:00:00"), &v, &server),
+            "another time"
+        );
+        assert!(
+            !task_matches(&xml.replace("<Wednesday />", ""), &v, &server),
+            "a day missing"
+        );
+        assert!(
+            !task_matches(
+                &xml.replace("<Monday />", "<Monday /><Friday />"),
+                &v,
+                &server
+            ),
+            "a day too many"
+        );
     }
 
     /// The real scheduler takes the entry, and it can be removed again
