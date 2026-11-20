@@ -9,7 +9,6 @@
 //! that cannot set the sandbox up, fails each of them, on every system.
 
 // (Only the sandbox check is used here, not the engine finder.)
-#[allow(dead_code)]
 mod support;
 
 use std::path::{Path, PathBuf};
