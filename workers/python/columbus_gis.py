@@ -38,6 +38,7 @@ os.environ["OGR_SQLITE_ALLOW_EXTERNAL_ACCESS"] = "NO"
 os.environ.setdefault("CPL_VSIL_CURL_ALLOWED_EXTENSIONS", ".columbus-none")
 
 import geopandas as gpd  # noqa: E402
+import datetime  # noqa: E402
 import pandas as pd  # noqa: E402
 import pyogrio  # noqa: E402
 import pyproj  # noqa: E402
@@ -1172,7 +1173,7 @@ def display_geojson(path: str, max_features: int = 20000, max_coordinates: int =
     bbox = [float(v) for v in present.total_bounds] if len(present) else None
     return {"type": "FeatureCollection", "features": feats, "total": total, "shown": len(feats),
             "truncated": len(feats) < total, "geometry": True,
-            "geometry_type": layer_summary(df).get("geometry_type"), "bbox": bbox,
+            "geometry_type": (layer_summary(df).get("geometry_types") or [None])[0], "bbox": bbox,
             "source_crs": df.crs.to_string()}
 
 
@@ -1470,6 +1471,15 @@ def export_layer(path: str, out_stem: str, fmt: str, crs: str | None = None,
         if wide:
             raise GISError("export.format", f"Shapefile text fields hold at most 254 bytes; {', '.join(map(str, wide))} has longer values",
                            fix="Deliver GeoPackage")
+        # Written through GDAL, a date or date-time field arrives as text.
+        dated = [str(c) for c in df.columns if c != gname
+                 and (pd.api.types.is_datetime64_any_dtype(df[c])
+                      or df[c].dropna().map(lambda v: isinstance(v, (datetime.date, datetime.datetime))).any())]
+        if dated:
+            checks.append(check("export.dates", "warn",
+                                f"{', '.join(dated)} {'is' if len(dated) == 1 else 'are'} written as text in the shapefile, not as dates (YYYY/MM/DD, with the time where there is one): ArcGIS and QGIS will see text fields",
+                                detail={"fields": dated},
+                                fix="Deliver GeoPackage or a file geodatabase to keep them as dates"))
     os.makedirs(os.path.dirname(out_stem) or ".", exist_ok=True)
     out = out_stem + ext
     if driver == "CSV":
@@ -1597,10 +1607,31 @@ def _pseudo_mercator(crs) -> bool:
     return "pseudo mercator" in method or "popular visualisation" in method
 
 
+def _datum_check(src, dst, checks: list, what: str) -> None:
+    """Say when moving between datums uses a less accurate method than the
+    best one, because its shift grid is not on this computer (Columbus
+    never downloads grids: PROJ_NETWORK is off)."""
+    try:
+        if src is None or dst is None or src.equals(dst):
+            return
+        sd, dd = CRS.from_user_input(src).datum, CRS.from_user_input(dst).datum
+        if sd is None or dd is None or sd == dd:
+            return
+        group = pyproj.transformer.TransformerGroup(src, dst, always_xy=True)
+        if group.best_available:
+            return
+        checks.append(check("crs.datum_shift", "warn",
+                            f"{what}: moving from {sd.name} to {dd.name} needs a shift grid that is not installed, so a less accurate method was used (errors of a metre or more are possible)",
+                            fix="Install the PROJ grids for these datums (proj-data) in the engine, or keep the data in its own datum"))
+    except Exception:  # noqa: BLE001
+        return
+
+
 def _align(base: gpd.GeoDataFrame, other: gpd.GeoDataFrame, name: str, checks: list) -> gpd.GeoDataFrame:
     if other.crs.equals(base.crs):
         return other
     checks.append(check("crs.agreement", "info", f"Reprojected {name} from {_label(other.crs)} to {_label(base.crs)} to match"))
+    _datum_check(other.crs, base.crs, checks, f"Reprojecting {name}")
     return other.to_crs(base.crs)
 
 
@@ -1721,6 +1752,7 @@ def _op_reproject(inp, params, checks):
         raise GISError("params", "crs must be an EPSG code such as \"EPSG:3081\"")
     out = to_crs(df, target.strip().upper())
     checks.append(check("crs.reprojected", "info", f"Reprojected from {_label(df.crs)} to {_label(out.crs)}"))
+    _datum_check(df.crs, out.crs, checks, "Reprojecting")
     return out
 
 
@@ -1786,6 +1818,12 @@ def _op_dissolve(inp, params, checks):
                                 detail={"features": nulls},
                                 fix="Fill or filter the empty values first if they should not be grouped together"))
     out = agg.dissolve(by=by, aggfunc={"feature_count": "sum"} if by else "first", dropna=False).reset_index()
+    dropped = [str(c) for c in df.columns if c != df.geometry.name and c not in (by or [])]
+    if dropped:
+        checks.append(check("dissolve.fields_dropped", "info",
+                            f"Dissolve keeps {'the field(s) ' + ', '.join(by) + ' and ' if by else ''}feature_count; the other fields are not carried over: {', '.join(dropped[:20])}{' …' if len(dropped) > 20 else ''}",
+                            detail={"fields": dropped},
+                            fix="Join the summary values you need back by the dissolve field, or summarize them first"))
     if not by:
         out = out[[out.geometry.name]].assign(feature_count=len(df))
     return out
@@ -1795,7 +1833,30 @@ def _op_intersect(inp, params, checks):
     a = _need_geo(inp["a"], "a")
     b = _align(a, _need_geo(inp["b"], "b"), "b", checks)
     _count_pairs(a, b, "intersects", _out_limit(params), "intersect")
-    return gpd.overlay(a, b, how="intersection", keep_geom_type=True)
+    # The result has the lower dimension of the two: polygons with lines are
+    # lines, with points are points (kept as a's type, a polygon layer cut by
+    # roads would come back empty).
+    dims = {"Point": 0, "MultiPoint": 0, "LineString": 1, "MultiLineString": 1, "LinearRing": 1,
+            "Polygon": 2, "MultiPolygon": 2}
+
+    def dim(df):
+        found = [dims[t] for t in df.geom_type.dropna().unique() if t in dims]
+        return max(found) if found else 2
+
+    target = min(dim(a), dim(b))
+    if dim(a) == dim(b):
+        return gpd.overlay(a, b, how="intersection", keep_geom_type=True)
+    out = gpd.overlay(a, b, how="intersection", keep_geom_type=False)
+    # Keep the parts of that dimension (a collection's other parts are
+    # where the shapes only touch).
+    parts = out.explode(index_parts=True)
+    parts = parts[parts.geom_type.map(lambda t: dims.get(t, -1)) == target]
+    if parts.empty:
+        return out.iloc[0:0]
+    keep = parts.geometry.groupby(level=0).agg(lambda g: shapely.union_all(list(g)))
+    out = out.loc[keep.index].copy()
+    out = out.set_geometry(gpd.GeoSeries(keep.values, index=keep.index, crs=out.crs), crs=out.crs)
+    return out
 
 
 def _op_join(inp, params, checks):
@@ -1960,6 +2021,10 @@ def vector_op(op: str, inputs: dict[str, str], params: dict[str, Any], stem: str
     if dropped:
         checks.append(dropped)
     path = write_layer(out, stem, layer=op)
+    if len(out) == 0 and all(len(d) for d in loaded.values()) and op != "filter":
+        checks.append(check("output.empty", "warn",
+                            f"{op} returned no features although every input has some",
+                            fix="Check the inputs overlap (their CRSs and extents), and for intersect that the layers really share area or lines"))
     checks.extend(_layer_checks(out, "The output"))
     in_extent = [layer_summary(d)["extent"] for d in loaded.values() if isinstance(d, gpd.GeoDataFrame)]
     summary = layer_summary(out)

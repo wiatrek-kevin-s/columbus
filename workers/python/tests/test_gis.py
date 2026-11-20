@@ -411,3 +411,58 @@ class WorkerGisTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@skip_unless_engine(HAVE_GIS, "GIS engine not installed")
+class ReviewFixesTests(unittest.TestCase):
+    """What the review of 2026-11-20 found: results lost or changed without
+    a word."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.d = self.tmp.name
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def layer(self, name, df):
+        return g.write_layer(df, os.path.join(self.d, name))
+
+    def test_polygons_intersected_with_lines_give_the_lines(self):
+        poly = gpd.GeoDataFrame({"zone": ["A", "B"]}, geometry=[shapely.box(0, 0, 1000, 1000), shapely.box(1000, 0, 2000, 1000)], crs=3081)
+        line = gpd.GeoDataFrame({"rd": ["r1"]}, geometry=[LineString([(-500, 500), (2500, 500)])], crs=3081)
+        pa, pl = self.layer("poly", poly), self.layer("line", line)
+        for a, b in ((pa, pl), (pl, pa)):
+            r = g.vector_op("intersect", {"a": a, "b": b}, {}, os.path.join(self.d, f"x{len(a)}{len(b)}"))
+            self.assertEqual(r["summary"]["rows"], 2, (a, b))
+            self.assertEqual(r["summary"]["geometry_types"], ["LineString"])
+        # Inputs that do not meet: an empty result is said.
+        far = self.layer("far", gpd.GeoDataFrame({"rd": ["r2"]}, geometry=[LineString([(9000, 9000), (9500, 9500)])], crs=3081))
+        r = g.vector_op("intersect", {"a": pa, "b": far}, {}, os.path.join(self.d, "none"))
+        self.assertEqual(r["summary"]["rows"], 0)
+        self.assertIn("output.empty", [c["id"] for c in r["checks"]])
+
+    def test_dissolve_names_the_fields_it_leaves_out(self):
+        df = gpd.GeoDataFrame({"cat": ["a", "a"], "pop": [1, 2]}, geometry=[shapely.box(0, 0, 1, 1), shapely.box(1, 0, 2, 1)], crs=3081)
+        r = g.vector_op("dissolve", {"layer": self.layer("d", df)}, {"by": "cat"}, os.path.join(self.d, "dd"))
+        c = next(c for c in r["checks"] if c["id"] == "dissolve.fields_dropped")
+        self.assertEqual(c["detail"]["fields"], ["pop"])
+
+    def test_shapefile_dates_are_said_to_become_text(self):
+        df = gpd.GeoDataFrame({"when": pd.to_datetime(["2024-01-02 13:45"]), "n": [1]}, geometry=[Point(1000000, 7000000)], crs=3081)
+        r = g.export_layer(self.layer("t", df), os.path.join(self.d, "out"), "shp")
+        self.assertIn("export.dates", [c["id"] for c in r["checks"]])
+        r = g.export_layer(self.layer("t2", df), os.path.join(self.d, "out2"), "gpkg")
+        self.assertNotIn("export.dates", [c["id"] for c in r["checks"]])
+
+    def test_a_datum_shift_without_its_grid_is_said(self):
+        nad27 = self.layer("n27", gpd.GeoDataFrame({"n": [1]}, geometry=[Point(-97.7, 30.3)], crs=4267))
+        r = g.vector_op("reproject", {"layer": nad27}, {"crs": "EPSG:4269"}, os.path.join(self.d, "r"))
+        ids = [c["id"] for c in r["checks"]]
+        # Only when the grid is missing: where the engine has it, nothing to say.
+        import pyproj
+        best = pyproj.transformer.TransformerGroup(4267, 4269, always_xy=True).best_available
+        self.assertEqual("crs.datum_shift" in ids, not best)
+        same = self.layer("n83", gpd.GeoDataFrame({"n": [1]}, geometry=[Point(-97.7, 30.3)], crs=4269))
+        r = g.vector_op("reproject", {"layer": same}, {"crs": "EPSG:3081"}, os.path.join(self.d, "r2"))
+        self.assertNotIn("crs.datum_shift", [c["id"] for c in r["checks"]])
