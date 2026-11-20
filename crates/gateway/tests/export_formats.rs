@@ -380,7 +380,10 @@ async fn tif_export() {
     )
     .await);
     assert!(e.contains("already exist"), "{e}");
-    assert_eq!(std::fs::read(share.join("theirs.tif")).unwrap(), b"their raster");
+    assert_eq!(
+        std::fs::read(share.join("theirs.tif")).unwrap(),
+        b"their raster"
+    );
 
     // A delivery spec in the raster's own CRS takes its format from the
     // spec; one in another CRS fails: rasters are never reprojected here.

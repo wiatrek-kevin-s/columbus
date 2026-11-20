@@ -1420,7 +1420,10 @@ pub fn read_run(root: &Path, id: &str, run: &str) -> Result<(Value, String), Str
 
 /// Delete all but the newest `keep` runs, with each one's session
 /// workspace (its copies of the data) when that is a folder directly in
-/// `workspaces`.
+/// `workspaces`. Runs that did nothing (skipped because another was going,
+/// waiting for re-approval, schedule off) are kept apart, `keep` of them, so
+/// they never push out a run that did work; and a run still going (started
+/// in the last day) is never deleted.
 pub fn prune_runs(root: &Path, id: &str, keep: usize, workspaces: Option<&Path>) {
     let dir = runs_dir(root, id);
     let Ok(entries) = std::fs::read_dir(&dir) else {
@@ -1437,26 +1440,53 @@ pub fn prune_runs(root: &Path, id: &str, keep: usize, workspaces: Option<&Path>)
         })
         .collect();
     runs.sort();
-    let n = runs.len().saturating_sub(keep);
-    let ws_root = workspaces.and_then(|w| w.canonicalize().ok());
-    for p in runs.into_iter().take(n) {
-        if let Some(ws_root) = &ws_root {
-            let ws = read_plain(&p.join(RUN_FILE), 1024 * 1024)
-                .ok()
-                .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
-                .and_then(|v| v["workspace"].as_str().map(PathBuf::from))
-                .and_then(|w| {
-                    std::fs::symlink_metadata(&w)
-                        .ok()
-                        .filter(|m| m.is_dir())
-                        .map(|_| w)
-                })
-                .and_then(|w| w.canonicalize().ok());
-            if let Some(ws) = ws.filter(|w| w.parent() == Some(ws_root.as_path())) {
-                let _ = std::fs::remove_dir_all(ws);
-            }
+    let record = |p: &Path| {
+        read_plain(&p.join(RUN_FILE), 1024 * 1024)
+            .ok()
+            .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+            .unwrap_or(Value::Null)
+    };
+    let (mut work, mut notes) = (Vec::new(), Vec::new());
+    for p in runs {
+        let r = record(&p);
+        let status = r["status"].as_str().unwrap_or("running").to_string();
+        if matches!(status.as_str(), "skipped" | "needs_reapproval" | "off") {
+            notes.push((p, r));
+        } else {
+            work.push((p, r));
         }
-        let _ = std::fs::remove_dir_all(p);
+    }
+    let going = |r: &Value| {
+        r["status"].as_str().unwrap_or("running") == "running"
+            && r["started"]
+                .as_str()
+                .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+                .is_none_or(|t| {
+                    chrono::Utc::now().signed_duration_since(t) < chrono::Duration::days(1)
+                })
+    };
+    let ws_root = workspaces.and_then(|w| w.canonicalize().ok());
+    for list in [work, notes] {
+        // A run still going does not count: it prunes when it finishes.
+        let list: Vec<(PathBuf, Value)> = list.into_iter().filter(|(_, r)| !going(r)).collect();
+        let n = list.len().saturating_sub(keep);
+        for (p, r) in list.into_iter().take(n) {
+            if let Some(ws_root) = &ws_root {
+                let ws = r["workspace"]
+                    .as_str()
+                    .map(PathBuf::from)
+                    .filter(|w| {
+                        std::fs::symlink_metadata(w)
+                            .ok()
+                            .is_some_and(|m| m.is_dir())
+                    })
+                    .and_then(|w| w.canonicalize().ok());
+                if let Some(ws) = ws.filter(|w| w.parent() == Some(ws_root.as_path())) {
+                    let _ = std::fs::remove_dir_all(ws);
+                }
+            }
+            let _ = std::fs::remove_dir_all(p);
+        }
     }
 }
 
@@ -1674,6 +1704,49 @@ pub fn lock(root: &Path, id: &str) -> Result<Lock, String> {
 
 #[cfg(test)]
 mod tests {
+
+    /// A run that did work is not pushed out by records of runs that did
+    /// nothing (another was going), and a run still going is never deleted.
+    #[test]
+    fn pruning_keeps_the_run_that_did_work() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = runs_dir(root.path(), "w");
+        let run = |name: &str, status: &str, started: &str| {
+            let d = dir.join(name);
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(
+                d.join(RUN_FILE),
+                serde_json::to_vec(&json!({"status": status, "started": started})).unwrap(),
+            )
+            .unwrap();
+        };
+        let old = "2020-01-01T00:00:00+00:00";
+        let now = chrono::Utc::now().to_rfc3339();
+        run("2026-01-01T06-00-00-000-aaaa", "done", old);
+        run("2026-01-02T06-00-00-000-bbbb", "skipped", old);
+        run("2026-01-02T06-00-01-000-cccc", "skipped", old);
+        run("2026-01-03T06-00-00-000-dddd", "running", &now);
+        prune_runs(root.path(), "w", 1, None);
+        let left: Vec<String> = {
+            let mut v: Vec<String> = std::fs::read_dir(&dir)
+                .unwrap()
+                .flatten()
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect();
+            v.sort();
+            v
+        };
+        // Work: the done run is older than the one going, but the one going
+        // is never deleted; notes: only the newest is kept.
+        assert_eq!(
+            left,
+            [
+                "2026-01-01T06-00-00-000-aaaa",
+                "2026-01-02T06-00-01-000-cccc",
+                "2026-01-03T06-00-00-000-dddd"
+            ]
+        );
+    }
     use super::*;
 
     const WF: &str = "id: morning-check\nname: Morning check\npurpose: Count the tracts every weekday.\nschedule: { days: weekdays, at: \"06:00\" }\nscope: { connections: [tiger], run_minutes: 10 }\nsteps:\n  - id: tracts\n    tool: query_features\n    args: { connection: tiger, dataset: tracts }\n  - id: check\n    tool: verify\n    args: { layer: \"${tracts}\" }\noutputs:\n  folder: { export: outbox, steps: [tracts] }\n";
