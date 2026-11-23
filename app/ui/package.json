@@ -12,7 +12,7 @@
     "test:e2e": "python ../../app/ui/e2e/companion.py ../../target/debug/columbus-mcp"
   },
   "dependencies": {
-    "maplibre-gl": "6.18.0",
+    "maplibre-gl": "6.19.0",
     "react": "19.3.1",
     "react-dom": "19.3.1"
   },
